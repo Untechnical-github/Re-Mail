@@ -2,6 +2,7 @@
 
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useState, useEffect, useMemo, useRef } from "react";
+import localforage from "localforage"; // ★これを追加
 
 type ChatConfig = {
   customName?: string;
@@ -185,14 +186,25 @@ export default function Home() {
     if (session) {
       const initLoad = async () => {
         setIsLoading(true);
+
+        // ★1. まず IndexedDB から爆速で過去のデータを読み込んで即座に画面に出す
+        const cachedEmails: any[] | null = await localforage.getItem("remail_cached_emails");
+        if (cachedEmails && cachedEmails.length > 0) {
+          setEmails(cachedEmails);
+          setIsLoading(false); // キャッシュがあれば一瞬でローディング解除！
+        }
+
         const settings = await loadD1Configs();
         const initLimit = settings?.limit ?? 10;
         const initInbox = settings?.inbox ?? true;
         const initSpam = settings?.spam ?? false;
         const initTrash = settings?.trash ?? false;
         setLimitAmount(initLimit); setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
+
+        // ★2. 画面は出たまま、裏側でこっそりAPIを叩いて「最新の差分」を取得しにいく
         await fetchEmails(initLimit, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
-        setIsLoading(false);
+        
+        if (!cachedEmails) setIsLoading(false);
       };
       initLoad();
     }
@@ -218,8 +230,13 @@ export default function Home() {
       if (res.ok) {
         const data = await res.json();
         const newMessages = data.messages || [];
-        setEmails(isLoadMore ? [...emails, ...newMessages] : newMessages);
+        const updatedEmails = isLoadMore ? [...emails, ...newMessages] : newMessages;
+        
+        setEmails(updatedEmails);
         setCurrentNextPageToken(data.nextPageToken);
+        
+        // ★次回爆速で開くために、最新状態を IndexedDB に保存しておく
+        await localforage.setItem("remail_cached_emails", updatedEmails);
       }
     } catch (error) { console.error(error); } finally { if (!isSilent) setIsLoading(false); }
   };
