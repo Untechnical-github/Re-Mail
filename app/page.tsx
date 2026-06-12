@@ -206,16 +206,21 @@ export default function Home() {
         setDisplayLimit(initLimit); // 表示件数を同期
         setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
 
-        // ★ IndexedDBから爆速ロード (受信箱の場合のみ)
-        if (initInbox && !initSpam && !initTrash) {
-          const cachedEmails: any[] | null = await localforage.getItem("remail_inbox_cache");
-          if (cachedEmails && cachedEmails.length > 0) {
-            setEmails(cachedEmails);
-            setIsLoading(false); // キャッシュがあればローディングを一瞬で消す
-          }
+        // ★ IndexedDBからスナップショットを爆速ロード
+        const snapshot: any = await localforage.getItem("remail_feed_cache");
+        
+        // キャッシュが存在し、かつ「保存された条件」が「現在の設定」と完全一致するか確認
+        if (snapshot && snapshot.flags &&
+            snapshot.flags.inbox === initInbox &&
+            snapshot.flags.spam === initSpam &&
+            snapshot.flags.trash === initTrash &&
+            snapshot.emails && snapshot.emails.length > 0) {
+          
+          setEmails(snapshot.emails);
+          setIsLoading(false); // 条件が一致すれば0秒でローディング解除！
         }
 
-        // 裏でAPIを叩いて最新差分を取得
+        // 裏でAPIを叩いて最新差分を取得（条件が変わっていればここで新しいデータに置き換わる）
         await fetchEmails(initLimit, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
         setIsLoading(false);
       };
@@ -227,9 +232,9 @@ export default function Home() {
     if (!flags.inbox && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return; }
     if (!isSilent) setIsLoading(true);
     
-    // ★ キャッシュ更新の対象か判定（受信箱のみ、検索なし、追加読み込みでない）
-    const isCacheTarget = flags.inbox && !flags.spam && !flags.trash && !query && !pageToken;
-    const targetLimit = isCacheTarget ? 100 : limit; // キャッシュ対象なら強制で最新100件を裏で取得
+    // ★ キャッシュ対象の判定（キーワード検索や過去ログ追加読み込みではない時）
+    const isCacheTarget = !query && !pageToken && !isLoadMore;
+    const targetLimit = isCacheTarget ? 100 : limit;
 
     try {
       let qParts = []; let orLabels = [];
