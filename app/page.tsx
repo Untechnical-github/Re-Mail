@@ -53,8 +53,11 @@ export default function Home() {
   const [modal, setModal] = useState<ModalState | null>(null);
   const [renameInput, setRenameInput] = useState("");
 
-  // D1から設定データをロード（グローバル設定の復元も含む）
-  const loadD1Configs = async () => {
+  // D1から設定データをロード（修正：設定データを返すように変更）
+  // D1から設定データをロード
+  const loadD1Configs = async (): Promise<{ limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null> => {
+    let globalSettings: { limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null = null;
+    
     try {
       const res = await fetch("/api/config");
       if (res.ok) {
@@ -64,11 +67,7 @@ export default function Home() {
         data.configs?.forEach((c: any) => {
           if (c.chat_id === "__GLOBAL_SETTINGS__" && c.custom_name) {
             try {
-              const settings = JSON.parse(c.custom_name);
-              if (settings.limit) setLimitAmount(settings.limit);
-              if (settings.inbox !== undefined) setCheckInbox(settings.inbox);
-              if (settings.spam !== undefined) setCheckSpam(settings.spam);
-              if (settings.trash !== undefined) setCheckTrash(settings.trash);
+              globalSettings = JSON.parse(c.custom_name);
             } catch (e) { console.error(e); }
             return;
           }
@@ -84,6 +83,7 @@ export default function Home() {
         setChatConfigs(formatted);
       }
     } catch (e) { console.error(e); }
+    return globalSettings;
   };
 
   // アプリ全体の読み込み条件をD1に保存
@@ -133,21 +133,51 @@ export default function Home() {
     };
   }, []);
 
+  // 修正：ブラウザバックの確実な検知
   useEffect(() => {
-    const handlePopState = () => { if (selectedSender) setSelectedSender(null); };
+    const handlePopState = () => { 
+      // URLに #chat が無ければ一覧画面に戻る
+      if (window.location.hash !== '#chat') {
+        setSelectedSender(null); 
+      }
+    };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [selectedSender]);
+  }, []);
 
+  // 修正：D1から設定をロード「してから」メールを初回読み込みする
   useEffect(() => {
     if (session) {
-      fetchEmails(10, "", { inbox: true, spam: false, trash: false }, null, false, false);
-      loadD1Configs();
+      const initLoad = async () => {
+        setIsLoading(true);
+        const settings = await loadD1Configs();
+        
+        // D1の設定があれば反映、なければデフォルト
+        const initLimit = settings?.limit ?? 10;
+        const initInbox = settings?.inbox ?? true;
+        const initSpam = settings?.spam ?? false;
+        const initTrash = settings?.trash ?? false;
+
+        setLimitAmount(initLimit);
+        setCheckInbox(initInbox);
+        setCheckSpam(initSpam);
+        setCheckTrash(initTrash);
+
+        // 同期した設定を使って取得
+        await fetchEmails(initLimit, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
+        setIsLoading(false);
+      };
+      initLoad();
     }
   }, [session]);
 
   const fetchEmails = async (limit = 10, query = "", flags = { inbox: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false) => {
-    if (!flags.inbox && !flags.spam && !flags.trash) return;
+    // 修正：何も選択されていない場合はリストを空にする
+    if (!flags.inbox && !flags.spam && !flags.trash) {
+      setEmails([]);
+      if (!isSilent) setIsLoading(false);
+      return;
+    }
     
     if (!isSilent) setIsLoading(true);
     try {
@@ -169,9 +199,9 @@ export default function Home() {
         const data = await res.json();
         const newMessages = data.messages || [];
         const updatedEmails = isLoadMore ? [...emails, ...newMessages] : newMessages;
-        if (updatedEmails.length !== emails.length || isLoadMore) {
-          setEmails(updatedEmails);
-        }
+        
+        // 修正：件数に関わらず無条件でリストを上書き更新する
+        setEmails(updatedEmails);
         setCurrentNextPageToken(data.nextPageToken);
       }
     } catch (error) { console.error(error); } finally { 
@@ -183,7 +213,6 @@ export default function Home() {
   useEffect(() => {
     if (!session) return;
     const interval = setInterval(() => {
-      // スクロール等で多く読み込んでいた場合、UIが縮まないように現在の件数をキープしてサイレントフェッチ
       const targetLimit = Math.max(limitAmount, emails.length || 10);
       fetchEmails(targetLimit, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, true);
     }, 60000);
@@ -264,7 +293,9 @@ export default function Home() {
     setSelectedSender(sender);
     setSelectedMessages([]); 
     setReplyToMessage(null);
-    if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`);
+    if (isMobile) {
+      window.history.pushState({ chat: sender }, '', `#chat`);
+    }
   };
 
   const handleSend = async () => {
@@ -523,9 +554,10 @@ export default function Home() {
                 fetchEmails(limitAmount, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false);
                 saveGlobalSettings(limitAmount, checkInbox, checkSpam, checkTrash);
               }} 
-              className="w-full bg-gray-800 text-white font-bold rounded text-xs px-4 py-2.5 hover:bg-black active:scale-[0.98] transition-transform shadow-sm"
+              disabled={isLoading}
+              className="w-full bg-gray-800 text-white font-bold rounded text-xs px-4 py-2.5 hover:bg-black active:scale-[0.98] transition-transform shadow-sm disabled:bg-gray-400"
             >
-              読み込み実行
+              {isLoading ? "読み込み中..." : "読み込み実行"}
             </button>
 
             <input 
