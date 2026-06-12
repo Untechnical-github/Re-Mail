@@ -11,9 +11,10 @@ type ChatConfig = {
   unhideOnNew?: boolean;
   forceFetch?: boolean;
   persistedData?: any;
+  roomId?: string;
 };
 
-type SelectionMode = "none" | "chat_hide" | "chat_delete" | "msg_hide" | "msg_delete" | "chat_pin" | "msg_pin";
+type SelectionMode = "none" | "chat_hide" | "chat_delete" | "msg_hide" | "msg_delete" | "chat_pin" | "msg_pin" | "chat_reset" | "msg_reset";
 
 type ContextMenuState = {
   type: "chat" | "msg";
@@ -23,7 +24,7 @@ type ContextMenuState = {
 } | null;
 
 type ModalState = {
-  type: "confirm_delete" | "confirm_hide" | "confirm_unhide" | "unhide_select" | "rename" | "confirm_pin";
+  type: "confirm_delete" | "confirm_hide" | "confirm_unhide" | "unhide_select" | "rename" | "confirm_pin" | "confirm_reset";
   targetMode: "chat" | "msg";
   targets: any[];
 } | null;
@@ -92,6 +93,7 @@ export default function Home() {
           let customNameVal = c.custom_name || undefined;
           let forceFetchVal = false;
           let pData = null;
+          let roomIdVal = undefined;
 
           if (customNameVal && customNameVal.startsWith('{')) {
             try {
@@ -99,6 +101,7 @@ export default function Home() {
               customNameVal = parsed.name;
               forceFetchVal = parsed.forceFetch;
               pData = parsed.data;
+              roomIdVal = parsed.roomId;
               if (pData) {
                 if (Array.isArray(pData)) pMsgs.push(...pData);
                 else pMsgs.push(pData);
@@ -136,9 +139,9 @@ export default function Home() {
     const nextConfig = { ...chatConfigs[targetId], ...updates };
     setChatConfigs(prev => ({ ...prev, [targetId]: nextConfig }));
     
-    let nameToSave = nextConfig.customName;
-    if (nextConfig.forceFetch && nextConfig.persistedData) {
-      nameToSave = JSON.stringify({ name: nextConfig.customName, forceFetch: true, data: nextConfig.persistedData });
+    let nameToSave = nextConfig.customName || "";
+    if (nextConfig.forceFetch || nextConfig.roomId) {
+      nameToSave = JSON.stringify({ name: nextConfig.customName, forceFetch: nextConfig.forceFetch, data: nextConfig.persistedData, roomId: nextConfig.roomId });
     }
 
     try {
@@ -287,8 +290,10 @@ export default function Home() {
     });
   }, [groupedEmails, chatConfigs]);
 
-  const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && !k.includes("-")); 
-  const hiddenMsgs = allUniqueEmails.filter(e => chatConfigs[e.id]?.isHidden && e.senderRoom === selectedSender);
+  const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined); 
+  const hiddenMsgs = Object.keys(chatConfigs)
+    .filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === selectedSender)
+    .map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "(読み込み範囲外のメッセージ)", date: new Date().toISOString() });
 
   const openChat = (sender: string) => {
     setSelectedSender(sender);
@@ -305,6 +310,7 @@ export default function Home() {
       let actionType: any = "confirm_hide";
       if (mode.includes("delete")) actionType = "confirm_delete";
       if (mode.includes("pin")) actionType = "confirm_pin";
+      if (mode.includes("reset")) actionType = "confirm_reset";
       
       setModal({ type: actionType, targetMode, targets: selectedIds });
       setSelectionMode("none");
@@ -353,11 +359,14 @@ export default function Home() {
         let pData = null;
         if (forceFetch) {
             if (modal.targetMode === "chat") {
-                pData = groupedEmails[targetId] || [];
+                pData = (groupedEmails[targetId] || []).map(e => ({ ...e, senderRoom: targetId }));
                 pMsgs.push(...pData);
             } else {
-                pData = allUniqueEmails.find(e => e.id === targetId);
-                if (pData) pMsgs.push(pData);
+                const found = allUniqueEmails.find(e => e.id === targetId);
+                if (found) {
+                  pData = { ...found, senderRoom: selectedSender };
+                  pMsgs.push(pData);
+                }
             }
         }
         updateChatConfig(targetId, { isPinned: true, forceFetch, persistedData: pData });
@@ -391,8 +400,18 @@ export default function Home() {
       }
     } 
     else if (type === "confirm_hide") {
-      targets.forEach(target => updateChatConfig(target, { isHidden: true, hiddenAtDate: new Date().toISOString() }));
+      targets.forEach(target => updateChatConfig(target, { 
+        isHidden: true, 
+        hiddenAtDate: new Date().toISOString(),
+        roomId: targetMode === "msg" ? selectedSender! : undefined 
+      }));
       if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
+    }
+    else if (type === "confirm_reset") {
+      targets.forEach(target => {
+        updateChatConfig(target, { customName: undefined, isPinned: false, isHidden: false, hiddenAtDate: undefined, unhideOnNew: false, forceFetch: false, persistedData: null, roomId: undefined });
+        setPersistedEmails(prev => prev.filter(e => e.id !== target && e.senderRoom !== target));
+      });
     }
     else if (type === "confirm_unhide") {
       targets.forEach(target => updateChatConfig(target, { isHidden: false }));
@@ -410,7 +429,11 @@ export default function Home() {
     if (action === "hide") setModal({ type: "confirm_hide", targetMode: mode, targets: [targetId] });
     if (action === "delete") setModal({ type: "confirm_delete", targetMode: mode, targets: [targetId] });
     if (action === "pin") setModal({ type: "confirm_pin", targetMode: mode, targets: [targetId] });
-    if (action === "unpin") updateChatConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null });
+    if (action === "unpin") {
+      updateChatConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null });
+      setPersistedEmails(prev => prev.filter(e => e.id !== targetId && e.senderRoom !== targetId));
+    }
+    if (action === "reset") setModal({ type: "confirm_reset", targetMode: mode, targets: [targetId] });
     if (action === "rename") { setRenameInput(chatConfigs[targetId]?.customName || targetId); setModal({ type: "rename", targetMode: mode, targets: [targetId] }); }
     if (action === "reply") setReplyToMessage(target);
     if (action === "copy") navigator.clipboard.writeText(target.body);
@@ -451,6 +474,8 @@ export default function Home() {
                 <div className="h-px bg-[#1E1F22] my-1"></div>
                 <button onClick={() => handleContextMenuAction("hide", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition">非表示(Re:Mailのみ)</button>
                 <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
+                <div className="h-px bg-[#1E1F22] my-1"></div>
+                <button onClick={() => handleContextMenuAction("reset", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition text-xs">設定をリセット</button>
               </div>
             );
           })()}
@@ -465,6 +490,8 @@ export default function Home() {
                 <div className="h-px bg-[#1E1F22] my-1"></div>
                 <button onClick={() => handleContextMenuAction("hide", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition">非表示(Re:Mailのみ)</button>
                 <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
+                <div className="h-px bg-[#1E1F22] my-1"></div>
+                <button onClick={() => handleContextMenuAction("reset", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition text-xs">設定をリセット</button>
               </div>
             );
           })()}
@@ -552,6 +579,18 @@ export default function Home() {
               </div>
             )}
 
+            {/* リセット確認 */}
+            {modal.type === "confirm_reset" && (
+              <div className="p-5">
+                <h2 className="text-lg font-bold text-white mb-2">設定のリセット</h2>
+                <p className="text-sm text-gray-300 mb-6 leading-relaxed">ピン留め、非表示、名前変更などの独自設定をすべて初期化します。よろしいですか？</p>
+                <div className="flex justify-end gap-3">
+                  <button onClick={() => setModal(null)} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+                  <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c]">リセットする</button>
+                </div>
+              </div>
+            )}
+
             {/* 名前変更 */}
             {modal.type === "rename" && (
               <div className="p-5">
@@ -609,7 +648,10 @@ export default function Home() {
             <button onClick={() => handleMenuBarClick("chat_delete")} className={`flex-1 min-w-[110px] py-1.5 text-[11px] font-bold rounded transition ${selectionMode === "chat_delete" ? 'bg-[#DA373C] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "chat_delete" ? 'opacity-30 pointer-events-none' : ''}`}>
               {selectionMode === "chat_delete" ? `実行(${selectedIds.length})` : "削除(Gmailを含む)"}
             </button>
-            <button onClick={() => { setModal({ type: "unhide_select", targetMode: "chat", targets: [] }); setSelectedIds([]); setSelectionMode("none"); }} className={`px-3 py-1.5 text-[11px] font-bold rounded bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith("chat_") ? 'opacity-30 pointer-events-none' : ''}`}>解除</button>
+            <button onClick={() => handleMenuBarClick("chat_reset")} className={`flex-1 min-w-[70px] py-1.5 text-[11px] font-bold rounded transition ${selectionMode === "chat_reset" ? 'bg-[#DA373C] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "chat_reset" ? 'opacity-30 pointer-events-none' : ''}`}>
+              {selectionMode === "chat_reset" ? `実行(${selectedIds.length})` : "リセット"}
+            </button>
+            <button onClick={() => { setModal({ type: "unhide_select", targetMode: "chat", targets: [] }); setSelectedIds([]); setSelectionMode("none"); }} className={`px-3 py-1.5 text-[11px] font-bold rounded bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith("chat_") ? 'opacity-30 pointer-events-none' : ''}`}>非表示解除</button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
@@ -673,7 +715,10 @@ export default function Home() {
             <button onClick={() => handleMenuBarClick("msg_delete")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_delete" ? 'bg-[#DA373C] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_delete" ? 'opacity-30 pointer-events-none' : ''}`}>
               {selectionMode === "msg_delete" ? `実行(${selectedIds.length})` : "削除(Gmailを含む)"}
             </button>
-            <button onClick={() => { setModal({ type: "unhide_select", targetMode: "msg", targets: [] }); setSelectedIds([]); setSelectionMode("none"); }} className={`px-3 py-1 text-xs font-bold rounded bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith("msg_") ? 'opacity-30 pointer-events-none' : ''}`}>解除</button>
+            <button onClick={() => handleMenuBarClick("msg_reset")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_reset" ? 'bg-[#DA373C] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_reset" ? 'opacity-30 pointer-events-none' : ''}`}>
+              {selectionMode === "msg_reset" ? `実行(${selectedIds.length})` : "リセット"}
+            </button>
+            <button onClick={() => { setModal({ type: "unhide_select", targetMode: "msg", targets: [] }); setSelectedIds([]); setSelectionMode("none"); }} className={`px-3 py-1 text-xs font-bold rounded bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith("msg_") ? 'opacity-30 pointer-events-none' : ''}`}>非表示解除</button>
           </div>
 
           {/* ピン留めメッセージのリスト（LINE風 上部ぶら下がり） */}
