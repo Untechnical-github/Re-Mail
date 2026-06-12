@@ -3,6 +3,8 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../auth";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
+export const runtime = 'edge';
+
 // D1からそのユーザーの全チャット設定を取得するAPI
 export async function GET() {
   const session = await getServerSession(authOptions);

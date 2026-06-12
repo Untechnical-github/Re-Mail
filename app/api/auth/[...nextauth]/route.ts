@@ -6,3 +6,4 @@ const handler = NextAuth(authOptions);
 
 // Next.jsのルール通り、GETとPOSTだけをexportする
 export { handler as GET, handler as POST };
+export const runtime = 'edge';

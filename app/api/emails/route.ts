@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../auth";
 
+export const runtime = 'edge';
+
 // --- ヘルパー関数: ヘッダー配列から特定の項目の値を取り出す ---
 function getHeader(headers: any[], name: string): string {
   const header = headers.find((h) => h.name.toLowerCase() === name.toLowerCase());
