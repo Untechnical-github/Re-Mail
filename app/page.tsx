@@ -40,8 +40,8 @@ export default function Home() {
 
   // 読み込み・フィルタリング
   const [limitAmount, setLimitAmount] = useState<number>(10);
-  const [startDate, setStartDate] = useState<string>("");
-  const [endDate, setEndDate] = useState<string>("");
+  const [displayLimit, setDisplayLimit] = useState<number>(10); // 画面に実際に表示する件数
+  const [isLoadingMore, setIsLoadingMore] = useState(false); // 過去ログの追加読み込み状態
   const [searchKeyword, setSearchKeyword] = useState("");
   const [checkInbox, setCheckInbox] = useState<boolean>(true);
   const [checkSpam, setCheckSpam] = useState<boolean>(false);
@@ -71,9 +71,11 @@ export default function Home() {
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
     persistedEmails.forEach(e => map.set(e.id, e));
-    emails.forEach(e => map.set(e.id, e));
+    // ★ 裏に何件あっても、ここで表示上限（displayLimit）の分だけ切り出して画面に渡す
+    const emailsToShow = emails.slice(0, displayLimit);
+    emailsToShow.forEach(e => map.set(e.id, e));
     return Array.from(map.values());
-  }, [emails, persistedEmails]);
+  }, [emails, persistedEmails, displayLimit]);
 
   // D1から設定データをロード
   const loadD1Configs = async (): Promise<{ limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null> => {
@@ -199,12 +201,23 @@ export default function Home() {
         const initInbox = settings?.inbox ?? true;
         const initSpam = settings?.spam ?? false;
         const initTrash = settings?.trash ?? false;
-        setLimitAmount(initLimit); setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
-
-        // ★2. 画面は出たまま、裏側でこっそりAPIを叩いて「最新の差分」を取得しにいく
-        await fetchEmails(initLimit, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
         
-        if (!cachedEmails) setIsLoading(false);
+        setLimitAmount(initLimit); 
+        setDisplayLimit(initLimit); // 表示件数を同期
+        setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
+
+        // ★ IndexedDBから爆速ロード (受信箱の場合のみ)
+        if (initInbox && !initSpam && !initTrash) {
+          const cachedEmails: any[] | null = await localforage.getItem("remail_inbox_cache");
+          if (cachedEmails && cachedEmails.length > 0) {
+            setEmails(cachedEmails);
+            setIsLoading(false); // キャッシュがあればローディングを一瞬で消す
+          }
+        }
+
+        // 裏でAPIを叩いて最新差分を取得
+        await fetchEmails(initLimit, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
+        setIsLoading(false);
       };
       initLoad();
     }
@@ -213,6 +226,11 @@ export default function Home() {
   const fetchEmails = async (limit = 10, query = "", flags = { inbox: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false) => {
     if (!flags.inbox && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return; }
     if (!isSilent) setIsLoading(true);
+    
+    // ★ キャッシュ更新の対象か判定（受信箱のみ、検索なし、追加読み込みでない）
+    const isCacheTarget = flags.inbox && !flags.spam && !flags.trash && !query && !pageToken;
+    const targetLimit = isCacheTarget ? 100 : limit; // キャッシュ対象なら強制で最新100件を裏で取得
+
     try {
       let qParts = []; let orLabels = [];
       if (flags.inbox) orLabels.push("in:inbox", "in:sent");
@@ -220,10 +238,8 @@ export default function Home() {
       if (flags.trash) orLabels.push("in:trash");
       if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
       if (query) qParts.push(query);
-      if (startDate) qParts.push(`after:${startDate}`);
-      if (endDate) qParts.push(`before:${endDate}`);
 
-      const params = new URLSearchParams({ maxResults: limit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
+      const params = new URLSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
       if (pageToken) params.append("pageToken", pageToken);
 
       const res = await fetch(`/api/emails?${params.toString()}`);
@@ -233,10 +249,13 @@ export default function Home() {
         const updatedEmails = isLoadMore ? [...emails, ...newMessages] : newMessages;
         
         setEmails(updatedEmails);
-        setCurrentNextPageToken(data.nextPageToken);
-        
-        // ★次回爆速で開くために、最新状態を IndexedDB に保存しておく
-        await localforage.setItem("remail_cached_emails", updatedEmails);
+        setCurrentNextPageToken(data.nextPageToken || null);
+
+        // ★ 受信箱の初回/更新フェッチの場合のみ、最新100件をIndexedDBに上書き保存
+        if (isCacheTarget && !isLoadMore) {
+          const emailsToCache = updatedEmails.slice(0, 100);
+          await localforage.setItem("remail_inbox_cache", emailsToCache);
+        }
       }
     } catch (error) { console.error(error); } finally { if (!isSilent) setIsLoading(false); }
   };
@@ -471,6 +490,24 @@ export default function Home() {
   // 現在のチャット内でピン留めされているメッセージ
   const pinnedMsgsInChat = (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned);
 
+  // ★ 直前に追加：無限スクロール用（過去ログ）の処理
+  const handleLoadMore = async () => {
+    if (isLoadingMore) return;
+    setIsLoadingMore(true);
+    if (displayLimit < emails.length) {
+      // 段階1: IndexedDBキャッシュ内（100件）からの高速読み込み
+      setDisplayLimit(prev => Math.min(prev + 20, emails.length));
+      setIsLoadingMore(false);
+    } else if (currentNextPageToken) {
+      // 段階2: キャッシュが尽きたらGoogle APIから追加取得
+      await fetchEmails(20, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, currentNextPageToken, true, true);
+      setDisplayLimit(prev => prev + 20);
+      setIsLoadingMore(false);
+    } else {
+      setIsLoadingMore(false);
+    }
+  };
+
   return (
     <div className="flex h-screen w-full bg-[#313338] overflow-hidden text-gray-200 relative select-none">
       
@@ -633,14 +670,8 @@ export default function Home() {
           </div>
 
           <div className="p-3 space-y-2 border-b border-[#1E1F22] bg-[#232428]">
-             <input type="text" placeholder="キーワード検索..." className="w-full bg-[#1E1F22] text-sm text-gray-300 px-3 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]" value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { fetchEmails(limitAmount, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false); saveGlobalSettings(limitAmount, checkInbox, checkSpam, checkTrash); }}} />
+             <input type="text" placeholder="キーワード検索..." className="w-full bg-[#1E1F22] text-sm text-gray-300 px-3 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]" value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { setDisplayLimit(limitAmount); fetchEmails(limitAmount, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false); saveGlobalSettings(limitAmount, checkInbox, checkSpam, checkTrash); }}} />
              
-             <div className="flex items-center gap-1 mt-1">
-                <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="bg-[#1E1F22] text-xs text-gray-300 px-2 py-1 rounded flex-1 focus:outline-none" />
-                <span className="text-gray-500 text-xs">~</span>
-                <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="bg-[#1E1F22] text-xs text-gray-300 px-2 py-1 rounded flex-1 focus:outline-none" />
-             </div>
-
              <div className="flex gap-1 text-xs mt-1">
                 <label className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={checkInbox} onChange={(e) => setCheckInbox(e.target.checked)} className="accent-[#5865F2]" /> 受信箱</label>
                 <label className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={checkSpam} onChange={(e) => setCheckSpam(e.target.checked)} className="accent-[#5865F2]" /> 迷惑メール</label>
@@ -650,7 +681,7 @@ export default function Home() {
              <div className="flex items-center gap-2 mt-2">
                <span className="text-[10px] font-bold text-gray-500 w-8">{limitAmount}件</span>
                <input type="range" min="1" max="100" value={limitAmount} onChange={(e) => setLimitAmount(Number(e.target.value))} className="flex-1 h-1 bg-[#1E1F22] rounded appearance-none" />
-               <button onClick={() => { fetchEmails(limitAmount, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false); saveGlobalSettings(limitAmount, checkInbox, checkSpam, checkTrash); }} disabled={isLoading} className="text-xs bg-[#5865F2] text-white px-3 py-1.5 rounded font-bold hover:bg-[#4752C4]">読込</button>
+               <button onClick={() => { setDisplayLimit(limitAmount); fetchEmails(limitAmount, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false); saveGlobalSettings(limitAmount, checkInbox, checkSpam, checkTrash); }} disabled={isLoading} className="text-xs bg-[#5865F2] text-white px-3 py-1.5 rounded font-bold hover:bg-[#4752C4]">読込</button>
              </div>
           </div>
 
@@ -756,6 +787,17 @@ export default function Home() {
 
           {/* メッセージ一覧 (LINE風の左/右レイアウトを採用しつつ、Discordのダークテーマ) */}
           <div className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin">
+            {groupedEmails[selectedSender!] && (displayLimit < emails.length || currentNextPageToken) && (
+              <div className="flex justify-center my-4 w-full">
+                <button 
+                  onClick={handleLoadMore} 
+                  disabled={isLoadingMore}
+                  className="bg-[#2B2D31] text-gray-300 hover:text-white px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] shadow-sm active:scale-95 transition disabled:opacity-50"
+                >
+                  {isLoadingMore ? "読み込み中..." : "過去のメッセージを読み込む"}
+                </button>
+              </div>
+            )}
             {groupedEmails[selectedSender!] ? (
               groupedEmails[selectedSender!].map((email) => {
                 const isMe = email.isMe || email.from.includes(session?.user?.email || "");
