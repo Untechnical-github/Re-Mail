@@ -8,13 +8,15 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-  // Cloudflare Edge環境向けの async_hooks 対策
-  serverExternalPackages: ["async_hooks"],
-  webpack: (config) => {
-    config.resolve.alias = {
-      ...config.resolve.alias,
-      "async_hooks": "node:async_hooks",
-    };
+  // Webpackのビルド設定
+  webpack: (config, { isServer, nextRuntime }) => {
+    // Edge環境でのビルド時に async_hooks を完全に無視（無効化）する
+    if (isServer && nextRuntime === "edge") {
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        "async_hooks": false,
+      };
+    }
     return config;
   },
 };
