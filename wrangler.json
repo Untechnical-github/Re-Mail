@@ -1,0 +1,14 @@
+{
+  "name": "re-mail",
+  "compatibility_date": "2024-05-18",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "re-mail",
+      "database_id": "f3e2ba87-ef1e-4a51-9054-b1add1cad95e"
+    }
+  ]
+}
