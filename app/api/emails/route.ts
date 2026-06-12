@@ -1,50 +1,57 @@
 import { NextResponse } from "next/server";
-import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせて階層を調整してください
-import { Buffer } from "node:buffer"; // ★原因解決：Edge環境ではBufferの明示的なインポートが必須！
+import { auth } from "../../../auth"; 
 
 export const runtime = 'edge';
 
-// --- ヘルパー関数: ヘッダー配列から特定の項目の値を取り出す ---
 function getHeader(headers: any[], name: string): string {
   const header = headers.find((h) => h.name.toLowerCase() === name.toLowerCase());
   return header ? header.value : "";
 }
 
-// --- ヘルパー関数: Gmailの複雑な構造から本文のBase64データを探してデコードする ---
-function getBody(payload: any): string {
-  // 1. 一番シンプルな平文テキストの場合
-  if (payload.body && payload.body.data) {
-    return Buffer.from(payload.body.data, "base64url").toString("utf-8");
+// Edge環境(Cloudflare)で100%安全に動くBase64デコード処理
+function decodeBase64Url(base64Url: string) {
+  try {
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const binString = atob(base64);
+    const bytes = Uint8Array.from(binString, (m) => m.codePointAt(0)!);
+    return new TextDecoder().decode(bytes);
+  } catch (e) {
+    return "";
   }
+}
 
-  // 2. 複数のパーツ（テキストとHTMLなど）に分かれている場合（再帰的に探索）
+// Edge環境(Cloudflare)で100%安全に動くBase64エンコード処理
+function encodeBase64(text: string) {
+  const bytes = new TextEncoder().encode(text);
+  const binString = Array.from(bytes).map(byte => String.fromCodePoint(byte)).join('');
+  return btoa(binString);
+}
+
+function getBody(payload: any): string {
+  if (payload.body && payload.body.data) {
+    return decodeBase64Url(payload.body.data);
+  }
   if (payload.parts) {
     for (const part of payload.parts) {
-      // プレーンテキスト(text/plain)を最優先で取得
       if (part.mimeType === "text/plain" && part.body && part.body.data) {
-        return Buffer.from(part.body.data, "base64url").toString("utf-8");
+        return decodeBase64Url(part.body.data);
       }
-      // text/plainが見つからず、さらにネストしている場合は再帰探査
       if (part.parts) {
         const nestedBody = getBody(part);
         if (nestedBody) return nestedBody;
       }
     }
-    
-    // text/plainがなくてHTMLだけの場合は代替手段として取得
     for (const part of payload.parts) {
       if (part.mimeType === "text/html" && part.body && part.body.data) {
-        return Buffer.from(part.body.data, "base64url").toString("utf-8");
+        return decodeBase64Url(part.body.data);
       }
     }
   }
-
   return "";
 }
 
 export async function GET(request: Request) {
   const session = await auth() as any; 
-  
   if (!session || !session.accessToken) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -58,25 +65,15 @@ export async function GET(request: Request) {
   try {
     let apiUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}`;
 
-    if (q) {
-      apiUrl += `&q=${encodeURIComponent(q)}`;
-    }
-    if (includeTrash) {
-      apiUrl += `&includeSpamTrash=true`;
-    }
-    if (pageToken) {
-      apiUrl += `&pageToken=${pageToken}`;
-    }
+    if (q) apiUrl += `&q=${encodeURIComponent(q)}`;
+    if (includeTrash) apiUrl += `&includeSpamTrash=true`;
+    if (pageToken) apiUrl += `&pageToken=${pageToken}`;
 
     const listRes = await fetch(apiUrl, {
       headers: { Authorization: `Bearer ${session.accessToken}` },
     });
 
-    if (!listRes.ok) {
-      const errorText = await listRes.text();
-      console.error("Google API からの拒否理由:", errorText);
-      throw new Error("Failed to fetch messages list");
-    }
+    if (!listRes.ok) throw new Error("Failed to fetch messages list");
     
     const listData = await listRes.json();
     const messages = listData.messages || [];
@@ -94,34 +91,22 @@ export async function GET(request: Request) {
     const parsedMessages = detailedMessages.map((message) => {
       const payload = message.payload;
       const headers = payload?.headers || [];
-
       const subject = getHeader(headers, "Subject") || "(件名なし)";
       const from = getHeader(headers, "From");
       const to = getHeader(headers, "To");
       const date = getHeader(headers, "Date");
       const body = getBody(payload) || message.snippet || "";
 
-      return {
-        id: message.id,
-        threadId: message.threadId,
-        subject,
-        from,
-        to,
-        date,
-        body,
-        snippet: message.snippet
-      };
+      return { id: message.id, threadId: message.threadId, subject, from, to, date, body, snippet: message.snippet };
     });
 
     return NextResponse.json({ messages: parsedMessages, nextPageToken });
-
   } catch (error) {
     console.error("Gmail API Error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
-// メールの送信・返信・転送 API
 export async function POST(request: Request) {
   const session = await auth() as any;
   if (!session || !session.accessToken) {
@@ -133,29 +118,19 @@ export async function POST(request: Request) {
 
     const rawMessage = [
       `To: ${to}`,
-      `Subject: =?utf-8?B?${Buffer.from(subject || "").toString("base64")}?=`,
+      `Subject: =?utf-8?B?${encodeBase64(subject || "")}?=`,
       "Content-Type: text/plain; charset=utf-8",
       "",
       body
     ].join("\r\n");
 
-    const encodedMessage = Buffer.from(rawMessage)
-      .toString("base64")
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/, '');
-
+    const encodedMessage = encodeBase64(rawMessage).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     const requestBody: any = { raw: encodedMessage };
-    if (threadId) {
-      requestBody.threadId = threadId;
-    }
+    if (threadId) requestBody.threadId = threadId;
 
     const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${session.accessToken}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
       body: JSON.stringify(requestBody),
     });
 
@@ -167,7 +142,6 @@ export async function POST(request: Request) {
   }
 }
 
-// メールのまとめて削除 API
 export async function DELETE(request: Request) {
   const session = await auth() as any; 
   if (!session || !session.accessToken) {
@@ -176,26 +150,13 @@ export async function DELETE(request: Request) {
 
   try {
     const { ids } = await request.json();
-
     const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${session.accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ids: ids,
-        addLabelIds: ["TRASH"],
-        removeLabelIds: ["INBOX"]
-      }),
+      headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: ids, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX"] }),
     });
 
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error("削除エラー詳細:", errText);
-      throw new Error("Failed to delete emails");
-    }
-
+    if (!res.ok) throw new Error("Failed to delete emails");
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("DELETE Error:", error);

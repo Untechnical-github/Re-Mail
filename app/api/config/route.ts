@@ -1,74 +1,53 @@
 import { NextResponse } from "next/server";
-import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせて階層を調整してください
 import { getRequestContext } from "@cloudflare/next-on-pages";
+import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせる
 
 export const runtime = 'edge';
 
-// D1からそのユーザーの全チャット設定を取得するAPI
-export async function GET() {
-  const session = await auth() as any; // accessTokenを取得するためanyキャスト
-  if (!session || !session.user?.email) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+export async function GET(request: Request) {
+  const session = await auth();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    // CloudflareのコンテキストからD1のバインディング（DB）を取得
-    const { env } = getRequestContext();
-    const db = (env as any).DB;
-
-    // 自分のメールアドレスに紐づくチャット設定をすべて取得
-    const { results } = await db
-      .prepare("SELECT * FROM chat_configs WHERE user_email = ?")
-      .bind(session.user.email)
-      .all();
-
+    // Cloudflare Edge専用のD1データベース呼び出し
+    const db = getRequestContext().env.DB;
+    const { results } = await db.prepare("SELECT * FROM configs").all();
     return NextResponse.json({ configs: results });
-  } catch (error) {
-    console.error("D1 GET Error:", error);
-    return NextResponse.json({ error: "Database Error" }, { status: 500 });
+  } catch (error: any) {
+    console.error("DB GET Error:", error);
+    return NextResponse.json({ error: "Database Error", details: error.message }, { status: 500 });
   }
 }
 
-// チャット設定をD1に保存・更新するAPI
 export async function POST(request: Request) {
-  const session = await auth() as any; // accessTokenを取得するためanyキャスト
-  if (!session || !session.user?.email) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const session = await auth();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const { chat_id, custom_name, is_pinned, is_hidden, hidden_at_date, unhide_on_new } = await request.json();
-    const user_email = session.user.email;
-
-    const { env } = getRequestContext();
-    const db = (env as any).DB;
-
-    // データがあれば更新（UPDATE）、なければ新規挿入（INSERT）するSQL (UPSERT句)
-    await db
-      .prepare(`
-        INSERT INTO chat_configs (user_email, chat_id, custom_name, is_pinned, is_hidden, hidden_at_date, unhide_on_new)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-        ON CONFLICT(user_email, chat_id) DO UPDATE SET
-          custom_name = COALESCE(?3, custom_name),
-          is_pinned = COALESCE(?4, is_pinned),
-          is_hidden = COALESCE(?5, is_hidden),
-          hidden_at_date = COALESCE(?6, hidden_at_date),
-          unhide_on_new = COALESCE(?7, unhide_on_new)
-      `)
-      .bind(
-        user_email,
-        chat_id,
-        custom_name !== undefined ? custom_name : null,
-        is_pinned !== undefined ? (is_pinned ? 1 : 0) : null,
-        is_hidden !== undefined ? (is_hidden ? 1 : 0) : null,
-        hidden_at_date !== undefined ? hidden_at_date : null,
-        unhide_on_new !== undefined ? (unhide_on_new ? 1 : 0) : null
-      )
-      .run();
+    const body = await request.json();
+    const db = getRequestContext().env.DB;
+    
+    await db.prepare(
+      `INSERT INTO configs (chat_id, custom_name, is_pinned, is_hidden, hidden_at_date, unhide_on_new)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(chat_id) DO UPDATE SET
+       custom_name=excluded.custom_name,
+       is_pinned=excluded.is_pinned,
+       is_hidden=excluded.is_hidden,
+       hidden_at_date=excluded.hidden_at_date,
+       unhide_on_new=excluded.unhide_on_new`
+    ).bind(
+      body.chat_id, 
+      body.custom_name || null, 
+      body.is_pinned ? 1 : 0, 
+      body.is_hidden ? 1 : 0, 
+      body.hidden_at_date || null, 
+      body.unhide_on_new ? 1 : 0
+    ).run();
 
     return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error("D1 POST Error:", error);
-    return NextResponse.json({ error: "Database Error" }, { status: 500 });
+  } catch (error: any) {
+    console.error("DB POST Error:", error);
+    return NextResponse.json({ error: "Database Error", details: error.message }, { status: 500 });
   }
 }
