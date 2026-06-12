@@ -1,9 +1,5 @@
 // app/api/auth/[...nextauth]/route.ts
-import NextAuth from "next-auth";
-import { authOptions } from "../../../../auth"; // ← 先ほど作った auth.ts へのパス
+import { handlers } from "../../../../auth";
 
-const handler = NextAuth(authOptions);
-
-// Next.jsのルール通り、GETとPOSTだけをexportする
-export { handler as GET, handler as POST };
+export const { GET, POST } = handlers;
 export const runtime = 'edge';

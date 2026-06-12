@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth/next";
-import { authOptions } from "../../../auth";
+import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせて階層を調整してください
 
 export const runtime = 'edge';
 
@@ -43,7 +42,7 @@ function getBody(payload: any): string {
 }
 
 export async function GET(request: Request) {
-  const session = await getServerSession(authOptions);
+  const session = await auth() as any; // accessTokenを取得するためanyキャスト
   
   if (!session || !session.accessToken) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -129,7 +128,7 @@ export async function GET(request: Request) {
 
 // メールの送信・返信・転送 API
 export async function POST(request: Request) {
-  const session = await getServerSession(authOptions);
+  const session = await auth() as any; // accessTokenを取得するためanyキャスト
   if (!session || !session.accessToken) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -176,7 +175,7 @@ export async function POST(request: Request) {
 
 // メールのまとめて削除 API
 export async function DELETE(request: Request) {
-  const session = await getServerSession(authOptions);
+  const session = await auth() as any; // accessTokenを取得するためanyキャスト
   if (!session || !session.accessToken) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

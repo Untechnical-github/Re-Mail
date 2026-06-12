@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth/next";
-import { authOptions } from "../../../auth";
+import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせて階層を調整してください
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
 export const runtime = 'edge';
 
 // D1からそのユーザーの全チャット設定を取得するAPI
 export async function GET() {
-  const session = await getServerSession(authOptions);
+  const session = await auth() as any; // accessTokenを取得するためanyキャスト
   if (!session || !session.user?.email) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -32,7 +31,7 @@ export async function GET() {
 
 // チャット設定をD1に保存・更新するAPI
 export async function POST(request: Request) {
-  const session = await getServerSession(authOptions);
+  const session = await auth() as any; // accessTokenを取得するためanyキャスト
   if (!session || !session.user?.email) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
