@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせて階層を調整してください
+import { Buffer } from "node:buffer"; // ★原因解決：Edge環境ではBufferの明示的なインポートが必須！
 
 export const runtime = 'edge';
 
@@ -42,7 +43,7 @@ function getBody(payload: any): string {
 }
 
 export async function GET(request: Request) {
-  const session = await auth() as any; // accessTokenを取得するためanyキャスト
+  const session = await auth() as any; 
   
   if (!session || !session.accessToken) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -52,7 +53,6 @@ export async function GET(request: Request) {
   const maxResults = searchParams.get("maxResults") || "10";
   const q = searchParams.get("q") || "";
   const includeTrash = searchParams.get("includeTrash") === "true";
-  // フロントエンドからページ移動用のトークンを受け取る
   const pageToken = searchParams.get("pageToken") || "";
 
   try {
@@ -64,7 +64,6 @@ export async function GET(request: Request) {
     if (includeTrash) {
       apiUrl += `&includeSpamTrash=true`;
     }
-    // トークンがあればURLに追加
     if (pageToken) {
       apiUrl += `&pageToken=${pageToken}`;
     }
@@ -81,7 +80,6 @@ export async function GET(request: Request) {
     
     const listData = await listRes.json();
     const messages = listData.messages || [];
-    // Googleから返ってきた「次のページ用のトークン」を保持
     const nextPageToken = listData.nextPageToken || null;
 
     const detailedMessages = await Promise.all(
@@ -99,7 +97,7 @@ export async function GET(request: Request) {
 
       const subject = getHeader(headers, "Subject") || "(件名なし)";
       const from = getHeader(headers, "From");
-      const to = getHeader(headers, "To"); // ★ここを追加
+      const to = getHeader(headers, "To");
       const date = getHeader(headers, "Date");
       const body = getBody(payload) || message.snippet || "";
 
@@ -108,14 +106,13 @@ export async function GET(request: Request) {
         threadId: message.threadId,
         subject,
         from,
-        to, // ★ここを追加
+        to,
         date,
         body,
         snippet: message.snippet
       };
     });
 
-    // messages と一緒に nextPageToken もフロントエンドに返します
     return NextResponse.json({ messages: parsedMessages, nextPageToken });
 
   } catch (error) {
@@ -124,17 +121,14 @@ export async function GET(request: Request) {
   }
 }
 
-// --- app/api/emails/route.ts の下部を以下で上書き ---
-
 // メールの送信・返信・転送 API
 export async function POST(request: Request) {
-  const session = await auth() as any; // accessTokenを取得するためanyキャスト
+  const session = await auth() as any;
   if (!session || !session.accessToken) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
-    // threadId があれば返信としてスレッドに結合
     const { to, subject, body, threadId } = await request.json();
 
     const rawMessage = [
@@ -175,16 +169,14 @@ export async function POST(request: Request) {
 
 // メールのまとめて削除 API
 export async function DELETE(request: Request) {
-  const session = await auth() as any; // accessTokenを取得するためanyキャスト
+  const session = await auth() as any; 
   if (!session || !session.accessToken) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
-    // 削除対象のメールIDの配列を受け取る
     const { ids } = await request.json();
 
-    // Gmailの batchModify API を使って、一括でゴミ箱(TRASH)ラベルを付け、INBOXラベルを外す
     const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
       method: "POST",
       headers: {
