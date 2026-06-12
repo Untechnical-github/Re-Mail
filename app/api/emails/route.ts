@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "../auth/[...nextauth]/route";
+import { authOptions } from "../../../auth";
 
 // --- ヘルパー関数: ヘッダー配列から特定の項目の値を取り出す ---
 function getHeader(headers: any[], name: string): string {

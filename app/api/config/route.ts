@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "../auth/[...nextauth]/route";
+import { authOptions } from "../../../auth";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
 // D1からそのユーザーの全チャット設定を取得するAPI
