@@ -8,7 +8,6 @@ function getHeader(headers: any[], name: string): string {
   return header ? header.value : "";
 }
 
-// Edge環境(Cloudflare)で100%安全に動くBase64デコード処理
 function decodeBase64Url(base64Url: string) {
   try {
     const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
@@ -20,7 +19,6 @@ function decodeBase64Url(base64Url: string) {
   }
 }
 
-// Edge環境(Cloudflare)で100%安全に動くBase64エンコード処理
 function encodeBase64(text: string) {
   const bytes = new TextEncoder().encode(text);
   const binString = Array.from(bytes).map(byte => String.fromCodePoint(byte)).join('');
@@ -79,12 +77,12 @@ export async function GET(request: Request) {
     const messages = listData.messages || [];
     const nextPageToken = listData.nextPageToken || null;
 
-    // ★ 修正1: 0件なら即座に空データを返してクラッシュ（500エラー）を回避
+    // 0件の場合は詳細フェッチに進まず、即座に空配列を返して500エラーを回避
     if (messages.length === 0) {
       return NextResponse.json({ messages: [], nextPageToken });
     }
 
-    // ★ 修正2: 20件ずつに分割（チャンク）し、APIの渋滞を防ぐ
+    // 有料プランのリソースを活かし、20件ずつのチャンク並行処理で100件を安全に高速フェッチ
     const chunkSize = 20;
     const detailedMessages: any[] = [];
 
@@ -92,7 +90,7 @@ export async function GET(request: Request) {
       const chunk = messages.slice(i, i + chunkSize);
       const chunkResults = await Promise.all(
         chunk.map(async (msg: { id: string }) => {
-          // ★ 修正3: fieldsパラメータを追加し、通信量を極限まで削る
+          // fieldsパラメータで不要なメタデータを削り、通信量を極限までカッティング
           const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?fields=id,threadId,snippet,payload(headers,parts,body)`, {
             headers: { Authorization: `Bearer ${session.accessToken}` },
           });

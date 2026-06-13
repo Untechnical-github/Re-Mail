@@ -40,8 +40,8 @@ export default function Home() {
 
   // 読み込み・フィルタリング
   const [limitAmount, setLimitAmount] = useState<number>(10);
-  const [displayLimit, setDisplayLimit] = useState<number>(10); // 画面に実際に表示する件数
-  const [isLoadingMore, setIsLoadingMore] = useState(false); // 過去ログの追加読み込み状態
+  const [displayLimit, setDisplayLimit] = useState<number>(10); // 画面に実際に描画する上限数
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState("");
   const [checkInbox, setCheckInbox] = useState<boolean>(true);
   const [checkSpam, setCheckSpam] = useState<boolean>(false);
@@ -71,7 +71,7 @@ export default function Home() {
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
     persistedEmails.forEach(e => map.set(e.id, e));
-    // ★ 裏に何件あっても、ここで表示上限（displayLimit）の分だけ切り出して画面に渡す
+    // 内部メモリ(emails)に何件あっても、画面描画はdisplayLimitの件数のみにカッティング
     const emailsToShow = emails.slice(0, displayLimit);
     emailsToShow.forEach(e => map.set(e.id, e));
     return Array.from(map.values());
@@ -184,60 +184,39 @@ export default function Home() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-    // 【スマホ調査用】画面右下にログ確認ボタンを出す裏技（特定できたら丸ごと消してください）
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const script = document.createElement('script');
-      script.src = "https://unpkg.com/vconsole@latest/dist/vconsole.min.js";
-      script.onload = () => new (window as any).VConsole();
-      document.head.appendChild(script);
-    }
-  }, []);
-
   useEffect(() => {
     if (session) {
       const initLoad = async () => {
-        setIsLoading(true);
-
-        // ★1. まず IndexedDB から爆速で過去のデータを読み込んで即座に画面に出す
-        const cachedEmails: any[] | null = await localforage.getItem("remail_cached_emails");
-        if (cachedEmails && cachedEmails.length > 0) {
-          setEmails(cachedEmails);
-          setIsLoading(false); // キャッシュがあれば一瞬でローディング解除！
-        }
-
-        const settings = await loadD1Configs();
-        const initLimit = settings?.limit ?? 10;
-        const initInbox = settings?.inbox ?? true;
-        const initSpam = settings?.spam ?? false;
-        const initTrash = settings?.trash ?? false;
-        
-        setLimitAmount(initLimit); 
-        setDisplayLimit(initLimit); // 表示件数を同期
-        setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
-
-                // ★ IndexedDBからスナップショットを爆速ロード（スマホエラー回避のtry-catch付き）
-        let snapshot: any = null;
         try {
-          snapshot = await localforage.getItem("remail_feed_cache");
-        } catch (e) {
-          console.warn("スマホのストレージ制限によりキャッシュをスキップします", e);
-        }
-        
-        // キャッシュが存在し、かつ「保存された条件」が「現在の設定」と完全一致するか確認
-        if (snapshot && snapshot.flags &&
-            snapshot.flags.inbox === initInbox &&
-            snapshot.flags.spam === initSpam &&
-            snapshot.flags.trash === initTrash &&
-            snapshot.emails && snapshot.emails.length > 0) {
+          const settings = await loadD1Configs();
+          const initLimit = settings?.limit ?? 10;
+          const initInbox = settings?.inbox ?? true;
+          const initSpam = settings?.spam ?? false;
+          const initTrash = settings?.trash ?? false;
           
-          setEmails(snapshot.emails);
-          setIsLoading(false); // 条件が一致すれば0秒でローディング解除！
-        }
+          setLimitAmount(initLimit); 
+          setDisplayLimit(initLimit);
+          setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
 
-        // 裏でAPIを叩いて最新差分を取得（条件が変わっていればここで新しいデータに置き換わる）
-        await fetchEmails(initLimit, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
-        setIsLoading(false);
+          // IndexedDBから前回のスナップショットをロード（スマホ対応の例外処理付き）
+          let snapshot: any = null;
+          try { snapshot = await localforage.getItem("remail_feed_cache"); } catch (e) { console.warn(e); }
+
+          // 保存された時のフィルター条件（flags）が現環境の設定と完全一致する場合のみ0秒ロード
+          if (snapshot && snapshot.flags &&
+              snapshot.flags.inbox === initInbox &&
+              snapshot.flags.spam === initSpam &&
+              snapshot.flags.trash === initTrash &&
+              snapshot.emails && snapshot.emails.length > 0) {
+            
+            setEmails(snapshot.emails);
+            setIsLoading(false);
+          }
+
+          // 裏側でAPIを自動実行し、最新の差分チェック・更新を行う
+          await fetchEmails(initLimit, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
+          setIsLoading(false);
+        } catch (err) { console.error(err); setIsLoading(false); }
       };
       initLoad();
     }
@@ -247,9 +226,9 @@ export default function Home() {
     if (!flags.inbox && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return; }
     if (!isSilent) setIsLoading(true);
     
-    // ★ キャッシュ対象の判定（キーワード検索や過去ログ追加読み込みではない時）
+    // キャッシュ対象の判定（検索や過去ログ追加読み込みではない時）
     const isCacheTarget = !query && !pageToken && !isLoadMore;
-    const targetLimit = isCacheTarget ? 100 : limit;
+    const targetLimit = isCacheTarget ? 100 : limit; // 有料プラン化に伴い、制限を100件に完全解放
 
     try {
       let qParts = []; let orLabels = [];
@@ -271,10 +250,13 @@ export default function Home() {
         setEmails(updatedEmails);
         setCurrentNextPageToken(data.nextPageToken || null);
 
-        // ★ 受信箱の初回/更新フェッチの場合のみ、最新100件をIndexedDBに上書き保存
-        if (isCacheTarget && !isLoadMore) {
+        // スナップショット保存（メールデータ100件と、その時のフィルター条件をペアで記録）
+        if (isCacheTarget) {
           const emailsToCache = updatedEmails.slice(0, 100);
-          await localforage.setItem("remail_inbox_cache", emailsToCache);
+          await localforage.setItem("remail_feed_cache", {
+            emails: emailsToCache,
+            flags: flags
+          });
         }
       }
     } catch (error) { console.error(error); } finally { if (!isSilent) setIsLoading(false); }
@@ -348,10 +330,10 @@ export default function Home() {
     });
   }, [groupedEmails, chatConfigs]);
 
-  const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined); 
+  const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && !k.includes("-")); 
   const hiddenMsgs = Object.keys(chatConfigs)
-    .filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === selectedSender)
-    .map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "(読み込み範囲外のメッセージ)", date: new Date().toISOString() });
+    .filter(k => chatConfigs[k]?.isHidden && k.includes("-"))
+    .map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ(詳細取得待ち)", date: new Date().toISOString() });
 
   const openChat = (sender: string) => {
     setSelectedSender(sender);
@@ -362,13 +344,19 @@ export default function Home() {
   };
 
   const handleMenuBarClick = (mode: SelectionMode) => {
+    // リセットボタンが押されたら、選択状態を問わず即座に全初期化の確認画面へ
+    if (mode.includes("reset")) {
+      setModal({ type: "confirm_reset", targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] });
+      setSelectionMode("none");
+      return;
+    }
+
     if (selectionMode === mode) {
       if (selectedIds.length === 0) { setSelectionMode("none"); return; }
       const targetMode = mode.startsWith("chat") ? "chat" : "msg";
       let actionType: any = "confirm_hide";
       if (mode.includes("delete")) actionType = "confirm_delete";
       if (mode.includes("pin")) actionType = "confirm_pin";
-      if (mode.includes("reset")) actionType = "confirm_reset";
       
       setModal({ type: actionType, targetMode, targets: selectedIds });
       setSelectionMode("none");
@@ -466,10 +454,12 @@ export default function Home() {
       if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
     }
     else if (type === "confirm_reset") {
-      targets.forEach(target => {
+      // 選択されたtargetsに関わらず、システム全体の設定とキャッシュを完全に初期化
+      Object.keys(chatConfigs).forEach(target => {
         updateChatConfig(target, { customName: undefined, isPinned: false, isHidden: false, hiddenAtDate: undefined, unhideOnNew: false, forceFetch: false, persistedData: null, roomId: undefined });
-        setPersistedEmails(prev => prev.filter(e => e.id !== target && e.senderRoom !== target));
       });
+      setPersistedEmails([]);
+      localforage.clear(); // ローカルキャッシュ（スナップショット等）もクリア
     }
     else if (type === "confirm_unhide") {
       targets.forEach(target => updateChatConfig(target, { isHidden: false }));
@@ -516,12 +506,13 @@ export default function Home() {
   const handleLoadMore = async () => {
     if (isLoadingMore) return;
     setIsLoadingMore(true);
+    
     if (displayLimit < emails.length) {
-      // 段階1: IndexedDBキャッシュ内（100件）からの高速読み込み
+      // 【段階1】手元の100件スナップショット内にまだ未表示データがあるなら通信せずに追記
       setDisplayLimit(prev => Math.min(prev + 20, emails.length));
       setIsLoadingMore(false);
     } else if (currentNextPageToken) {
-      // 段階2: キャッシュが尽きたらGoogle APIから追加取得
+      // 【段階2】100件を使い切ったら、Google APIから直接20件追加取得（キャッシュは汚さない）
       await fetchEmails(20, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, currentNextPageToken, true, true);
       setDisplayLimit(prev => prev + 20);
       setIsLoadingMore(false);
