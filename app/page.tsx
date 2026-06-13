@@ -226,9 +226,8 @@ export default function Home() {
     if (!flags.inbox && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return; }
     if (!isSilent) setIsLoading(true);
     
-    // キャッシュ対象の判定（検索や過去ログ追加読み込みではない時）
     const isCacheTarget = !query && !pageToken && !isLoadMore;
-    const targetLimit = isCacheTarget ? 100 : limit; // 有料プラン化に伴い、制限を100件に完全解放
+    const targetLimit = isCacheTarget ? 100 : limit;
 
     try {
       let qParts = []; let orLabels = [];
@@ -241,16 +240,36 @@ export default function Home() {
       const params = new URLSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
       if (pageToken) params.append("pageToken", pageToken);
 
+      // ★ 追加：差分チェック用として、現在画面に表示している最新のIDリストをサーバーに教える
+      if (isCacheTarget && emails.length > 0) {
+        const knownIds = emails.slice(0, targetLimit).map(e => e.id).join(",");
+        params.append("knownIds", knownIds);
+      }
+
       const res = await fetch(`/api/emails?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        const newMessages = data.messages || [];
-        const updatedEmails = isLoadMore ? [...emails, ...newMessages] : newMessages;
+        const newMessages = data.messages || []; // 新着メールの差分データのみ
+        const topIds = data.topIds || [];        // 最新の正しい並び順のIDリスト
+        
+        let updatedEmails;
+        if (isLoadMore) {
+          updatedEmails = [...emails, ...newMessages]; // 過去ログ取得時はそのまま追記
+        } else if (isCacheTarget && topIds.length > 0) {
+          // ★ スマートマージ：手持ちのデータと新着データを合体させ、Googleの最新順に並べ直す
+          const emailMap = new Map(emails.map(e => [e.id, e]));
+          newMessages.forEach((m: any) => emailMap.set(m.id, m));
+          
+          // topIdsのリスト通りにデータを復元（もしGmail側で削除されたメールがあれば自然にここから消える）
+          updatedEmails = topIds.map((id: string) => emailMap.get(id)).filter(Boolean);
+        } else {
+          updatedEmails = newMessages; // 検索時や初回など
+        }
         
         setEmails(updatedEmails);
         setCurrentNextPageToken(data.nextPageToken || null);
 
-        // スナップショット保存（メールデータ100件と、その時のフィルター条件をペアで記録）
+        // スナップショット保存
         if (isCacheTarget) {
           const emailsToCache = updatedEmails.slice(0, 100);
           await localforage.setItem("remail_feed_cache", {
@@ -833,9 +852,11 @@ export default function Home() {
                     
                     {/* 相手のアイコン */}
                     {!isMe && !selectionMode.startsWith("msg_") && (
-                       <div className="w-9 h-9 rounded-full bg-[#DA373C] text-white flex items-center justify-center text-sm font-bold mr-3 flex-shrink-0 mt-1 shadow-sm select-none">
-                         {email.from.charAt(0).toUpperCase()}
-                       </div>
+                       <img 
+                         src={`/api/avatar?name=${encodeURIComponent(email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown")}`}
+                         alt=""
+                         className="w-9 h-9 rounded-full mr-3 flex-shrink-0 mt-1 shadow-sm select-none pointer-events-none"
+                       />
                     )}
 
                     <div className={`flex flex-col max-w-[75%] ${isMe ? 'items-end' : 'items-start'}`}>
@@ -862,9 +883,11 @@ export default function Home() {
 
                     {/* 自分のアイコン */}
                     {isMe && !selectionMode.startsWith("msg_") && (
-                       <div className="w-9 h-9 rounded-full bg-[#5865F2] text-white flex items-center justify-center text-sm font-bold ml-3 flex-shrink-0 mt-1 shadow-sm select-none">
-                         自
-                       </div>
+                       <img 
+                         src={`/api/avatar?name=${encodeURIComponent(session?.user?.name || "Me")}`}
+                         alt=""
+                         className="w-9 h-9 rounded-full ml-3 flex-shrink-0 mt-1 shadow-sm select-none pointer-events-none"
+                       />
                     )}
                   </div>
                 );
