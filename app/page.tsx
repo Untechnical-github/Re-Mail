@@ -614,17 +614,31 @@ export default function Home() {
             )}
 
             {/* ピン留め確認 */}
-            {modal.type === "confirm_pin" && (
-              <div className="p-5">
-                <h2 className="text-lg font-bold text-white mb-2">ピン留め</h2>
-                <p className="text-sm text-gray-300 mb-6 leading-relaxed">読み込み対象外（期間外や件数制限など）になった際も、この{modal.targetMode === "chat" ? "チャット" : "メッセージ"}を表示させますか？</p>
-                <div className="flex flex-col gap-2">
-                  <button onClick={() => executePin(true)} className="w-full py-2.5 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">対象外になっても常に表示する</button>
-                  <button onClick={() => executePin(false)} className="w-full py-2.5 bg-[#404249] text-white rounded text-sm font-bold hover:bg-[#4f545c]">対象外になった場合は隠す</button>
-                  <button onClick={() => setModal(null)} className="w-full py-2 mt-2 hover:underline text-gray-400 text-sm">キャンセル</button>
+            {modal.type === "confirm_pin" && (() => {
+              // チャットモードの場合のみ制限を計算
+              const isChatMode = modal.targetMode === "chat";
+              const existingForcePinnedChats = Object.keys(chatConfigs).filter(k => !k.includes("-") && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch);
+              const newChatsToPin = isChatMode ? modal.targets.filter(t => !existingForcePinnedChats.includes(t)) : [];
+              const willExceedLimit = isChatMode && (existingForcePinnedChats.length + newChatsToPin.length > 10);
+
+              return (
+                <div className="p-5">
+                  <h2 className="text-lg font-bold text-white mb-2">ピン留め</h2>
+                  <p className="text-sm text-gray-300 mb-6 leading-relaxed">読み込み対象外（期間外や件数制限など）になった際も、この{modal.targetMode === "chat" ? "チャット" : "メッセージ"}を表示させますか？</p>
+                  <div className="flex flex-col gap-2">
+                    <button 
+                      onClick={() => executePin(true)} 
+                      disabled={willExceedLimit}
+                      className={`w-full py-2.5 rounded text-sm font-bold transition ${willExceedLimit ? 'bg-[#3f4147] text-gray-500 cursor-not-allowed' : 'bg-[#5865F2] text-white hover:bg-[#4752C4] active:scale-95'}`}
+                    >
+                      {willExceedLimit ? "永続読み込みは10件までです" : "対象外になっても常に表示する"}
+                    </button>
+                    <button onClick={() => executePin(false)} className="w-full py-2.5 bg-[#404249] text-white rounded text-sm font-bold hover:bg-[#4f545c] active:scale-95">対象外になった場合は隠す</button>
+                    <button onClick={() => setModal(null)} className="w-full py-2 mt-2 hover:underline text-gray-400 text-sm">キャンセル</button>
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* 非表示解除確認 */}
             {modal.type === "confirm_unhide" && (
@@ -819,17 +833,8 @@ export default function Home() {
 
           {/* メッセージ一覧 (LINE風の左/右レイアウトを採用しつつ、Discordのダークテーマ) */}
           <div className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin">
-            {groupedEmails[selectedSender!] && (displayLimit < emails.length || currentNextPageToken) && (
-              <div className="flex justify-center my-4 w-full">
-                <button 
-                  onClick={handleLoadMore} 
-                  disabled={isLoadingMore}
-                  className="bg-[#2B2D31] text-gray-300 hover:text-white px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] shadow-sm active:scale-95 transition disabled:opacity-50"
-                >
-                  {isLoadingMore ? "読み込み中..." : "過去のメッセージを読み込む"}
-                </button>
-              </div>
-            )}
+            
+            {/* ① メッセージを先に描画する（flex-col-reverseにより新しいものが下になる） */}
             {groupedEmails[selectedSender!] ? (
               groupedEmails[selectedSender!].map((email) => {
                 const isMe = email.isMe || email.from.includes(session?.user?.email || "");
@@ -893,6 +898,19 @@ export default function Home() {
                 );
               })
             ) : null}
+            {/* ② 過去ログ読み込みボタンを最後に置く（flex-col-reverseにより画面の一番「上」になる） */}
+            {groupedEmails[selectedSender!] && (displayLimit < emails.length || currentNextPageToken) && (
+              <div className="flex justify-center my-4 w-full">
+                <button 
+                  onClick={handleLoadMore} 
+                  disabled={isLoadingMore}
+                  className="bg-[#2B2D31] text-gray-300 hover:text-white px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] shadow-sm active:scale-95 transition disabled:opacity-50"
+                >
+                  {isLoadingMore ? "読み込み中..." : "過去のメッセージを読み込む"}
+                </button>
+              </div>
+            )}
+            
           </div>
 
           <div className="p-4 bg-[#313338]">
