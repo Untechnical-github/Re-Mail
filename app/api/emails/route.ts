@@ -79,14 +79,28 @@ export async function GET(request: Request) {
     const messages = listData.messages || [];
     const nextPageToken = listData.nextPageToken || null;
 
-    const detailedMessages = await Promise.all(
-      messages.map(async (msg: { id: string }) => {
-        const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`, {
-          headers: { Authorization: `Bearer ${session.accessToken}` },
-        });
-        return detailRes.json();
-      })
-    );
+    // ★ 修正1: 0件なら即座に空データを返してクラッシュ（500エラー）を回避
+    if (messages.length === 0) {
+      return NextResponse.json({ messages: [], nextPageToken });
+    }
+
+    // ★ 修正2: 20件ずつに分割（チャンク）し、APIの渋滞を防ぐ
+    const chunkSize = 20;
+    const detailedMessages: any[] = [];
+
+    for (let i = 0; i < messages.length; i += chunkSize) {
+      const chunk = messages.slice(i, i + chunkSize);
+      const chunkResults = await Promise.all(
+        chunk.map(async (msg: { id: string }) => {
+          // ★ 修正3: fieldsパラメータを追加し、通信量を極限まで削る
+          const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?fields=id,threadId,snippet,payload(headers,parts,body)`, {
+            headers: { Authorization: `Bearer ${session.accessToken}` },
+          });
+          return detailRes.json();
+        })
+      );
+      detailedMessages.push(...chunkResults);
+    }
 
     const parsedMessages = detailedMessages.map((message) => {
       const payload = message.payload;
