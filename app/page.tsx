@@ -184,6 +184,16 @@ export default function Home() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
+    // 【スマホ調査用】画面右下にログ確認ボタンを出す裏技（特定できたら丸ごと消してください）
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const script = document.createElement('script');
+      script.src = "https://unpkg.com/vconsole@latest/dist/vconsole.min.js";
+      script.onload = () => new (window as any).VConsole();
+      document.head.appendChild(script);
+    }
+  }, []);
+
   useEffect(() => {
     if (session) {
       const initLoad = async () => {
