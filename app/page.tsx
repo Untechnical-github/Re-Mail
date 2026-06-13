@@ -514,7 +514,7 @@ export default function Home() {
   };
 
   return (
-    <div className="flex h-screen w-full bg-[#313338] overflow-hidden text-gray-200 relative select-none">
+    <div className="flex h-[100dvh] w-full bg-[#313338] overflow-hidden text-gray-200 relative select-none">
       
       {/* ＝＝＝＝ コンテキストメニュー（右クリック / 長押し） ＝＝＝＝ */}
       {contextMenu && (
@@ -667,7 +667,7 @@ export default function Home() {
 
       {/* ＝＝＝＝ 左ペイン：チャットリスト ＝＝＝＝ */}
       {showChatList && (
-        <aside className={`${isMobile ? 'w-full' : 'w-[320px] border-r'} border-[#1E1F22] bg-[#2B2D31] flex flex-col`}>
+        <aside className={`${isMobile ? 'w-full' : 'w-[320px] border-r'} border-[#1E1F22] bg-[#2B2D31] flex flex-col h-full min-h-0`}>
           
           <div className="p-4 border-b border-[#1E1F22] shadow-sm flex items-center justify-between">
             <h1 className="text-xl font-extrabold text-white">Re:Mail</h1>
@@ -707,7 +707,7 @@ export default function Home() {
             <button onClick={() => { setModal({ type: "unhide_select", targetMode: "chat", targets: [] }); setSelectedIds([]); setSelectionMode("none"); }} className={`px-3 py-1.5 text-[11px] font-bold rounded bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith("chat_") ? 'opacity-30 pointer-events-none' : ''}`}>非表示解除</button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+          <div className="flex-1 overflow-y-auto p-2 space-y-0.5 min-h-0">
              {senderList.map((sender) => {
               const latestEmail = groupedEmails[sender][0];
               const isSelected = selectedIds.includes(sender);
