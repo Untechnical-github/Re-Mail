@@ -206,8 +206,13 @@ export default function Home() {
         setDisplayLimit(initLimit); // 表示件数を同期
         setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
 
-        // ★ IndexedDBからスナップショットを爆速ロード
-        const snapshot: any = await localforage.getItem("remail_feed_cache");
+                // ★ IndexedDBからスナップショットを爆速ロード（スマホエラー回避のtry-catch付き）
+        let snapshot: any = null;
+        try {
+          snapshot = await localforage.getItem("remail_feed_cache");
+        } catch (e) {
+          console.warn("スマホのストレージ制限によりキャッシュをスキップします", e);
+        }
         
         // キャッシュが存在し、かつ「保存された条件」が「現在の設定」と完全一致するか確認
         if (snapshot && snapshot.flags &&
@@ -326,8 +331,10 @@ export default function Home() {
     }).sort((a, b) => {
       const pinA = chatConfigs[a]?.isPinned ? 1 : 0;
       const pinB = chatConfigs[b]?.isPinned ? 1 : 0;
-      if (pinA !== pinB) return pinB - pinA;
-      return new Date(groupedEmails[b][0].date).getTime() - new Date(groupedEmails[a][0].date).getTime();
+            if (pinA !== pinB) return pinB - pinA;
+      const timeA = new Date(groupedEmails[a][0].date).getTime();
+      const timeB = new Date(groupedEmails[b][0].date).getTime();
+      return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
   }, [groupedEmails, chatConfigs]);
 
