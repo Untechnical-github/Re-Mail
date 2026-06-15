@@ -1303,7 +1303,6 @@ export default function Home() {
               </div>
             </>
           ) : (
-            /* ★修正：未選択時はバーを消して、プレースホルダーのみを表示 */
             <div className="flex flex-1 items-center justify-center text-gray-500 font-bold cursor-default" onClick={(e) => e.stopPropagation()}>
               左のリストからチャットを選択してください
             </div>
