@@ -33,7 +33,7 @@ type ModalState = {
 export default function Home() {
   const { data: session, status } = useSession();
   const [emails, setEmails] = useState<any[]>([]);
-  const [persistedEmails, setPersistedEmails] = useState<any[]>([]); // ピン留め等で常に保持するデータ
+  const [persistedEmails, setPersistedEmails] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedSender, setSelectedSender] = useState<string | null>(null);
   const [chatConfigs, setChatConfigs] = useState<Record<string, ChatConfig>>({});
@@ -45,6 +45,9 @@ export default function Home() {
   const [checkSpam, setCheckSpam] = useState<boolean>(false);
   const [checkTrash, setCheckTrash] = useState<boolean>(false);
   const [currentNextPageToken, setCurrentNextPageToken] = useState<string | null>(null);
+  const [chatStatusMessage, setChatStatusMessage] = useState<string | null>(null);
+  const [msgStatusMessage, setMsgStatusMessage] = useState<string | null>(null);
+  const [isLoadingMoreChats, setIsLoadingMoreChats] = useState(false);
 
   // 送信・作成
   const [replySubject, setReplySubject] = useState("");
@@ -66,24 +69,21 @@ export default function Home() {
   const touchTimer = useRef<NodeJS.Timeout | null>(null);
   const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true }); // ★ 追加：リセットの選択肢
 
+  const getCacheKey = (flags: { inbox: boolean; spam: boolean; trash: boolean }) => {
+    return `remail_feed_cache_i${flags.inbox ? 1 : 0}s${flags.spam ? 1 : 0}t${flags.trash ? 1 : 0}`;
+  };
+
   // 全メールデータ（新規取得分 ＋ D1に保存されたピン留め分）を結合して重複を排除
   const allUniqueEmails = useMemo(() => {
-    // 現在のチェックボックス状態に基づいてフィルタリング
-    const filtered = emails.filter(e => {
-      if (checkInbox && (e.from.includes("inbox") || !e.senderRoom)) return true; // 簡易判定
-      if (checkSpam && e.labels?.includes("SPAM")) return true;
-      if (checkTrash && e.labels?.includes("TRASH")) return true;
-      return false;
-    });
-
     const map = new Map();
     // ピン留めデータを優先してMapに入れる
     persistedEmails.forEach(e => map.set(e.id, e));
-    // フィルター済みキャッシュデータを上書き（ピン留めデータと重複した場合はこちらを優先）
-    filtered.forEach(e => map.set(e.id, e));
+    
+    // emailsには既にチェックボックスに合致したデータしか入っていないので、そのまま結合する
+    emails.forEach(e => map.set(e.id, e));
     
     return Array.from(map.values());
-  }, [emails, persistedEmails, checkInbox, checkSpam, checkTrash]);
+  }, [emails, persistedEmails]);
 
   // D1から設定データをロード
   const loadD1Configs = async (): Promise<{ limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null> => {
@@ -137,11 +137,11 @@ export default function Home() {
     return globalSettings;
   };
 
-  const saveGlobalSettings = async (limit: number, inbox: boolean, spam: boolean, trash: boolean) => {
+  const saveGlobalSettings = async (inbox: boolean, spam: boolean, trash: boolean) => {
     try {
       await fetch("/api/config", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: "__GLOBAL_SETTINGS__", custom_name: JSON.stringify({ limit, inbox, spam, trash }) })
+        body: JSON.stringify({ chat_id: "__GLOBAL_SETTINGS__", custom_name: JSON.stringify({ inbox, spam, trash }) })
       });
     } catch (e) { console.error(e); }
   };
@@ -196,40 +196,32 @@ export default function Home() {
     if (session) {
       const initLoad = async () => {
         try {
+          setIsLoading(true);
           const settings = await loadD1Configs();
-          const initLimit = settings?.limit ?? 10;
           const initInbox = settings?.inbox ?? true;
           const initSpam = settings?.spam ?? false;
           const initTrash = settings?.trash ?? false;
           
           setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
 
-          // IndexedDBから前回のスナップショットをロード（スマホ対応の例外処理付き）
+          // 分離された専用キーから、前回のスナップショットを0秒で爆速ロード
           let snapshot: any = null;
-          try { snapshot = await localforage.getItem("remail_feed_cache"); } catch (e) { console.warn(e); }
+          try { snapshot = await localforage.getItem(getCacheKey({ inbox: initInbox, spam: initSpam, trash: initTrash })); } catch (e) {}
 
-          // 保存された時のフィルター条件（flags）が現環境の設定と完全一致する場合のみ0秒ロード
-          if (snapshot && snapshot.flags &&
-              snapshot.flags.inbox === initInbox &&
-              snapshot.flags.spam === initSpam &&
-              snapshot.flags.trash === initTrash &&
-              snapshot.emails && snapshot.emails.length > 0) {
-            
+          if (snapshot && snapshot.emails && snapshot.emails.length > 0) {
             setEmails(snapshot.emails);
-            setIsLoading(false);
           }
 
-          // 裏側でAPIを自動実行し、最新の差分チェック・更新を行う
-          await fetchEmails(initLimit, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
-          setIsLoading(false);
-        } catch (err) { console.error(err); setIsLoading(false); }
+          // 最新の差分チェック
+          await fetchEmails(100, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
+        } catch (err) { console.error(err); } finally { setIsLoading(false); }
       };
       initLoad();
     }
   }, [session]);
 
-  const fetchEmails = async (limit = 10, query = "", flags = { inbox: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false) => {
-    if (!flags.inbox && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return; }
+  const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false) => {
+    if (!flags.inbox && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return false; }
     if (!isSilent) setIsLoading(true);
     
     const isCacheTarget = !query && !pageToken && !isLoadMore;
@@ -246,7 +238,6 @@ export default function Home() {
       const params = new URLSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
       if (pageToken) params.append("pageToken", pageToken);
 
-      // ★ 追加：差分チェック用として、現在画面に表示している最新のIDリストをサーバーに教える
       if (isCacheTarget && emails.length > 0) {
         const knownIds = emails.slice(0, targetLimit).map(e => e.id).join(",");
         params.append("knownIds", knownIds);
@@ -255,46 +246,69 @@ export default function Home() {
       const res = await fetch(`/api/emails?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        const newMessages = data.messages || []; // 新着メールの差分データのみ
-        const topIds = data.topIds || [];        // 最新の正しい並び順のIDリスト
+        const newMessages = data.messages || [];
+        const topIds = data.topIds || [];
         
         let updatedEmails;
         if (isLoadMore) {
-          updatedEmails = [...emails, ...newMessages]; // 過去ログ取得時はそのまま追記
+          updatedEmails = [...emails, ...newMessages];
         } else if (isCacheTarget && topIds.length > 0) {
-          // ★ スマートマージ：手持ちのデータと新着データを合体させ、Googleの最新順に並べ直す
           const emailMap = new Map(emails.map(e => [e.id, e]));
           newMessages.forEach((m: any) => emailMap.set(m.id, m));
-          
-          // topIdsのリスト通りにデータを復元（もしGmail側で削除されたメールがあれば自然にここから消える）
           updatedEmails = topIds.map((id: string) => emailMap.get(id)).filter(Boolean);
         } else {
-          updatedEmails = newMessages; // 検索時や初回など
+          updatedEmails = newMessages;
         }
         
         setEmails(updatedEmails);
         setCurrentNextPageToken(data.nextPageToken || null);
 
-        // スナップショット保存
+        // ★ 変更：分離された専用のキーに対してスナップショットを安全に保存
         if (isCacheTarget) {
           const emailsToCache = updatedEmails.slice(0, 100);
-          await localforage.setItem("remail_feed_cache", {
+          await localforage.setItem(getCacheKey(flags), {
             emails: emailsToCache,
             flags: flags
           });
         }
+        return true;
       }
-    } catch (error) { console.error(error); } finally { if (!isSilent) setIsLoading(false); }
+      return false;
+    } catch (error) { console.error(error); return false; } finally { if (!isSilent) setIsLoading(false); }
   };
 
   useEffect(() => {
     if (!session) return;
+    
+    const handleFilterChange = async () => {
+      // 1. 他の端末へ状態をリアルタイム同期（D1保存）
+      await saveGlobalSettings(checkInbox, checkSpam, checkTrash);
+      
+      // 2. 切り替え先の専用キャッシュが存在すれば、先行して画面に一瞬で描画（真っ白を防止）
+      let snapshot: any = null;
+      try { snapshot = await localforage.getItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash })); } catch (e) {}
+      if (snapshot && snapshot.emails) {
+        setEmails(snapshot.emails);
+      } else {
+        setEmails([]); // キャッシュがない場合は一旦空にしてロードを待つ
+      }
+
+      // 3. 最新データをGoogleから一括フェッチ
+      setChatStatusMessage(null);
+      await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false);
+    };
+
+    handleFilterChange();
+  }, [checkInbox, checkSpam, checkTrash]);
+
+  // ★ 1分ごとのバックグラウンド自動更新（スマート差分フェッチ）
+  useEffect(() => {
+    if (!session) return;
     const interval = setInterval(() => {
-      // スライダーによるlimitAmountを廃止し、常に100件で最新を維持
       fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, true);
     }, 60000);
     return () => clearInterval(interval);
-  }, [session, searchKeyword, checkInbox, checkSpam, checkTrash]); // limitAmount と emails を依存配列から削除
+  }, [session, searchKeyword, checkInbox, checkSpam, checkTrash]);
 
   // グルーピングは allUniqueEmails (通常取得 + ピン留め) をベースに行う
   const groupedEmails = useMemo(() => {
@@ -568,23 +582,102 @@ export default function Home() {
   const pinnedMsgsInChat = (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned);
 
   // ★ 直前に追加：無限スクロール用（過去ログ）の処理
-  const handleLoadMore = async () => {
+  const handleLoadMoreChats = async () => {
+    if (isLoadingMoreChats || !currentNextPageToken) {
+      if (!currentNextPageToken) setChatStatusMessage("すべてのメールを読み込みました");
+      return;
+    }
+    setIsLoadingMoreChats(true);
+    setChatStatusMessage(null);
+
+    let tempToken = currentNextPageToken;
+    let hasNewSender = false;
+    let loopCount = 0;
+    const maxLoops = 5; // Paidプランのパワーを活かした安全な自動追従上限
+
+    try {
+      // 現在画面に表示されている送信者の名前リストをキャプチャ
+      const currentSenders = new Set(Object.keys(groupedEmails));
+
+      while (!hasNewSender && tempToken && loopCount < maxLoops) {
+        loopCount++;
+        let qParts = []; let orLabels = [];
+        if (checkInbox) orLabels.push("in:inbox", "in:sent");
+        if (checkSpam) orLabels.push("in:spam");
+        if (checkTrash) orLabels.push("in:trash");
+        if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
+        if (searchKeyword) qParts.push(searchKeyword);
+
+        const params = new URLSearchParams({ maxResults: "40", q: qParts.join(" ").trim(), includeTrash: "true", pageToken: tempToken });
+        const res = await fetch(`/api/emails?${params.toString()}`);
+        
+        if (!res.ok) {
+          setChatStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。");
+          break;
+        }
+
+        const data = await res.json();
+        const newMessages = data.messages || [];
+        tempToken = data.nextPageToken || null;
+
+        if (newMessages.length === 0) {
+          setChatStatusMessage("すべてのメールを読み込みました");
+          setCurrentNextPageToken(null);
+          break;
+        }
+
+        // 取得した古いメールの中に、まだチャット一覧にいない新しい宛先があるか判定
+        const hasNew = newMessages.some((email: any) => {
+          if (chatConfigs[email.id]?.isHidden) return false;
+          if (email.senderRoom) return !currentSenders.has(email.senderRoom);
+          const isMe = email.isMe || email.from.includes(session?.user?.email || "");
+          if (!isMe) {
+            const roomName = email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown";
+            return !currentSenders.has(roomName);
+          }
+          return false;
+        });
+
+        // データをメモリに統合し、トークンを更新
+        setEmails(prev => [...prev, ...newMessages]);
+        setCurrentNextPageToken(tempToken);
+
+        if (hasNew) {
+          hasNewSender = true; // 新しい宛先が見つかったのでループを抜けてユーザーに見せる
+        }
+      }
+
+      if (loopCount >= maxLoops && !hasNewSender) {
+        setChatStatusMessage("APIの上限に達しました。しばらくしてからもう一度お試しください。");
+      } else if (!tempToken && !hasNewSender) {
+        setChatStatusMessage("すべてのメールを読み込みました");
+      }
+
+    } catch (error) {
+      setChatStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。");
+    } finally {
+      setIsLoadingMoreChats(false);
+    }
+  };
+
+  // ★ メッセージ（トーク画面側）の過去ログ追加読み込み
+  const handleLoadMoreMessage = async () => {
     if (isLoadingMore) return;
     setIsLoadingMore(true);
+    setMsgStatusMessage(null); // ステータスメッセージをリセット
     
-    // 【段階1】キャッシュされているメールがまだ全件表示されていない場合
-    // (もし全件表示済みなら、この条件は false になる)
-    if (allUniqueEmails.length < emails.length) {
-      // 制限を設ける必要がないため、一気にすべて表示する
-      // (もし段階的に見せたい場合は、ここで何らかのカウンターをインクリメントしてください)
-    } 
-    // 【段階2】キャッシュを使い切ったら、Google APIから過去分を直接取得
-    else if (currentNextPageToken) {
-      await fetchEmails(20, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, currentNextPageToken, true, true);
-      setIsLoadingMore(false);
+    if (currentNextPageToken) {
+      // APIから過去20件の取得を試みる
+      const success = await fetchEmails(20, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, currentNextPageToken, true, true);
+      
+      if (!success) {
+        setMsgStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。");
+      }
     } else {
-      setIsLoadingMore(false);
+      // トークンがない（＝もうこれ以上過去のメールがない）場合
+      setMsgStatusMessage("すべてのメールを読み込みました");
     }
+    setIsLoadingMore(false);
   };
 
   return (
@@ -826,6 +919,8 @@ export default function Home() {
           </div>
 
           <div className="flex-1 overflow-y-auto p-2 space-y-0.5 min-h-0">
+             {/* リアルタイムローディング表示 */}
+             {isLoading && <div className="text-xs text-[#5865F2] font-bold p-2 text-center animate-pulse">読み込み中...</div>}
              {senderList.map((sender) => {
               const latestEmail = groupedEmails[sender][0];
               const isSelected = selectedIds.includes(sender);
@@ -862,6 +957,22 @@ export default function Home() {
                 </div>
               );
             })}
+            {/* ★ 改革：チャット一覧の最下部に到達した際の追加読み込みシステム */}
+             {senderList.length > 0 && (
+               <div className="flex flex-col items-center p-3 mt-2 border-t border-[#1E1F22]/50">
+                 {chatStatusMessage ? (
+                   <span className="text-xs text-gray-500 font-medium px-2 py-1 bg-[#232428] rounded text-center">{chatStatusMessage}</span>
+                 ) : (
+                   <button 
+                     onClick={handleLoadMoreChats} 
+                     disabled={isLoadingMoreChats}
+                     className="w-full bg-[#1E1F22] hover:bg-[#3f4147] text-gray-400 hover:text-gray-200 py-2 rounded text-xs font-bold transition active:scale-[0.98] disabled:opacity-50"
+                   >
+                     {isLoadingMoreChats ? "新しいチャットを探索中..." : "さらにチャットを読み込む"}
+                   </button>
+                 )}
+               </div>
+             )}
           </div>
         </aside>
       )}
@@ -975,19 +1086,22 @@ export default function Home() {
                 );
               })
             ) : null}
-            {/* ② 過去ログ読み込みボタンを最後に置く（flex-col-reverseにより画面の一番「上」になる） */}
-            {groupedEmails[selectedSender!] && (allUniqueEmails.length < emails.length || currentNextPageToken) && (
+            {/* 過去ログ読み込みボタンと共通ステータスメッセージ */}
+            {groupedEmails[selectedSender!] && (
               <div className="flex justify-center my-4 w-full">
-                <button 
-                  onClick={handleLoadMore} 
-                  disabled={isLoadingMore}
-                  className="bg-[#2B2D31] text-gray-300 hover:text-white px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] shadow-sm active:scale-95 transition disabled:opacity-50"
-                >
-                  {isLoadingMore ? "読み込み中..." : "過去のメッセージを読み込む"}
-                </button>
+                {msgStatusMessage ? (
+                  <span className="text-xs text-gray-500 font-medium px-3 py-1.5 bg-[#2B2D31] rounded-full border border-[#1E1F22]">{msgStatusMessage}</span>
+                ) : (
+                  <button 
+                    onClick={handleLoadMoreMessage} 
+                    disabled={isLoadingMore}
+                    className="bg-[#2B2D31] text-gray-300 hover:text-white px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] shadow-sm active:scale-95 transition disabled:opacity-50"
+                  >
+                    {isLoadingMore ? "読み込み中..." : "過去のメッセージを読み込む"}
+                  </button>
+                )}
               </div>
             )}
-            
           </div>
 
           <div className="p-4 bg-[#313338]">
