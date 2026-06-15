@@ -39,8 +39,6 @@ export default function Home() {
   const [chatConfigs, setChatConfigs] = useState<Record<string, ChatConfig>>({});
 
   // 読み込み・フィルタリング
-  const [limitAmount, setLimitAmount] = useState<number>(10);
-  const [displayLimit, setDisplayLimit] = useState<number>(10); // 画面に実際に描画する上限数
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState("");
   const [checkInbox, setCheckInbox] = useState<boolean>(true);
@@ -70,13 +68,22 @@ export default function Home() {
 
   // 全メールデータ（新規取得分 ＋ D1に保存されたピン留め分）を結合して重複を排除
   const allUniqueEmails = useMemo(() => {
+    // 現在のチェックボックス状態に基づいてフィルタリング
+    const filtered = emails.filter(e => {
+      if (checkInbox && (e.from.includes("inbox") || !e.senderRoom)) return true; // 簡易判定
+      if (checkSpam && e.labels?.includes("SPAM")) return true;
+      if (checkTrash && e.labels?.includes("TRASH")) return true;
+      return false;
+    });
+
     const map = new Map();
+    // ピン留めデータを優先してMapに入れる
     persistedEmails.forEach(e => map.set(e.id, e));
-    // 内部メモリ(emails)に何件あっても、画面描画はdisplayLimitの件数のみにカッティング
-    const emailsToShow = emails.slice(0, displayLimit);
-    emailsToShow.forEach(e => map.set(e.id, e));
+    // フィルター済みキャッシュデータを上書き（ピン留めデータと重複した場合はこちらを優先）
+    filtered.forEach(e => map.set(e.id, e));
+    
     return Array.from(map.values());
-  }, [emails, persistedEmails, displayLimit]);
+  }, [emails, persistedEmails, checkInbox, checkSpam, checkTrash]);
 
   // D1から設定データをロード
   const loadD1Configs = async (): Promise<{ limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null> => {
@@ -195,8 +202,6 @@ export default function Home() {
           const initSpam = settings?.spam ?? false;
           const initTrash = settings?.trash ?? false;
           
-          setLimitAmount(initLimit); 
-          setDisplayLimit(initLimit);
           setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
 
           // IndexedDBから前回のスナップショットをロード（スマホ対応の例外処理付き）
@@ -285,11 +290,11 @@ export default function Home() {
   useEffect(() => {
     if (!session) return;
     const interval = setInterval(() => {
-      const targetLimit = Math.max(limitAmount, emails.length || 10);
-      fetchEmails(targetLimit, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, true);
+      // スライダーによるlimitAmountを廃止し、常に100件で最新を維持
+      fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, true);
     }, 60000);
     return () => clearInterval(interval);
-  }, [session, limitAmount, searchKeyword, checkInbox, checkSpam, checkTrash, emails]);
+  }, [session, searchKeyword, checkInbox, checkSpam, checkTrash]); // limitAmount と emails を依存配列から削除
 
   // グルーピングは allUniqueEmails (通常取得 + ピン留め) をベースに行う
   const groupedEmails = useMemo(() => {
@@ -567,14 +572,15 @@ export default function Home() {
     if (isLoadingMore) return;
     setIsLoadingMore(true);
     
-    if (displayLimit < emails.length) {
-      // 【段階1】手元の100件スナップショット内にまだ未表示データがあるなら通信せずに追記
-      setDisplayLimit(prev => Math.min(prev + 20, emails.length));
-      setIsLoadingMore(false);
-    } else if (currentNextPageToken) {
-      // 【段階2】100件を使い切ったら、Google APIから直接20件追加取得（キャッシュは汚さない）
+    // 【段階1】キャッシュされているメールがまだ全件表示されていない場合
+    // (もし全件表示済みなら、この条件は false になる)
+    if (allUniqueEmails.length < emails.length) {
+      // 制限を設ける必要がないため、一気にすべて表示する
+      // (もし段階的に見せたい場合は、ここで何らかのカウンターをインクリメントしてください)
+    } 
+    // 【段階2】キャッシュを使い切ったら、Google APIから過去分を直接取得
+    else if (currentNextPageToken) {
       await fetchEmails(20, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, currentNextPageToken, true, true);
-      setDisplayLimit(prev => prev + 20);
       setIsLoadingMore(false);
     } else {
       setIsLoadingMore(false);
@@ -792,19 +798,13 @@ export default function Home() {
             <button onClick={() => signOut()} className="text-xs text-gray-400 hover:text-white transition">ログアウト</button>
           </div>
 
-          <div className="p-3 space-y-2 border-b border-[#1E1F22] bg-[#232428]">
-             <input type="text" placeholder="キーワード検索..." className="w-full bg-[#1E1F22] text-sm text-gray-300 px-3 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]" value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { setDisplayLimit(limitAmount); fetchEmails(limitAmount, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false); saveGlobalSettings(limitAmount, checkInbox, checkSpam, checkTrash); }}} />
+          <div className="p-3 border-b border-[#1E1F22] bg-[#232428]">
+             <input type="text" placeholder="キーワード検索..." className="w-full bg-[#1E1F22] text-sm text-gray-300 px-3 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]" value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false); } }} />
              
-             <div className="flex gap-1 text-xs mt-1">
+             <div className="flex gap-1 text-xs mt-2">
                 <label className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={checkInbox} onChange={(e) => setCheckInbox(e.target.checked)} className="accent-[#5865F2]" /> 受信箱</label>
                 <label className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={checkSpam} onChange={(e) => setCheckSpam(e.target.checked)} className="accent-[#5865F2]" /> 迷惑メール</label>
                 <label className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={checkTrash} onChange={(e) => setCheckTrash(e.target.checked)} className="accent-[#5865F2]" /> ゴミ箱</label>
-             </div>
-             
-             <div className="flex items-center gap-2 mt-2">
-               <span className="text-[10px] font-bold text-gray-500 w-8">{limitAmount}件</span>
-               <input type="range" min="1" max="100" value={limitAmount} onChange={(e) => setLimitAmount(Number(e.target.value))} className="flex-1 h-1 bg-[#1E1F22] rounded appearance-none" />
-               <button onClick={() => { setDisplayLimit(limitAmount); fetchEmails(limitAmount, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false); saveGlobalSettings(limitAmount, checkInbox, checkSpam, checkTrash); }} disabled={isLoading} className="text-xs bg-[#5865F2] text-white px-3 py-1.5 rounded font-bold hover:bg-[#4752C4]">読込</button>
              </div>
           </div>
 
@@ -976,7 +976,7 @@ export default function Home() {
               })
             ) : null}
             {/* ② 過去ログ読み込みボタンを最後に置く（flex-col-reverseにより画面の一番「上」になる） */}
-            {groupedEmails[selectedSender!] && (displayLimit < emails.length || currentNextPageToken) && (
+            {groupedEmails[selectedSender!] && (allUniqueEmails.length < emails.length || currentNextPageToken) && (
               <div className="flex justify-center my-4 w-full">
                 <button 
                   onClick={handleLoadMore} 
