@@ -481,12 +481,42 @@ export default function Home() {
       if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
     }
     else if (type === "confirm_reset") {
-      // 選択されたtargetsに関わらず、システム全体の設定とキャッシュを完全に初期化
-      Object.keys(chatConfigs).forEach(target => {
-        updateChatConfig(target, { customName: undefined, isPinned: false, isHidden: false, hiddenAtDate: undefined, unhideOnNew: false, forceFetch: false, persistedData: null, roomId: undefined });
+      const { pin, hide, name } = resetOptions;
+      const specificTarget = targets[0]; // specific_chat や current_chat の場合に対象のIDが入る
+      
+      let keysToProcess = Object.keys(chatConfigs);
+
+      // すべてのチャット以外（特定のチャット内）の場合は絞り込む
+      if (targetMode === "current_chat" || targetMode === "specific_chat") {
+         keysToProcess = keysToProcess.filter(k => k === specificTarget || chatConfigs[k]?.roomId === specificTarget);
+      }
+
+      keysToProcess.forEach(target => {
+        const currentConfig = chatConfigs[target];
+        const updates: Partial<ChatConfig> = {};
+
+        if (pin) {
+          updates.isPinned = false;
+          updates.forceFetch = false;
+          updates.persistedData = null;
+        }
+        if (hide) {
+          updates.isHidden = false;
+          updates.hiddenAtDate = undefined;
+          updates.unhideOnNew = false;
+        }
+        if (name && currentConfig?.roomId === undefined) {
+          updates.customName = undefined; // 名前の変更はチャットにのみ適用
+        }
+
+        if (Object.keys(updates).length > 0) {
+          updateChatConfig(target, updates);
+        }
       });
-      setPersistedEmails([]);
-      localforage.clear(); // ローカルキャッシュ（スナップショット等）もクリア
+
+      if (pin) {
+        setPersistedEmails(prev => prev.filter(e => !keysToProcess.includes(e.id) && !keysToProcess.includes(e.senderRoom)));
+      }
     }
     else if (type === "confirm_unhide") {
       targets.forEach(target => updateChatConfig(target, { isHidden: false }));
