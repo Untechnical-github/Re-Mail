@@ -26,7 +26,7 @@ type ContextMenuState = {
 
 type ModalState = {
   type: "confirm_delete" | "confirm_hide" | "confirm_unhide" | "unhide_select" | "rename" | "confirm_pin" | "confirm_reset";
-  targetMode: "chat" | "msg";
+  targetMode: "chat" | "msg" | "all_chats" | "current_chat" | "specific_chat"; // ★ リセット用のスコープを追加
   targets: any[];
 } | null;
 
@@ -66,6 +66,7 @@ export default function Home() {
   const [modal, setModal] = useState<ModalState>(null);
   const [renameInput, setRenameInput] = useState("");
   const touchTimer = useRef<NodeJS.Timeout | null>(null);
+  const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true }); // ★ 追加：リセットの選択肢
 
   // 全メールデータ（新規取得分 ＋ D1に保存されたピン留め分）を結合して重複を排除
   const allUniqueEmails = useMemo(() => {
@@ -349,9 +350,10 @@ export default function Home() {
     });
   }, [groupedEmails, chatConfigs]);
 
-  const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && !k.includes("-")); 
+  // ★ 判定ロジックを roomId の有無に変更
+  const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined); 
   const hiddenMsgs = Object.keys(chatConfigs)
-    .filter(k => chatConfigs[k]?.isHidden && k.includes("-"))
+    .filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId !== undefined)
     .map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ(詳細取得待ち)", date: new Date().toISOString() });
 
   const openChat = (sender: string) => {
@@ -363,9 +365,15 @@ export default function Home() {
   };
 
   const handleMenuBarClick = (mode: SelectionMode) => {
-    // リセットボタンが押されたら、選択状態を問わず即座に全初期化の確認画面へ
-    if (mode.includes("reset")) {
-      setModal({ type: "confirm_reset", targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] });
+    if (mode === "chat_reset") {
+      setResetOptions({ pin: true, hide: true, name: true });
+      setModal({ type: "confirm_reset", targetMode: "all_chats", targets: [] });
+      setSelectionMode("none");
+      return;
+    }
+    if (mode === "msg_reset") {
+      setResetOptions({ pin: true, hide: true, name: true });
+      setModal({ type: "confirm_reset", targetMode: "current_chat", targets: [selectedSender!] });
       setSelectionMode("none");
       return;
     }
@@ -500,7 +508,10 @@ export default function Home() {
       updateChatConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null });
       setPersistedEmails(prev => prev.filter(e => e.id !== targetId && e.senderRoom !== targetId));
     }
-    if (action === "reset") setModal({ type: "confirm_reset", targetMode: mode, targets: [targetId] });
+    if (action === "reset") {
+      setResetOptions({ pin: true, hide: true, name: true });
+      setModal({ type: "confirm_reset", targetMode: "specific_chat", targets: [targetId] });
+    }
     if (action === "rename") { setRenameInput(chatConfigs[targetId]?.customName || targetId); setModal({ type: "rename", targetMode: mode, targets: [targetId] }); }
     if (action === "reply") setReplyToMessage(target);
     if (action === "copy") navigator.clipboard.writeText(target.body);
@@ -561,7 +572,7 @@ export default function Home() {
                 <button onClick={() => handleContextMenuAction("hide", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition">非表示(Re:Mailのみ)</button>
                 <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
                 <div className="h-px bg-[#1E1F22] my-1"></div>
-                <button onClick={() => handleContextMenuAction("reset", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition text-xs">設定をリセット</button>
+                <button onClick={() => handleContextMenuAction("reset", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition text-xs">リセット</button>
               </div>
             );
           })()}
@@ -576,8 +587,6 @@ export default function Home() {
                 <div className="h-px bg-[#1E1F22] my-1"></div>
                 <button onClick={() => handleContextMenuAction("hide", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition">非表示(Re:Mailのみ)</button>
                 <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
-                <div className="h-px bg-[#1E1F22] my-1"></div>
-                <button onClick={() => handleContextMenuAction("reset", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition text-xs">設定をリセット</button>
               </div>
             );
           })()}
@@ -683,10 +692,34 @@ export default function Home() {
             {modal.type === "confirm_reset" && (
               <div className="p-5">
                 <h2 className="text-lg font-bold text-white mb-2">設定のリセット</h2>
-                <p className="text-sm text-gray-300 mb-6 leading-relaxed">ピン留め、非表示、名前変更などの独自設定をすべて初期化します。よろしいですか？</p>
+                <p className="text-sm text-gray-300 mb-4 leading-relaxed bg-[#2B2D31] p-3 rounded border border-[#1E1F22]">
+                  {modal.targetMode === "all_chats" && "すべてのチャットとメッセージの設定から、選択した項目を初期化します。"}
+                  {modal.targetMode === "current_chat" && `現在のチャット（${chatConfigs[selectedSender!]?.customName || selectedSender}）内のみの設定から、選択した項目を初期化します。`}
+                  {modal.targetMode === "specific_chat" && `選択したチャット（${chatConfigs[modal.targets[0]]?.customName || modal.targets[0]}）内のみの設定から、選択した項目を初期化します。`}
+                </p>
+                <div className="flex flex-col gap-2 mb-6 text-sm text-gray-200">
+                  <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition">
+                    <input type="checkbox" checked={resetOptions.pin} onChange={(e) => setResetOptions({...resetOptions, pin: e.target.checked})} className="accent-[#5865F2] w-4 h-4" /> 
+                    ピン留め (通常・永続) を解除
+                  </label>
+                  <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition">
+                    <input type="checkbox" checked={resetOptions.hide} onChange={(e) => setResetOptions({...resetOptions, hide: e.target.checked})} className="accent-[#5865F2] w-4 h-4" /> 
+                    非表示設定 を解除
+                  </label>
+                  <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition">
+                    <input type="checkbox" checked={resetOptions.name} onChange={(e) => setResetOptions({...resetOptions, name: e.target.checked})} className="accent-[#5865F2] w-4 h-4" /> 
+                    名前の変更 を初期化
+                  </label>
+                </div>
                 <div className="flex justify-end gap-3">
                   <button onClick={() => setModal(null)} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-                  <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c]">リセットする</button>
+                  <button 
+                    onClick={executeConfirmedAction} 
+                    disabled={!resetOptions.pin && !resetOptions.hide && !resetOptions.name}
+                    className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c] disabled:bg-[#3f4147] disabled:text-gray-500"
+                  >
+                    リセットする
+                  </button>
                 </div>
               </div>
             )}
