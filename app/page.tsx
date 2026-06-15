@@ -389,7 +389,21 @@ export default function Home() {
           matchedRoom = roomName; break;
         }
       }
-      if (matchedRoom) groups[matchedRoom].push({ ...email, isMe: true });
+      
+      if (matchedRoom) {
+        // 既存のチャットが見つかった場合はそこに追加
+        groups[matchedRoom].push({ ...email, isMe: true });
+      } else {
+        // ★修正：受信メールがない（自分が送信しただけの）宛先でも、独立したチャットを生成する
+        let newRoomName = "Unknown";
+        if (email.to) {
+          const toMatch = email.to.split(",")[0]; // 複数宛先がある場合は最初の1人を部屋名にする
+          newRoomName = toMatch.split("<")[0].replace(/"/g, "").trim() || toMatch.replace(/[<>]/g, "").trim();
+          if (!newRoomName) newRoomName = "Unknown";
+        }
+        if (!groups[newRoomName]) groups[newRoomName] = [];
+        groups[newRoomName].push({ ...email, isMe: true });
+      }
     });
 
     Object.keys(groups).forEach(sender => groups[sender].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
@@ -1136,154 +1150,164 @@ export default function Home() {
           onClick={handleBackgroundClick}
           className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-[#313338] relative cursor-pointer`}
         >
-          {/* スマホ版・PC版共通メッセージヘッダー：左矢印を完全履歴バック化 */}
-          <header className="px-4 py-3 bg-[#313338] border-b border-[#1E1F22] shadow-sm z-10 flex items-center gap-3 cursor-default" onClick={(e) => e.stopPropagation()}>
-            {isMobile && (
-              <button 
-                onClick={() => window.history.back()} 
-                className="text-gray-400 hover:text-white font-bold p-1 text-lg transition active:scale-90"
-              >
-                ←
-              </button>
-            )}
-            <h2 className="font-bold text-base truncate flex-1 text-white">{chatConfigs[selectedSender!]?.customName || selectedSender}</h2>
-          </header>
-
-          {/* メッセージ用 アクションバー */}
-          <div className="flex flex-wrap px-4 py-2 gap-2 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default" onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => handleMenuBarClick("msg_pin")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_pin" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_pin" ? 'opacity-30 pointer-events-none' : ''}`}>
-              {selectionMode === "msg_pin" ? `実行(${selectedIds.length})` : "ピン留め"}
-            </button>
-            <button onClick={() => handleMenuBarClick("msg_hide")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_hide" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_hide" ? 'opacity-30 pointer-events-none' : ''}`}>
-              {selectionMode === "msg_hide" ? `実行(${selectedIds.length})` : "非表示(Re:Mailのみ)"}
-            </button>
-            <button onClick={() => handleMenuBarClick("msg_delete")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_delete" ? 'bg-[#DA373C] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_delete" ? 'opacity-30 pointer-events-none' : ''}`}>
-              {selectionMode === "msg_delete" ? `実行(${selectedIds.length})` : "削除(Gmailを含む)"}
-            </button>
-            <button onClick={() => handleMenuBarClick("msg_reset")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_reset" ? 'bg-[#DA373C] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_reset" ? 'opacity-30 pointer-events-none' : ''}`}>
-              {selectionMode === "msg_reset" ? `実行(${selectedIds.length})` : "リセット"}
-            </button>
-            <button onClick={() => { setModal({ type: "unhide_select", targetMode: "msg", targets: [] }); setSelectedIds([]); setSelectionMode("none"); }} className={`px-3 py-1 text-xs font-bold rounded bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith("msg_") ? 'opacity-30 pointer-events-none' : ''}`}>非表示解除</button>
-          </div>
-
-          {/* ピン留めメッセージリスト */}
-          {pinnedMsgsInChat.length > 0 && (
-            <div className="bg-[#2B2D31] border-b border-[#1E1F22] px-4 py-1.5 flex gap-2 overflow-x-auto scrollbar-none items-center shadow-inner cursor-default" onClick={(e) => e.stopPropagation()}>
-               <span className="text-xs text-[#FEE75C] font-bold">📌</span>
-               {pinnedMsgsInChat.map(m => (
+          {selectedSender ? (
+            <>
+              {/* スマホ版・PC版共通メッセージヘッダー：左矢印を完全履歴バック化 */}
+              <header className="px-4 py-3 bg-[#313338] border-b border-[#1E1F22] shadow-sm z-10 flex items-center gap-3 cursor-default" onClick={(e) => e.stopPropagation()}>
+                {isMobile && (
                   <button 
-                    key={`pin-${m.id}`} 
-                    onClick={() => document.getElementById(`msg-${m.id}`)?.scrollIntoView({behavior: 'smooth', block: 'center'})} 
-                    className="text-xs bg-[#1E1F22] text-gray-300 px-3 py-1.5 rounded-full truncate max-w-[200px] hover:text-white border border-[#35373C] flex-shrink-0 transition active:scale-95"
+                    onClick={() => window.history.back()} 
+                    className="text-gray-400 hover:text-white font-bold p-1 text-lg transition active:scale-90"
                   >
-                     {m.subject || m.snippet}
-                  </button>
-               ))}
-            </div>
-          )}
-
-          {/* メッセージ一覧コンテナ（背景余白クリックを活かすためコンテナ自体にはstopPropagationをつけない） */}
-          <div className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin">
-            {groupedEmails[selectedSender!] ? (
-              groupedEmails[selectedSender!].map((email) => {
-                const isMe = email.isMe || email.from.includes(session?.user?.email || "");
-                const isSelected = selectedIds.includes(email.id);
-
-                return (
-                  <div 
-                    id={`msg-${email.id}`}
-                    key={email.id} 
-                    onClick={(e) => e.stopPropagation()} // ★ メッセージ行エリアのクリックによる誤解除を徹底ガード
-                    className={`flex w-full mb-6 cursor-default ${isMe ? 'justify-end' : 'justify-start'}`}
-                  >
-                    {/* 左側のチェックボックス (選択モード時) */}
-                    {selectionMode.startsWith("msg_") && (
-                      <div className="flex-shrink-0 w-8 flex justify-center pt-3 mr-2" onClick={() => toggleSelection(email.id)}>
-                        <div className={`w-5 h-5 rounded-sm flex items-center justify-center border cursor-pointer ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500'}`}>
-                          {isSelected && <div className="w-2.5 h-2.5 bg-white rounded-sm"></div>}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* 相手のアイコン */}
-                    {!isMe && !selectionMode.startsWith("msg_") && (
-                       <img 
-                         src={`/api/avatar?name=${encodeURIComponent(email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown")}`}
-                         alt=""
-                         className="w-9 h-9 rounded-full mr-3 flex-shrink-0 mt-1 shadow-sm select-none pointer-events-none"
-                       />
-                    )}
-
-                    <div className={`flex flex-col max-w-[75%] ${isMe ? 'items-end' : 'items-start'}`}>
-                       {/* 名前と時間 */}
-                       <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
-                          {!isMe && <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>}
-                          <span>{new Date(email.date).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}</span>
-                       </div>
-                       
-                       {/* メッセージバブル */}
-                       <div 
-                          className={`p-3.5 text-[15px] leading-relaxed break-words whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 border border-[#1E1F22] rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
-                          onClick={() => { if (selectionMode.startsWith("msg_")) toggleSelection(email.id); }}
-                          onContextMenu={(e) => { e.preventDefault(); setContextMenu({ type: "msg", target: email, x: e.clientX, y: e.clientY }); }}
-                          onTouchStart={(e) => { if (!hasMouse) touchTimer.current = setTimeout(() => { setContextMenu({ type: "msg", target: email, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
-                          onTouchEnd={() => touchTimer.current && clearTimeout(touchTimer.current)}
-                          onTouchMove={() => touchTimer.current && clearTimeout(touchTimer.current)}
-                       >
-                          {chatConfigs[email.id]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
-                          {email.subject && !email.subject.startsWith("Re:") && <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10">{email.subject}</div>}
-                          {email.body}
-                       </div>
-                    </div>
-
-                    {/* 自分のアイコン */}
-                    {isMe && !selectionMode.startsWith("msg_") && (
-                       <img 
-                         src={`/api/avatar?name=${encodeURIComponent(session?.user?.name || "Me")}`}
-                         alt=""
-                         className="w-9 h-9 rounded-full ml-3 flex-shrink-0 mt-1 shadow-sm select-none pointer-events-none"
-                       />
-                    )}
-                  </div>
-                );
-              })
-            ) : null}
-            {/* 過去ログ読み込みボタンと共通ステータスメッセージ */}
-            {groupedEmails[selectedSender!] && (
-              <div className="flex justify-center my-4 w-full">
-                {msgStatusMessage ? (
-                  <span className="text-xs text-gray-500 font-medium px-3 py-1.5 bg-[#2B2D31] rounded-full border border-[#1E1F22]">{msgStatusMessage}</span>
-                ) : (
-                  <button 
-                    onClick={handleLoadMoreMessage} 
-                    disabled={isLoadingMore}
-                    className="bg-[#2B2D31] text-gray-300 hover:text-white px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] shadow-sm active:scale-95 transition disabled:opacity-50"
-                  >
-                    {isLoadingMore ? "読み込み中..." : "過去のメッセージを読み込む"}
+                    ←
                   </button>
                 )}
-              </div>
-            )}
-          </div>
+                <h2 className="font-bold text-base truncate flex-1 text-white">{chatConfigs[selectedSender]?.customName || selectedSender}</h2>
+              </header>
 
-          {/* 下部メッセージ入力欄 */}
-          <div className="p-4 bg-[#313338] cursor-default" onClick={(e) => e.stopPropagation()}>
-            <div className="bg-[#383A40] rounded-lg p-3 border border-[#1E1F22]">
-              {replyToMessage && (
-                <div className="flex justify-between items-center bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">
-                  <span className="truncate">Replying to: {replyToMessage.subject || replyToMessage.snippet}</span>
-                  <button onClick={() => setReplyToMessage(null)} className="font-bold px-2 hover:text-white">×</button>
+              {/* メッセージ用 アクションバー */}
+              <div className="flex flex-wrap px-4 py-2 gap-2 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default" onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => handleMenuBarClick("msg_pin")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_pin" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_pin" ? 'opacity-30 pointer-events-none' : ''}`}>
+                  {selectionMode === "msg_pin" ? `実行(${selectedIds.length})` : "ピン留め"}
+                </button>
+                <button onClick={() => handleMenuBarClick("msg_hide")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_hide" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_hide" ? 'opacity-30 pointer-events-none' : ''}`}>
+                  {selectionMode === "msg_hide" ? `実行(${selectedIds.length})` : "非表示(Re:Mailのみ)"}
+                </button>
+                <button onClick={() => handleMenuBarClick("msg_delete")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_delete" ? 'bg-[#DA373C] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_delete" ? 'opacity-30 pointer-events-none' : ''}`}>
+                  {selectionMode === "msg_delete" ? `実行(${selectedIds.length})` : "削除(Gmailを含む)"}
+                </button>
+                <button onClick={() => handleMenuBarClick("msg_reset")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_reset" ? 'bg-[#DA373C] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_reset" ? 'opacity-30 pointer-events-none' : ''}`}>
+                  {selectionMode === "msg_reset" ? `実行(${selectedIds.length})` : "リセット"}
+                </button>
+                <button onClick={() => { setModal({ type: "unhide_select", targetMode: "msg", targets: [] }); setSelectedIds([]); setSelectionMode("none"); }} className={`px-3 py-1 text-xs font-bold rounded bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith("msg_") ? 'opacity-30 pointer-events-none' : ''}`}>非表示解除</button>
+              </div>
+
+              {/* ピン留めメッセージリスト */}
+              {pinnedMsgsInChat.length > 0 && (
+                <div className="bg-[#2B2D31] border-b border-[#1E1F22] px-4 py-1.5 flex gap-2 overflow-x-auto scrollbar-none items-center shadow-inner cursor-default" onClick={(e) => e.stopPropagation()}>
+                   <span className="text-xs text-[#FEE75C] font-bold">📌</span>
+                   {pinnedMsgsInChat.map(m => (
+                      <button 
+                        key={`pin-${m.id}`} 
+                        onClick={() => document.getElementById(`msg-${m.id}`)?.scrollIntoView({behavior: 'smooth', block: 'center'})} 
+                        className="text-xs bg-[#1E1F22] text-gray-300 px-3 py-1.5 rounded-full truncate max-w-[200px] hover:text-white border border-[#35373C] flex-shrink-0 transition active:scale-95"
+                      >
+                         {m.subject || m.snippet}
+                      </button>
+                   ))}
                 </div>
               )}
-              <input type="text" placeholder="件名 (省略可)" value={replySubject} onChange={(e) => setReplySubject(e.target.value)} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
-              <div className="flex items-end gap-2">
-                <textarea placeholder={`Message to ${chatConfigs[selectedSender!]?.customName || selectedSender}`} rows={isMobile ? 1 : 2} value={replyBody} onChange={(e) => setReplyBody(e.target.value)} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
-                <button onClick={handleSend} disabled={isSending || !replyBody.trim()} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
-                  {isSending ? "..." : "送信"}
-                </button>
+
+              {/* メッセージ一覧コンテナ */}
+              <div className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin">
+                {groupedEmails[selectedSender] ? (
+                  groupedEmails[selectedSender].map((email) => {
+                    const isMe = email.isMe || email.from.includes(session?.user?.email || "");
+                    const isSelected = selectedIds.includes(email.id);
+
+                    return (
+                      <div 
+                        id={`msg-${email.id}`}
+                        key={email.id} 
+                        onClick={(e) => e.stopPropagation()}
+                        className={`flex w-full mb-6 cursor-default ${isMe ? 'justify-end' : 'justify-start'}`}
+                      >
+                        {/* 左側のチェックボックス (選択モード時) */}
+                        {selectionMode.startsWith("msg_") && (
+                          <div className="flex-shrink-0 w-8 flex justify-center pt-3 mr-2" onClick={() => toggleSelection(email.id)}>
+                            <div className={`w-5 h-5 rounded-sm flex items-center justify-center border cursor-pointer ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500'}`}>
+                              {isSelected && <div className="w-2.5 h-2.5 bg-white rounded-sm"></div>}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* 相手のアイコン */}
+                        {!isMe && !selectionMode.startsWith("msg_") && (
+                           <img 
+                             src={`/api/avatar?name=${encodeURIComponent(email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown")}`}
+                             alt=""
+                             className="w-9 h-9 rounded-full mr-3 flex-shrink-0 mt-1 shadow-sm select-none pointer-events-none"
+                           />
+                        )}
+
+                        <div className={`flex flex-col max-w-[75%] ${isMe ? 'items-end' : 'items-start'}`}>
+                           {/* 名前と時間 */}
+                           <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
+                              {!isMe && <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>}
+                              <span>{new Date(email.date).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}</span>
+                           </div>
+                           
+                           {/* メッセージバブル */}
+                           <div 
+                              className={`p-3.5 text-[15px] leading-relaxed break-words whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 border border-[#1E1F22] rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
+                              onClick={() => { if (selectionMode.startsWith("msg_")) toggleSelection(email.id); }}
+                              onContextMenu={(e) => { e.preventDefault(); setContextMenu({ type: "msg", target: email, x: e.clientX, y: e.clientY }); }}
+                              onTouchStart={(e) => { if (!hasMouse) touchTimer.current = setTimeout(() => { setContextMenu({ type: "msg", target: email, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
+                              onTouchEnd={() => touchTimer.current && clearTimeout(touchTimer.current)}
+                              onTouchMove={() => touchTimer.current && clearTimeout(touchTimer.current)}
+                           >
+                              {chatConfigs[email.id]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
+                              {email.subject && !email.subject.startsWith("Re:") && <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10">{email.subject}</div>}
+                              {email.body}
+                           </div>
+                        </div>
+
+                        {/* 自分のアイコン */}
+                        {isMe && !selectionMode.startsWith("msg_") && (
+                           <img 
+                             src={`/api/avatar?name=${encodeURIComponent(session?.user?.name || "Me")}`}
+                             alt=""
+                             className="w-9 h-9 rounded-full ml-3 flex-shrink-0 mt-1 shadow-sm select-none pointer-events-none"
+                           />
+                        )}
+                      </div>
+                    );
+                  })
+                ) : null}
+                
+                {/* 過去ログ読み込みボタンと共通ステータスメッセージ */}
+                {groupedEmails[selectedSender] && (
+                  <div className="flex justify-center my-4 w-full">
+                    {msgStatusMessage ? (
+                      <span className="text-xs text-gray-500 font-medium px-3 py-1.5 bg-[#2B2D31] rounded-full border border-[#1E1F22]">{msgStatusMessage}</span>
+                    ) : (
+                      <button 
+                        onClick={handleLoadMoreMessage} 
+                        disabled={isLoadingMore}
+                        className="bg-[#2B2D31] text-gray-300 hover:text-white px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] shadow-sm active:scale-95 transition disabled:opacity-50"
+                      >
+                        {isLoadingMore ? "読み込み中..." : "過去のメッセージを読み込む"}
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
+
+              {/* 下部メッセージ入力欄 */}
+              <div className="p-4 bg-[#313338] cursor-default" onClick={(e) => e.stopPropagation()}>
+                <div className="bg-[#383A40] rounded-lg p-3 border border-[#1E1F22]">
+                  {replyToMessage && (
+                    <div className="flex justify-between items-center bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">
+                      <span className="truncate">Replying to: {replyToMessage.subject || replyToMessage.snippet}</span>
+                      <button onClick={() => setReplyToMessage(null)} className="font-bold px-2 hover:text-white">×</button>
+                    </div>
+                  )}
+                  <input type="text" placeholder="件名 (省略可)" value={replySubject} onChange={(e) => setReplySubject(e.target.value)} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
+                  <div className="flex items-end gap-2">
+                    <textarea placeholder={`Message to ${chatConfigs[selectedSender]?.customName || selectedSender}`} rows={isMobile ? 1 : 2} value={replyBody} onChange={(e) => setReplyBody(e.target.value)} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
+                    <button onClick={handleSend} disabled={isSending || !replyBody.trim()} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
+                      {isSending ? "..." : "送信"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            /* ★修正：未選択時はバーを消して、プレースホルダーのみを表示 */
+            <div className="flex flex-1 items-center justify-center text-gray-500 font-bold cursor-default" onClick={(e) => e.stopPropagation()}>
+              左のリストからチャットを選択してください
             </div>
-          </div>
+          )}
         </main>
       )}
     </div>
