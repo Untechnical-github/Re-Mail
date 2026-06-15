@@ -69,6 +69,10 @@ export default function Home() {
   const touchTimer = useRef<NodeJS.Timeout | null>(null);
   const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true }); // ★ 追加：リセットの選択肢
 
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hasPushedSearchRef = useRef(false);
+  const hasPushedSelectRef = useRef(false);
+
   const getCacheKey = (flags: { inbox: boolean; spam: boolean; trash: boolean }) => {
     return `remail_feed_cache_i${flags.inbox ? 1 : 0}s${flags.spam ? 1 : 0}t${flags.trash ? 1 : 0}`;
   };
@@ -187,7 +191,32 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const handlePopState = () => { if (window.location.hash !== '#chat') setSelectedSender(null); };
+    const handlePopState = (e: PopStateEvent) => {
+      const state = e.state;
+
+      // 1. アクションバー（選択モード）の解除同期
+      if (!state || state.action !== "select") {
+        setSelectionMode("none");
+        setSelectedIds([]);
+        hasPushedSelectRef.current = false;
+      } else {
+        hasPushedSelectRef.current = true;
+      }
+
+      // 2. 検索キーワードのクリア同期
+      if (!state || state.action !== "search") {
+        setSearchKeyword("");
+        hasPushedSearchRef.current = false;
+      } else {
+        hasPushedSearchRef.current = true;
+      }
+
+      // 3. スマホ版チャット画面の閉じる同期
+      if (window.location.hash !== '#chat') {
+        setSelectedSender(null);
+      }
+    };
+
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
@@ -279,27 +308,45 @@ export default function Home() {
 
   useEffect(() => {
     if (!session) return;
-    
-    const handleFilterChange = async () => {
-      // 1. 他の端末へ状態をリアルタイム同期（D1保存）
-      await saveGlobalSettings(checkInbox, checkSpam, checkTrash);
-      
-      // 2. 切り替え先の専用キャッシュが存在すれば、先行して画面に一瞬で描画（真っ白を防止）
-      let snapshot: any = null;
-      try { snapshot = await localforage.getItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash })); } catch (e) {}
-      if (snapshot && snapshot.emails) {
-        setEmails(snapshot.emails);
-      } else {
-        setEmails([]); // キャッシュがない場合は一旦空にしてロードを待つ
-      }
 
-      // 3. 最新データをGoogleから一括フェッチ
-      setChatStatusMessage(null);
-      await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false);
+    const handleFilterChange = async () => {
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+
+      // 1文字入力ごとのカクつきを防ぐため、検索時は300msのディレイ後に実行
+      searchTimeoutRef.current = setTimeout(async () => {
+        await saveGlobalSettings(checkInbox, checkSpam, checkTrash);
+
+        // 検索中でない場合のみキャッシュから先行描画
+        if (!searchKeyword) {
+          let snapshot: any = null;
+          try { snapshot = await localforage.getItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash })); } catch (e) {}
+          if (snapshot && snapshot.emails) setEmails(snapshot.emails);
+        }
+
+        setChatStatusMessage(null);
+        await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false);
+      }, searchKeyword ? 300 : 0);
     };
 
     handleFilterChange();
-  }, [checkInbox, checkSpam, checkTrash]);
+
+    return () => {
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    };
+  }, [checkInbox, checkSpam, checkTrash, searchKeyword]);
+
+  const handleSearchChange = (val: string) => {
+    if (!searchKeyword && val && !hasPushedSearchRef.current) {
+      window.history.pushState({ action: "search" }, "");
+      hasPushedSearchRef.current = true;
+    } else if (searchKeyword && !val && hasPushedSearchRef.current) {
+      window.history.back();
+      hasPushedSearchRef.current = false;
+      return;
+    }
+    setSearchKeyword(val);
+  };
+
 
   // ★ 1分ごとのバックグラウンド自動更新（スマート差分フェッチ）
   useEffect(() => {
@@ -380,35 +427,44 @@ export default function Home() {
     setSelectionMode("none");
     setSelectedIds([]);
     setReplyToMessage(null);
+    setMsgStatusMessage(null); // ★追加：別のチャットを開いた時に完了メッセージをリセットし、ボタンを復活させる
     if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`);
   };
 
   const handleMenuBarClick = (mode: SelectionMode) => {
-    if (mode === "chat_reset") {
+    if (mode.includes("reset")) {
+      const scope = mode.startsWith("chat") ? "all_chats" : "current_chat";
       setResetOptions({ pin: true, hide: true, name: true });
-      setModal({ type: "confirm_reset", targetMode: "all_chats", targets: [] });
-      setSelectionMode("none");
-      return;
-    }
-    if (mode === "msg_reset") {
-      setResetOptions({ pin: true, hide: true, name: true });
-      setModal({ type: "confirm_reset", targetMode: "current_chat", targets: [selectedSender!] });
+      setModal({ type: "confirm_reset", targetMode: scope, targets: scope === "current_chat" ? [selectedSender!] : [] });
       setSelectionMode("none");
       return;
     }
 
     if (selectionMode === mode) {
-      if (selectedIds.length === 0) { setSelectionMode("none"); return; }
+      if (selectedIds.length === 0) {
+        window.history.back();
+        return;
+      }
       const targetMode = mode.startsWith("chat") ? "chat" : "msg";
       let actionType: any = "confirm_hide";
       if (mode.includes("delete")) actionType = "confirm_delete";
       if (mode.includes("pin")) actionType = "confirm_pin";
       
       setModal({ type: actionType, targetMode, targets: selectedIds });
-      setSelectionMode("none");
+      window.history.back(); // モーダルが開くので選択モード履歴は戻す
     } else {
       setSelectionMode(mode);
       setSelectedIds([]);
+      if (!hasPushedSelectRef.current) {
+        window.history.pushState({ action: "select" }, "");
+        hasPushedSelectRef.current = true;
+      }
+    }
+  };
+
+  const handleBackgroundClick = () => {
+    if (selectionMode !== "none") {
+      window.history.back();
     }
   };
 
@@ -662,22 +718,86 @@ export default function Home() {
 
   // ★ メッセージ（トーク画面側）の過去ログ追加読み込み
   const handleLoadMoreMessage = async () => {
-    if (isLoadingMore) return;
-    setIsLoadingMore(true);
-    setMsgStatusMessage(null); // ステータスメッセージをリセット
-    
-    if (currentNextPageToken) {
-      // APIから過去20件の取得を試みる
-      const success = await fetchEmails(20, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, currentNextPageToken, true, true);
-      
-      if (!success) {
-        setMsgStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。");
-      }
-    } else {
-      // トークンがない（＝もうこれ以上過去のメールがない）場合
-      setMsgStatusMessage("すべてのメールを読み込みました");
+    if (isLoadingMore || !currentNextPageToken) {
+      if (!currentNextPageToken) setMsgStatusMessage("すべてのメールを読み込みました");
+      return;
     }
-    setIsLoadingMore(false);
+    setIsLoadingMore(true);
+    setMsgStatusMessage(null);
+
+    let tempToken = currentNextPageToken;
+    let hasFoundTargetMsg = false;
+    let loopCount = 0;
+    const maxLoops = 5; // Paidプランのパワーを活かし、最大200件分まで一気に探索
+
+    try {
+      const targetSenderLower = selectedSender!.toLowerCase();
+
+      // 現在のチャットのメールが見つかるか、トークンが尽きるまで自動ループ
+      while (!hasFoundTargetMsg && tempToken && loopCount < maxLoops) {
+        loopCount++;
+        let qParts = []; let orLabels = [];
+        if (checkInbox) orLabels.push("in:inbox", "in:sent");
+        if (checkSpam) orLabels.push("in:spam");
+        if (checkTrash) orLabels.push("in:trash");
+        if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
+        if (searchKeyword) qParts.push(searchKeyword);
+
+        const params = new URLSearchParams({ maxResults: "40", q: qParts.join(" ").trim(), includeTrash: "true", pageToken: tempToken });
+        const res = await fetch(`/api/emails?${params.toString()}`);
+        
+        if (!res.ok) {
+          setMsgStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。");
+          break;
+        }
+
+        const data = await res.json();
+        const newMessages = data.messages || [];
+        tempToken = data.nextPageToken || null;
+
+        if (newMessages.length === 0) {
+          setMsgStatusMessage("すべてのメールを読み込みました");
+          setCurrentNextPageToken(null);
+          break;
+        }
+
+        // ★取得した新着メール群の中に、現在開いているチャット（selectedSender）のメールがあるか判定
+        const found = newMessages.some((email: any) => {
+          if (chatConfigs[email.id]?.isHidden) return false;
+          
+          // 相手からのメールか判定
+          const fromName = email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown";
+          if (fromName === selectedSender || email.senderRoom === selectedSender) return true;
+          
+          // 自分が送ったメールか判定
+          const isMe = email.from.includes(session?.user?.email || "");
+          if (isMe) {
+            const toClean = email.to ? email.to.toLowerCase() : "";
+            if (toClean.includes(targetSenderLower)) return true;
+          }
+          return false;
+        });
+
+        // データを結合してトークンを更新
+        setEmails(prev => [...prev, ...newMessages]);
+        setCurrentNextPageToken(tempToken);
+
+        if (found) {
+          hasFoundTargetMsg = true; // 見つかったのでループ終了
+        }
+      }
+
+      // ループ終了後の判定
+      if (!tempToken) {
+        // トークンが完全に尽きた場合のみ完了メッセージを表示（ボタンが消える）
+        setMsgStatusMessage("すべてのメールを読み込みました");
+      }
+
+    } catch (error) {
+      setMsgStatusMessage("エラーが発生しました。しばらくしてからもう一度お試しください。");
+    } finally {
+      setIsLoadingMore(false);
+    }
   };
 
   return (
@@ -882,17 +1002,50 @@ export default function Home() {
         </div>
       )}
 
-      {/* ＝＝＝＝ 左ペイン：チャットリスト ＝＝＝＝ */}
+      {/* ＝＝＝＝ 左ペイン：チャットリスト（asideの背景クリックでキャンセル） ＝＝＝＝ */}
       {showChatList && (
-        <aside className={`${isMobile ? 'w-full' : 'w-[320px] border-r'} border-[#1E1F22] bg-[#2B2D31] flex flex-col h-full min-h-0`}>
-          
-          <div className="p-4 border-b border-[#1E1F22] shadow-sm flex items-center justify-between">
-            <h1 className="text-xl font-extrabold text-white">Re:Mail</h1>
+        <aside 
+          onClick={handleBackgroundClick}
+          className={`${isMobile ? 'w-full' : 'w-[320px] border-r'} border-[#1E1F22] bg-[#2B2D31] flex flex-col h-full min-h-0 cursor-pointer`}
+        >
+          {/* PC版ヘッダー：矢印の位置とロゴ位置を固定 */}
+          <div className="p-4 border-b border-[#1E1F22] shadow-sm flex items-center justify-between cursor-default" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2">
+              {/* 常に位置を固定するためw-6を確保し、戻れる場面のみ←を表示 */}
+              <div className="w-6 h-6 flex items-center justify-center">
+                {(selectionMode !== "none" || searchKeyword !== "") && (
+                  <button 
+                    onClick={() => window.history.back()} 
+                    className="text-gray-400 hover:text-white font-bold text-lg transition active:scale-90"
+                  >
+                    ←
+                  </button>
+                )}
+              </div>
+              <h1 className="text-xl font-extrabold text-white tracking-wide">Re:Mail</h1>
+            </div>
             <button onClick={() => signOut()} className="text-xs text-gray-400 hover:text-white transition">ログアウト</button>
           </div>
 
-          <div className="p-3 border-b border-[#1E1F22] bg-[#232428]">
-             <input type="text" placeholder="キーワード検索..." className="w-full bg-[#1E1F22] text-sm text-gray-300 px-3 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]" value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false); } }} />
+          {/* 検索入力欄：リアルタイム化 ＆ ✕ボタン設置 */}
+          <div className="p-3 border-b border-[#1E1F22] bg-[#232428] cursor-default" onClick={(e) => e.stopPropagation()}>
+             <div className="relative w-full">
+               <input 
+                 type="text" 
+                 placeholder="キーワード検索..." 
+                 className="w-full bg-[#1E1F22] text-sm text-gray-300 pl-3 pr-8 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]" 
+                 value={searchKeyword} 
+                 onChange={(e) => handleSearchChange(e.target.value)} 
+               />
+               {searchKeyword && (
+                 <button 
+                   onClick={() => window.history.back()} 
+                   className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs font-bold px-1 transition"
+                 >
+                   ✕
+                 </button>
+               )}
+             </div>
              
              <div className="flex gap-1 text-xs mt-2">
                 <label className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={checkInbox} onChange={(e) => setCheckInbox(e.target.checked)} className="accent-[#5865F2]" /> 受信箱</label>
@@ -902,7 +1055,7 @@ export default function Home() {
           </div>
 
           {/* チャット用 アクションバー */}
-          <div className="flex flex-wrap p-2 gap-1 border-b border-[#1E1F22] bg-[#2B2D31]">
+          <div className="flex flex-wrap p-2 gap-1 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default" onClick={(e) => e.stopPropagation()}>
             <button onClick={() => handleMenuBarClick("chat_pin")} className={`flex-1 min-w-[70px] py-1.5 text-[11px] font-bold rounded transition ${selectionMode === "chat_pin" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "chat_pin" ? 'opacity-30 pointer-events-none' : ''}`}>
               {selectionMode === "chat_pin" ? `実行(${selectedIds.length})` : "ピン留め"}
             </button>
@@ -913,13 +1066,13 @@ export default function Home() {
               {selectionMode === "chat_delete" ? `実行(${selectedIds.length})` : "削除(Gmailを含む)"}
             </button>
             <button onClick={() => handleMenuBarClick("chat_reset")} className={`flex-1 min-w-[70px] py-1.5 text-[11px] font-bold rounded transition ${selectionMode === "chat_reset" ? 'bg-[#DA373C] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "chat_reset" ? 'opacity-30 pointer-events-none' : ''}`}>
-              {selectionMode === "chat_reset" ? `実行(${selectedIds.length})` : "リセット"}
+              リセット
             </button>
             <button onClick={() => { setModal({ type: "unhide_select", targetMode: "chat", targets: [] }); setSelectedIds([]); setSelectionMode("none"); }} className={`px-3 py-1.5 text-[11px] font-bold rounded bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith("chat_") ? 'opacity-30 pointer-events-none' : ''}`}>非表示解除</button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2 space-y-0.5 min-h-0">
-             {/* リアルタイムローディング表示 */}
+          {/* チャットリスト（コンテナごと伝播ストップしてアイテムの隙間クリックでの誤解除を防止） */}
+          <div className="flex-1 overflow-y-auto p-2 space-y-0.5 min-h-0 cursor-default" onClick={(e) => e.stopPropagation()}>
              {isLoading && <div className="text-xs text-[#5865F2] font-bold p-2 text-center animate-pulse">読み込み中...</div>}
              {senderList.map((sender) => {
               const latestEmail = groupedEmails[sender][0];
@@ -977,17 +1130,27 @@ export default function Home() {
         </aside>
       )}
 
-      {/* ＝＝＝＝ 右ペイン：トーク画面 ＝＝＝＝ */}
+      {/* ＝＝＝＝ 右ペイン：トーク画面（mainの背景余白クリックでキャンセル） ＝＝＝＝ */}
       {showTalk && (
-        <main className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-[#313338] relative`}>
-          
-          <header className="px-4 py-3 bg-[#313338] border-b border-[#1E1F22] shadow-sm z-10 flex items-center gap-3">
-            {isMobile && <button onClick={() => { window.history.back(); setSelectionMode("none"); }} className="text-gray-400 hover:text-white font-bold p-1">←</button>}
+        <main 
+          onClick={handleBackgroundClick}
+          className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-[#313338] relative cursor-pointer`}
+        >
+          {/* スマホ版・PC版共通メッセージヘッダー：左矢印を完全履歴バック化 */}
+          <header className="px-4 py-3 bg-[#313338] border-b border-[#1E1F22] shadow-sm z-10 flex items-center gap-3 cursor-default" onClick={(e) => e.stopPropagation()}>
+            {isMobile && (
+              <button 
+                onClick={() => window.history.back()} 
+                className="text-gray-400 hover:text-white font-bold p-1 text-lg transition active:scale-90"
+              >
+                ←
+              </button>
+            )}
             <h2 className="font-bold text-base truncate flex-1 text-white">{chatConfigs[selectedSender!]?.customName || selectedSender}</h2>
           </header>
 
           {/* メッセージ用 アクションバー */}
-          <div className="flex flex-wrap px-4 py-2 gap-2 border-b border-[#1E1F22] bg-[#2B2D31]">
+          <div className="flex flex-wrap px-4 py-2 gap-2 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default" onClick={(e) => e.stopPropagation()}>
             <button onClick={() => handleMenuBarClick("msg_pin")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_pin" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_pin" ? 'opacity-30 pointer-events-none' : ''}`}>
               {selectionMode === "msg_pin" ? `実行(${selectedIds.length})` : "ピン留め"}
             </button>
@@ -1003,9 +1166,9 @@ export default function Home() {
             <button onClick={() => { setModal({ type: "unhide_select", targetMode: "msg", targets: [] }); setSelectedIds([]); setSelectionMode("none"); }} className={`px-3 py-1 text-xs font-bold rounded bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith("msg_") ? 'opacity-30 pointer-events-none' : ''}`}>非表示解除</button>
           </div>
 
-          {/* ピン留めメッセージのリスト（LINE風 上部ぶら下がり） */}
+          {/* ピン留めメッセージリスト */}
           {pinnedMsgsInChat.length > 0 && (
-            <div className="bg-[#2B2D31] border-b border-[#1E1F22] px-4 py-1.5 flex gap-2 overflow-x-auto scrollbar-none items-center shadow-inner">
+            <div className="bg-[#2B2D31] border-b border-[#1E1F22] px-4 py-1.5 flex gap-2 overflow-x-auto scrollbar-none items-center shadow-inner cursor-default" onClick={(e) => e.stopPropagation()}>
                <span className="text-xs text-[#FEE75C] font-bold">📌</span>
                {pinnedMsgsInChat.map(m => (
                   <button 
@@ -1019,10 +1182,8 @@ export default function Home() {
             </div>
           )}
 
-          {/* メッセージ一覧 (LINE風の左/右レイアウトを採用しつつ、Discordのダークテーマ) */}
+          {/* メッセージ一覧コンテナ（背景余白クリックを活かすためコンテナ自体にはstopPropagationをつけない） */}
           <div className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin">
-            
-            {/* ① メッセージを先に描画する（flex-col-reverseにより新しいものが下になる） */}
             {groupedEmails[selectedSender!] ? (
               groupedEmails[selectedSender!].map((email) => {
                 const isMe = email.isMe || email.from.includes(session?.user?.email || "");
@@ -1032,7 +1193,8 @@ export default function Home() {
                   <div 
                     id={`msg-${email.id}`}
                     key={email.id} 
-                    className={`flex w-full mb-6 ${isMe ? 'justify-end' : 'justify-start'}`}
+                    onClick={(e) => e.stopPropagation()} // ★ メッセージ行エリアのクリックによる誤解除を徹底ガード
+                    className={`flex w-full mb-6 cursor-default ${isMe ? 'justify-end' : 'justify-start'}`}
                   >
                     {/* 左側のチェックボックス (選択モード時) */}
                     {selectionMode.startsWith("msg_") && (
@@ -1104,7 +1266,8 @@ export default function Home() {
             )}
           </div>
 
-          <div className="p-4 bg-[#313338]">
+          {/* 下部メッセージ入力欄 */}
+          <div className="p-4 bg-[#313338] cursor-default" onClick={(e) => e.stopPropagation()}>
             <div className="bg-[#383A40] rounded-lg p-3 border border-[#1E1F22]">
               {replyToMessage && (
                 <div className="flex justify-between items-center bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">
