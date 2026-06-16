@@ -15,7 +15,7 @@ type ChatConfig = {
   roomId?: string;
 };
 
-type SelectionMode = "none" | "chat_hide" | "chat_delete" | "msg_hide" | "msg_delete" | "chat_pin" | "msg_pin" | "chat_reset" | "msg_reset";
+type SelectionMode = "none" | "chat_hide" | "chat_delete" | "msg_hide" | "msg_delete" | "chat_pin" | "msg_pin" | "chat_reset" | "msg_reset" | "chat_move" | "msg_move"; // ★ 移動モード追加
 
 type ContextMenuState = {
   type: "chat" | "msg";
@@ -25,7 +25,7 @@ type ContextMenuState = {
 } | null;
 
 type ModalState = {
-  type: "confirm_delete" | "confirm_hide" | "confirm_unhide" | "unhide_select" | "rename" | "confirm_pin" | "confirm_reset";
+  type: "confirm_delete" | "confirm_hide" | "confirm_unhide" | "unhide_select" | "rename" | "confirm_pin" | "confirm_reset" | "select_move_dest" | "select_move_dest_context" | "confirm_move"; // ★ 移動関連のモーダル追加
   targetMode: "chat" | "msg" | "all_chats" | "current_chat" | "specific_chat";
   targets: any[];
 } | null;
@@ -78,7 +78,7 @@ export default function Home() {
   const [renameInput, setRenameInput] = useState("");
   const touchTimer = useRef<NodeJS.Timeout | null>(null);
   const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true });
-  // ★追加：クロスプロンプトで個別に「読み込む」を押したメールのIDを記録する
+  const [moveDestination, setMoveDestination] = useState<"INBOX" | "SPAM" | "TRASH" | null>(null); // ★ 追加：移動先の保持
   const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
 
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -547,10 +547,15 @@ export default function Home() {
       let actionType: any = "confirm_hide";
       if (mode.includes("delete")) actionType = "confirm_delete";
       if (mode.includes("pin")) actionType = "confirm_pin";
+      if (mode.includes("move")) actionType = "confirm_move";
       
       setModal({ type: actionType, targetMode, targets: selectedIds });
       window.history.back(); 
     } else {
+      if (mode.includes("move")) {
+        setModal({ type: "select_move_dest", targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] });
+        return; 
+      }
       setSelectionMode(mode);
       setSelectedIds([]);
       if (!hasPushedSelectRef.current) {
@@ -626,24 +631,63 @@ export default function Home() {
     const { type, targets, targetMode } = modal;
     
     if (type === "confirm_delete") {
-      let deleteIds: string[] = [];
+      let deleteEmails: any[] = [];
       if (targetMode === "chat") {
-        targets.forEach(chat => deleteIds.push(...(groupedEmails[chat]?.map(e => e.id) || [])));
+        targets.forEach(chat => deleteEmails.push(...(groupedEmails[chat] || [])));
       } else {
-        deleteIds = targets;
+        deleteEmails = allUniqueEmails.filter(e => targets.includes(e.id));
       }
-      if (deleteIds.length > 0) {
+
+      // ★修正：ゴミ箱にあるものは完全削除、それ以外はゴミ箱へ移動
+      const permanentIds = deleteEmails.filter(e => e.labelIds?.includes("TRASH")).map(e => e.id);
+      const trashIds = deleteEmails.filter(e => !e.labelIds?.includes("TRASH")).map(e => e.id);
+
+      if (permanentIds.length > 0 || trashIds.length > 0) {
         try {
           await fetch("/api/emails", {
             method: "DELETE", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ids: deleteIds })
+            body: JSON.stringify({ permanentIds, trashIds })
           });
-          setEmails(emails.filter(e => !deleteIds.includes(e.id)));
-          setPersistedEmails(persistedEmails.filter(e => !deleteIds.includes(e.id)));
+          const allDeletedIds = [...permanentIds, ...trashIds];
+          setEmails(emails.filter(e => !allDeletedIds.includes(e.id)));
+          setPersistedEmails(persistedEmails.filter(e => !allDeletedIds.includes(e.id)));
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
         } catch (e) { console.error(e); }
       }
     } 
+    else if (type === "confirm_move") {
+      // ★追加：移動の実行ロジック
+      let emailsToMove: any[] = [];
+      if (targetMode === "chat") {
+        targets.forEach(chat => emailsToMove.push(...(groupedEmails[chat] || [])));
+      } else {
+        emailsToMove = allUniqueEmails.filter(e => targets.includes(e.id));
+      }
+      
+      // 移動先にまだ存在していないメールだけを抽出
+      const idsToMove = emailsToMove.filter(e => !e.labelIds?.includes(moveDestination!)).map(e => e.id);
+      
+      if (idsToMove.length > 0) {
+        try {
+          await fetch("/api/emails", {
+            method: "PUT", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: idsToMove, destination: moveDestination })
+          });
+          // フロントのキャッシュ内のラベル情報を更新して即座に画面に反映させる
+          const applyNewLabels = (e: any) => {
+            if (idsToMove.includes(e.id)) {
+              let newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "TRASH" && l !== "SPAM");
+              newLabels.push(moveDestination);
+              return { ...e, labelIds: newLabels };
+            }
+            return e;
+          };
+          setEmails(emails.map(applyNewLabels));
+          setPersistedEmails(persistedEmails.map(applyNewLabels));
+          if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
+        } catch (e) { console.error(e); }
+      }
+    }
     else if (type === "confirm_hide") {
       targets.forEach(target => updateChatConfig(target, { 
         isHidden: true, 
@@ -655,44 +699,23 @@ export default function Home() {
     else if (type === "confirm_reset") {
       const { pin, hide, name } = resetOptions;
       const specificTarget = targets[0]; 
-      
       let keysToProcess = Object.keys(chatConfigs);
-
       if (targetMode === "current_chat" || targetMode === "specific_chat") {
          keysToProcess = keysToProcess.filter(k => k === specificTarget || chatConfigs[k]?.roomId === specificTarget);
       }
-
       keysToProcess.forEach(target => {
         const currentConfig = chatConfigs[target];
         const updates: Partial<ChatConfig> = {};
-
-        if (pin) {
-          updates.isPinned = false;
-          updates.forceFetch = false;
-          updates.persistedData = null;
-        }
-        if (hide) {
-          updates.isHidden = false;
-          updates.hiddenAtDate = undefined;
-          updates.unhideOnNew = false;
-        }
-        if (name && currentConfig?.roomId === undefined) {
-          updates.customName = undefined;
-        }
-
-        if (Object.keys(updates).length > 0) {
-          updateChatConfig(target, updates);
-        }
+        if (pin) { updates.isPinned = false; updates.forceFetch = false; updates.persistedData = null; }
+        if (hide) { updates.isHidden = false; updates.hiddenAtDate = undefined; updates.unhideOnNew = false; }
+        if (name && currentConfig?.roomId === undefined) updates.customName = undefined;
+        if (Object.keys(updates).length > 0) updateChatConfig(target, updates);
       });
-
-      if (pin) {
-        setPersistedEmails(prev => prev.filter(e => !keysToProcess.includes(e.id) && !keysToProcess.includes(e.senderRoom)));
-      }
+      if (pin) setPersistedEmails(prev => prev.filter(e => !keysToProcess.includes(e.id) && !keysToProcess.includes(e.senderRoom)));
     }
     else if (type === "confirm_unhide") {
       targets.forEach(target => updateChatConfig(target, { isHidden: false }));
     }
-    
     setModal(null);
     setSelectedIds([]);
   };
@@ -705,6 +728,7 @@ export default function Home() {
     if (action === "hide") setModal({ type: "confirm_hide", targetMode: mode, targets: [targetId] });
     if (action === "delete") setModal({ type: "confirm_delete", targetMode: mode, targets: [targetId] });
     if (action === "pin") setModal({ type: "confirm_pin", targetMode: mode, targets: [targetId] });
+    if (action === "move") setModal({ type: "select_move_dest_context", targetMode: mode, targets: [targetId] });
     if (action === "unpin") {
       updateChatConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null });
       setPersistedEmails(prev => prev.filter(e => e.id !== targetId && e.senderRoom !== targetId));
@@ -718,14 +742,6 @@ export default function Home() {
     if (action === "copy") navigator.clipboard.writeText(target.body);
     if (action === "forward") { setReplyBody(`【転送メッセージ】\n${target.body}`); setReplySubject("Fwd:"); }
   };
-
-  if (status === "loading") return <div className="flex h-screen items-center justify-center bg-gray-100 text-gray-600">読み込み中...</div>;
-  if (!session) return (
-    <div className="flex h-screen flex-col items-center justify-center bg-[#313338] text-white">
-      <h1 className="mb-8 text-5xl font-extrabold text-[#5865F2]">Re:Mail</h1>
-      <button onClick={() => signIn("google")} className="rounded bg-[#5865F2] px-8 py-3 font-bold shadow transition hover:bg-[#4752C4] active:scale-95">Googleでログインして始める</button>
-    </div>
-  );
 
   const showChatList = !isMobile || !selectedSender;
   const showTalk = !isMobile || selectedSender;
@@ -902,41 +918,47 @@ export default function Home() {
       
       {/* ＝＝＝＝ コンテキストメニュー ＝＝＝＝ */}
       {contextMenu && (
-        <div 
-          className={`fixed z-[100] bg-[#2B2D31] rounded shadow-xl border border-[#1E1F22] overflow-hidden text-sm w-56 text-gray-300 ${isMobile ? 'bottom-0 left-0 w-full rounded-b-none p-2 animate-slide-up' : ''}`}
-          style={isMobile ? {} : { top: Math.min(contextMenu.y, window.innerHeight - 300), left: Math.min(contextMenu.x, window.innerWidth - 200) }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {contextMenu.type === "chat" && (() => {
-            const tId = typeof contextMenu.target === "string" ? contextMenu.target : contextMenu.target.id;
-            return (
-              <div className="flex flex-col p-1">
-                <div className="px-2 py-1.5 text-xs font-bold text-gray-400 truncate border-b border-[#1E1F22] mb-1">{chatConfigs[tId]?.customName || tId}</div>
-                <button onClick={() => handleContextMenuAction("rename", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">名前の変更</button>
-                <button onClick={() => handleContextMenuAction(chatConfigs[tId]?.isPinned ? "unpin" : "pin", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">{chatConfigs[tId]?.isPinned ? "ピン留め解除" : "ピン留めする"}</button>
-                <div className="h-px bg-[#1E1F22] my-1"></div>
-                <button onClick={() => handleContextMenuAction("hide", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition">非表示(Re:Mailのみ)</button>
-                <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
-                <div className="h-px bg-[#1E1F22] my-1"></div>
-                <button onClick={() => handleContextMenuAction("reset", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition text-xs">リセット</button>
-              </div>
-            );
-          })()}
-          {contextMenu.type === "msg" && (() => {
-            const mId = contextMenu.target.id;
-            return (
-              <div className="flex flex-col p-1">
-                <button onClick={() => handleContextMenuAction("reply", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">リプライ</button>
-                <button onClick={() => handleContextMenuAction("forward", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">転送</button>
-                <button onClick={() => handleContextMenuAction("copy", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">テキストをコピー</button>
-                <button onClick={() => handleContextMenuAction(chatConfigs[mId]?.isPinned ? "unpin" : "pin", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">{chatConfigs[mId]?.isPinned ? "ピン留め解除" : "ピン留めする"}</button>
-                <div className="h-px bg-[#1E1F22] my-1"></div>
-                <button onClick={() => handleContextMenuAction("hide", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition">非表示(Re:Mailのみ)</button>
-                <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
-              </div>
-            );
-          })()}
-        </div>
+        <>
+          {/* ★修正：背景クリックで確実にメニューを消すための透明なオーバーレイ */}
+          <div className="fixed inset-0 z-[99]" onClick={(e) => { e.stopPropagation(); setContextMenu(null); }}></div>
+          <div 
+            className={`fixed z-[100] bg-[#2B2D31] rounded shadow-xl border border-[#1E1F22] overflow-hidden text-sm w-56 text-gray-300 ${isMobile ? 'bottom-0 left-0 w-full rounded-b-none p-2 animate-slide-up' : ''}`}
+            style={isMobile ? {} : { top: Math.min(contextMenu.y, window.innerHeight - 300), left: Math.min(contextMenu.x, window.innerWidth - 200) }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {contextMenu.type === "chat" && (() => {
+              const tId = typeof contextMenu.target === "string" ? contextMenu.target : contextMenu.target.id;
+              return (
+                <div className="flex flex-col p-1">
+                  <div className="px-2 py-1.5 text-xs font-bold text-gray-400 truncate border-b border-[#1E1F22] mb-1">{chatConfigs[tId]?.customName || tId}</div>
+                  <button onClick={() => handleContextMenuAction("rename", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">名前の変更</button>
+                  <button onClick={() => handleContextMenuAction(chatConfigs[tId]?.isPinned ? "unpin" : "pin", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">{chatConfigs[tId]?.isPinned ? "ピン留め解除" : "ピン留めする"}</button>
+                  <div className="h-px bg-[#1E1F22] my-1"></div>
+                  <button onClick={() => handleContextMenuAction("move", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">移動</button>
+                  <button onClick={() => handleContextMenuAction("hide", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition">非表示(Re:Mailのみ)</button>
+                  <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
+                  <div className="h-px bg-[#1E1F22] my-1"></div>
+                  <button onClick={() => handleContextMenuAction("reset", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition text-xs">リセット</button>
+                </div>
+              );
+            })()}
+            {contextMenu.type === "msg" && (() => {
+              const mId = contextMenu.target.id;
+              return (
+                <div className="flex flex-col p-1">
+                  <button onClick={() => handleContextMenuAction("reply", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">リプライ</button>
+                  <button onClick={() => handleContextMenuAction("forward", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">転送</button>
+                  <button onClick={() => handleContextMenuAction("copy", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">テキストをコピー</button>
+                  <button onClick={() => handleContextMenuAction(chatConfigs[mId]?.isPinned ? "unpin" : "pin", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">{chatConfigs[mId]?.isPinned ? "ピン留め解除" : "ピン留めする"}</button>
+                  <div className="h-px bg-[#1E1F22] my-1"></div>
+                  <button onClick={() => handleContextMenuAction("move", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">移動</button>
+                  <button onClick={() => handleContextMenuAction("hide", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition">非表示(Re:Mailのみ)</button>
+                  <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
+                </div>
+              );
+            })()}
+          </div>
+        </>
       )}
 
       {/* ＝＝＝＝ 確認モーダルシステム ＝＝＝＝ */}
@@ -944,13 +966,92 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
           <div className="bg-[#313338] rounded-md shadow-2xl w-full max-w-sm border border-[#1E1F22]">
             
-            {modal.type === "confirm_delete" && (
+            {modal.type === "confirm_delete" && (() => {
+              let deleteEmails: any[] = [];
+              if (modal.targetMode === "chat") {
+                modal.targets.forEach(chat => deleteEmails.push(...(groupedEmails[chat] || [])));
+              } else {
+                deleteEmails = allUniqueEmails.filter(e => modal.targets.includes(e.id));
+              }
+              const permanentCount = deleteEmails.filter(e => e.labelIds?.includes("TRASH")).length;
+              const trashCount = deleteEmails.filter(e => !e.labelIds?.includes("TRASH")).length;
+              
+              return (
+                <div className="p-5">
+                  <h2 className="text-lg font-bold text-white mb-2">削除の確認</h2>
+                  <p className="text-sm text-gray-300 mb-6 leading-relaxed">
+                    選択した{modal.targetMode === "chat" ? "チャット内の" : ""}メッセージを削除します。<br/>
+                    {trashCount > 0 && <span className="block mt-2 font-bold">・{trashCount}件のメールをゴミ箱へ移動します。</span>}
+                    {permanentCount > 0 && <span className="block mt-2 text-[#DA373C] font-bold">・{permanentCount}件のメール（既にゴミ箱にあるもの）は完全に削除され、元に戻せません。</span>}
+                  </p>
+                  <div className="flex justify-end gap-3">
+                    <button onClick={() => setModal(null)} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+                    <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c]">削除する</button>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* ★追加：アクションバーからの移動先選択 */}
+            {modal.type === "select_move_dest" && (
               <div className="p-5">
-                <h2 className="text-lg font-bold text-white mb-2">削除(Gmailを含む)</h2>
-                <p className="text-sm text-gray-300 mb-6 leading-relaxed">選択した{modal.targetMode === "chat" ? "チャット内のすべての" : ""}メッセージを削除します。<br/><span className="text-[#DA373C] font-bold">この操作はGmail本体のゴミ箱に反映されます。</span>よろしいですか？</p>
+                <h2 className="text-lg font-bold text-white mb-4">移動先の選択</h2>
+                <div className="flex flex-col gap-2 mb-4">
+                  {["INBOX", "SPAM", "TRASH"].map(dest => {
+                    const labels: Record<string, string> = { "INBOX": "受信箱", "SPAM": "迷惑メール", "TRASH": "ゴミ箱" };
+                    return (
+                      <button 
+                        key={dest} 
+                        onClick={() => { setMoveDestination(dest as any); setSelectionMode(modal.targetMode + "_move" as SelectionMode); setModal(null); }} 
+                        className="w-full py-2.5 bg-[#2B2D31] hover:bg-[#3f4147] border border-[#1E1F22] rounded text-white font-bold transition"
+                      >
+                        {labels[dest]}
+                      </button>
+                    );
+                  })}
+                </div>
+                <button onClick={() => setModal(null)} className="w-full py-2 hover:underline text-gray-400 text-sm">キャンセル</button>
+              </div>
+            )}
+
+            {/* ★追加：右クリックからの直接移動先選択 */}
+            {modal.type === "select_move_dest_context" && (() => {
+              let items = modal.targetMode === "chat" ? groupedEmails[modal.targets[0]] : allUniqueEmails.filter(e => e.id === modal.targets[0]);
+              if (!items) items = [];
+              return (
+                <div className="p-5">
+                  <h2 className="text-lg font-bold text-white mb-4">移動先の選択</h2>
+                  <div className="flex flex-col gap-2 mb-4">
+                    {["INBOX", "SPAM", "TRASH"].map(dest => {
+                      const isAllInDest = items.length > 0 && items.every((e: any) => e.labelIds?.includes(dest));
+                      const labels: Record<string, string> = { "INBOX": "受信箱", "SPAM": "迷惑メール", "TRASH": "ゴミ箱" };
+                      return (
+                        <button 
+                          key={dest} 
+                          disabled={isAllInDest}
+                          onClick={() => { setMoveDestination(dest as any); setModal({ type: "confirm_move", targetMode: modal.targetMode, targets: modal.targets }); }} 
+                          className={`w-full py-2.5 border rounded font-bold transition ${isAllInDest ? 'bg-[#1E1F22] text-gray-600 border-[#1E1F22] cursor-not-allowed' : 'bg-[#2B2D31] hover:bg-[#3f4147] border-[#1E1F22] text-white'}`}
+                        >
+                          {labels[dest]} {isAllInDest && "(既に存在します)"}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button onClick={() => setModal(null)} className="w-full py-2 hover:underline text-gray-400 text-sm">キャンセル</button>
+                </div>
+              );
+            })()}
+
+            {/* ★追加：移動の最終確認 */}
+            {modal.type === "confirm_move" && (
+              <div className="p-5">
+                <h2 className="text-lg font-bold text-white mb-2">移動の確認</h2>
+                <p className="text-sm text-gray-300 mb-6 leading-relaxed">
+                  選択したアイテムを「{moveDestination === "INBOX" ? "受信箱" : moveDestination === "SPAM" ? "迷惑メール" : "ゴミ箱"}」へ移動します。よろしいですか？
+                </p>
                 <div className="flex justify-end gap-3">
                   <button onClick={() => setModal(null)} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-                  <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c]">削除する</button>
+                  <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">移動する</button>
                 </div>
               </div>
             )}
@@ -1152,6 +1253,9 @@ export default function Home() {
             <button onClick={() => handleMenuBarClick("chat_pin")} className={`flex-1 min-w-[70px] py-1.5 text-[11px] font-bold rounded transition ${selectionMode === "chat_pin" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "chat_pin" ? 'opacity-30 pointer-events-none' : ''}`}>
               {selectionMode === "chat_pin" ? `実行(${selectedIds.length})` : "ピン留め"}
             </button>
+            <button onClick={() => handleMenuBarClick("chat_move")} className={`flex-1 min-w-[70px] py-1.5 text-[11px] font-bold rounded transition ${selectionMode === "chat_move" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "chat_move" ? 'opacity-30 pointer-events-none' : ''}`}>
+              {selectionMode === "chat_move" ? `実行(${selectedIds.length})` : "移動"}
+            </button>
             <button onClick={() => handleMenuBarClick("chat_hide")} className={`flex-1 min-w-[120px] py-1.5 text-[11px] font-bold rounded transition ${selectionMode === "chat_hide" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "chat_hide" ? 'opacity-30 pointer-events-none' : ''}`}>
               {selectionMode === "chat_hide" ? `実行(${selectedIds.length})` : "非表示(Re:Mailのみ)"}
             </button>
@@ -1175,13 +1279,12 @@ export default function Home() {
               const count = groupedEmails[sender].length;
               const latestDate = new Date(latestEmail.date).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
-              // ★ 追加：検索時のプレビュー生成ロジック（本文にヒットした場合は抜粋を表示）
+              // ★ 修正：検索時のプレビュー生成ロジック（本文ヒット時に確実な文字列抽出を行う）
               let previewSubject = latestEmail.subject || "No Subject";
               let previewSnippet = "";
               
               if (searchKeyword) {
                  const kwLower = searchKeyword.toLowerCase();
-                 // このチャット内で検索に引っかかった最初のメールを探す
                  const matched = groupedEmails[sender].find(e => 
                     e.subject?.toLowerCase().includes(kwLower) || 
                     e.body?.toLowerCase().includes(kwLower) || 
@@ -1190,19 +1293,24 @@ export default function Home() {
                  );
                  if (matched) {
                     previewSubject = matched.subject || "No Subject";
-                    // 本文にヒットしていて、件名にはヒットしていない場合は本文の前後を抜粋する
-                    if (matched.body?.toLowerCase().includes(kwLower) && !matched.subject?.toLowerCase().includes(kwLower)) {
-                        const idx = matched.body.toLowerCase().indexOf(kwLower);
-                        const start = Math.max(0, idx - 10);
-                        previewSnippet = (start > 0 ? "..." : "") + matched.body.substring(start, idx + kwLower.length + 15).replace(/\n/g, " ") + "...";
+                    const bodyStr = matched.body || "";
+                    const idx = bodyStr.toLowerCase().indexOf(kwLower);
+                    
+                    // 件名にキーワードがなく、本文に見つかった場合のみ本文スニペットを抽出
+                    if (idx !== -1 && !matched.subject?.toLowerCase().includes(kwLower)) {
+                        const start = Math.max(0, idx - 15);
+                        previewSnippet = (start > 0 ? "..." : "") + bodyStr.substring(start, idx + kwLower.length + 20).replace(/\s+/g, " ") + "...";
                     }
                  }
               }
+
+              const isMoveGrayedOut = selectionMode === "chat_move" && moveDestination && groupedEmails[sender].every(e => e.labelIds?.includes(moveDestination));
 
               return (
                 <div 
                   key={sender}
                   onClick={() => {
+                    if (isMoveGrayedOut) return; // ★追加
                     if (selectionMode.startsWith("chat_")) toggleSelection(sender);
                     else openChat(sender);
                   }}
@@ -1210,7 +1318,7 @@ export default function Home() {
                   onTouchStart={(e) => { if (!hasMouse) touchTimer.current = setTimeout(() => { setContextMenu({ type: "chat", target: sender, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
                   onTouchEnd={() => touchTimer.current && clearTimeout(touchTimer.current)}
                   onTouchMove={() => touchTimer.current && clearTimeout(touchTimer.current)}
-                  className={`flex items-center px-2 py-2 rounded cursor-pointer transition ${selectionMode.startsWith("chat_") ? (isSelected ? 'bg-[rgba(88,101,242,0.2)] border border-[#5865F2]' : 'hover:bg-[#35373C] border border-transparent') : (isOpened ? 'bg-[#404249] text-white' : 'hover:bg-[#35373C] text-gray-400 hover:text-gray-200')}`}
+                  className={`flex items-center px-2 py-2 rounded cursor-pointer transition ${isMoveGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${selectionMode.startsWith("chat_") ? (isSelected ? 'bg-[rgba(88,101,242,0.2)] border border-[#5865F2]' : 'hover:bg-[#35373C] border border-transparent') : (isOpened ? 'bg-[#404249] text-white' : 'hover:bg-[#35373C] text-gray-400 hover:text-gray-200')}`}
                 >
                   {selectionMode.startsWith("chat_") && (
                     <div className={`w-4 h-4 mr-3 rounded-sm flex items-center justify-center border ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500'}`}>
@@ -1284,6 +1392,10 @@ export default function Home() {
                 <button onClick={() => handleMenuBarClick("msg_pin")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_pin" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_pin" ? 'opacity-30 pointer-events-none' : ''}`}>
                   {selectionMode === "msg_pin" ? `実行(${selectedIds.length})` : "ピン留め"}
                 </button>
+                {/* ★追加：移動ボタン */}
+                <button onClick={() => handleMenuBarClick("msg_move")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_move" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_move" ? 'opacity-30 pointer-events-none' : ''}`}>
+                  {selectionMode === "msg_move" ? `実行(${selectedIds.length})` : "移動"}
+                </button>
                 <button onClick={() => handleMenuBarClick("msg_hide")} className={`px-3 py-1 text-xs font-bold rounded transition ${selectionMode === "msg_hide" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "msg_hide" ? 'opacity-30 pointer-events-none' : ''}`}>
                   {selectionMode === "msg_hide" ? `実行(${selectedIds.length})` : "非表示(Re:Mailのみ)"}
                 </button>
@@ -1341,12 +1453,18 @@ export default function Home() {
                         );
                     }
 
+                    // ★追加：移動先の完全一致グレーアウト判定
+                    const isMoveGrayedOut = selectionMode === "msg_move" && moveDestination && email.labelIds?.includes(moveDestination);
+
                     return (
                       <div 
                         id={`msg-${email.id}`}
                         key={email.id} 
-                        onClick={(e) => e.stopPropagation()}
-                        className={`flex w-full mb-6 cursor-default ${isMe ? 'justify-end' : 'justify-start'}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (isMoveGrayedOut) return; // ★追加
+                        }}
+                        className={`flex w-full mb-6 cursor-default transition ${isMoveGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${isMe ? 'justify-end' : 'justify-start'}`}
                       >
                         {selectionMode.startsWith("msg_") && (
                           <div className="flex-shrink-0 w-8 flex justify-center pt-3 mr-2" onClick={() => toggleSelection(email.id)}>
