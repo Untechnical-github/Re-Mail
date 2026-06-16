@@ -48,33 +48,21 @@ function getBody(payload: any): string {
   return "";
 }
 
-// ★ 追加：HTMLタグや不要なCSS/JSを削ぎ落とし、純粋なテキストに変換するクレンジング関数
 function cleanseBody(text: string): string {
   if (!text) return "";
-  
-  // 1. スタイルシートとスクリプトを中身ごと完全に削除
   let cleaned = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
   cleaned = cleaned.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
-  
-  // 2. ブロック要素や改行タグを、実際の改行コード（\n）に変換してレイアウトを維持
   cleaned = cleaned.replace(/<br\s*\/?>/gi, "\n");
   cleaned = cleaned.replace(/<\/p>|<\/div>|<\/tr>|<\/li>/gi, "\n");
-  
-  // 3. 残りのすべてのHTMLタグ（<...>）を削除
   cleaned = cleaned.replace(/<[^>]+>/g, "");
-  
-  // 4. 特殊なHTMLエンティティ（文字化けの原因）を通常の記号に復元
   cleaned = cleaned.replace(/&nbsp;/g, " ")
                    .replace(/&amp;/g, "&")
                    .replace(/&lt;/g, "<")
                    .replace(/&gt;/g, ">")
                    .replace(/&quot;/g, '"')
                    .replace(/&#39;/g, "'")
-                   .replace(/&zwnj;/g, ""); // メルマガによくある見えない文字を削除
-                   
-  // 5. 連続しすぎる無駄な改行（3回以上）を2回に圧縮し、前後の空白をトリム
+                   .replace(/&zwnj;/g, ""); 
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
-  
   return cleaned;
 }
 
@@ -90,7 +78,6 @@ export async function GET(request: Request) {
   const includeTrash = searchParams.get("includeTrash") === "true";
   const pageToken = searchParams.get("pageToken") || "";
   
-  // ★ 追加：クライアントが「すでに持っているメールのID」を受け取る
   const knownIdsParam = searchParams.get("knownIds") || "";
   const knownIds = new Set(knownIdsParam.split(",").filter(Boolean));
 
@@ -108,28 +95,25 @@ export async function GET(request: Request) {
     if (!listRes.ok) throw new Error("Failed to fetch messages list");
     
     const listData = await listRes.json();
-    const messages = listData.messages || []; // Googleから取得した最新のIDリスト（最大100件）
+    const messages = listData.messages || [];
     const nextPageToken = listData.nextPageToken || null;
 
     if (messages.length === 0) {
       return NextResponse.json({ messages: [], topIds: [], nextPageToken });
     }
 
-    // ★ 追加：最新の正確な並び順を記録しておく
     const topIds = messages.map((m: any) => m.id);
-
-    // ★ 追加：差分チェック！すでにクライアントが持っているIDはフェッチ対象から除外（これで通信が爆速化）
     const messagesToFetch = messages.filter((m: any) => !knownIds.has(m.id));
 
     const chunkSize = 20;
     const detailedMessages: any[] = [];
 
-    // 新着（差分）のメッセージだけを詳細取得する
     for (let i = 0; i < messagesToFetch.length; i += chunkSize) {
       const chunk = messagesToFetch.slice(i, i + chunkSize);
       const chunkResults = await Promise.all(
         chunk.map(async (msg: { id: string }) => {
-          const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?fields=id,threadId,snippet,payload(headers,parts,body)`, {
+          // ★修正：labelIds を取得するように fields を変更
+          const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`, {
             headers: { Authorization: `Bearer ${session.accessToken}` },
           });
           return detailRes.json();
@@ -145,14 +129,14 @@ export async function GET(request: Request) {
       const from = getHeader(headers, "From");
       const to = getHeader(headers, "To");
       const date = getHeader(headers, "Date");
+      const labelIds = message.labelIds || []; // ★追加
       
       const rawBody = getBody(payload) || message.snippet || "";
-      const cleansedBody = cleanseBody(rawBody); // 第1弾で追加したクレンジング
+      const cleansedBody = cleanseBody(rawBody);
 
-      return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet };
+      return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds };
     });
 
-    // ★ 変更：差分データ（parsedMessages）と一緒に、最新の並び順（topIds）をフロントに返す
     return NextResponse.json({ messages: parsedMessages, topIds, nextPageToken });
   } catch (error) {
     console.error("Gmail API Error:", error);
