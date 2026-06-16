@@ -87,7 +87,9 @@ export default function Home() {
   const activeLoadRef = useRef<number>(0);
 
   const getCacheKey = (flags: { inbox: boolean; spam: boolean; trash: boolean }) => {
-    return `remail_feed_cache_i${flags.inbox ? 1 : 0}s${flags.spam ? 1 : 0}t${flags.trash ? 1 : 0}`;
+    // ★ 修正：キャッシュのバージョンを v2 に変更。これにより古いバグデータが強制消去され、
+    // ゴミ箱のラベル情報を正確に持った最新のデータだけで再構築されます。
+    return `remail_feed_cache_v2_i${flags.inbox ? 1 : 0}s${flags.spam ? 1 : 0}t${flags.trash ? 1 : 0}`;
   };
 
   // ★改革：APIからどんなデータが混ざってきても、画面描画前に現在の条件で「絶対に弾く」最強フィルター
@@ -382,11 +384,9 @@ export default function Home() {
 
         let loadedEmails = emails;
         
-        // ★修正：検索キーワードが入力された瞬間は、他のボックスのキャッシュと混ざらないよう一旦画面を空にする
-        if (searchKeyword) {
-          loadedEmails = [];
-          if (!isCancelled) setEmails([]);
-        } else {
+        // ★ 修正：検索キーワード入力時に画面のデータを空にしない！
+        // allUniqueEmailsのリアルタイムフィルターが働くため、消さずにそのままAPIの到着を待つ
+        if (!searchKeyword) {
           let snapshot: any = null;
           try { snapshot = await localforage.getItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash })); } catch (e) {}
           if (snapshot && snapshot.emails) {
@@ -508,7 +508,7 @@ export default function Home() {
       const timeB = new Date(groupedEmails[b][0].date).getTime();
       return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
-  }, [groupedEmails, chatConfigs]);
+  }, [groupedEmails, chatConfigs, checkHasSent]); // ★ 修正：checkHasSent を依存配列に追加し、ボタンを押した瞬間に画面が切り替わるようにする
 
   const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined); 
   const hiddenMsgs = Object.keys(chatConfigs)
