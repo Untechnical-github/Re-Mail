@@ -77,38 +77,67 @@ export default function Home() {
   const [renameInput, setRenameInput] = useState("");
   const touchTimer = useRef<NodeJS.Timeout | null>(null);
   const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true });
+  // ★追加：クロスプロンプトで個別に「読み込む」を押したメールのIDを記録する
   const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
 
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const hasPushedSearchRef = useRef(false);
   const hasPushedSelectRef = useRef(false);
+  const activeLoadRef = useRef<number>(0);
 
   const getCacheKey = (flags: { inbox: boolean; spam: boolean; trash: boolean }) => {
     return `remail_feed_cache_i${flags.inbox ? 1 : 0}s${flags.spam ? 1 : 0}t${flags.trash ? 1 : 0}`;
   };
 
+  // ★改革：APIからどんなデータが混ざってきても、画面描画前に現在の条件で「絶対に弾く」最強フィルター
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
-    const keywordLower = searchKeyword.toLowerCase();
 
-    // ★ 修正：API通信を待たず、今画面にあるデータを一瞬で検索絞り込みする
-    const passesSearch = (e: any) => {
-      if (!searchKeyword) return true;
-      return e.subject?.toLowerCase().includes(keywordLower) || 
-             e.body?.toLowerCase().includes(keywordLower) || 
-             e.from?.toLowerCase().includes(keywordLower) ||
-             (e.senderRoom && e.senderRoom.toLowerCase().includes(keywordLower));
+    const isDisplayable = (e: any) => {
+      // 1. 永続ピン留めされたデータは条件を無視して強制表示
+      if (chatConfigs[e.id]?.forceFetch) return true;
+      if (e.senderRoom && chatConfigs[e.senderRoom]?.forceFetch) return true;
+
+      // 2. 検索キーワードの厳密フィルター
+      if (searchKeyword) {
+        const keywordLower = searchKeyword.toLowerCase();
+        const matchesKeyword = e.subject?.toLowerCase().includes(keywordLower) || 
+                               e.body?.toLowerCase().includes(keywordLower) || 
+                               e.from?.toLowerCase().includes(keywordLower) ||
+                               (e.senderRoom && e.senderRoom.toLowerCase().includes(keywordLower));
+        if (!matchesKeyword) return false;
+      }
+
+      // 3. ボックス（受信箱/迷惑メール/ゴミ箱）の厳密フィルター
+      const labels = e.labelIds || [];
+      const isTrash = labels.includes("TRASH");
+      const isSpam = labels.includes("SPAM");
+      const isSent = labels.includes("SENT") || e.isMe;
+
+      // クロスプロンプトとして「読み込みますか？」ボタンに変換されるメールは通過させる
+      if (isSent && isTrash && !checkTrash && !revealedCrossPrompts.includes(e.id)) return true;
+      if (isSent && !isTrash && checkTrash && !checkInbox && !revealedCrossPrompts.includes(e.id)) return true;
+      
+      // プロンプトを「読み込む」と許可したメールも通過させる
+      if (revealedCrossPrompts.includes(e.id)) return true;
+
+      // 現在のチェックボックスに合致しないものはここで完全に死滅する
+      if (isTrash) return checkTrash;
+      if (isSpam) return checkSpam;
+      
+      // 自分が送った通常のメール、相手から来た通常のメールは受信箱扱い
+      return checkInbox;
     };
 
     persistedEmails.forEach(e => {
-       if (passesSearch(e)) map.set(e.id, e);
+       if (isDisplayable(e)) map.set(e.id, e);
     });
     emails.forEach(e => {
-       if (passesSearch(e)) map.set(e.id, e);
+       if (isDisplayable(e)) map.set(e.id, e);
     });
     
     return Array.from(map.values());
-  }, [emails, persistedEmails, searchKeyword]);
+  }, [emails, persistedEmails, searchKeyword, checkInbox, checkSpam, checkTrash, chatConfigs, revealedCrossPrompts]);
 
   const loadD1Configs = async (): Promise<{ limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null> => {
     let globalSettings: { limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null = null;
@@ -265,7 +294,7 @@ export default function Home() {
     }
   }, [session]);
 
-  const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emails) => {
+  const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emails, getIsCancelled = () => false) => {
     if (!flags.inbox && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return false; }
     if (!isSilent) setIsLoading(true);
     
@@ -283,13 +312,16 @@ export default function Home() {
       const params = new URLSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
       if (pageToken) params.append("pageToken", pageToken);
 
-      if (isCacheTarget && currentEmailsState.length > 0) {
+      if (currentEmailsState.length > 0) {
+        // ★修正：検索中であっても無駄な再取得を防ぐため既知のIDを渡す
         const knownIds = currentEmailsState.slice(0, targetLimit).map(e => e.id).join(",");
         params.append("knownIds", knownIds);
       }
 
       const res = await fetch(`/api/emails?${params.toString()}`);
       if (res.ok) {
+        if (getIsCancelled()) return false; // ★通信中にチェックボックスが切り替わっていたら、この結果は捨てる（絶対混ざらない）
+
         const data = await res.json();
         const newMessages = data.messages || [];
         const topIds = data.topIds || [];
@@ -303,33 +335,34 @@ export default function Home() {
           const existingOldEmails = currentEmailsState.filter(e => !topIds.includes(e.id));
           updatedEmails = [...topIds.map((id: string) => emailMap.get(id)).filter(Boolean), ...existingOldEmails];
         } else {
-          updatedEmails = newMessages;
+          // ★修正：検索中などの場合、既存の検索結果に新着の検索結果をマージする（検索が消えるバグを解決）
+          const emailMap = new Map(currentEmailsState.map(e => [e.id, e]));
+          newMessages.forEach((m: any) => emailMap.set(m.id, m));
+          updatedEmails = Array.from(emailMap.values());
         }
         
         setEmails(updatedEmails);
         
-        // ★ 修正：バックグラウンド更新時は絶対にトークンを触らない（「すべて読み込みました」バグの防止）
-        if (!isSilent && !isLoadMore) {
-           setCurrentNextPageToken(data.nextPageToken || null);
-        } else if (isLoadMore) {
+        if (!isSilent || updatedEmails.length <= targetLimit) {
            setCurrentNextPageToken(data.nextPageToken || null);
         }
 
         if (isCacheTarget) {
           const emailsToCache = updatedEmails.slice(0, 100);
-          await localforage.setItem(getCacheKey(flags), {
-            emails: emailsToCache,
-            flags: flags
-          });
+          await localforage.setItem(getCacheKey(flags), { emails: emailsToCache, flags: flags });
         }
         return true;
       }
       return false;
-    } catch (error) { console.error(error); return false; } finally { if (!isSilent) setIsLoading(false); }
+    } catch (error) { console.error(error); return false; } finally { if (!isSilent && !getIsCancelled()) setIsLoading(false); }
   };
 
   useEffect(() => {
     if (!session) return;
+    let isCancelled = false; 
+    
+    // ★ 追加：条件が切り替わった瞬間に世代IDをインクリメント（過去の非同期ループを過去の遺物にする）
+    activeLoadRef.current += 1;
 
     const handleFilterChange = async () => {
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
@@ -337,28 +370,33 @@ export default function Home() {
       searchTimeoutRef.current = setTimeout(async () => {
         await saveGlobalSettings(checkInbox, checkSpam, checkTrash);
 
-        let loadedEmails = emails; // デフォルトは現在のemails
-        if (!searchKeyword) {
+        let loadedEmails = emails;
+        
+        // ★修正：検索キーワードが入力された瞬間は、他のボックスのキャッシュと混ざらないよう一旦画面を空にする
+        if (searchKeyword) {
+          loadedEmails = [];
+          if (!isCancelled) setEmails([]);
+        } else {
           let snapshot: any = null;
           try { snapshot = await localforage.getItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash })); } catch (e) {}
           if (snapshot && snapshot.emails) {
             loadedEmails = snapshot.emails;
-            setEmails(loadedEmails);
+            if (!isCancelled) setEmails(loadedEmails);
           } else {
             loadedEmails = [];
-            setEmails([]);
+            if (!isCancelled) setEmails([]);
           }
         }
 
-        setChatStatusMessage(null);
-        // ★修正：非同期通信に入る直前の確定したStateを渡すことでキャッシュの混ざりを防ぐ
-        await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails);
+        if (!isCancelled) setChatStatusMessage(null);
+        await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled);
       }, searchKeyword ? 300 : 0);
     };
 
     handleFilterChange();
 
     return () => {
+      isCancelled = true; // ★ユーザーが次の行動を起こした瞬間、実行中の通信をキャンセル扱いにする
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
     };
   }, [checkInbox, checkSpam, checkTrash, searchKeyword]);
@@ -693,10 +731,16 @@ export default function Home() {
     let loopCount = 0;
     const maxLoops = 5; 
 
+    // ★ 追加：この関数が呼ばれた時の世代IDを記憶
+    const currentLoadId = activeLoadRef.current;
+
     try {
       const currentSenders = new Set(Object.keys(groupedEmails));
 
       while (!hasNewSender && tempToken && loopCount < maxLoops) {
+        // ★ 追加：ループの最中に条件が切り替わっていたら、即座にループを破棄して終了する
+        if (activeLoadRef.current !== currentLoadId) break;
+
         loopCount++;
         let qParts = []; let orLabels = [];
         if (checkInbox) orLabels.push("in:inbox", "in:sent");
@@ -770,10 +814,16 @@ export default function Home() {
     let loopCount = 0;
     const maxLoops = 5; 
 
+    // ★ 追加：この関数が呼ばれた時の世代IDを記憶
+    const currentLoadId = activeLoadRef.current;
+
     try {
       const targetSenderLower = selectedSender!.toLowerCase();
 
       while (!hasFoundTargetMsg && tempToken && loopCount < maxLoops) {
+        // ★ 追加：ループの最中に条件が切り替わっていたら、即座にループを破棄して終了する
+        if (activeLoadRef.current !== currentLoadId) break;
+
         loopCount++;
         let qParts = []; let orLabels = [];
         if (checkInbox) orLabels.push("in:inbox", "in:sent");
@@ -1261,37 +1311,31 @@ export default function Home() {
                         )}
 
                         <div className={`flex flex-col max-w-[75%] ${isMe ? 'items-end' : 'items-start'}`}>
-                           <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
+                          {/* 名前と時間 */}
+                          <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
                               {!isMe && <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>}
-                              {/* ★修正：時刻だけでなく日付も表示 */}
-                              <span>{new Date(email.date).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
-                           </div>
-                           
-                           {/* 名前と時間 */}
-                           <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
-                              {!isMe && <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>}
-                              {/* ★ 修正：日付も表示されるようにフォーマットを変更 */}
+                              {/* 日付と時刻のフォーマットを統一して1箇所に集約 */}
                               <span>{new Date(email.date).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
-                           </div>
-                           
-                           {/* メッセージバブル */}
-                           <div 
-                              className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 border border-[#1E1F22] rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
-                              style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-                              onClick={() => { if (selectionMode.startsWith("msg_")) toggleSelection(email.id); }}
-                              onContextMenu={(e) => { e.preventDefault(); setContextMenu({ type: "msg", target: email, x: e.clientX, y: e.clientY }); }}
-                              onTouchStart={(e) => { if (!hasMouse) touchTimer.current = setTimeout(() => { setContextMenu({ type: "msg", target: email, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
-                              onTouchEnd={() => touchTimer.current && clearTimeout(touchTimer.current)}
-                              onTouchMove={() => touchTimer.current && clearTimeout(touchTimer.current)}
-                           >
-                              {chatConfigs[email.id]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
-                              {email.subject && !email.subject.startsWith("Re:") && (
-                                <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10">
-                                  <HighlightText text={email.subject} highlight={searchKeyword} />
-                                </div>
-                              )}
-                              <HighlightText text={email.body} highlight={searchKeyword} />
-                           </div>
+                          </div>
+                          
+                          {/* メッセージバブル */}
+                          <div 
+                            className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 border border-[#1E1F22] rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
+                            style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                            onClick={() => { if (selectionMode.startsWith("msg_")) toggleSelection(email.id); }}
+                            onContextMenu={(e) => { e.preventDefault(); setContextMenu({ type: "msg", target: email, x: e.clientX, y: e.clientY }); }}
+                            onTouchStart={(e) => { if (!hasMouse) touchTimer.current = setTimeout(() => { setContextMenu({ type: "msg", target: email, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
+                            onTouchEnd={() => touchTimer.current && clearTimeout(touchTimer.current)}
+                            onTouchMove={() => touchTimer.current && clearTimeout(touchTimer.current)}
+                          >
+                            {chatConfigs[email.id]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
+                            {email.subject && !email.subject.startsWith("Re:") && (
+                              <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10">
+                                <HighlightText text={email.subject} highlight={searchKeyword} />
+                              </div>
+                            )}
+                            <HighlightText text={email.body} highlight={searchKeyword} />
+                          </div>
                         </div>
 
                         {isMe && !selectionMode.startsWith("msg_") && (
