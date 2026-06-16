@@ -77,6 +77,7 @@ export default function Home() {
   const [renameInput, setRenameInput] = useState("");
   const touchTimer = useRef<NodeJS.Timeout | null>(null);
   const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true });
+  const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
 
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const hasPushedSearchRef = useRef(false);
@@ -90,19 +91,22 @@ export default function Home() {
     const map = new Map();
     const keywordLower = searchKeyword.toLowerCase();
 
-    // ★修正：検索時はピン留めメールも文字でフィルタリングする
+    // ★ 修正：API通信を待たず、今画面にあるデータを一瞬で検索絞り込みする
+    const passesSearch = (e: any) => {
+      if (!searchKeyword) return true;
+      return e.subject?.toLowerCase().includes(keywordLower) || 
+             e.body?.toLowerCase().includes(keywordLower) || 
+             e.from?.toLowerCase().includes(keywordLower) ||
+             (e.senderRoom && e.senderRoom.toLowerCase().includes(keywordLower));
+    };
+
     persistedEmails.forEach(e => {
-       if (!searchKeyword || 
-           e.subject.toLowerCase().includes(keywordLower) || 
-           e.body.toLowerCase().includes(keywordLower) || 
-           e.from.toLowerCase().includes(keywordLower) ||
-           (e.senderRoom && e.senderRoom.toLowerCase().includes(keywordLower))) {
-           map.set(e.id, e);
-       }
+       if (passesSearch(e)) map.set(e.id, e);
+    });
+    emails.forEach(e => {
+       if (passesSearch(e)) map.set(e.id, e);
     });
     
-    // 通常のメールはすでにAPI側で検索絞り込み済み
-    emails.forEach(e => map.set(e.id, e));
     return Array.from(map.values());
   }, [emails, persistedEmails, searchKeyword]);
 
@@ -261,7 +265,7 @@ export default function Home() {
     }
   }, [session]);
 
-  const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false) => {
+  const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emails) => {
     if (!flags.inbox && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return false; }
     if (!isSilent) setIsLoading(true);
     
@@ -279,8 +283,8 @@ export default function Home() {
       const params = new URLSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
       if (pageToken) params.append("pageToken", pageToken);
 
-      if (isCacheTarget && emails.length > 0) {
-        const knownIds = emails.slice(0, targetLimit).map(e => e.id).join(",");
+      if (isCacheTarget && currentEmailsState.length > 0) {
+        const knownIds = currentEmailsState.slice(0, targetLimit).map(e => e.id).join(",");
         params.append("knownIds", knownIds);
       }
 
@@ -292,12 +296,11 @@ export default function Home() {
         
         let updatedEmails;
         if (isLoadMore) {
-          updatedEmails = [...emails, ...newMessages];
+          updatedEmails = [...currentEmailsState, ...newMessages];
         } else if (isCacheTarget && topIds.length > 0) {
-          const emailMap = new Map(emails.map(e => [e.id, e]));
+          const emailMap = new Map(currentEmailsState.map(e => [e.id, e]));
           newMessages.forEach((m: any) => emailMap.set(m.id, m));
-          // ★修正：過去に読み込んだメール(topIdsに含まれないもの)も保持し続けることでバグを解消
-          const existingOldEmails = emails.filter(e => !topIds.includes(e.id));
+          const existingOldEmails = currentEmailsState.filter(e => !topIds.includes(e.id));
           updatedEmails = [...topIds.map((id: string) => emailMap.get(id)).filter(Boolean), ...existingOldEmails];
         } else {
           updatedEmails = newMessages;
@@ -305,8 +308,10 @@ export default function Home() {
         
         setEmails(updatedEmails);
         
-        // ★修正：自動更新(isSilent)で手持ちのキャッシュを切り捨てていない場合は、次ページトークンを上書きしない
-        if (!isSilent || updatedEmails.length <= targetLimit) {
+        // ★ 修正：バックグラウンド更新時は絶対にトークンを触らない（「すべて読み込みました」バグの防止）
+        if (!isSilent && !isLoadMore) {
+           setCurrentNextPageToken(data.nextPageToken || null);
+        } else if (isLoadMore) {
            setCurrentNextPageToken(data.nextPageToken || null);
         }
 
@@ -332,14 +337,22 @@ export default function Home() {
       searchTimeoutRef.current = setTimeout(async () => {
         await saveGlobalSettings(checkInbox, checkSpam, checkTrash);
 
+        let loadedEmails = emails; // デフォルトは現在のemails
         if (!searchKeyword) {
           let snapshot: any = null;
           try { snapshot = await localforage.getItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash })); } catch (e) {}
-          if (snapshot && snapshot.emails) setEmails(snapshot.emails);
+          if (snapshot && snapshot.emails) {
+            loadedEmails = snapshot.emails;
+            setEmails(loadedEmails);
+          } else {
+            loadedEmails = [];
+            setEmails([]);
+          }
         }
 
         setChatStatusMessage(null);
-        await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false);
+        // ★修正：非同期通信に入る直前の確定したStateを渡すことでキャッシュの混ざりを防ぐ
+        await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails);
       }, searchKeyword ? 300 : 0);
     };
 
@@ -405,7 +418,11 @@ export default function Home() {
       if (matchedRoom) {
         groups[matchedRoom].push({ ...email, isMe: true });
       } else {
-        // ★修正：相手からの受信履歴がなくても、送信した宛先で独立したチャットを生成する
+        // ★ 修正：現在のボックス（受信箱/ゴミ箱など）に属していない送信済みメールは、独立したチャットを作らない
+        const isTrashed = email.labelIds?.includes("TRASH");
+        if (isTrashed && !checkTrash) return;
+        if (!isTrashed && !checkInbox && checkTrash) return;
+
         let newRoomName = "Unknown";
         if (email.to) {
           const toMatch = email.to.split(",")[0]; 
@@ -1145,7 +1162,7 @@ export default function Home() {
           onClick={handleBackgroundClick}
           className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-[#313338] relative cursor-pointer`}
         >
-          {selectedSender ? (
+          {selectedSender && groupedEmails[selectedSender] && groupedEmails[selectedSender].length > 0 ? (
             <>
               <header className="px-4 py-3 bg-[#313338] border-b border-[#1E1F22] shadow-sm z-10 flex items-center gap-3 cursor-default" onClick={(e) => e.stopPropagation()}>
                 {isMobile && (
@@ -1200,19 +1217,20 @@ export default function Home() {
                     const isTrashed = email.labelIds?.includes("TRASH");
                     const isSent = email.labelIds?.includes("SENT") || email.isMe;
 
-                    if (isSent && isTrashed && !checkTrash) {
+                    // ★ 修正：1件ずつ読み込む仕様に変更（グローバルのチェックボックスは切り替えない）
+                    if (isSent && isTrashed && !checkTrash && !revealedCrossPrompts.includes(email.id)) {
                         return (
                             <div key={`prompt-${email.id}`} className="flex w-full justify-center my-4 cursor-default" onClick={(e) => e.stopPropagation()}>
-                                <button onClick={() => setCheckTrash(true)} className="bg-[#2B2D31] text-[#FEE75C] px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] hover:bg-[#35373C] transition shadow-sm">
+                                <button onClick={() => setRevealedCrossPrompts(p => [...p, email.id])} className="bg-[#2B2D31] text-[#FEE75C] px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] hover:bg-[#35373C] transition shadow-sm">
                                     ゴミ箱に自分が返信したメールが含まれています。読み込みますか？
                                 </button>
                             </div>
                         );
                     }
-                    if (isSent && !isTrashed && checkTrash && !checkInbox) {
+                    if (isSent && !isTrashed && checkTrash && !checkInbox && !revealedCrossPrompts.includes(email.id)) {
                         return (
                             <div key={`prompt-${email.id}`} className="flex w-full justify-center my-4 cursor-default" onClick={(e) => e.stopPropagation()}>
-                                <button onClick={() => setCheckInbox(true)} className="bg-[#2B2D31] text-[#5865F2] px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] hover:bg-[#35373C] transition shadow-sm">
+                                <button onClick={() => setRevealedCrossPrompts(p => [...p, email.id])} className="bg-[#2B2D31] text-[#5865F2] px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] hover:bg-[#35373C] transition shadow-sm">
                                     受信箱に自分が返信したメールが含まれています。読み込みますか？
                                 </button>
                             </div>
@@ -1249,9 +1267,17 @@ export default function Home() {
                               <span>{new Date(email.date).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                            </div>
                            
-                           {/* ★修正：break-all whitespace-pre-wrap で英数字の横はみ出しを防止 */}
+                           {/* 名前と時間 */}
+                           <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
+                              {!isMe && <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>}
+                              {/* ★ 修正：日付も表示されるようにフォーマットを変更 */}
+                              <span>{new Date(email.date).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                           </div>
+                           
+                           {/* メッセージバブル */}
                            <div 
-                              className={`p-3.5 text-[15px] leading-relaxed break-all whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 border border-[#1E1F22] rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
+                              className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 border border-[#1E1F22] rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
+                              style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
                               onClick={() => { if (selectionMode.startsWith("msg_")) toggleSelection(email.id); }}
                               onContextMenu={(e) => { e.preventDefault(); setContextMenu({ type: "msg", target: email, x: e.clientX, y: e.clientY }); }}
                               onTouchStart={(e) => { if (!hasMouse) touchTimer.current = setTimeout(() => { setContextMenu({ type: "msg", target: email, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
