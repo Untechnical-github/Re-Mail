@@ -58,6 +58,7 @@ export default function Home() {
   const [checkInbox, setCheckInbox] = useState<boolean>(true);
   const [checkSpam, setCheckSpam] = useState<boolean>(false);
   const [checkTrash, setCheckTrash] = useState<boolean>(false);
+  const [checkHasSent, setCheckHasSent] = useState<boolean>(false);
   const [currentNextPageToken, setCurrentNextPageToken] = useState<string | null>(null);
   const [chatStatusMessage, setChatStatusMessage] = useState<string | null>(null);
   const [msgStatusMessage, setMsgStatusMessage] = useState<string | null>(null);
@@ -104,6 +105,7 @@ export default function Home() {
         const matchesKeyword = e.subject?.toLowerCase().includes(keywordLower) || 
                                e.body?.toLowerCase().includes(keywordLower) || 
                                e.from?.toLowerCase().includes(keywordLower) ||
+                               e.to?.toLowerCase().includes(keywordLower) || // ★ 追加：宛先(To)のアドレスも検索対象に含める
                                (e.senderRoom && e.senderRoom.toLowerCase().includes(keywordLower));
         if (!matchesKeyword) return false;
       }
@@ -281,7 +283,15 @@ export default function Home() {
           setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
 
           let snapshot: any = null;
-          try { snapshot = await localforage.getItem(getCacheKey({ inbox: initInbox, spam: initSpam, trash: initTrash })); } catch (e) {}
+          try { 
+            snapshot = await localforage.getItem(getCacheKey({ inbox: initInbox, spam: initSpam, trash: initTrash })); 
+            
+            // ★ 追加：古い形式のキャッシュ（ラベル情報がないデータ）を検知したら強制的にクリアしてバグを防止する
+            if (snapshot && snapshot.emails && snapshot.emails.length > 0 && !snapshot.emails[0].labelIds) {
+              await localforage.clear();
+              snapshot = null;
+            }
+          } catch (e) {}
 
           if (snapshot && snapshot.emails && snapshot.emails.length > 0) {
             setEmails(snapshot.emails);
@@ -486,6 +496,10 @@ export default function Home() {
         if (latestTime > hiddenTime) { updateChatConfig(sender, { isHidden: false }); return true; }
       }
       return false;
+    }).filter((sender) => {
+      // ★ 追加：送信・返信したチャットのみを表示する強力なフィルター
+      if (!checkHasSent) return true;
+      return groupedEmails[sender].some((e: any) => e.isMe || e.labelIds?.includes("SENT"));
     }).sort((a, b) => {
       const pinA = chatConfigs[a]?.isPinned ? 1 : 0;
       const pinB = chatConfigs[b]?.isPinned ? 1 : 0;
@@ -1101,7 +1115,7 @@ export default function Home() {
              <div className="relative w-full">
                <input 
                  type="text" 
-                 placeholder="キーワード検索..." 
+                 placeholder="キーワード検索 (アドレス・件名・本文)..." 
                  className="w-full bg-[#1E1F22] text-sm text-gray-300 pl-3 pr-8 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]" 
                  value={searchKeyword} 
                  onChange={(e) => handleSearchChange(e.target.value)} 
@@ -1121,8 +1135,19 @@ export default function Home() {
                 <label className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={checkSpam} onChange={(e) => setCheckSpam(e.target.checked)} className="accent-[#5865F2]" /> 迷惑メール</label>
                 <label className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={checkTrash} onChange={(e) => setCheckTrash(e.target.checked)} className="accent-[#5865F2]" /> ゴミ箱</label>
              </div>
+
+             {/* ★ 追加：送信/返信ありフィルターボタン */}
+             <div className="mt-2">
+                <button 
+                  onClick={() => setCheckHasSent(!checkHasSent)} 
+                  className={`w-full py-1.5 text-xs font-bold rounded border transition shadow-sm ${checkHasSent ? 'bg-[#5865F2] text-white border-[#5865F2]' : 'bg-[#1E1F22] text-gray-400 border-[#35373C] hover:bg-[#3f4147] hover:text-white'}`}
+                >
+                  {checkHasSent ? "✓ 送信・返信履歴のあるチャットのみ表示中" : "送信・返信履歴のあるチャットのみ絞り込む"}
+                </button>
+             </div>
           </div>
 
+          {/* チャット用 アクションバー（既存のまま） */}
           <div className="flex flex-wrap p-2 gap-1 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default" onClick={(e) => e.stopPropagation()}>
             <button onClick={() => handleMenuBarClick("chat_pin")} className={`flex-1 min-w-[70px] py-1.5 text-[11px] font-bold rounded transition ${selectionMode === "chat_pin" ? 'bg-[#5865F2] text-white' : 'bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200'} ${selectionMode !== "none" && selectionMode !== "chat_pin" ? 'opacity-30 pointer-events-none' : ''}`}>
               {selectionMode === "chat_pin" ? `実行(${selectedIds.length})` : "ピン留め"}
@@ -1147,9 +1172,32 @@ export default function Home() {
               const isOpened = selectedSender === sender && !isMobile;
               const config = chatConfigs[sender];
               
-              // ★追加：チャットリストの追加情報（日付と件数）
               const count = groupedEmails[sender].length;
               const latestDate = new Date(latestEmail.date).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+              // ★ 追加：検索時のプレビュー生成ロジック（本文にヒットした場合は抜粋を表示）
+              let previewSubject = latestEmail.subject || "No Subject";
+              let previewSnippet = "";
+              
+              if (searchKeyword) {
+                 const kwLower = searchKeyword.toLowerCase();
+                 // このチャット内で検索に引っかかった最初のメールを探す
+                 const matched = groupedEmails[sender].find(e => 
+                    e.subject?.toLowerCase().includes(kwLower) || 
+                    e.body?.toLowerCase().includes(kwLower) || 
+                    e.from?.toLowerCase().includes(kwLower) || 
+                    e.to?.toLowerCase().includes(kwLower)
+                 );
+                 if (matched) {
+                    previewSubject = matched.subject || "No Subject";
+                    // 本文にヒットしていて、件名にはヒットしていない場合は本文の前後を抜粋する
+                    if (matched.body?.toLowerCase().includes(kwLower) && !matched.subject?.toLowerCase().includes(kwLower)) {
+                        const idx = matched.body.toLowerCase().indexOf(kwLower);
+                        const start = Math.max(0, idx - 10);
+                        previewSnippet = (start > 0 ? "..." : "") + matched.body.substring(start, idx + kwLower.length + 15).replace(/\n/g, " ") + "...";
+                    }
+                 }
+              }
 
               return (
                 <div 
@@ -1181,7 +1229,13 @@ export default function Home() {
                     </div>
                     <div className="text-[10px] text-[#5865F2] font-bold mt-0.5">{count}件のメッセージ</div>
                     <div className="text-xs text-gray-500 truncate mt-0.5">
-                      <HighlightText text={latestEmail.subject || "No Subject"} highlight={searchKeyword} />
+                      {/* ★ 修正：件名のハイライト表示と、本文ヒット時のスニペット表示 */}
+                      <HighlightText text={previewSubject} highlight={searchKeyword} />
+                      {previewSnippet && (
+                        <span className="ml-1 text-gray-400">
+                          - <HighlightText text={previewSnippet} highlight={searchKeyword} />
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
