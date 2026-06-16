@@ -1,0 +1,552 @@
+import { useSession } from "next-auth/react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import localforage from "localforage";
+import { ChatConfig, SelectionMode, ContextMenuState, ModalState } from "../types/mail";
+
+export function useMailApp() {
+  const { data: session, status } = useSession();
+  const [emails, setEmails] = useState<any[]>([]);
+  const [persistedEmails, setPersistedEmails] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [selectedSender, setSelectedSender] = useState<string | null>(null);
+  const [chatConfigs, setChatConfigs] = useState<Record<string, ChatConfig>>({});
+
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [searchKeyword, setSearchKeyword] = useState("");
+  const [checkInbox, setCheckInbox] = useState<boolean>(true);
+  const [checkSpam, setCheckSpam] = useState<boolean>(false);
+  const [checkTrash, setCheckTrash] = useState<boolean>(false);
+  const [checkHasSent, setCheckHasSent] = useState<boolean>(false);
+  const [currentNextPageToken, setCurrentNextPageToken] = useState<string | null>(null);
+  const [chatStatusMessage, setChatStatusMessage] = useState<string | null>(null);
+  const [msgStatusMessage, setMsgStatusMessage] = useState<string | null>(null);
+  const [isLoadingMoreChats, setIsLoadingMoreChats] = useState(false);
+
+  const [replySubject, setReplySubject] = useState("");
+  const [replyBody, setReplyBody] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [replyToMessage, setReplyToMessage] = useState<any | null>(null);
+
+  const [hasMouse, setHasMouse] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
+  const [selectionMode, setSelectionMode] = useState<SelectionMode>("none");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
+  const [modal, setModal] = useState<ModalState>(null);
+  const [renameInput, setRenameInput] = useState("");
+  const touchTimer = useRef<NodeJS.Timeout | null>(null);
+  const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true });
+  const [moveDestination, setMoveDestination] = useState<"INBOX" | "SPAM" | "TRASH" | null>(null);
+  const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
+
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hasPushedSearchRef = useRef(false);
+  const hasPushedSelectRef = useRef(false);
+  const activeLoadRef = useRef<number>(0);
+
+  const getCacheKey = (flags: { inbox: boolean; spam: boolean; trash: boolean }) => {
+    return `remail_feed_cache_v2_i${flags.inbox ? 1 : 0}s${flags.spam ? 1 : 0}t${flags.trash ? 1 : 0}`;
+  };
+
+  const allUniqueEmails = useMemo(() => {
+    const map = new Map();
+    const isDisplayable = (e: any) => {
+      if (chatConfigs[e.id]?.forceFetch) return true;
+      if (e.senderRoom && chatConfigs[e.senderRoom]?.forceFetch) return true;
+      if (searchKeyword) {
+        const keywordLower = searchKeyword.toLowerCase();
+        const matchesKeyword = e.subject?.toLowerCase().includes(keywordLower) || 
+                               e.body?.toLowerCase().includes(keywordLower) || 
+                               e.from?.toLowerCase().includes(keywordLower) ||
+                               e.to?.toLowerCase().includes(keywordLower) ||
+                               (e.senderRoom && e.senderRoom.toLowerCase().includes(keywordLower));
+        if (!matchesKeyword) return false;
+      }
+      const labels = e.labelIds || [];
+      const isTrash = labels.includes("TRASH");
+      const isSpam = labels.includes("SPAM");
+      const isSent = labels.includes("SENT") || e.isMe;
+
+      if (isSent && isTrash && !checkTrash && !revealedCrossPrompts.includes(e.id)) return true;
+      if (isSent && !isTrash && checkTrash && !checkInbox && !revealedCrossPrompts.includes(e.id)) return true;
+      if (revealedCrossPrompts.includes(e.id)) return true;
+
+      if (isTrash) return checkTrash;
+      if (isSpam) return checkSpam;
+      return checkInbox;
+    };
+
+    persistedEmails.forEach(e => { if (isDisplayable(e)) map.set(e.id, e); });
+    emails.forEach(e => { if (isDisplayable(e)) map.set(e.id, e); });
+    return Array.from(map.values());
+  }, [emails, persistedEmails, searchKeyword, checkInbox, checkSpam, checkTrash, chatConfigs, revealedCrossPrompts]);
+
+  const loadD1Configs = async (): Promise<{ limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null> => {
+    let globalSettings: { limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null = null;
+    try {
+      const res = await fetch("/api/config");
+      if (res.ok) {
+        const data = await res.json();
+        const formatted: Record<string, ChatConfig> = {};
+        const pMsgs: any[] = [];
+        data.configs?.forEach((c: any) => {
+          if (c.chat_id === "__GLOBAL_SETTINGS__" && c.custom_name) {
+            try { globalSettings = JSON.parse(c.custom_name); } catch (e) {} return;
+          }
+          let customNameVal = c.custom_name || undefined;
+          let forceFetchVal = false;
+          let pData = null;
+          let roomIdVal = undefined;
+          if (customNameVal && customNameVal.startsWith('{')) {
+            try {
+              const parsed = JSON.parse(customNameVal);
+              customNameVal = parsed.name; forceFetchVal = parsed.forceFetch; pData = parsed.data; roomIdVal = parsed.roomId;
+              if (pData) { if (Array.isArray(pData)) pMsgs.push(...pData); else pMsgs.push(pData); }
+            } catch (e) {}
+          }
+          formatted[c.chat_id] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, roomId: roomIdVal };
+        });
+        setChatConfigs(formatted); setPersistedEmails(pMsgs);
+      }
+    } catch (e) { console.error(e); }
+    return globalSettings;
+  };
+
+  const saveGlobalSettings = async (inbox: boolean, spam: boolean, trash: boolean) => {
+    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: "__GLOBAL_SETTINGS__", custom_name: JSON.stringify({ inbox, spam, trash }) }) }); } catch (e) { console.error(e); }
+  };
+
+  const updateChatConfig = async (targetId: string, updates: Partial<ChatConfig>) => {
+    const nextConfig = { ...chatConfigs[targetId], ...updates };
+    setChatConfigs(prev => ({ ...prev, [targetId]: nextConfig }));
+    let nameToSave = nextConfig.customName || "";
+    if (nextConfig.forceFetch || nextConfig.roomId) nameToSave = JSON.stringify({ name: nextConfig.customName, forceFetch: nextConfig.forceFetch, data: nextConfig.persistedData, roomId: nextConfig.roomId });
+    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
+  };
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(pointer: fine)');
+    setHasMouse(mediaQuery.matches);
+    const handler = (e: MediaQueryListEvent) => setHasMouse(e.matches);
+    mediaQuery.addEventListener('change', handler);
+    const resizeHandler = () => setIsMobile(window.innerWidth < 768);
+    resizeHandler();
+    window.addEventListener('resize', resizeHandler);
+    const closeContextMenu = () => setContextMenu(null);
+    window.addEventListener('click', closeContextMenu);
+    return () => { mediaQuery.removeEventListener('change', handler); window.removeEventListener('resize', resizeHandler); window.removeEventListener('click', closeContextMenu); };
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = (e: PopStateEvent) => {
+      const state = e.state;
+      setModal(null); setContextMenu(null);
+      if (!state || state.action !== "select") { setSelectionMode("none"); setSelectedIds([]); hasPushedSelectRef.current = false; } else { hasPushedSelectRef.current = true; }
+      if (!state || state.action !== "search") { setSearchKeyword(""); hasPushedSearchRef.current = false; } else { hasPushedSearchRef.current = true; }
+      if (window.innerWidth < 768 && window.location.hash !== '#chat') setSelectedSender(null);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (session) {
+      const initLoad = async () => {
+        try {
+          setIsLoading(true);
+          const settings = await loadD1Configs();
+          const initInbox = settings?.inbox ?? true; const initSpam = settings?.spam ?? false; const initTrash = settings?.trash ?? false;
+          setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
+          let snapshot: any = null;
+          try { 
+            snapshot = await localforage.getItem(getCacheKey({ inbox: initInbox, spam: initSpam, trash: initTrash })); 
+            if (snapshot && snapshot.emails && snapshot.emails.length > 0 && !snapshot.emails[0].labelIds) { await localforage.clear(); snapshot = null; }
+          } catch (e) {}
+          if (snapshot && snapshot.emails && snapshot.emails.length > 0) setEmails(snapshot.emails);
+          await fetchEmails(100, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
+        } catch (err) { console.error(err); } finally { setIsLoading(false); }
+      };
+      initLoad();
+    }
+  }, [session]);
+
+  const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emails, getIsCancelled = () => false) => {
+    if (!flags.inbox && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return false; }
+    if (!isSilent) setIsLoading(true);
+    const isCacheTarget = !query && !pageToken && !isLoadMore;
+    const targetLimit = isCacheTarget ? 100 : limit;
+
+    try {
+      let qParts = []; let orLabels = [];
+      if (flags.inbox) orLabels.push("in:inbox", "in:sent");
+      if (flags.spam) orLabels.push("in:spam");
+      if (flags.trash) orLabels.push("in:trash");
+      if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
+      if (query) qParts.push(query);
+
+      const params = new URLSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
+      if (pageToken) params.append("pageToken", pageToken);
+      if (currentEmailsState.length > 0) {
+        const knownIds = currentEmailsState.slice(0, targetLimit).map(e => e.id).join(",");
+        params.append("knownIds", knownIds);
+      }
+
+      const res = await fetch(`/api/emails?${params.toString()}`);
+      if (res.ok) {
+        if (getIsCancelled()) return false;
+        const data = await res.json();
+        const newMessages = data.messages || [];
+        const topIds = data.topIds || [];
+        let updatedEmails;
+        if (isLoadMore) {
+          updatedEmails = [...currentEmailsState, ...newMessages];
+        } else if (isCacheTarget && topIds.length > 0) {
+          const emailMap = new Map(currentEmailsState.map(e => [e.id, e]));
+          newMessages.forEach((m: any) => emailMap.set(m.id, m));
+          const existingOldEmails = currentEmailsState.filter(e => !topIds.includes(e.id));
+          updatedEmails = [...topIds.map((id: string) => emailMap.get(id)).filter(Boolean), ...existingOldEmails];
+        } else {
+          const emailMap = new Map(currentEmailsState.map(e => [e.id, e]));
+          newMessages.forEach((m: any) => emailMap.set(m.id, m));
+          updatedEmails = Array.from(emailMap.values());
+        }
+        setEmails(updatedEmails);
+        if (!isSilent || updatedEmails.length <= targetLimit) setCurrentNextPageToken(data.nextPageToken || null);
+        if (isCacheTarget) await localforage.setItem(getCacheKey(flags), { emails: updatedEmails.slice(0, 100), flags: flags });
+        return true;
+      }
+      return false;
+    } catch (error) { return false; } finally { if (!isSilent && !getIsCancelled()) setIsLoading(false); }
+  };
+
+  useEffect(() => {
+    if (!session) return;
+    let isCancelled = false; 
+    activeLoadRef.current += 1;
+
+    const handleFilterChange = async () => {
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = setTimeout(async () => {
+        await saveGlobalSettings(checkInbox, checkSpam, checkTrash);
+        let loadedEmails = emails;
+        if (!searchKeyword) {
+          let snapshot: any = null;
+          try { snapshot = await localforage.getItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash })); } catch (e) {}
+          if (snapshot && snapshot.emails) { loadedEmails = snapshot.emails; if (!isCancelled) setEmails(loadedEmails); } 
+          else { loadedEmails = []; if (!isCancelled) setEmails([]); }
+        }
+        if (!isCancelled) setChatStatusMessage(null);
+        await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled);
+      }, searchKeyword ? 300 : 0);
+    };
+    handleFilterChange();
+    return () => { isCancelled = true; if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current); };
+  }, [checkInbox, checkSpam, checkTrash, searchKeyword]);
+
+  const handleSearchChange = (val: string) => {
+    if (!searchKeyword && val && !hasPushedSearchRef.current) { window.history.pushState({ action: "search" }, ""); hasPushedSearchRef.current = true; } 
+    else if (searchKeyword && !val && hasPushedSearchRef.current) { window.history.back(); hasPushedSearchRef.current = false; return; }
+    setSearchKeyword(val);
+  };
+
+  useEffect(() => {
+    if (!session) return;
+    const interval = setInterval(() => { fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, true); }, 60000);
+    return () => clearInterval(interval);
+  }, [session, searchKeyword, checkInbox, checkSpam, checkTrash]);
+
+  const groupedEmails = useMemo(() => {
+    const groups: Record<string, any[]> = {};
+    const tempSentEmails: any[] = [];
+    allUniqueEmails.forEach((email) => {
+      if (chatConfigs[email.id]?.isHidden) return;
+      if (email.senderRoom) { if (!groups[email.senderRoom]) groups[email.senderRoom] = []; groups[email.senderRoom].push(email); return; }
+      const isMe = email.isMe || email.from.includes(session?.user?.email || "");
+      if (!isMe) {
+        const roomName = email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown";
+        if (!groups[roomName]) groups[roomName] = []; groups[roomName].push(email);
+      } else { tempSentEmails.push(email); }
+    });
+
+    tempSentEmails.forEach((email) => {
+      const toClean = email.to ? email.to.toLowerCase() : "";
+      let matchedRoom: string | null = null;
+      for (const roomName of Object.keys(groups)) {
+        const roomNameLower = roomName.toLowerCase();
+        const partnerEmail = groups[roomName].find(e => !e.isMe && !e.from.includes(session?.user?.email || ""))?.from.toLowerCase() || "";
+        const partnerAddr = (partnerEmail.match(/<([^>]+)>/) || [null, partnerEmail])[1]?.trim() || partnerEmail.trim();
+        if ((roomNameLower && toClean.includes(roomNameLower)) || (partnerAddr && toClean.includes(partnerAddr))) { matchedRoom = roomName; break; }
+      }
+      if (matchedRoom) { groups[matchedRoom].push({ ...email, isMe: true }); } 
+      else {
+        const isTrashed = email.labelIds?.includes("TRASH");
+        if (isTrashed && !checkTrash) return;
+        if (!isTrashed && !checkInbox && checkTrash) return;
+        let newRoomName = "Unknown";
+        if (email.to) {
+          const toMatch = email.to.split(",")[0]; 
+          newRoomName = toMatch.split("<")[0].replace(/"/g, "").trim() || toMatch.replace(/[<>]/g, "").trim();
+          if (!newRoomName) newRoomName = "Unknown";
+        }
+        if (!groups[newRoomName]) groups[newRoomName] = []; groups[newRoomName].push({ ...email, isMe: true });
+      }
+    });
+
+    Object.keys(groups).forEach(sender => groups[sender].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+    return groups;
+  }, [allUniqueEmails, session, chatConfigs]);
+
+  const senderList = useMemo(() => {
+    return Object.keys(groupedEmails).filter((sender) => {
+      const config = chatConfigs[sender];
+      if (!config?.isHidden) return true;
+      if (config.unhideOnNew && config.hiddenAtDate && groupedEmails[sender][0]) {
+        const latestTime = new Date(groupedEmails[sender][0].date).getTime();
+        const hiddenTime = new Date(config.hiddenAtDate).getTime();
+        if (latestTime > hiddenTime) { updateChatConfig(sender, { isHidden: false }); return true; }
+      }
+      return false;
+    }).filter((sender) => {
+      if (!checkHasSent) return true;
+      return groupedEmails[sender].some((e: any) => e.isMe || e.labelIds?.includes("SENT"));
+    }).sort((a, b) => {
+      const pinA = chatConfigs[a]?.isPinned ? 1 : 0; const pinB = chatConfigs[b]?.isPinned ? 1 : 0; if (pinA !== pinB) return pinB - pinA;
+      const timeA = new Date(groupedEmails[a][0].date).getTime(); const timeB = new Date(groupedEmails[b][0].date).getTime(); return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
+    });
+  }, [groupedEmails, chatConfigs, checkHasSent]); 
+
+  const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined); 
+  const hiddenMsgs = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId !== undefined).map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ", date: new Date().toISOString() });
+
+  const openChat = (sender: string) => { setSelectedSender(sender); setSelectionMode("none"); setSelectedIds([]); setReplyToMessage(null); setMsgStatusMessage(null); if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`); };
+
+  const handleMenuBarClick = (mode: SelectionMode) => {
+    if (mode === "chat_reset" || mode === "msg_reset") {
+      setResetOptions({ pin: true, hide: true, name: true });
+      setModal({ type: "confirm_reset", targetMode: mode.startsWith("chat") ? "all_chats" : "current_chat", targets: mode === "msg_reset" ? [selectedSender!] : [] });
+      setSelectionMode("none"); window.history.pushState({ action: "modal" }, ""); return;
+    }
+    if (selectionMode === mode) {
+      if (selectedIds.length === 0) { window.history.back(); return; }
+      const targetMode = mode.startsWith("chat") ? "chat" : "msg";
+      let actionType: any = "confirm_hide";
+      if (mode.includes("delete")) actionType = "confirm_delete"; if (mode.includes("pin")) actionType = "confirm_pin"; if (mode.includes("move")) actionType = "confirm_move";
+      setModal({ type: actionType, targetMode, targets: selectedIds });
+      window.history.replaceState({ action: "modal" }, ""); 
+    } else {
+      if (mode.includes("move")) { setModal({ type: "select_move_dest", targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] }); window.history.pushState({ action: "modal" }, ""); return; }
+      setSelectionMode(mode); setSelectedIds([]);
+      if (!hasPushedSelectRef.current) { window.history.pushState({ action: "select" }, ""); hasPushedSelectRef.current = true; }
+    }
+  };
+
+  const handleBackgroundClick = () => { if (selectionMode !== "none") window.history.back(); };
+  const toggleSelection = (id: string) => setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+
+  const handleSend = async () => {
+    if (!selectedSender || !replyBody.trim()) return;
+    setIsSending(true);
+    try {
+      const targetEmails = groupedEmails[selectedSender]; const actualTo = targetEmails ? targetEmails[0]?.from : selectedSender;
+      let finalBody = replyBody; let threadId = undefined; let finalSubject = replySubject;
+      if (replyToMessage) { finalBody = `${replyBody}\n\n> ${replyToMessage.body.replace(/\n/g, "\n> ")}`; threadId = replyToMessage.threadId; if (!finalSubject) finalSubject = replyToMessage.subject.startsWith("Re:") ? replyToMessage.subject : `Re: ${replyToMessage.subject}`; }
+      const res = await fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: actualTo, subject: finalSubject, body: finalBody, threadId }) });
+      if (res.ok) {
+        const sentFake = { id: `fake-${Date.now()}`, threadId: threadId || "", subject: finalSubject || "(件名なし)", from: session?.user?.email || "自分", date: new Date().toUTCString(), body: finalBody, snippet: finalBody.slice(0, 60), senderRoom: selectedSender, isMe: true, labelIds: ["SENT"] };
+        setEmails([sentFake, ...emails]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null);
+      }
+    } catch (error) { console.error(error); } finally { setIsSending(false); }
+  };
+
+  const executePin = (forceFetch: boolean) => {
+    if (!modal) return;
+    const pMsgs = [...persistedEmails];
+    modal.targets.forEach(targetId => {
+        let pData = null;
+        if (forceFetch) {
+            if (modal.targetMode === "chat") { pData = (groupedEmails[targetId] || []).map(e => ({ ...e, senderRoom: targetId })); pMsgs.push(...pData); } 
+            else { const found = allUniqueEmails.find(e => e.id === targetId); if (found) { pData = { ...found, senderRoom: selectedSender }; pMsgs.push(pData); } }
+        }
+        updateChatConfig(targetId, { isPinned: true, forceFetch, persistedData: pData });
+    });
+    setPersistedEmails(pMsgs); window.history.back();
+  };
+
+  const executeConfirmedAction = async () => {
+    if (!modal) return;
+    const { type, targets, targetMode } = modal;
+    
+    if (type === "confirm_delete") {
+      let deleteEmails: any[] = [];
+      if (targetMode === "chat") { targets.forEach(chat => deleteEmails.push(...(groupedEmails[chat] || []))); } 
+      else { deleteEmails = allUniqueEmails.filter(e => targets.includes(e.id)); }
+      const permanentIds = deleteEmails.filter(e => e.labelIds?.includes("TRASH")).map(e => e.id);
+      const trashIds = deleteEmails.filter(e => !e.labelIds?.includes("TRASH")).map(e => e.id);
+
+      if (permanentIds.length > 0 || trashIds.length > 0) {
+        try {
+          await fetch("/api/emails", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ permanentIds, trashIds }) });
+          const allDeletedIds = [...permanentIds, ...trashIds];
+          setEmails(emails.filter(e => !allDeletedIds.includes(e.id))); setPersistedEmails(persistedEmails.filter(e => !allDeletedIds.includes(e.id)));
+          if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
+        } catch (e) { console.error(e); }
+      }
+    } 
+    else if (type === "confirm_move") {
+      let emailsToMove: any[] = [];
+      if (targetMode === "chat") { targets.forEach(chat => emailsToMove.push(...(groupedEmails[chat] || []))); } 
+      else { emailsToMove = allUniqueEmails.filter(e => targets.includes(e.id)); }
+      const idsToMove = emailsToMove.filter(e => !e.labelIds?.includes(moveDestination!)).map(e => e.id);
+      
+      if (idsToMove.length > 0) {
+        try {
+          await fetch("/api/emails", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: idsToMove, destination: moveDestination }) });
+          const applyNewLabels = (e: any) => {
+            if (idsToMove.includes(e.id)) { let newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "TRASH" && l !== "SPAM"); newLabels.push(moveDestination); return { ...e, labelIds: newLabels }; }
+            return e;
+          };
+          setEmails(emails.map(applyNewLabels)); setPersistedEmails(persistedEmails.map(applyNewLabels));
+          if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
+        } catch (e) { console.error(e); }
+      }
+    }
+    else if (type === "confirm_hide") {
+      targets.forEach(target => updateChatConfig(target, { isHidden: true, hiddenAtDate: new Date().toISOString(), roomId: targetMode === "msg" ? selectedSender! : undefined }));
+      if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
+    }
+    else if (type === "confirm_reset") {
+      const { pin, hide, name } = resetOptions; const specificTarget = targets[0]; let keysToProcess = Object.keys(chatConfigs);
+      if (targetMode === "current_chat" || targetMode === "specific_chat") keysToProcess = keysToProcess.filter(k => k === specificTarget || chatConfigs[k]?.roomId === specificTarget);
+      keysToProcess.forEach(target => {
+        const currentConfig = chatConfigs[target]; const updates: Partial<ChatConfig> = {};
+        if (pin) { updates.isPinned = false; updates.forceFetch = false; updates.persistedData = null; }
+        if (hide) { updates.isHidden = false; updates.hiddenAtDate = undefined; updates.unhideOnNew = false; }
+        if (name && currentConfig?.roomId === undefined) updates.customName = undefined;
+        if (Object.keys(updates).length > 0) updateChatConfig(target, updates);
+      });
+      if (pin) setPersistedEmails(prev => prev.filter(e => !keysToProcess.includes(e.id) && !keysToProcess.includes(e.senderRoom)));
+    }
+    else if (type === "confirm_unhide") { targets.forEach(target => updateChatConfig(target, { isHidden: false })); }
+    
+    window.history.back();
+  };
+
+  const handleContextMenuAction = (action: string, target: any) => {
+    setContextMenu(null);
+    const mode = contextMenu?.type || "chat"; const targetId = typeof target === "string" ? target : target.id;
+    let newModal = null;
+    if (action === "hide") newModal = { type: "confirm_hide", targetMode: mode, targets: [targetId] };
+    if (action === "delete") newModal = { type: "confirm_delete", targetMode: mode, targets: [targetId] };
+    if (action === "pin") newModal = { type: "confirm_pin", targetMode: mode, targets: [targetId] };
+    if (action === "move") newModal = { type: "select_move_dest_context", targetMode: mode, targets: [targetId] };
+    if (action === "reset") { setResetOptions({ pin: true, hide: true, name: true }); newModal = { type: "confirm_reset", targetMode: "specific_chat", targets: [targetId] }; }
+    if (action === "rename") { setRenameInput(chatConfigs[targetId]?.customName || targetId); newModal = { type: "rename", targetMode: mode, targets: [targetId] }; }
+    
+    if (newModal) { setModal(newModal as ModalState); window.history.pushState({ action: "modal" }, ""); }
+    if (action === "unpin") { updateChatConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null }); setPersistedEmails(prev => prev.filter(e => e.id !== targetId && e.senderRoom !== targetId)); }
+    if (action === "reply") setReplyToMessage(target);
+    if (action === "copy") navigator.clipboard.writeText(target.body);
+    if (action === "forward") { setReplyBody(`【転送メッセージ】\n${target.body}`); setReplySubject("Fwd:"); }
+  };
+
+  const handleLoadMoreChats = async () => {
+    if (isLoadingMoreChats || !currentNextPageToken) { if (!currentNextPageToken) setChatStatusMessage("すべてのメールを読み込みました"); return; }
+    setIsLoadingMoreChats(true); setChatStatusMessage(null);
+    let tempToken = currentNextPageToken; let hasNewSender = false; let loopCount = 0; const maxLoops = 5; 
+    const currentLoadId = activeLoadRef.current;
+
+    try {
+      const currentSenders = new Set(Object.keys(groupedEmails));
+      while (!hasNewSender && tempToken && loopCount < maxLoops) {
+        if (activeLoadRef.current !== currentLoadId) break;
+        loopCount++; let qParts = []; let orLabels = [];
+        if (checkInbox) orLabels.push("in:inbox", "in:sent"); if (checkSpam) orLabels.push("in:spam"); if (checkTrash) orLabels.push("in:trash");
+        if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`); if (searchKeyword) qParts.push(searchKeyword);
+
+        const params = new URLSearchParams({ maxResults: "100", q: qParts.join(" ").trim(), includeTrash: "true", pageToken: tempToken });
+        const res = await fetch(`/api/emails?${params.toString()}`);
+        if (!res.ok) { setChatStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。"); break; }
+
+        const data = await res.json(); const newMessages = data.messages || []; tempToken = data.nextPageToken || null;
+        if (newMessages.length === 0) { setChatStatusMessage("すべてのメールを読み込みました"); setCurrentNextPageToken(null); break; }
+
+        const hasNew = newMessages.some((email: any) => {
+          if (chatConfigs[email.id]?.isHidden) return false;
+          if (email.senderRoom) return !currentSenders.has(email.senderRoom);
+          const isMe = email.isMe || email.from.includes(session?.user?.email || "");
+          if (!isMe) { const roomName = email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"; return !currentSenders.has(roomName); } 
+          else { const toClean = email.to ? email.to.split(",")[0].split("<")[0].replace(/"/g, "").trim() : ""; return toClean && !currentSenders.has(toClean); }
+        });
+
+        setEmails(prev => [...prev, ...newMessages]); setCurrentNextPageToken(tempToken);
+        if (hasNew) { hasNewSender = true; }
+      }
+      if (loopCount >= maxLoops && !hasNewSender) setChatStatusMessage("APIの上限に達しました。しばらくしてからもう一度お試しください。");
+      else if (!tempToken && !hasNewSender) setChatStatusMessage("すべてのメールを読み込みました");
+    } catch (error) { setChatStatusMessage("エラーが発生しました。"); } finally { setIsLoadingMoreChats(false); }
+  };
+
+  const handleLoadMoreMessage = async () => {
+    if (isLoadingMore || !currentNextPageToken) { if (!currentNextPageToken) setMsgStatusMessage("すべてのメールを読み込みました"); return; }
+    setIsLoadingMore(true); setMsgStatusMessage(null);
+    let tempToken = currentNextPageToken; let hasFoundTargetMsg = false; let loopCount = 0; const maxLoops = 5; 
+    const currentLoadId = activeLoadRef.current;
+
+    try {
+      const targetSenderLower = selectedSender!.toLowerCase();
+      while (!hasFoundTargetMsg && tempToken && loopCount < maxLoops) {
+        if (activeLoadRef.current !== currentLoadId) break;
+        loopCount++; let qParts = []; let orLabels = [];
+        if (checkInbox) orLabels.push("in:inbox", "in:sent"); if (checkSpam) orLabels.push("in:spam"); if (checkTrash) orLabels.push("in:trash");
+        if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`); if (searchKeyword) qParts.push(searchKeyword);
+
+        const params = new URLSearchParams({ maxResults: "100", q: qParts.join(" ").trim(), includeTrash: "true", pageToken: tempToken });
+        const res = await fetch(`/api/emails?${params.toString()}`);
+        if (!res.ok) { setMsgStatusMessage("エラーが発生しました。"); break; }
+
+        const data = await res.json(); const newMessages = data.messages || []; tempToken = data.nextPageToken || null;
+        if (newMessages.length === 0) { setMsgStatusMessage("すべてのメールを読み込みました"); setCurrentNextPageToken(null); break; }
+
+        const found = newMessages.some((email: any) => {
+          if (chatConfigs[email.id]?.isHidden) return false;
+          const fromName = email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown";
+          if (fromName === selectedSender || email.senderRoom === selectedSender) return true;
+          const isMe = email.isMe || email.from.includes(session?.user?.email || "");
+          if (isMe) { const toClean = email.to ? email.to.toLowerCase() : ""; if (toClean.includes(targetSenderLower)) return true; }
+          return false;
+        });
+
+        setEmails(prev => [...prev, ...newMessages]); setCurrentNextPageToken(tempToken);
+        if (found) { hasFoundTargetMsg = true; }
+      }
+      if (!tempToken) setMsgStatusMessage("すべてのメールを読み込みました");
+    } catch (error) { setMsgStatusMessage("エラーが発生しました。"); } finally { setIsLoadingMore(false); }
+  };
+
+  const pinnedMsgsInChat = (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned);
+
+  return {
+    auth: { session, status },
+    state: {
+      emails, persistedEmails, isLoading, selectedSender, chatConfigs,
+      isLoadingMore, searchKeyword, checkInbox, checkSpam, checkTrash, checkHasSent,
+      currentNextPageToken, chatStatusMessage, msgStatusMessage, isLoadingMoreChats,
+      replySubject, replyBody, isSending, replyToMessage,
+      hasMouse, isMobile, selectionMode, selectedIds, contextMenu, modal, renameInput,
+      resetOptions, moveDestination, revealedCrossPrompts
+    },
+    actions: {
+      setSearchKeyword, setCheckInbox, setCheckSpam, setCheckTrash, setCheckHasSent,
+      setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setContextMenu, setModal, setRenameInput,
+      setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig,
+      handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,
+      handleSend, executePin, executeConfirmedAction, handleContextMenuAction,
+      openChat, handleLoadMoreChats, handleLoadMoreMessage
+    },
+    computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
+    // ★修正：必要な Ref をすべてエクスポートに追加
+    refs: { touchTimer, hasPushedSelectRef, hasPushedSearchRef, activeLoadRef, searchTimeoutRef }
+  };
+}
+
+export type MailAppHook = ReturnType<typeof useMailApp>;
