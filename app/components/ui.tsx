@@ -48,7 +48,8 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
       <button
         onClick={() => {
           setModal({ type: "unhide_select", targetMode: modePrefix, targets: [] });
-          setSelectedIds([]); setSelectionMode("none"); window.history.pushState({ action: "modal" }, "");
+          setSelectedIds([]); setSelectionMode("none"); 
+          window.history.pushState({ action: "modal" }, "", window.location.href); // ★追加
         }}
         className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith(modePrefix + "_") ? 'opacity-30 pointer-events-none' : ''}`}
       >

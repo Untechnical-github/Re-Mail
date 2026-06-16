@@ -22,37 +22,37 @@ export default function Home() {
   const showTalk = !state.isMobile || state.selectedSender;
 
   return (
-    <div className="flex h-[100dvh] w-full bg-[#313338] overflow-hidden text-gray-200 relative select-none">
+    <div className="flex h-[100dvh] w-full bg-[#313338] overflow-hidden text-gray-200 relative select-none" onClick={actions.handleBackgroundClick}>
       <ContextMenu app={app} />
       <Modals app={app} />
 
       {showChatList && (
-        <aside onClick={actions.handleBackgroundClick} className={`${state.isMobile ? 'w-full' : 'w-[320px] border-r'} border-[#1E1F22] bg-[#2B2D31] flex flex-col h-full min-h-0 cursor-pointer`}>
+        <aside className={`${state.isMobile ? 'w-full' : 'w-[320px] border-r'} border-[#1E1F22] bg-[#2B2D31] flex flex-col h-full min-h-0 cursor-pointer`}>
           <div className="p-4 border-b border-[#1E1F22] shadow-sm flex items-center justify-between cursor-default">
             <div className="flex items-center gap-2">
               <div className="w-6 h-6 flex items-center justify-center">
                 {(state.selectionMode !== "none" || state.searchKeyword !== "") && (
-                  <button onClick={() => window.history.back()} className="text-gray-400 hover:text-white font-bold text-lg transition active:scale-90">←</button>
+                  <button onClick={(e) => { e.stopPropagation(); window.history.back(); }} className="text-gray-400 hover:text-white font-bold text-lg transition active:scale-90">←</button>
                 )}
               </div>
               <h1 className="text-xl font-extrabold text-white tracking-wide">Re:Mail</h1>
             </div>
-            <button onClick={() => signOut({ callbackUrl: "/" })} className="text-xs text-gray-400 hover:text-white transition">ログアウト</button>
+            <button onClick={(e) => { e.stopPropagation(); signOut({ callbackUrl: "/" }); }} className="text-xs text-gray-400 hover:text-white transition">ログアウト</button>
           </div>
 
           <div className="p-3 border-b border-[#1E1F22] bg-[#232428] cursor-default">
              <div className="relative w-full">
-               <input type="text" placeholder="キーワード検索 (アドレス・件名・本文)..." className="w-full bg-[#1E1F22] text-sm text-gray-300 pl-3 pr-8 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]" value={state.searchKeyword} onChange={(e) => actions.handleSearchChange(e.target.value)} />
-               {state.searchKeyword && <button onClick={() => window.history.back()} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs font-bold px-1 transition">✕</button>}
+               <input onClick={(e) => e.stopPropagation()} type="text" placeholder="キーワード検索 (アドレス・件名・本文)..." className="w-full bg-[#1E1F22] text-sm text-gray-300 pl-3 pr-8 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]" value={state.searchKeyword} onChange={(e) => actions.handleSearchChange(e.target.value)} />
+               {state.searchKeyword && <button onClick={(e) => { e.stopPropagation(); window.history.back(); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs font-bold px-1 transition">✕</button>}
              </div>
              
              <div className="flex gap-1 text-xs mt-2">
-                <label className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkInbox} onChange={(e) => actions.setCheckInbox(e.target.checked)} className="accent-[#5865F2]" /> 受信箱</label>
-                <label className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkSpam} onChange={(e) => actions.setCheckSpam(e.target.checked)} className="accent-[#5865F2]" /> 迷惑メール</label>
-                <label className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkTrash} onChange={(e) => actions.setCheckTrash(e.target.checked)} className="accent-[#5865F2]" /> ゴミ箱</label>
+                <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkInbox} onChange={(e) => actions.setCheckInbox(e.target.checked)} className="accent-[#5865F2]" /> 受信箱</label>
+                <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkSpam} onChange={(e) => actions.setCheckSpam(e.target.checked)} className="accent-[#5865F2]" /> 迷惑メール</label>
+                <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkTrash} onChange={(e) => actions.setCheckTrash(e.target.checked)} className="accent-[#5865F2]" /> ゴミ箱</label>
              </div>
              <div className="mt-2">
-                <button onClick={() => actions.setCheckHasSent(!state.checkHasSent)} className={`w-full py-1.5 text-xs font-bold rounded border transition shadow-sm ${state.checkHasSent ? 'bg-[#5865F2] text-white border-[#5865F2]' : 'bg-[#1E1F22] text-gray-400 border-[#35373C] hover:bg-[#3f4147] hover:text-white'}`}>
+                <button onClick={(e) => { e.stopPropagation(); actions.setCheckHasSent(!state.checkHasSent); }} className={`w-full py-1.5 text-xs font-bold rounded border transition shadow-sm ${state.checkHasSent ? 'bg-[#5865F2] text-white border-[#5865F2]' : 'bg-[#1E1F22] text-gray-400 border-[#35373C] hover:bg-[#3f4147] hover:text-white'}`}>
                   {state.checkHasSent ? "✓ 送信・返信履歴のあるチャットのみ表示中" : "送信・返信履歴のあるチャットのみ絞り込む"}
                 </button>
              </div>
@@ -131,7 +131,7 @@ export default function Home() {
                  {state.chatStatusMessage ? (
                    <span className="text-xs text-gray-500 font-medium px-2 py-1 bg-[#232428] rounded text-center">{state.chatStatusMessage}</span>
                  ) : (
-                   <button onClick={actions.handleLoadMoreChats} disabled={state.isLoadingMoreChats} className="w-full bg-[#1E1F22] hover:bg-[#3f4147] text-gray-400 hover:text-gray-200 py-2 rounded text-xs font-bold transition active:scale-[0.98] disabled:opacity-50">
+                   <button onClick={(e) => { e.stopPropagation(); actions.handleLoadMoreChats(); }} disabled={state.isLoadingMoreChats} className="w-full bg-[#1E1F22] hover:bg-[#3f4147] text-gray-400 hover:text-gray-200 py-2 rounded text-xs font-bold transition active:scale-[0.98] disabled:opacity-50">
                      {state.isLoadingMoreChats ? "新しいチャットを探索中..." : "さらにチャットを読み込む"}
                    </button>
                  )}
@@ -142,12 +142,12 @@ export default function Home() {
       )}
 
       {showTalk && (
-        <main onClick={actions.handleBackgroundClick} className={`${state.isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-[#313338] relative cursor-pointer`}>
+        <main className={`${state.isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-[#313338] relative cursor-pointer`}>
           {state.selectedSender && computed.groupedEmails[state.selectedSender!] && computed.groupedEmails[state.selectedSender!].length > 0 ? (
             <>
               <header className="px-4 py-3 bg-[#313338] border-b border-[#1E1F22] shadow-sm z-10 flex items-center gap-3 cursor-default">
                 {state.isMobile && (
-                  <button onClick={() => window.history.back()} className="text-gray-400 hover:text-white font-bold p-1 text-lg transition active:scale-90">←</button>
+                  <button onClick={(e) => { e.stopPropagation(); window.history.back(); }} className="text-gray-400 hover:text-white font-bold p-1 text-lg transition active:scale-90">←</button>
                 )}
                 <h2 className="font-bold text-base truncate flex-1 text-white">{state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}</h2>
               </header>
@@ -157,7 +157,7 @@ export default function Home() {
               {computed.pinnedMsgsInChat.length > 0 && (
                 <div className="bg-[#2B2D31] border-b border-[#1E1F22] px-4 py-1.5 flex gap-2 overflow-x-auto scrollbar-none items-center shadow-inner cursor-default">
                    <span className="text-xs text-[#FEE75C] font-bold">📌</span>
-                   {computed.pinnedMsgsInChat.map(m => (
+                   {computed.pinnedMsgsInChat.map((m: any) => (
                       <button key={`pin-${m.id}`} onClick={(e) => { e.stopPropagation(); document.getElementById(`msg-${m.id}`)?.scrollIntoView({behavior: 'smooth', block: 'center'}); }} className="text-xs bg-[#1E1F22] text-gray-300 px-3 py-1.5 rounded-full truncate max-w-[200px] hover:text-white border border-[#35373C] flex-shrink-0 transition active:scale-95">
                          {m.subject || m.snippet}
                       </button>
@@ -165,7 +165,7 @@ export default function Home() {
                 </div>
               )}
 
-              <div className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin cursor-default" onClick={actions.handleBackgroundClick}>
+              <div className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin cursor-default">
                 {computed.groupedEmails[state.selectedSender!].map((email) => {
                     const isMe = email.isMe || email.from.includes(auth.session?.user?.email || "");
                     const isSelected = state.selectedIds.includes(email.id);
@@ -201,11 +201,12 @@ export default function Home() {
                         onClick={(e) => {
                           e.stopPropagation();
                           if (isMoveGrayedOut) return;
+                          if (state.selectionMode.startsWith("msg_")) actions.toggleSelection(email.id);
                         }}
                         className={`flex w-full mb-6 cursor-default transition ${isMoveGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${isMe ? 'justify-end' : 'justify-start'}`}
                       >
                         {state.selectionMode.startsWith("msg_") && (
-                          <div className="flex-shrink-0 w-8 flex justify-center pt-3 mr-2" onClick={() => actions.toggleSelection(email.id)}>
+                          <div className="flex-shrink-0 w-8 flex justify-center pt-3 mr-2">
                             <div className={`w-5 h-5 rounded-sm flex items-center justify-center border cursor-pointer ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500'}`}>
                               {isSelected && <div className="w-2.5 h-2.5 bg-white rounded-sm"></div>}
                             </div>
@@ -224,7 +225,6 @@ export default function Home() {
                            <div 
                               className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 border border-[#1E1F22] rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
                               style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-                              onClick={() => { if (state.selectionMode.startsWith("msg_")) actions.toggleSelection(email.id); }}
                               onContextMenu={(e) => { e.preventDefault(); actions.setContextMenu({ type: "msg", target: email, x: e.clientX, y: e.clientY }); }}
                               onTouchStart={(e) => { if (!state.hasMouse) refs.touchTimer.current = setTimeout(() => { actions.setContextMenu({ type: "msg", target: email, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
                               onTouchEnd={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
@@ -258,7 +258,7 @@ export default function Home() {
                 )}
               </div>
 
-              <div className="p-4 bg-[#313338] cursor-default">
+              <div className="p-4 bg-[#313338] cursor-default" onClick={(e) => e.stopPropagation()}>
                 <div className="bg-[#383A40] rounded-lg p-3 border border-[#1E1F22]">
                   {state.replyToMessage && (
                     <div className="flex justify-between items-center bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">

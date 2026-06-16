@@ -160,9 +160,9 @@ export function Modals({ app }: { app: MailAppHook }) {
                       setMoveDestination(dest as any); 
                       setSelectionMode((modal.targetMode + "_move") as SelectionMode); 
                       setModal(null); 
-                      window.history.replaceState({ action: "select" }, "");
+                      window.history.replaceState({ action: "select" }, "", window.location.href); // ★追加
                       app.refs.hasPushedSelectRef.current = true;
-                    }} 
+                    }}
                     className="w-full py-2.5 bg-[#2B2D31] hover:bg-[#3f4147] border border-[#1E1F22] rounded text-white font-bold transition"
                   >
                     {labels[dest]}

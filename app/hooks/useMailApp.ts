@@ -324,19 +324,32 @@ export function useMailApp() {
     if (mode === "chat_reset" || mode === "msg_reset") {
       setResetOptions({ pin: true, hide: true, name: true });
       setModal({ type: "confirm_reset", targetMode: mode.startsWith("chat") ? "all_chats" : "current_chat", targets: mode === "msg_reset" ? [selectedSender!] : [] });
-      setSelectionMode("none"); window.history.pushState({ action: "modal" }, ""); return;
+      setSelectionMode("none"); 
+      window.history.pushState({ action: "modal" }, "", window.location.href); // ★修正
+      return;
     }
+
     if (selectionMode === mode) {
       if (selectedIds.length === 0) { window.history.back(); return; }
       const targetMode = mode.startsWith("chat") ? "chat" : "msg";
       let actionType: any = "confirm_hide";
-      if (mode.includes("delete")) actionType = "confirm_delete"; if (mode.includes("pin")) actionType = "confirm_pin"; if (mode.includes("move")) actionType = "confirm_move";
+      if (mode.includes("delete")) actionType = "confirm_delete"; 
+      if (mode.includes("pin")) actionType = "confirm_pin"; 
+      if (mode.includes("move")) actionType = "confirm_move";
+      
       setModal({ type: actionType, targetMode, targets: selectedIds });
-      window.history.replaceState({ action: "modal" }, ""); 
+      window.history.replaceState({ action: "modal" }, "", window.location.href); // ★修正
     } else {
-      if (mode.includes("move")) { setModal({ type: "select_move_dest", targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] }); window.history.pushState({ action: "modal" }, ""); return; }
+      if (mode.includes("move")) { 
+        setModal({ type: "select_move_dest", targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] }); 
+        window.history.pushState({ action: "modal" }, "", window.location.href); // ★修正
+        return; 
+      }
       setSelectionMode(mode); setSelectedIds([]);
-      if (!hasPushedSelectRef.current) { window.history.pushState({ action: "select" }, ""); hasPushedSelectRef.current = true; }
+      if (!hasPushedSelectRef.current) { 
+        window.history.pushState({ action: "select" }, "", window.location.href); // ★修正
+        hasPushedSelectRef.current = true; 
+      }
     }
   };
 
@@ -442,7 +455,8 @@ export function useMailApp() {
     if (action === "reset") { setResetOptions({ pin: true, hide: true, name: true }); newModal = { type: "confirm_reset", targetMode: "specific_chat", targets: [targetId] }; }
     if (action === "rename") { setRenameInput(chatConfigs[targetId]?.customName || targetId); newModal = { type: "rename", targetMode: mode, targets: [targetId] }; }
     
-    if (newModal) { setModal(newModal as ModalState); window.history.pushState({ action: "modal" }, ""); }
+    // ★修正: pushState に window.location.href を追加
+    if (newModal) { setModal(newModal as ModalState); window.history.pushState({ action: "modal" }, "", window.location.href); }
     if (action === "unpin") { updateChatConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null }); setPersistedEmails(prev => prev.filter(e => e.id !== targetId && e.senderRoom !== targetId)); }
     if (action === "reply") setReplyToMessage(target);
     if (action === "copy") navigator.clipboard.writeText(target.body);
