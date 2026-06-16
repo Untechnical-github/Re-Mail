@@ -743,6 +743,20 @@ export default function Home() {
     if (action === "forward") { setReplyBody(`【転送メッセージ】\n${target.body}`); setReplySubject("Fwd:"); }
   };
 
+  if (status === "loading") return <div className="flex h-screen items-center justify-center bg-[#313338] text-gray-400 font-bold">読み込み中...</div>;
+  
+  if (!session) return (
+    <div className="flex h-screen flex-col items-center justify-center bg-[#313338] text-white">
+      <h1 className="mb-8 text-5xl font-extrabold text-[#5865F2]">Re:Mail</h1>
+      <button 
+        onClick={() => signIn("google", { callbackUrl: "/" })} 
+        className="rounded bg-[#5865F2] px-8 py-3 font-bold shadow transition hover:bg-[#4752C4] active:scale-95"
+      >
+        Googleでログインして始める
+      </button>
+    </div>
+  );
+
   const showChatList = !isMobile || !selectedSender;
   const showTalk = !isMobile || selectedSender;
 
