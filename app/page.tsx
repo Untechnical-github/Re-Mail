@@ -1209,7 +1209,7 @@ export default function Home() {
               </div>
               <h1 className="text-xl font-extrabold text-white tracking-wide">Re:Mail</h1>
             </div>
-            <button onClick={() => signOut()} className="text-xs text-gray-400 hover:text-white transition">ログアウト</button>
+            <button onClick={() => signOut({ callbackUrl: "/" })} className="text-xs text-gray-400 hover:text-white transition">ログアウト</button>
           </div>
 
           <div className="p-3 border-b border-[#1E1F22] bg-[#232428] cursor-default" onClick={(e) => e.stopPropagation()}>
