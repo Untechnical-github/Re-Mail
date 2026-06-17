@@ -93,7 +93,6 @@ export default function Home() {
 
               const isMoveGrayedOut = state.selectionMode === "chat_move" && state.moveDestination && allEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!));
 
-              // ★追加: チャットの枠色（グラデーション）の算出
               const colorsSet = new Set<string>();
               visibleEmails.forEach((e: any) => {
                  const isTrash = e.labelIds?.includes("TRASH");
@@ -184,7 +183,6 @@ export default function Home() {
                 {state.isMobile && (
                   <button onClick={(e) => { e.stopPropagation(); actions.safeBack(); }} className="text-gray-400 hover:text-white font-bold p-1 text-lg transition active:scale-90">←</button>
                 )}
-                {/* ★修正: ヘッダーに宛先名とアドレスを並べて表示 */}
                 <div className="flex-1 min-w-0 flex items-baseline gap-2">
                   <h2 className="font-bold text-base truncate text-white">{state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}</h2>
                   {(() => {
@@ -221,7 +219,7 @@ export default function Home() {
                     const isSpam = email.labelIds?.includes("SPAM");
                     const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (!isTrash && !isSpam && state.checkInbox);
 
-                    // ★修正: 送信者に関わらず、現在のボックスにないメールにはプロンプトを出す
+                    // ★修正：送信済みかどうかの条件を排除し、現在のボックス条件外の全メールを時系列通りに一本釣りプロンプト化
                     if (!isCurrentBox && !state.revealedCrossPrompts.includes(email.id)) {
                         const boxName = isTrash ? "ゴミ箱" : isSpam ? "迷惑メール" : "受信箱";
                         const boxColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : state.boxColors.inbox;
@@ -230,7 +228,7 @@ export default function Home() {
                                 <button 
                                   onClick={(e) => { e.stopPropagation(); actions.setRevealedCrossPrompts(p => [...p, email.id]); }} 
                                   style={{ borderColor: boxColor, color: boxColor }} 
-                                  className="bg-[#2B2D31] px-4 py-2 rounded-full text-xs font-bold border-2 hover:bg-[#35373C] transition shadow-sm"
+                                  className="bg-[#2B2D31] px-4 py-2 rounded-full text-xs font-bold border-2 hover:bg-[#35373C] transition shadow-sm animate-fade-in"
                                 >
                                     {boxName}のメールが含まれています。読み込みますか？
                                 </button>
@@ -239,8 +237,6 @@ export default function Home() {
                     }
 
                     const isMoveGrayedOut = state.selectionMode === "msg_move" && state.moveDestination && email.labelIds?.includes(state.moveDestination);
-                    
-                    // ★追加: メッセージの枠色
                     const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : state.boxColors.inbox;
 
                     return (
@@ -268,7 +264,6 @@ export default function Home() {
 
                         <div className={`flex flex-col max-w-[75%] ${isMe ? 'items-end' : 'items-start'}`}>
                            <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
-                              {/* ★修正: 宛先名の横のアドレスを消去し、名前のみにする */}
                               {!isMe && <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>}
                               <span>{new Date(email.date).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                            </div>

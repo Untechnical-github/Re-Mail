@@ -1,3 +1,5 @@
+"use client";
+
 import { useSession } from "next-auth/react";
 import { useState, useEffect, useMemo, useRef } from "react";
 import localforage from "localforage";
@@ -39,11 +41,10 @@ export function useMailApp() {
   const [moveDestination, setMoveDestination] = useState<"INBOX" | "SPAM" | "TRASH" | null>(null);
   const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
 
-  // ★追加: 将来の設定画面を見据えたボックスカラーの準備
   const [boxColors, setBoxColors] = useState({
-    inbox: "#5865F2", // 青系
-    spam: "#FEE75C",  // 黄色系
-    trash: "#DA373C"  // 赤系
+    inbox: "#5865F2", 
+    spam: "#FEE75C",  
+    trash: "#DA373C"  
   });
 
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -55,6 +56,7 @@ export function useMailApp() {
     return `remail_feed_cache_v2_i${flags.inbox ? 1 : 0}s${flags.spam ? 1 : 0}t${flags.trash ? 1 : 0}`;
   };
 
+  // ★修正：リアルタイム反映のため、チェック状態や許可ボタンのStateをしっかりと監視させる
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
     const isDisplayable = (e: any) => {
@@ -69,14 +71,13 @@ export function useMailApp() {
                                (e.senderRoom && e.senderRoom.toLowerCase().includes(keywordLower));
         if (!matchesKeyword) return false;
       }
-      // ★修正: 他の場所のメールもボタンとして出すため、ここではボックスによる弾きをせずに全て通す
       return true; 
     };
 
     persistedEmails.forEach(e => { if (isDisplayable(e)) map.set(e.id, e); });
     emails.forEach(e => { if (isDisplayable(e)) map.set(e.id, e); });
     return Array.from(map.values());
-  }, [emails, persistedEmails, searchKeyword, chatConfigs]);
+  }, [emails, persistedEmails, searchKeyword, checkInbox, checkSpam, checkTrash, chatConfigs, revealedCrossPrompts]);
 
   const loadD1Configs = async (): Promise<{ limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null> => {
     let globalSettings: { limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null = null;
@@ -294,7 +295,6 @@ export function useMailApp() {
       const config = chatConfigs[sender];
       if (config?.isHidden) return false;
 
-      // ★修正: このチャットに「現在のチェックボックス条件を満たすメール」か「プロンプトで許可されたメール」があるかチェック
       const hasDisplayableEmail = groupedEmails[sender].some((e: any) => {
         if (config?.isHidden) return false;
         if (revealedCrossPrompts.includes(e.id)) return true;
@@ -331,7 +331,31 @@ export function useMailApp() {
     }
   };
 
-  const openChat = (sender: string) => { setSelectedSender(sender); setSelectionMode("none"); setSelectedIds([]); setReplyToMessage(null); setMsgStatusMessage(null); if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`); };
+  // ★修正: チャットを開いた瞬間に、その送信者宛て・送信者からのメールを全ボックスから一本釣り（横断フェッチ）してマージする
+  const openChat = async (sender: string) => {
+    setSelectedSender(sender);
+    setSelectionMode("none");
+    setSelectedIds([]);
+    setReplyToMessage(null);
+    setMsgStatusMessage(null); 
+    if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`);
+
+    try {
+      const params = new URLSearchParams({ maxResults: "60", q: `(from:"${sender}" OR to:"${sender}")`, includeTrash: "true" });
+      const res = await fetch(`/api/emails?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        const newMsgs = data.messages || [];
+        if (newMsgs.length > 0) {
+          setEmails(prev => {
+            const map = new Map(prev.map(e => [e.id, e]));
+            newMsgs.forEach((m: any) => map.set(m.id, m));
+            return Array.from(map.values());
+          });
+        }
+      }
+    } catch (e) { console.error(e); }
+  };
 
   const handleMenuBarClick = (mode: SelectionMode) => {
     if (mode === "chat_reset" || mode === "msg_reset") {
@@ -420,7 +444,13 @@ export function useMailApp() {
         try {
           await fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", permanentIds, trashIds }) });
           const allDeletedIds = [...permanentIds, ...trashIds];
-          setEmails(emails.filter(e => !allDeletedIds.includes(e.id))); setPersistedEmails(persistedEmails.filter(e => !allDeletedIds.includes(e.id)));
+          const nextEmails = emails.filter(e => !allDeletedIds.includes(e.id));
+          setEmails(nextEmails); 
+          setPersistedEmails(persistedEmails.filter(e => !allDeletedIds.includes(e.id)));
+          
+          // ★修正: メモリだけでなくローカルキャッシュデータも即時上書き保存して同期不全を破壊
+          await localforage.setItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash }), { emails: nextEmails.slice(0, 100), flags: { inbox: checkInbox, spam: checkSpam, trash: checkTrash } });
+          
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
         } catch (e) { console.error(e); }
       }
@@ -438,7 +468,13 @@ export function useMailApp() {
             if (idsToMove.includes(e.id)) { let newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "TRASH" && l !== "SPAM"); newLabels.push(moveDestination); return { ...e, labelIds: newLabels }; }
             return e;
           };
-          setEmails(emails.map(applyNewLabels)); setPersistedEmails(persistedEmails.map(applyNewLabels));
+          const nextEmails = emails.map(applyNewLabels);
+          setEmails(nextEmails); 
+          setPersistedEmails(persistedEmails.map(applyNewLabels));
+          
+          // ★修正: 移動後のメールデータをローカルキャッシュへ即時同期保存（枠色・状態のリアクティブ化）
+          await localforage.setItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash }), { emails: nextEmails.slice(0, 100), flags: { inbox: checkInbox, spam: checkSpam, trash: checkTrash } });
+          
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
         } catch (e) { console.error(e); }
       }
@@ -526,12 +562,14 @@ export function useMailApp() {
     const currentLoadId = activeLoadRef.current;
 
     try {
-      const targetSenderLower = selectedSender!.toLowerCase();
+      const targetSenderLower = selectedSender!.toLowerCase(); // ★この1行を追加（復活）してください！
+
+      // ★修正: 過去ログを追加で掘る際も、このチャット相手のメールを横断（全ボックス）して一本釣りするよう明示
       while (!hasFoundTargetMsg && tempToken && loopCount < maxLoops) {
         if (activeLoadRef.current !== currentLoadId) break;
         loopCount++; 
-        // ★修正: 特定のチャット内の過去メールを探すため、ここで in:inbox などの縛りを外す
-        let qParts = []; 
+        
+        let qParts = [`(from:"${selectedSender}" OR to:"${selectedSender}")`]; 
         if (searchKeyword) qParts.push(searchKeyword);
 
         const params = new URLSearchParams({ maxResults: "100", q: qParts.join(" ").trim(), includeTrash: "true", pageToken: tempToken });
@@ -550,7 +588,13 @@ export function useMailApp() {
           return false;
         });
 
-        setEmails(prev => [...prev, ...newMessages]); setCurrentNextPageToken(tempToken);
+        setEmails(prev => {
+          const map = new Map(prev.map(e => [e.id, e]));
+          newMessages.forEach((m: any) => map.set(m.id, m));
+          return Array.from(map.values());
+        });
+        
+        setCurrentNextPageToken(tempToken);
         if (found) { hasFoundTargetMsg = true; }
       }
       if (!tempToken) setMsgStatusMessage("すべてのメールを読み込みました");
