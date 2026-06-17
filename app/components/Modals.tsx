@@ -3,13 +3,13 @@ import { SelectionMode } from "../types/mail";
 
 export function Modals({ app }: { app: MailAppHook }) {
   const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds } = app.state;
-  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig } = app.actions;
+  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
 
   if (!modal) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
       <div className="bg-[#313338] rounded-md shadow-2xl w-full max-w-sm border border-[#1E1F22]">
         
         {modal.type === "confirm_delete" && (() => {
@@ -28,7 +28,7 @@ export function Modals({ app }: { app: MailAppHook }) {
                 {permanentCount > 0 && <span className="block mt-2 text-[#DA373C] font-bold">・{permanentCount}件のメール（既にゴミ箱にあるもの）は完全に削除され、元に戻せません。</span>}
               </p>
               <div className="flex justify-end gap-3">
-                <button onClick={() => window.history.back()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+                <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
                 <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c]">削除する</button>
               </div>
             </div>
@@ -40,7 +40,7 @@ export function Modals({ app }: { app: MailAppHook }) {
             <h2 className="text-lg font-bold text-white mb-2">非表示(Re:Mailのみ)</h2>
             <p className="text-sm text-gray-300 mb-6 leading-relaxed">選択した項目をRe:Mailの画面上から隠します。（Gmailからは削除されません）</p>
             <div className="flex justify-end gap-3">
-              <button onClick={() => window.history.back()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
               <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">非表示にする</button>
             </div>
           </div>
@@ -60,7 +60,7 @@ export function Modals({ app }: { app: MailAppHook }) {
                   {willExceedLimit ? "永続読み込みは10件までです" : "対象外になっても常に表示する"}
                 </button>
                 <button onClick={() => executePin(false)} className="w-full py-2.5 bg-[#404249] text-white rounded text-sm font-bold hover:bg-[#4f545c] active:scale-95">対象外になった場合は隠す</button>
-                <button onClick={() => window.history.back()} className="w-full py-2 mt-2 hover:underline text-gray-400 text-sm">キャンセル</button>
+                <button onClick={() => safeBack()} className="w-full py-2 mt-2 hover:underline text-gray-400 text-sm">キャンセル</button>
               </div>
             </div>
           );
@@ -88,7 +88,7 @@ export function Modals({ app }: { app: MailAppHook }) {
                   <input type="checkbox" checked={selectedIds.includes(c)} onChange={() => app.actions.toggleSelection(c)} className="accent-[#5865F2]" />
                   <span className="text-sm truncate">{chatConfigs[c]?.customName || c}</span>
                 </label>
-              )) : hiddenMsgs.map(m => {
+              )) : hiddenMsgs.map((m: any) => {
                 const roomId = chatConfigs[m.id]?.roomId; const chatName = roomId ? (chatConfigs[roomId]?.customName || roomId) : "不明なチャット";
                 return (
                   <label key={m.id} className="flex items-center gap-3 p-2 hover:bg-[#2B2D31] rounded cursor-pointer">
@@ -106,7 +106,7 @@ export function Modals({ app }: { app: MailAppHook }) {
               {(modal.targetMode === "chat" ? hiddenChats : hiddenMsgs).length === 0 && <div className="text-gray-500 text-sm p-4 text-center">非表示の項目はありません</div>}
             </div>
             <div className="p-4 border-t border-[#1E1F22] flex justify-end gap-3">
-              <button onClick={() => window.history.back()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
               <button disabled={selectedIds.length === 0} onClick={() => setModal({ type: "confirm_unhide", targetMode: modal.targetMode, targets: selectedIds })} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-gray-600 disabled:text-gray-400">次へ ({selectedIds.length})</button>
             </div>
           </div>
@@ -130,7 +130,7 @@ export function Modals({ app }: { app: MailAppHook }) {
               </label>
             </div>
             <div className="flex justify-end gap-3">
-              <button onClick={() => window.history.back()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
               <button onClick={executeConfirmedAction} disabled={!resetOptions.pin && !resetOptions.hide && !resetOptions.name} className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c] disabled:bg-[#3f4147] disabled:text-gray-500">リセットする</button>
             </div>
           </div>
@@ -141,8 +141,8 @@ export function Modals({ app }: { app: MailAppHook }) {
             <h2 className="text-lg font-bold text-white mb-4">チャット名の変更</h2>
             <input type="text" value={renameInput} onChange={(e) => setRenameInput(e.target.value)} className="w-full bg-[#1E1F22] text-gray-200 px-3 py-2 rounded focus:outline-none focus:ring-2 focus:ring-[#5865F2] mb-4" />
             <div className="flex justify-end gap-3">
-              <button onClick={() => window.history.back()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-              <button onClick={() => { updateChatConfig(modal.targets[0], { customName: renameInput.trim() }); window.history.back(); }} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">変更</button>
+              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+              <button onClick={() => { updateChatConfig(modal.targets[0], { customName: renameInput.trim() }); safeBack(); }} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">変更</button>
             </div>
           </div>
         )}
@@ -160,9 +160,9 @@ export function Modals({ app }: { app: MailAppHook }) {
                       setMoveDestination(dest as any); 
                       setSelectionMode((modal.targetMode + "_move") as SelectionMode); 
                       setModal(null); 
-                      window.history.replaceState({ action: "select" }, "", window.location.href); // ★追加
+                      window.history.replaceState({ action: "select" }, "", window.location.href);
                       app.refs.hasPushedSelectRef.current = true;
-                    }}
+                    }} 
                     className="w-full py-2.5 bg-[#2B2D31] hover:bg-[#3f4147] border border-[#1E1F22] rounded text-white font-bold transition"
                   >
                     {labels[dest]}
@@ -170,7 +170,7 @@ export function Modals({ app }: { app: MailAppHook }) {
                 );
               })}
             </div>
-            <button onClick={() => window.history.back()} className="w-full py-2 hover:underline text-gray-400 text-sm">キャンセル</button>
+            <button onClick={() => safeBack()} className="w-full py-2 hover:underline text-gray-400 text-sm">キャンセル</button>
           </div>
         )}
 
@@ -196,7 +196,7 @@ export function Modals({ app }: { app: MailAppHook }) {
                   );
                 })}
               </div>
-              <button onClick={() => window.history.back()} className="w-full py-2 hover:underline text-gray-400 text-sm">キャンセル</button>
+              <button onClick={() => safeBack()} className="w-full py-2 hover:underline text-gray-400 text-sm">キャンセル</button>
             </div>
           );
         })()}
@@ -208,7 +208,7 @@ export function Modals({ app }: { app: MailAppHook }) {
               選択したアイテムを「{moveDestination === "INBOX" ? "受信箱" : moveDestination === "SPAM" ? "迷惑メール" : "ゴミ箱"}」へ移動します。よろしいですか？
             </p>
             <div className="flex justify-end gap-3">
-              <button onClick={() => window.history.back()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
               <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">移動する</button>
             </div>
           </div>

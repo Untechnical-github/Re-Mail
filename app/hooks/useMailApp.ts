@@ -245,7 +245,7 @@ export function useMailApp() {
 
   const handleSearchChange = (val: string) => {
     if (!searchKeyword && val && !hasPushedSearchRef.current) { window.history.pushState({ action: "search" }, ""); hasPushedSearchRef.current = true; } 
-    else if (searchKeyword && !val && hasPushedSearchRef.current) { window.history.back(); hasPushedSearchRef.current = false; return; }
+    else if (searchKeyword && !val && hasPushedSearchRef.current) { safeBack(); hasPushedSearchRef.current = false; return; } // ★修正
     setSearchKeyword(val);
   };
 
@@ -320,17 +320,31 @@ export function useMailApp() {
 
   const openChat = (sender: string) => { setSelectedSender(sender); setSelectionMode("none"); setSelectedIds([]); setReplyToMessage(null); setMsgStatusMessage(null); if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`); };
 
+  const safeBack = () => {
+    const state = window.history.state;
+    // 履歴スタックがRe:Mailの内部アクションである場合のみブラウザバックを許可
+    if (state && (state.action || state.chat)) {
+      window.history.back();
+    } else {
+      // 履歴が空の場合はアプリを閉じず、画面上の状態だけを強制リセットする
+      setModal(null);
+      setContextMenu(null);
+      setSelectionMode("none");
+      setSelectedIds([]);
+    }
+  };
+
   const handleMenuBarClick = (mode: SelectionMode) => {
     if (mode === "chat_reset" || mode === "msg_reset") {
       setResetOptions({ pin: true, hide: true, name: true });
       setModal({ type: "confirm_reset", targetMode: mode.startsWith("chat") ? "all_chats" : "current_chat", targets: mode === "msg_reset" ? [selectedSender!] : [] });
       setSelectionMode("none"); 
-      window.history.pushState({ action: "modal" }, "", window.location.href); // ★修正
+      window.history.pushState({ action: "modal" }, "", window.location.href); 
       return;
     }
 
     if (selectionMode === mode) {
-      if (selectedIds.length === 0) { window.history.back(); return; }
+      if (selectedIds.length === 0) { safeBack(); return; } // ★修正
       const targetMode = mode.startsWith("chat") ? "chat" : "msg";
       let actionType: any = "confirm_hide";
       if (mode.includes("delete")) actionType = "confirm_delete"; 
@@ -338,22 +352,25 @@ export function useMailApp() {
       if (mode.includes("move")) actionType = "confirm_move";
       
       setModal({ type: actionType, targetMode, targets: selectedIds });
-      window.history.replaceState({ action: "modal" }, "", window.location.href); // ★修正
+      window.history.replaceState({ action: "modal" }, "", window.location.href); 
     } else {
       if (mode.includes("move")) { 
         setModal({ type: "select_move_dest", targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] }); 
-        window.history.pushState({ action: "modal" }, "", window.location.href); // ★修正
+        window.history.pushState({ action: "modal" }, "", window.location.href); 
         return; 
       }
       setSelectionMode(mode); setSelectedIds([]);
       if (!hasPushedSelectRef.current) { 
-        window.history.pushState({ action: "select" }, "", window.location.href); // ★修正
+        window.history.pushState({ action: "select" }, "", window.location.href); 
         hasPushedSelectRef.current = true; 
       }
     }
   };
 
-  const handleBackgroundClick = () => { if (selectionMode !== "none") window.history.back(); };
+  const handleBackgroundClick = () => { 
+    if (modal || contextMenu) return; // ★修正: 確認画面(モーダル)やメニューが出ている時は背景キャンセルを完全無効化！
+    if (selectionMode !== "none") safeBack(); // ★修正
+  };
   const toggleSelection = (id: string) => setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
 
   const handleSend = async () => {
@@ -385,7 +402,7 @@ export function useMailApp() {
         }
         updateChatConfig(targetId, { isPinned: true, forceFetch, persistedData: pData });
     });
-    setPersistedEmails(pMsgs); window.history.back();
+    setPersistedEmails(pMsgs); safeBack(); // ★修正
   };
 
   const executeConfirmedAction = async () => {
@@ -444,7 +461,7 @@ export function useMailApp() {
     }
     else if (type === "confirm_unhide") { targets.forEach(target => updateChatConfig(target, { isHidden: false })); }
     
-    window.history.back();
+    safeBack(); // ★修正
   };
 
   const handleContextMenuAction = (action: string, target: any) => {
@@ -558,7 +575,7 @@ export function useMailApp() {
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,
       handleSend, executePin, executeConfirmedAction, handleContextMenuAction,
-      openChat, handleLoadMoreChats, handleLoadMoreMessage
+      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack // ★追加
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
     // ★修正：必要な Ref をすべてエクスポートに追加

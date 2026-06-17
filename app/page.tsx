@@ -32,7 +32,7 @@ export default function Home() {
             <div className="flex items-center gap-2">
               <div className="w-6 h-6 flex items-center justify-center">
                 {(state.selectionMode !== "none" || state.searchKeyword !== "") && (
-                  <button onClick={(e) => { e.stopPropagation(); window.history.back(); }} className="text-gray-400 hover:text-white font-bold text-lg transition active:scale-90">←</button>
+                  <button onClick={(e) => { e.stopPropagation(); actions.safeBack(); }} className="text-gray-400 hover:text-white font-bold text-lg transition active:scale-90">←</button>
                 )}
               </div>
               <h1 className="text-xl font-extrabold text-white tracking-wide">Re:Mail</h1>
@@ -43,7 +43,7 @@ export default function Home() {
           <div className="p-3 border-b border-[#1E1F22] bg-[#232428] cursor-default">
              <div className="relative w-full">
                <input onClick={(e) => e.stopPropagation()} type="text" placeholder="キーワード検索 (アドレス・件名・本文)..." className="w-full bg-[#1E1F22] text-sm text-gray-300 pl-3 pr-8 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]" value={state.searchKeyword} onChange={(e) => actions.handleSearchChange(e.target.value)} />
-               {state.searchKeyword && <button onClick={(e) => { e.stopPropagation(); window.history.back(); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs font-bold px-1 transition">✕</button>}
+               {state.searchKeyword && <button onClick={(e) => { e.stopPropagation(); actions.safeBack(); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs font-bold px-1 transition">✕</button>}
              </div>
              
              <div className="flex gap-1 text-xs mt-2">
@@ -147,7 +147,7 @@ export default function Home() {
             <>
               <header className="px-4 py-3 bg-[#313338] border-b border-[#1E1F22] shadow-sm z-10 flex items-center gap-3 cursor-default">
                 {state.isMobile && (
-                  <button onClick={(e) => { e.stopPropagation(); window.history.back(); }} className="text-gray-400 hover:text-white font-bold p-1 text-lg transition active:scale-90">←</button>
+                  <button onClick={(e) => { e.stopPropagation(); actions.safeBack(); }} className="text-gray-400 hover:text-white font-bold p-1 text-lg transition active:scale-90">←</button>
                 )}
                 <h2 className="font-bold text-base truncate flex-1 text-white">{state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}</h2>
               </header>
