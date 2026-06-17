@@ -2,7 +2,6 @@ import { MailAppHook } from "../hooks/useMailApp";
 import { SelectionMode } from "../types/mail";
 
 export function Modals({ app }: { app: MailAppHook }) {
-  // ★修正: selectedSender を追加して抽出
   const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender } = app.state;
   const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
@@ -122,7 +121,6 @@ export function Modals({ app }: { app: MailAppHook }) {
               ) : (
                 <div>
                   <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">このチャット内の非表示メッセージ</div>
-                  {/* ★修正: state.selectedSender から selectedSender に修正 */}
                   {hiddenMsgs.filter((m: any) => chatConfigs[m.id]?.roomId === selectedSender).map((m: any) => (
                     <label key={m.id} className="flex items-center gap-3 p-2 hover:bg-[#2B2D31] rounded cursor-pointer">
                       <input type="checkbox" checked={selectedIds.includes(m.id)} onChange={() => app.actions.toggleSelection(m.id)} className="accent-[#5865F2]" />
@@ -134,7 +132,6 @@ export function Modals({ app }: { app: MailAppHook }) {
                       </div>
                     </label>
                   ))}
-                  {/* ★修正: state.selectedSender から selectedSender に修正 */}
                   {hiddenMsgs.filter((m: any) => chatConfigs[m.id]?.roomId === selectedSender).length === 0 && (
                     <div className="text-gray-500 text-sm p-4 text-center">このチャット内に非表示のメッセージはありません</div>
                   )}

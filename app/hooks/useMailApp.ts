@@ -39,6 +39,13 @@ export function useMailApp() {
   const [moveDestination, setMoveDestination] = useState<"INBOX" | "SPAM" | "TRASH" | null>(null);
   const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
 
+  // ★追加: 将来の設定画面を見据えたボックスカラーの準備
+  const [boxColors, setBoxColors] = useState({
+    inbox: "#5865F2", // 青系
+    spam: "#FEE75C",  // 黄色系
+    trash: "#DA373C"  // 赤系
+  });
+
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const hasPushedSearchRef = useRef(false);
   const hasPushedSelectRef = useRef(false);
@@ -62,24 +69,14 @@ export function useMailApp() {
                                (e.senderRoom && e.senderRoom.toLowerCase().includes(keywordLower));
         if (!matchesKeyword) return false;
       }
-      const labels = e.labelIds || [];
-      const isTrash = labels.includes("TRASH");
-      const isSpam = labels.includes("SPAM");
-      const isSent = labels.includes("SENT") || e.isMe;
-
-      if (isSent && isTrash && !checkTrash && !revealedCrossPrompts.includes(e.id)) return true;
-      if (isSent && !isTrash && checkTrash && !checkInbox && !revealedCrossPrompts.includes(e.id)) return true;
-      if (revealedCrossPrompts.includes(e.id)) return true;
-
-      if (isTrash) return checkTrash;
-      if (isSpam) return checkSpam;
-      return checkInbox;
+      // ★修正: 他の場所のメールもボタンとして出すため、ここではボックスによる弾きをせずに全て通す
+      return true; 
     };
 
     persistedEmails.forEach(e => { if (isDisplayable(e)) map.set(e.id, e); });
     emails.forEach(e => { if (isDisplayable(e)) map.set(e.id, e); });
     return Array.from(map.values());
-  }, [emails, persistedEmails, searchKeyword, checkInbox, checkSpam, checkTrash, chatConfigs, revealedCrossPrompts]);
+  }, [emails, persistedEmails, searchKeyword, chatConfigs]);
 
   const loadD1Configs = async (): Promise<{ limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null> => {
     let globalSettings: { limit?: number; inbox?: boolean; spam?: boolean; trash?: boolean } | null = null;
@@ -245,7 +242,7 @@ export function useMailApp() {
 
   const handleSearchChange = (val: string) => {
     if (!searchKeyword && val && !hasPushedSearchRef.current) { window.history.pushState({ action: "search" }, ""); hasPushedSearchRef.current = true; } 
-    else if (searchKeyword && !val && hasPushedSearchRef.current) { safeBack(); hasPushedSearchRef.current = false; return; } // ★修正
+    else if (searchKeyword && !val && hasPushedSearchRef.current) { safeBack(); hasPushedSearchRef.current = false; return; }
     setSearchKeyword(val);
   };
 
@@ -278,9 +275,6 @@ export function useMailApp() {
       }
       if (matchedRoom) { groups[matchedRoom].push({ ...email, isMe: true }); } 
       else {
-        const isTrashed = email.labelIds?.includes("TRASH");
-        if (isTrashed && !checkTrash) return;
-        if (!isTrashed && !checkInbox && checkTrash) return;
         let newRoomName = "Unknown";
         if (email.to) {
           const toMatch = email.to.split(",")[0]; 
@@ -298,40 +292,46 @@ export function useMailApp() {
   const senderList = useMemo(() => {
     return Object.keys(groupedEmails).filter((sender) => {
       const config = chatConfigs[sender];
-      if (!config?.isHidden) return true;
-      if (config.unhideOnNew && config.hiddenAtDate && groupedEmails[sender][0]) {
-        const latestTime = new Date(groupedEmails[sender][0].date).getTime();
-        const hiddenTime = new Date(config.hiddenAtDate).getTime();
-        if (latestTime > hiddenTime) { updateChatConfig(sender, { isHidden: false }); return true; }
+      if (config?.isHidden) return false;
+
+      // ★修正: このチャットに「現在のチェックボックス条件を満たすメール」か「プロンプトで許可されたメール」があるかチェック
+      const hasDisplayableEmail = groupedEmails[sender].some((e: any) => {
+        if (config?.isHidden) return false;
+        if (revealedCrossPrompts.includes(e.id)) return true;
+        const labels = e.labelIds || [];
+        const isTrash = labels.includes("TRASH");
+        const isSpam = labels.includes("SPAM");
+        if (isTrash) return checkTrash;
+        if (isSpam) return checkSpam;
+        return checkInbox;
+      });
+
+      if (!hasDisplayableEmail && !config?.isPinned) return false;
+
+      if (checkHasSent) {
+        const hasSent = groupedEmails[sender].some((e: any) => e.isMe || e.labelIds?.includes("SENT"));
+        if (!hasSent) return false;
       }
-      return false;
-    }).filter((sender) => {
-      if (!checkHasSent) return true;
-      return groupedEmails[sender].some((e: any) => e.isMe || e.labelIds?.includes("SENT"));
+      return true;
     }).sort((a, b) => {
       const pinA = chatConfigs[a]?.isPinned ? 1 : 0; const pinB = chatConfigs[b]?.isPinned ? 1 : 0; if (pinA !== pinB) return pinB - pinA;
       const timeA = new Date(groupedEmails[a][0].date).getTime(); const timeB = new Date(groupedEmails[b][0].date).getTime(); return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
-  }, [groupedEmails, chatConfigs, checkHasSent]); 
+  }, [groupedEmails, chatConfigs, checkHasSent, checkInbox, checkSpam, checkTrash, revealedCrossPrompts]); 
 
   const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined); 
   const hiddenMsgs = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId !== undefined).map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ", date: new Date().toISOString() });
 
-  const openChat = (sender: string) => { setSelectedSender(sender); setSelectionMode("none"); setSelectedIds([]); setReplyToMessage(null); setMsgStatusMessage(null); if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`); };
-
   const safeBack = () => {
     const state = window.history.state;
-    // 履歴スタックがRe:Mailの内部アクションである場合のみブラウザバックを許可
     if (state && (state.action || state.chat)) {
       window.history.back();
     } else {
-      // 履歴が空の場合はアプリを閉じず、画面上の状態だけを強制リセットする
-      setModal(null);
-      setContextMenu(null);
-      setSelectionMode("none");
-      setSelectedIds([]);
+      setModal(null); setContextMenu(null); setSelectionMode("none"); setSelectedIds([]);
     }
   };
+
+  const openChat = (sender: string) => { setSelectedSender(sender); setSelectionMode("none"); setSelectedIds([]); setReplyToMessage(null); setMsgStatusMessage(null); if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`); };
 
   const handleMenuBarClick = (mode: SelectionMode) => {
     if (mode === "chat_reset" || mode === "msg_reset") {
@@ -343,7 +343,7 @@ export function useMailApp() {
     }
 
     if (selectionMode === mode) {
-      if (selectedIds.length === 0) { safeBack(); return; } // ★修正
+      if (selectedIds.length === 0) { safeBack(); return; } 
       const targetMode = mode.startsWith("chat") ? "chat" : "msg";
       let actionType: any = "confirm_hide";
       if (mode.includes("delete")) actionType = "confirm_delete"; 
@@ -367,9 +367,10 @@ export function useMailApp() {
   };
 
   const handleBackgroundClick = () => { 
-    if (modal || contextMenu) return; // ★修正: 確認画面(モーダル)やメニューが出ている時は背景キャンセルを完全無効化！
-    if (selectionMode !== "none") safeBack(); // ★修正
+    if (modal || contextMenu) return; 
+    if (selectionMode !== "none") safeBack(); 
   };
+
   const toggleSelection = (id: string) => setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
 
   const handleSend = async () => {
@@ -401,7 +402,7 @@ export function useMailApp() {
         }
         updateChatConfig(targetId, { isPinned: true, forceFetch, persistedData: pData });
     });
-    setPersistedEmails(pMsgs); safeBack(); // ★修正
+    setPersistedEmails(pMsgs); safeBack(); 
   };
 
   const executeConfirmedAction = async () => {
@@ -460,7 +461,7 @@ export function useMailApp() {
     }
     else if (type === "confirm_unhide") { targets.forEach(target => updateChatConfig(target, { isHidden: false })); }
     
-    safeBack(); // ★修正
+    safeBack(); 
   };
 
   const handleContextMenuAction = (action: string, target: any) => {
@@ -474,7 +475,6 @@ export function useMailApp() {
     if (action === "reset") { setResetOptions({ pin: true, hide: true, name: true }); newModal = { type: "confirm_reset", targetMode: "specific_chat", targets: [targetId] }; }
     if (action === "rename") { setRenameInput(chatConfigs[targetId]?.customName || targetId); newModal = { type: "rename", targetMode: mode, targets: [targetId] }; }
     
-    // ★修正: pushState に window.location.href を追加
     if (newModal) { setModal(newModal as ModalState); window.history.pushState({ action: "modal" }, "", window.location.href); }
     if (action === "unpin") { updateChatConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null }); setPersistedEmails(prev => prev.filter(e => e.id !== targetId && e.senderRoom !== targetId)); }
     if (action === "reply") setReplyToMessage(target);
@@ -529,9 +529,10 @@ export function useMailApp() {
       const targetSenderLower = selectedSender!.toLowerCase();
       while (!hasFoundTargetMsg && tempToken && loopCount < maxLoops) {
         if (activeLoadRef.current !== currentLoadId) break;
-        loopCount++; let qParts = []; let orLabels = [];
-        if (checkInbox) orLabels.push("in:inbox", "in:sent"); if (checkSpam) orLabels.push("in:spam"); if (checkTrash) orLabels.push("in:trash");
-        if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`); if (searchKeyword) qParts.push(searchKeyword);
+        loopCount++; 
+        // ★修正: 特定のチャット内の過去メールを探すため、ここで in:inbox などの縛りを外す
+        let qParts = []; 
+        if (searchKeyword) qParts.push(searchKeyword);
 
         const params = new URLSearchParams({ maxResults: "100", q: qParts.join(" ").trim(), includeTrash: "true", pageToken: tempToken });
         const res = await fetch(`/api/emails?${params.toString()}`);
@@ -566,7 +567,7 @@ export function useMailApp() {
       currentNextPageToken, chatStatusMessage, msgStatusMessage, isLoadingMoreChats,
       replySubject, replyBody, isSending, replyToMessage,
       hasMouse, isMobile, selectionMode, selectedIds, contextMenu, modal, renameInput,
-      resetOptions, moveDestination, revealedCrossPrompts
+      resetOptions, moveDestination, revealedCrossPrompts, boxColors
     },
     actions: {
       setSearchKeyword, setCheckInbox, setCheckSpam, setCheckTrash, setCheckHasSent,
@@ -574,10 +575,9 @@ export function useMailApp() {
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,
       handleSend, executePin, executeConfirmedAction, handleContextMenuAction,
-      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack // ★追加
+      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
-    // ★修正：必要な Ref をすべてエクスポートに追加
     refs: { touchTimer, hasPushedSelectRef, hasPushedSearchRef, activeLoadRef, searchTimeoutRef }
   };
 }

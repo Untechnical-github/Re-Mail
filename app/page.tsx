@@ -64,15 +64,14 @@ export default function Home() {
              {state.isLoading && <div className="text-xs text-[#5865F2] font-bold p-2 text-center animate-pulse">読み込み中...</div>}
              {computed.senderList.map((sender) => {
               const allEmails = computed.groupedEmails[sender] || [];
-              // ★修正: メッセージ非表示を除外した表示用リストを基準にする
-              const visibleEmails = allEmails.filter(e => !state.chatConfigs[e.id]?.isHidden);
+              const visibleEmails = allEmails.filter((e: any) => !state.chatConfigs[e.id]?.isHidden);
               const latestEmail = visibleEmails[0] || allEmails[0];
               if (!latestEmail) return null;
 
               const isSelected = state.selectedIds.includes(sender);
               const isOpened = state.selectedSender === sender && !state.isMobile;
               const config = state.chatConfigs[sender];
-              const count = visibleEmails.length; // ★修正: カウントも非表示分を差し引く
+              const count = visibleEmails.length;
               const latestDate = new Date(latestEmail.date).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
               let previewSubject = latestEmail.subject || "No Subject";
@@ -80,7 +79,7 @@ export default function Home() {
               
               if (state.searchKeyword) {
                  const kwLower = state.searchKeyword.toLowerCase();
-                 const matched = visibleEmails.find(e => e.subject?.toLowerCase().includes(kwLower) || e.body?.toLowerCase().includes(kwLower) || e.from?.toLowerCase().includes(kwLower) || e.to?.toLowerCase().includes(kwLower));
+                 const matched = visibleEmails.find((e: any) => e.subject?.toLowerCase().includes(kwLower) || e.body?.toLowerCase().includes(kwLower) || e.from?.toLowerCase().includes(kwLower) || e.to?.toLowerCase().includes(kwLower));
                  if (matched) {
                     previewSubject = matched.subject || "No Subject";
                     const bodyStr = matched.body || "";
@@ -92,40 +91,71 @@ export default function Home() {
                  }
               }
 
-              const isMoveGrayedOut = state.selectionMode === "chat_move" && state.moveDestination && computed.groupedEmails[sender].every(e => e.labelIds?.includes(state.moveDestination!));
+              const isMoveGrayedOut = state.selectionMode === "chat_move" && state.moveDestination && allEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!));
+
+              // ★追加: チャットの枠色（グラデーション）の算出
+              const colorsSet = new Set<string>();
+              visibleEmails.forEach((e: any) => {
+                 const isTrash = e.labelIds?.includes("TRASH");
+                 const isSpam = e.labelIds?.includes("SPAM");
+                 const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (!isTrash && !isSpam && state.checkInbox);
+                 
+                 if (isCurrentBox || state.revealedCrossPrompts.includes(e.id)) {
+                     if (isTrash) colorsSet.add(state.boxColors.trash);
+                     else if (isSpam) colorsSet.add(state.boxColors.spam);
+                     else colorsSet.add(state.boxColors.inbox);
+                 }
+              });
+              const colors = Array.from(colorsSet);
+              
+              let wrapperStyle: React.CSSProperties = { borderRadius: '0.5rem' };
+              let innerClass = `flex items-center px-2 py-2 rounded cursor-pointer transition ${isMoveGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${state.selectionMode.startsWith("chat_") ? (isSelected ? 'bg-[rgba(88,101,242,0.2)]' : 'hover:bg-[#35373C]') : (isOpened ? 'bg-[#404249] text-white' : 'hover:bg-[#35373C] text-gray-400 hover:text-gray-200')}`;
+              let innerStyle: React.CSSProperties = {};
+
+              if (colors.length === 1) {
+                  wrapperStyle = { ...wrapperStyle, border: `2px solid ${colors[0]}` };
+              } else if (colors.length > 1) {
+                  wrapperStyle = { ...wrapperStyle, background: `linear-gradient(45deg, ${colors.join(', ')})`, padding: '2px', border: 'none' };
+                  innerClass = innerClass.replace('px-2 py-2', 'px-2 py-1.5'); 
+                  innerStyle = { borderRadius: '0.4rem', backgroundColor: isOpened ? '#404249' : '#2B2D31', width: '100%', height: '100%' };
+              } else {
+                  wrapperStyle = { ...wrapperStyle, border: `2px solid transparent` };
+              }
 
               return (
-                <div 
-                  key={sender}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (isMoveGrayedOut) return;
-                    if (state.selectionMode.startsWith("chat_")) actions.toggleSelection(sender);
-                    else actions.openChat(sender);
-                  }}
-                  onContextMenu={(e) => { e.preventDefault(); actions.setContextMenu({ type: "chat", target: sender, x: e.clientX, y: e.clientY }); }}
-                  onTouchStart={(e) => { if (!state.hasMouse) refs.touchTimer.current = setTimeout(() => { actions.setContextMenu({ type: "chat", target: sender, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
-                  onTouchEnd={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
-                  onTouchMove={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
-                  className={`flex items-center px-2 py-2 rounded cursor-pointer transition ${isMoveGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${state.selectionMode.startsWith("chat_") ? (isSelected ? 'bg-[rgba(88,101,242,0.2)] border border-[#5865F2]' : 'hover:bg-[#35373C] border border-transparent') : (isOpened ? 'bg-[#404249] text-white' : 'hover:bg-[#35373C] text-gray-400 hover:text-gray-200')}`}
-                >
-                  {state.selectionMode.startsWith("chat_") && (
-                    <div className={`w-4 h-4 mr-3 rounded-sm flex items-center justify-center border ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500'}`}>
-                      {isSelected && <div className="w-2 h-2 bg-white rounded-sm"></div>}
-                    </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex justify-between items-baseline">
-                      <div className="flex items-center gap-1 truncate pr-2">
-                        {config?.isPinned && <span className="text-[#FEE75C] text-[10px]">📌</span>}
-                        <span className="font-bold text-sm truncate"><HighlightText text={config?.customName || sender} highlight={state.searchKeyword} /></span>
+                <div key={sender} style={wrapperStyle} className="mb-1">
+                  <div 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (isMoveGrayedOut) return;
+                      if (state.selectionMode.startsWith("chat_")) actions.toggleSelection(sender);
+                      else actions.openChat(sender);
+                    }}
+                    onContextMenu={(e) => { e.preventDefault(); actions.setContextMenu({ type: "chat", target: sender, x: e.clientX, y: e.clientY }); }}
+                    onTouchStart={(e) => { if (!state.hasMouse) refs.touchTimer.current = setTimeout(() => { actions.setContextMenu({ type: "chat", target: sender, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
+                    onTouchEnd={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
+                    onTouchMove={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
+                    className={innerClass}
+                    style={innerStyle}
+                  >
+                    {state.selectionMode.startsWith("chat_") && (
+                      <div className={`w-4 h-4 mr-3 rounded-sm flex items-center justify-center border ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500'}`}>
+                        {isSelected && <div className="w-2 h-2 bg-white rounded-sm"></div>}
                       </div>
-                      <span className="text-[10px] text-gray-500 flex-shrink-0">{latestDate}</span>
-                    </div>
-                    <div className="text-[10px] text-[#5865F2] font-bold mt-0.5">{count}件のメッセージ</div>
-                    <div className="text-xs text-gray-500 truncate mt-0.5">
-                      <HighlightText text={previewSubject} highlight={state.searchKeyword} />
-                      {previewSnippet && <span className="ml-1 text-gray-400">- <HighlightText text={previewSnippet} highlight={state.searchKeyword} /></span>}
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex justify-between items-baseline">
+                        <div className="flex items-center gap-1 truncate pr-2">
+                          {config?.isPinned && <span className="text-[#FEE75C] text-[10px]">📌</span>}
+                          <span className="font-bold text-sm truncate"><HighlightText text={config?.customName || sender} highlight={state.searchKeyword} /></span>
+                        </div>
+                        <span className="text-[10px] text-gray-500 flex-shrink-0">{latestDate}</span>
+                      </div>
+                      <div className="text-[10px] text-[#5865F2] font-bold mt-0.5">{count}件のメッセージ</div>
+                      <div className="text-xs text-gray-500 truncate mt-0.5">
+                        <HighlightText text={previewSubject} highlight={state.searchKeyword} />
+                        {previewSnippet && <span className="ml-1 text-gray-400">- <HighlightText text={previewSnippet} highlight={state.searchKeyword} /></span>}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -154,7 +184,17 @@ export default function Home() {
                 {state.isMobile && (
                   <button onClick={(e) => { e.stopPropagation(); actions.safeBack(); }} className="text-gray-400 hover:text-white font-bold p-1 text-lg transition active:scale-90">←</button>
                 )}
-                <h2 className="font-bold text-base truncate flex-1 text-white">{state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}</h2>
+                {/* ★修正: ヘッダーに宛先名とアドレスを並べて表示 */}
+                <div className="flex-1 min-w-0 flex items-baseline gap-2">
+                  <h2 className="font-bold text-base truncate text-white">{state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}</h2>
+                  {(() => {
+                    const firstPartner = computed.groupedEmails[state.selectedSender!].find((e: any) => !e.isMe && !e.from.includes(auth.session?.user?.email || ""));
+                    if (!firstPartner) return null;
+                    const addrMatch = firstPartner.from.match(/<([^>]+)>/);
+                    const addr = addrMatch ? addrMatch[1].trim() : firstPartner.from.trim();
+                    return <span className="text-xs text-gray-500 truncate">{addr}</span>;
+                  })()}
+                </div>
               </header>
 
               <ActionBar app={app} isChat={false} />
@@ -171,43 +211,44 @@ export default function Home() {
               )}
 
               <div className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin cursor-default">
-                {computed.groupedEmails[state.selectedSender!].map((email) => {
-                    // ★追加: メッセージ単位で非表示にされたものはトーク画面で描画しない
+                {computed.groupedEmails[state.selectedSender!].map((email: any) => {
                     if (state.chatConfigs[email.id]?.isHidden) return null;
 
                     const isMe = email.isMe || email.from.includes(auth.session?.user?.email || "");
                     const isSelected = state.selectedIds.includes(email.id);
                     
-                    const isTrashed = email.labelIds?.includes("TRASH");
-                    const isSent = email.labelIds?.includes("SENT") || email.isMe;
+                    const isTrash = email.labelIds?.includes("TRASH");
+                    const isSpam = email.labelIds?.includes("SPAM");
+                    const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (!isTrash && !isSpam && state.checkInbox);
 
-                    if (isSent && isTrashed && !state.checkTrash && !state.revealedCrossPrompts.includes(email.id)) {
+                    // ★修正: 送信者に関わらず、現在のボックスにないメールにはプロンプトを出す
+                    if (!isCurrentBox && !state.revealedCrossPrompts.includes(email.id)) {
+                        const boxName = isTrash ? "ゴミ箱" : isSpam ? "迷惑メール" : "受信箱";
+                        const boxColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : state.boxColors.inbox;
                         return (
                             <div key={`prompt-${email.id}`} className="flex w-full justify-center my-4 cursor-default">
-                                <button onClick={(e) => { e.stopPropagation(); actions.setRevealedCrossPrompts(p => [...p, email.id]); }} className="bg-[#2B2D31] text-[#FEE75C] px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] hover:bg-[#35373C] transition shadow-sm">
-                                    ゴミ箱に自分が返信したメールが含まれています。読み込みますか？
-                                </button>
-                            </div>
-                        );
-                    }
-                    if (isSent && !isTrashed && state.checkTrash && !state.checkInbox && !state.revealedCrossPrompts.includes(email.id)) {
-                        return (
-                            <div key={`prompt-${email.id}`} className="flex w-full justify-center my-4 cursor-default">
-                                <button onClick={(e) => { e.stopPropagation(); actions.setRevealedCrossPrompts(p => [...p, email.id]); }} className="bg-[#2B2D31] text-[#5865F2] px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] hover:bg-[#35373C] transition shadow-sm">
-                                    受信箱に自分が返信したメールが含まれています。読み込みますか？
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); actions.setRevealedCrossPrompts(p => [...p, email.id]); }} 
+                                  style={{ borderColor: boxColor, color: boxColor }} 
+                                  className="bg-[#2B2D31] px-4 py-2 rounded-full text-xs font-bold border-2 hover:bg-[#35373C] transition shadow-sm"
+                                >
+                                    {boxName}のメールが含まれています。読み込みますか？
                                 </button>
                             </div>
                         );
                     }
 
                     const isMoveGrayedOut = state.selectionMode === "msg_move" && state.moveDestination && email.labelIds?.includes(state.moveDestination);
+                    
+                    // ★追加: メッセージの枠色
+                    const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : state.boxColors.inbox;
 
                     return (
                       <div 
                         id={`msg-${email.id}`}
                         key={email.id} 
                         onClick={(e) => {
-                          e.stopPropagation();
+                          e.stopPropagation(); 
                           if (isMoveGrayedOut) return;
                           if (state.selectionMode.startsWith("msg_")) actions.toggleSelection(email.id);
                         }}
@@ -227,18 +268,13 @@ export default function Home() {
 
                         <div className={`flex flex-col max-w-[75%] ${isMe ? 'items-end' : 'items-start'}`}>
                            <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
-                              {/* ★修正: 宛先名の右側にメールアドレスを表示する */}
-                              {!isMe && (
-                                <>
-                                  <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>
-                                  <span className="text-gray-500 font-normal">{email.from.includes("<") ? ` <${email.from.split("<")[1].replace(/>/g, "").trim()}>` : ""}</span>
-                                </>
-                              )}
+                              {/* ★修正: 宛先名の横のアドレスを消去し、名前のみにする */}
+                              {!isMe && <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>}
                               <span>{new Date(email.date).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                            </div>
                            <div 
-                              className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 border border-[#1E1F22] rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
-                              style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                              className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
+                              style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', border: `2px solid ${msgColor}` }}
                               onContextMenu={(e) => { e.preventDefault(); actions.setContextMenu({ type: "msg", target: email, x: e.clientX, y: e.clientY }); }}
                               onTouchStart={(e) => { if (!state.hasMouse) refs.touchTimer.current = setTimeout(() => { actions.setContextMenu({ type: "msg", target: email, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
                               onTouchEnd={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
