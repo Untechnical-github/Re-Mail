@@ -16,7 +16,7 @@ export const HighlightText = ({ text, highlight }: { text: string, highlight: st
 
 export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
-  const { selectionMode, selectedIds } = app.state;
+  const { selectionMode, selectedIds, checkInbox } = app.state;
   const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode } = app.actions;
 
   const isMode = (action: string) => selectionMode === `${modePrefix}_${action}`;
@@ -40,7 +40,8 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   return (
     <div className={containerClass} onClick={(e) => e.stopPropagation()}>
-      <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin", "bg-[#5865F2]")}>{renderText("pin", "ピン留め")}</button>
+      {/* ★修正: 受信箱にチェックが入っている時のみピン留めボタンを表示 */}
+      {checkInbox && <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin", "bg-[#5865F2]")}>{renderText("pin", "ピン留め")}</button>}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_move`)} className={getBtnClass("move", "bg-[#5865F2]")}>{renderText("move", "移動")}</button>
       <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>{renderText("hide", "非表示(Re:Mail)")}</button>
       <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", "bg-[#DA373C]")}>{renderText("delete", "削除(Gmail)")}</button>
@@ -48,8 +49,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
       <button
         onClick={() => {
           setModal({ type: "unhide_select", targetMode: modePrefix, targets: [] });
-          setSelectedIds([]); setSelectionMode("none"); 
-          window.history.pushState({ action: "modal" }, "", window.location.href); // ★追加
+          setSelectedIds([]); setSelectionMode("none"); window.history.pushState({ action: "modal" }, "", window.location.href);
         }}
         className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith(modePrefix + "_") ? 'opacity-30 pointer-events-none' : ''}`}
       >

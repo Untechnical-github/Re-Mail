@@ -38,7 +38,7 @@ export function useMailApp() {
   const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true });
   const [moveDestination, setMoveDestination] = useState<"INBOX" | "SPAM" | "TRASH" | null>(null);
   const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
-  const [pinType, setPinType] = useState<boolean | null>(null); // ★追加: ピン留めの種類（true: 永続, false: 通常）
+  const [pinType, setPinType] = useState<boolean | null>(null);
 
   const [boxColors, setBoxColors] = useState({
     inbox: "#5865F2", 
@@ -50,6 +50,9 @@ export function useMailApp() {
   const hasPushedSearchRef = useRef(false);
   const hasPushedSelectRef = useRef(false);
   const activeLoadRef = useRef<number>(0);
+  
+  const chatConfigsRef = useRef(chatConfigs);
+  useEffect(() => { chatConfigsRef.current = chatConfigs; }, [chatConfigs]);
 
   const getCacheKey = (flags: { inbox: boolean; spam: boolean; trash: boolean }) => {
     return `remail_feed_cache_v2_i${flags.inbox ? 1 : 0}s${flags.spam ? 1 : 0}t${flags.trash ? 1 : 0}`;
@@ -58,8 +61,10 @@ export function useMailApp() {
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
     const isDisplayable = (e: any) => {
-      if (chatConfigs[e.id]?.forceFetch) return true;
-      if (e.senderRoom && chatConfigs[e.senderRoom]?.forceFetch) return true;
+      // ★修正: 永続ピン留め（forceFetch）による強制表示は「受信箱にチェックが入っている時」のみ許可
+      const isForceFetched = checkInbox && (chatConfigs[e.id]?.forceFetch || (e.senderRoom && chatConfigs[e.senderRoom]?.forceFetch));
+      if (isForceFetched) return true;
+
       if (searchKeyword) {
         const keywordLower = searchKeyword.toLowerCase();
         const matchesKeyword = e.subject?.toLowerCase().includes(keywordLower) || 
@@ -113,11 +118,51 @@ export function useMailApp() {
   };
 
   const updateChatConfig = async (targetId: string, updates: Partial<ChatConfig>) => {
-    const nextConfig = { ...chatConfigs[targetId], ...updates };
+    const nextConfig = { ...chatConfigsRef.current[targetId], ...updates };
     setChatConfigs(prev => ({ ...prev, [targetId]: nextConfig }));
     let nameToSave = nextConfig.customName || "";
     if (nextConfig.forceFetch || nextConfig.roomId) nameToSave = JSON.stringify({ name: nextConfig.customName, forceFetch: nextConfig.forceFetch, data: nextConfig.persistedData, roomId: nextConfig.roomId });
     try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
+  };
+
+  // ★追加: 移動・削除・受信時に、自動的にD1の「永続データ」を受信箱のみに同期する強力なフィルターエンジン
+  const syncPins = (latestEmails: any[], currentConfigs: Record<string, ChatConfig>) => {
+    const pMsgs: any[] = [];
+    const updatesToD1: {id: string, updates: any}[] = [];
+
+    Object.keys(currentConfigs).forEach(targetId => {
+      const config = currentConfigs[targetId];
+      if (config?.isPinned && config.forceFetch) {
+        const isMsgPin = config.roomId !== undefined;
+
+        if (isMsgPin) {
+          const msg = latestEmails.find(e => e.id === targetId);
+          if (!msg || !msg.labelIds?.includes("INBOX")) {
+            // 受信箱から消えたら永続を解除
+            updatesToD1.push({ id: targetId, updates: { isPinned: false, forceFetch: false, persistedData: null }});
+          } else {
+            pMsgs.push({ ...msg, senderRoom: config.roomId });
+          }
+        } else {
+          // チャットピンの場合は受信箱のメールだけを抽出して再構築
+          const chatEmails = latestEmails.filter(e => {
+             const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
+             return room === targetId && e.labelIds?.includes("INBOX");
+          }).map(e => ({...e, senderRoom: targetId}));
+          
+          const oldIds = (config.persistedData || []).map((e:any)=>e.id).join(",");
+          const newIds = chatEmails.map((e:any)=>e.id).join(",");
+          
+          if (oldIds !== newIds) {
+             updatesToD1.push({ id: targetId, updates: { persistedData: chatEmails }});
+          }
+          pMsgs.push(...chatEmails);
+        }
+      }
+    });
+
+    updatesToD1.forEach(u => updateChatConfig(u.id, u.updates));
+    return pMsgs;
   };
 
   useEffect(() => {
@@ -206,7 +251,12 @@ export function useMailApp() {
           newMessages.forEach((m: any) => emailMap.set(m.id, m));
           updatedEmails = Array.from(emailMap.values());
         }
+        
+        // ★修正: 受信などでメール一覧が更新された時も、ピン留めデータを最新に同期する
+        const nextPMsgs = syncPins(updatedEmails, chatConfigsRef.current);
+        setPersistedEmails(nextPMsgs);
         setEmails(updatedEmails);
+        
         if (!isSilent || updatedEmails.length <= targetLimit) setCurrentNextPageToken(data.nextPageToken || null);
         if (isCacheTarget) await localforage.setItem(getCacheKey(flags), { emails: updatedEmails.slice(0, 100), flags: flags });
         return true;
@@ -215,7 +265,6 @@ export function useMailApp() {
     } catch (error) { return false; } finally { if (!isSilent && !getIsCancelled()) setIsLoading(false); }
   };
 
-  // ★修正: 他ボックスのメールを確実に一本釣りする強力なバックグラウンドフェッチ
   const fetchChatCrossbox = async (sender: string) => {
     try {
       const addrSet = new Set<string>();
@@ -262,7 +311,6 @@ export function useMailApp() {
           let snapshot: any = null;
           try { snapshot = await localforage.getItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash })); } catch (e) {}
           
-          // ★修正: キャッシュ復元時に、開いているチャットのメールと許可済みのメールを上書きから「保護」する
           const protectedEmails = emails.filter(e => {
              if (revealedCrossPrompts.includes(e.id)) return true;
              if (selectedSender) {
@@ -287,7 +335,6 @@ export function useMailApp() {
         if (!isCancelled) setChatStatusMessage(null);
         await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled);
         
-        // ★修正: フィルター切り替え後、開いているチャットの別ボックスメールを再確保する
         if (selectedSender && !isCancelled) {
            fetchChatCrossbox(selectedSender);
         }
@@ -362,7 +409,8 @@ export function useMailApp() {
         return checkInbox;
       });
 
-      if (!hasDisplayableEmail && !config?.isPinned) return false;
+      // ★修正: 永続ピン留めであっても、受信箱のチェックが外れていればリストに表示しない
+      if (!hasDisplayableEmail && (!config?.isPinned || !checkInbox)) return false;
 
       if (checkHasSent) {
         const hasSent = groupedEmails[sender].some((e: any) => e.isMe || e.labelIds?.includes("SENT"));
@@ -411,18 +459,17 @@ export function useMailApp() {
       const targetMode = mode.startsWith("chat") ? "chat" : "msg";
       let actionType: any = "confirm_hide";
       if (mode.includes("delete")) actionType = "confirm_delete"; 
-      if (mode.includes("pin")) actionType = "confirm_pin_execute"; // ★修正: アクションバーからの実行時は専用の最終確認モーダルへ
+      if (mode.includes("pin")) actionType = "confirm_pin_execute"; 
       if (mode.includes("move")) actionType = "confirm_move";
       
       setModal({ type: actionType, targetMode, targets: selectedIds });
       window.history.replaceState({ action: "modal" }, "", window.location.href); 
     } else {
       if (mode.includes("move")) { 
-        setModal({ type: "select_move_dest" as any, targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] }); 
+        setModal({ type: "select_move_dest", targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] }); 
         window.history.pushState({ action: "modal" }, "", window.location.href); 
         return; 
       }
-      // ★追加: ピン留め時も先に種類選択モーダルを開く
       if (mode.includes("pin")) { 
         setModal({ type: "select_pin_type" as any, targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] }); 
         window.history.pushState({ action: "modal" }, "", window.location.href); 
@@ -467,8 +514,20 @@ export function useMailApp() {
     modal.targets.forEach(targetId => {
         let pData = null;
         if (forceFetch) {
-            if (modal.targetMode === "chat") { pData = (groupedEmails[targetId] || []).map(e => ({ ...e, senderRoom: targetId })); pMsgs.push(...pData); } 
-            else { const found = allUniqueEmails.find(e => e.id === targetId); if (found) { pData = { ...found, senderRoom: selectedSender }; pMsgs.push(pData); } }
+            if (modal.targetMode === "chat") { 
+                // ★修正: 永続化するのは受信箱のメールのみ！
+                pData = (groupedEmails[targetId] || [])
+                           .filter(e => e.labelIds?.includes("INBOX"))
+                           .map(e => ({ ...e, senderRoom: targetId })); 
+                pMsgs.push(...pData); 
+            } 
+            else { 
+                const found = allUniqueEmails.find(e => e.id === targetId); 
+                if (found && found.labelIds?.includes("INBOX")) { 
+                    pData = { ...found, senderRoom: selectedSender }; 
+                    pMsgs.push(pData); 
+                } 
+            }
         }
         updateChatConfig(targetId, { isPinned: true, forceFetch, persistedData: pData });
     });
@@ -479,7 +538,6 @@ export function useMailApp() {
     if (!modal) return;
     const { type, targets, targetMode } = modal;
     
-    // ★修正: 削除や移動時にオプティミスティック更新（即時反映）を行い、体感速度をMAXにする
     if (type === "confirm_delete") {
       let deleteEmails: any[] = [];
       if (targetMode === "chat") { targets.forEach(chat => deleteEmails.push(...(groupedEmails[chat] || []))); } 
@@ -499,8 +557,10 @@ export function useMailApp() {
           };
           
           const nextEmails = emails.map(applyTrashLabels).filter(e => !permanentIds.includes(e.id));
+          const nextPMsgs = syncPins(nextEmails, chatConfigsRef.current);
+          
           setEmails(nextEmails); 
-          setPersistedEmails(persistedEmails.map(applyTrashLabels).filter(e => !permanentIds.includes(e.id)));
+          setPersistedEmails(nextPMsgs);
           setRevealedCrossPrompts(prev => prev.filter(id => !permanentIds.includes(id) && !trashIds.includes(id)));
 
           localforage.setItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash }), { emails: nextEmails.slice(0, 100), flags: { inbox: checkInbox, spam: checkSpam, trash: checkTrash } });
@@ -524,8 +584,10 @@ export function useMailApp() {
           };
           
           const nextEmails = emails.map(applyNewLabels);
+          const nextPMsgs = syncPins(nextEmails, chatConfigsRef.current);
+          
           setEmails(nextEmails); 
-          setPersistedEmails(persistedEmails.map(applyNewLabels));
+          setPersistedEmails(nextPMsgs);
           setRevealedCrossPrompts(prev => prev.filter(id => !idsToMove.includes(id)));
 
           localforage.setItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash }), { emails: nextEmails.slice(0, 100), flags: { inbox: checkInbox, spam: checkSpam, trash: checkTrash } });
@@ -655,7 +717,7 @@ export function useMailApp() {
     } catch (error) { setMsgStatusMessage("エラーが発生しました。"); } finally { setIsLoadingMore(false); }
   };
 
-  const pinnedMsgsInChat = (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned);
+  const pinnedMsgsInChat = (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned && e.labelIds?.includes("INBOX"));
 
   return {
     auth: { session, status },
@@ -665,7 +727,7 @@ export function useMailApp() {
       currentNextPageToken, chatStatusMessage, msgStatusMessage, isLoadingMoreChats,
       replySubject, replyBody, isSending, replyToMessage,
       hasMouse, isMobile, selectionMode, selectedIds, contextMenu, modal, renameInput,
-      resetOptions, moveDestination, revealedCrossPrompts, boxColors, pinType // ★追加
+      resetOptions, moveDestination, revealedCrossPrompts, boxColors, pinType
     },
     actions: {
       setSearchKeyword, setCheckInbox, setCheckSpam, setCheckTrash, setCheckHasSent,
@@ -673,7 +735,7 @@ export function useMailApp() {
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,
       handleSend, executePin, executeConfirmedAction, handleContextMenuAction,
-      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, setPinType // ★追加
+      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, setPinType
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
     refs: { touchTimer, hasPushedSelectRef, hasPushedSearchRef, activeLoadRef, searchTimeoutRef }

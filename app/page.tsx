@@ -91,7 +91,11 @@ export default function Home() {
                  }
               }
 
+              // ★修正: アクションバーで「ピン留め」選択モードの時、受信箱のメールがないチャットはグレーアウト
               const isMoveGrayedOut = state.selectionMode === "chat_move" && state.moveDestination && allEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!));
+              const hasInbox = allEmails.some((e: any) => e.labelIds?.includes("INBOX"));
+              const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasInbox;
+              const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut;
 
               const colorsSet = new Set<string>();
               visibleEmails.forEach((e: any) => {
@@ -108,7 +112,7 @@ export default function Home() {
               const colors = Array.from(colorsSet);
               
               let wrapperStyle: React.CSSProperties = { borderRadius: '0.5rem' };
-              let innerClass = `flex items-center px-2 py-2 rounded cursor-pointer transition ${isMoveGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${state.selectionMode.startsWith("chat_") ? (isSelected ? 'bg-[rgba(88,101,242,0.2)]' : 'hover:bg-[#35373C]') : (isOpened ? 'bg-[#404249] text-white' : 'hover:bg-[#35373C] text-gray-400 hover:text-gray-200')}`;
+              let innerClass = `flex items-center px-2 py-2 rounded cursor-pointer transition ${isActionGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${state.selectionMode.startsWith("chat_") ? (isSelected ? 'bg-[rgba(88,101,242,0.2)]' : 'hover:bg-[#35373C]') : (isOpened ? 'bg-[#404249] text-white' : 'hover:bg-[#35373C] text-gray-400 hover:text-gray-200')}`;
               let innerStyle: React.CSSProperties = {};
 
               if (colors.length === 1) {
@@ -126,7 +130,7 @@ export default function Home() {
                   <div 
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (isMoveGrayedOut) return;
+                      if (isActionGrayedOut) return;
                       if (state.selectionMode.startsWith("chat_")) actions.toggleSelection(sender);
                       else actions.openChat(sender);
                     }}
@@ -222,7 +226,6 @@ export default function Home() {
                     const boxName = isTrash ? "ゴミ箱" : isSpam ? "迷惑メール" : "受信箱";
                     const boxColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : state.boxColors.inbox;
 
-                    // ★修正: 別ボックスの未許可メールを「通常のメッセージと同じ外観」でボタン化して時系列に挟み込む
                     if (!isCurrentBox && !state.revealedCrossPrompts.includes(email.id)) {
                         const roundedClass = isMe ? 'rounded-2xl rounded-tr-sm' : 'rounded-2xl rounded-tl-sm';
                         return (
@@ -253,7 +256,11 @@ export default function Home() {
                         );
                     }
 
+                    // ★修正: アクションバーで「ピン留め」選択モードの時、受信箱にないメッセージはグレーアウト
                     const isMoveGrayedOut = state.selectionMode === "msg_move" && state.moveDestination && email.labelIds?.includes(state.moveDestination);
+                    const isMsgPinGrayedOut = state.selectionMode === "msg_pin" && !email.labelIds?.includes("INBOX");
+                    const isActionGrayedOut = isMoveGrayedOut || isMsgPinGrayedOut;
+                    
                     const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : state.boxColors.inbox;
 
                     return (
@@ -262,15 +269,15 @@ export default function Home() {
                         key={email.id} 
                         onClick={(e) => {
                           e.stopPropagation(); 
-                          if (isMoveGrayedOut) return;
+                          if (isActionGrayedOut) return;
                           if (state.selectionMode.startsWith("msg_")) actions.toggleSelection(email.id);
                         }}
-                        className={`flex w-full mb-6 cursor-default transition ${isMoveGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${isMe ? 'justify-end' : 'justify-start'}`}
+                        className={`flex w-full mb-6 cursor-default transition ${isActionGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${isMe ? 'justify-end' : 'justify-start'}`}
                       >
                         {state.selectionMode.startsWith("msg_") && (
                           <div className="flex-shrink-0 w-8 flex justify-center pt-3 mr-2">
                             <div className={`w-5 h-5 rounded-sm flex items-center justify-center border cursor-pointer ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500'}`}>
-                              {isSelected && <div className="w-2 h-2 bg-white rounded-sm"></div>}
+                              {isSelected && <div className="w-2.5 h-2.5 bg-white rounded-sm"></div>}
                             </div>
                           </div>
                         )}
