@@ -124,19 +124,22 @@ export function useMailApp() {
     try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
   };
 
-  const syncPins = (latestEmails: any[], currentConfigs: Record<string, ChatConfig>) => {
+  // ★修正: 永続ピン留めに加え、非表示設定も監視し、INBOXから外れたら自動的にクリーンアップする
+  const syncConfigs = (latestEmails: any[], currentConfigs: Record<string, ChatConfig>) => {
     const pMsgs: any[] = [];
     const updatesToD1: {id: string, updates: any}[] = [];
 
     Object.keys(currentConfigs).forEach(targetId => {
       const config = currentConfigs[targetId];
+      let hasUpdate = false;
+      let newConfig = { ...config };
+
       if (config?.isPinned) {
         const isMsgPin = config.roomId !== undefined;
-
         if (isMsgPin) {
           const msg = latestEmails.find(e => e.id === targetId);
           if (!msg || !msg.labelIds?.includes("INBOX")) {
-            updatesToD1.push({ id: targetId, updates: { isPinned: false, forceFetch: false, persistedData: null }});
+            newConfig.isPinned = false; newConfig.forceFetch = false; newConfig.persistedData = null; hasUpdate = true;
           } else if (config.forceFetch) {
             pMsgs.push({ ...msg, senderRoom: config.roomId });
           }
@@ -149,14 +152,33 @@ export function useMailApp() {
             
             const oldIds = (config.persistedData || []).map((e:any)=>e.id).join(",");
             const newIds = chatEmails.map((e:any)=>e.id).join(",");
-            
             if (oldIds !== newIds) {
-               updatesToD1.push({ id: targetId, updates: { persistedData: chatEmails.length > 0 ? chatEmails : null }});
+               newConfig.persistedData = chatEmails.length > 0 ? chatEmails : null; hasUpdate = true;
             }
             pMsgs.push(...chatEmails);
           }
         }
       }
+
+      if (config?.isHidden) {
+        const isMsgHide = config.roomId !== undefined;
+        if (isMsgHide) {
+          const msg = latestEmails.find(e => e.id === targetId);
+          if (!msg || !msg.labelIds?.includes("INBOX")) {
+            newConfig.isHidden = false; newConfig.hiddenAtDate = undefined; newConfig.roomId = undefined; hasUpdate = true;
+          }
+        } else {
+          const hasInbox = latestEmails.some(e => {
+             const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
+             return room === targetId && e.labelIds?.includes("INBOX");
+          });
+          if (!hasInbox) {
+            newConfig.isHidden = false; newConfig.hiddenAtDate = undefined; hasUpdate = true;
+          }
+        }
+      }
+
+      if (hasUpdate) updatesToD1.push({ id: targetId, updates: newConfig });
     });
 
     updatesToD1.forEach(u => updateChatConfig(u.id, u.updates));
@@ -250,7 +272,7 @@ export function useMailApp() {
           updatedEmails = Array.from(emailMap.values());
         }
         
-        const nextPMsgs = syncPins(updatedEmails, chatConfigsRef.current);
+        const nextPMsgs = syncConfigs(updatedEmails, chatConfigsRef.current);
         setPersistedEmails(nextPMsgs);
         setEmails(updatedEmails);
         
@@ -393,14 +415,16 @@ export function useMailApp() {
   const senderList = useMemo(() => {
     return Object.keys(groupedEmails).filter((sender) => {
       const config = chatConfigs[sender];
-      if (config?.isHidden) return false;
 
+      // ★修正: INBOXのメールのみが isHidden の影響を受ける。TRASHやSPAMはすり抜ける。
       const hasDisplayableEmail = groupedEmails[sender].some((e: any) => {
-        if (config?.isHidden) return false;
+        const isTrash = e.labelIds?.includes("TRASH");
+        const isSpam = e.labelIds?.includes("SPAM");
+        const isInbox = !isTrash && !isSpam;
+
+        if (isInbox && (chatConfigs[e.id]?.isHidden || config?.isHidden)) return false;
+
         if (revealedCrossPrompts.includes(e.id)) return true;
-        const labels = e.labelIds || [];
-        const isTrash = labels.includes("TRASH");
-        const isSpam = labels.includes("SPAM");
         if (isTrash) return checkTrash;
         if (isSpam) return checkSpam;
         return checkInbox;
@@ -414,7 +438,6 @@ export function useMailApp() {
       }
       return true;
     }).sort((a, b) => {
-      // ★修正: 受信箱にチェックが入っている時のみ、ピン留めを優先ソートする
       const pinA = (chatConfigs[a]?.isPinned && checkInbox) ? 1 : 0; 
       const pinB = (chatConfigs[b]?.isPinned && checkInbox) ? 1 : 0; 
       if (pinA !== pinB) return pinB - pinA;
@@ -557,7 +580,7 @@ export function useMailApp() {
           };
           
           const nextEmails = emails.map(applyTrashLabels).filter(e => !permanentIds.includes(e.id));
-          const nextPMsgs = syncPins(nextEmails, chatConfigsRef.current);
+          const nextPMsgs = syncConfigs(nextEmails, chatConfigsRef.current);
           
           setEmails(nextEmails); 
           setPersistedEmails(nextPMsgs);
@@ -584,7 +607,7 @@ export function useMailApp() {
           };
           
           const nextEmails = emails.map(applyNewLabels);
-          const nextPMsgs = syncPins(nextEmails, chatConfigsRef.current);
+          const nextPMsgs = syncConfigs(nextEmails, chatConfigsRef.current);
           
           setEmails(nextEmails); 
           setPersistedEmails(nextPMsgs);
@@ -717,7 +740,6 @@ export function useMailApp() {
     } catch (error) { setMsgStatusMessage("エラーが発生しました。"); } finally { setIsLoadingMore(false); }
   };
 
-  // ★修正: 📌も受信箱にチェックが入っている時だけ表示するよう連動
   const pinnedMsgsInChat = checkInbox ? (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned && e.labelIds?.includes("INBOX")) : [];
 
   return {

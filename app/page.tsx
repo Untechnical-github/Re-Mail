@@ -64,13 +64,22 @@ export default function Home() {
              {state.isLoading && <div className="text-xs text-[#5865F2] font-bold p-2 text-center animate-pulse">読み込み中...</div>}
              {computed.senderList.map((sender) => {
               const allEmails = computed.groupedEmails[sender] || [];
-              const visibleEmails = allEmails.filter((e: any) => !state.chatConfigs[e.id]?.isHidden);
+              const config = state.chatConfigs[sender];
+
+              // ★修正: 非表示の適用はINBOXのメールのみ
+              const visibleEmails = allEmails.filter((e: any) => {
+                 const isTrash = e.labelIds?.includes("TRASH");
+                 const isSpam = e.labelIds?.includes("SPAM");
+                 const isInbox = !isTrash && !isSpam;
+                 if (isInbox && (config?.isHidden || state.chatConfigs[e.id]?.isHidden)) return false;
+                 return true;
+              });
+
               const latestEmail = visibleEmails[0] || allEmails[0];
               if (!latestEmail) return null;
 
               const isSelected = state.selectedIds.includes(sender);
               const isOpened = state.selectedSender === sender && !state.isMobile;
-              const config = state.chatConfigs[sender];
               const count = visibleEmails.length;
               const latestDate = new Date(latestEmail.date).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
@@ -94,7 +103,8 @@ export default function Home() {
               const isMoveGrayedOut = state.selectionMode === "chat_move" && state.moveDestination && allEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!));
               const hasInbox = allEmails.some((e: any) => e.labelIds?.includes("INBOX"));
               const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasInbox;
-              const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut;
+              const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasInbox;
+              const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut;
 
               const colorsSet = new Set<string>();
               visibleEmails.forEach((e: any) => {
@@ -148,7 +158,6 @@ export default function Home() {
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-baseline">
                         <div className="flex items-center gap-1 truncate pr-2">
-                          {/* ★修正: 📌は受信箱にチェックが入っている時だけ表示 */}
                           {config?.isPinned && state.checkInbox && <span className="text-[#FEE75C] text-[10px]">📌</span>}
                           <span className="font-bold text-sm truncate"><HighlightText text={config?.customName || sender} highlight={state.searchKeyword} /></span>
                         </div>
@@ -214,14 +223,16 @@ export default function Home() {
 
               <div className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin cursor-default">
                 {computed.groupedEmails[state.selectedSender!].map((email: any) => {
-                    if (state.chatConfigs[email.id]?.isHidden) return null;
+                    const isTrash = email.labelIds?.includes("TRASH");
+                    const isSpam = email.labelIds?.includes("SPAM");
+                    const isInbox = !isTrash && !isSpam;
+
+                    // ★修正: 非表示の適用はINBOXのメールのみ
+                    if (isInbox && (state.chatConfigs[state.selectedSender!]?.isHidden || state.chatConfigs[email.id]?.isHidden)) return null;
 
                     const isMe = email.isMe || email.from.includes(auth.session?.user?.email || "");
                     const isSelected = state.selectedIds.includes(email.id);
-                    
-                    const isTrash = email.labelIds?.includes("TRASH");
-                    const isSpam = email.labelIds?.includes("SPAM");
-                    const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (!isTrash && !isSpam && state.checkInbox);
+                    const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox);
 
                     const boxName = isTrash ? "ゴミ箱" : isSpam ? "迷惑メール" : "受信箱";
                     const boxColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : state.boxColors.inbox;
@@ -257,8 +268,9 @@ export default function Home() {
                     }
 
                     const isMoveGrayedOut = state.selectionMode === "msg_move" && state.moveDestination && email.labelIds?.includes(state.moveDestination);
-                    const isMsgPinGrayedOut = state.selectionMode === "msg_pin" && !email.labelIds?.includes("INBOX");
-                    const isActionGrayedOut = isMoveGrayedOut || isMsgPinGrayedOut;
+                    const isMsgPinGrayedOut = state.selectionMode === "msg_pin" && !isInbox;
+                    const isMsgHideGrayedOut = state.selectionMode === "msg_hide" && !isInbox;
+                    const isActionGrayedOut = isMoveGrayedOut || isMsgPinGrayedOut || isMsgHideGrayedOut;
                     
                     const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : state.boxColors.inbox;
 
@@ -298,7 +310,6 @@ export default function Home() {
                               onTouchEnd={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
                               onTouchMove={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
                            >
-                              {/* ★修正: メッセージ一覧の中の📌も、受信箱にチェックが入っている時だけ表示 */}
                               {state.chatConfigs[email.id]?.isPinned && state.checkInbox && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
                               {email.subject && !email.subject.startsWith("Re:") && (
                                 <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={email.subject} highlight={state.searchKeyword} /></div>

@@ -20,7 +20,24 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode } = app.actions;
 
   const isMode = (action: string) => selectionMode === `${modePrefix}_${action}`;
-  const isDisabled = (action: string) => selectionMode !== "none" && selectionMode !== `${modePrefix}_${action}`;
+  
+  // ★修正: 選択されたアイテムに受信箱のメールが含まれているかチェック
+  const hasSelectedInbox = selectedIds.some((id: string) => {
+      if (isChat) {
+          return app.computed.groupedEmails[id]?.some((e:any) => e.labelIds?.includes("INBOX"));
+      } else {
+          const msg = app.computed.allUniqueEmails.find((e:any) => e.id === id);
+          return msg?.labelIds?.includes("INBOX");
+      }
+  });
+
+  const isDisabled = (action: string) => {
+      if (selectionMode !== "none" && selectionMode !== `${modePrefix}_${action}`) return true;
+      // ★修正: 非表示もピン留めと同様に、INBOXがないアイテムでは実行させない
+      if (action === "pin" && selectionMode === `${modePrefix}_pin` && !hasSelectedInbox) return true;
+      if (action === "hide" && selectionMode === `${modePrefix}_hide` && !hasSelectedInbox) return true;
+      return false;
+  };
 
   const btnBase = isChat
     ? "flex-1 min-w-[70px] py-1.5 text-[11px] font-bold rounded transition"
@@ -28,7 +45,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const getBtnClass = (action: string, activeBg: string) => {
     const active = isMode(action) ? `${activeBg} text-white` : "bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200";
-    const disabled = isDisabled(action) ? "opacity-30 pointer-events-none" : "";
+    const disabled = isDisabled(action) ? "opacity-30 pointer-events-none grayscale" : "";
     return `${btnBase} ${active} ${disabled}`;
   };
 
@@ -40,21 +57,24 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   return (
     <div className={containerClass} onClick={(e) => e.stopPropagation()}>
-      {/* ★修正: 受信箱にチェックが入っている時のみピン留めボタンを表示 */}
       {checkInbox && <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin", "bg-[#5865F2]")}>{renderText("pin", "ピン留め")}</button>}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_move`)} className={getBtnClass("move", "bg-[#5865F2]")}>{renderText("move", "移動")}</button>
-      <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>{renderText("hide", "非表示(Re:Mail)")}</button>
+      {/* ★修正: 「非表示」も受信箱にチェックが入っている時のみ表示 */}
+      {checkInbox && <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>{renderText("hide", "非表示(Re:Mail)")}</button>}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", "bg-[#DA373C]")}>{renderText("delete", "削除(Gmail)")}</button>
       <button onClick={() => handleMenuBarClick(`${modePrefix}_reset`)} className={getBtnClass("reset", "bg-[#DA373C]")}>リセット</button>
-      <button
-        onClick={() => {
-          setModal({ type: "unhide_select", targetMode: modePrefix, targets: [] });
-          setSelectedIds([]); setSelectionMode("none"); window.history.pushState({ action: "modal" }, "", window.location.href);
-        }}
-        className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith(modePrefix + "_") ? 'opacity-30 pointer-events-none' : ''}`}
-      >
-        非表示解除
-      </button>
+      {/* ★修正: 非表示解除も受信箱にチェックが入っている時のみ表示 */}
+      {checkInbox && (
+        <button
+          onClick={() => {
+            setModal({ type: "unhide_select", targetMode: modePrefix, targets: [] });
+            setSelectedIds([]); setSelectionMode("none"); window.history.pushState({ action: "modal" }, "", window.location.href);
+          }}
+          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectionMode.startsWith(modePrefix + "_") ? 'opacity-30 pointer-events-none' : ''}`}
+        >
+          非表示解除
+        </button>
+      )}
     </div>
   );
 }
