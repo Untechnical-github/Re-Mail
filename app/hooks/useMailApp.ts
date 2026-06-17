@@ -61,7 +61,6 @@ export function useMailApp() {
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
     const isDisplayable = (e: any) => {
-      // ★修正: 永続ピン留め（forceFetch）による強制表示は「受信箱にチェックが入っている時」のみ許可
       const isForceFetched = checkInbox && (chatConfigs[e.id]?.forceFetch || (e.senderRoom && chatConfigs[e.senderRoom]?.forceFetch));
       if (isForceFetched) return true;
 
@@ -125,38 +124,40 @@ export function useMailApp() {
     try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
   };
 
-  // ★追加: 移動・削除・受信時に、自動的にD1の「永続データ」を受信箱のみに同期する強力なフィルターエンジン
+  // ★修正: 永続・通常に関わらず、すべてのピン留めに対して受信箱にあるかチェックして同期する
   const syncPins = (latestEmails: any[], currentConfigs: Record<string, ChatConfig>) => {
     const pMsgs: any[] = [];
     const updatesToD1: {id: string, updates: any}[] = [];
 
     Object.keys(currentConfigs).forEach(targetId => {
       const config = currentConfigs[targetId];
-      if (config?.isPinned && config.forceFetch) {
+      if (config?.isPinned) {
         const isMsgPin = config.roomId !== undefined;
 
         if (isMsgPin) {
           const msg = latestEmails.find(e => e.id === targetId);
           if (!msg || !msg.labelIds?.includes("INBOX")) {
-            // 受信箱から消えたら永続を解除
+            // 受信箱から消えたら、永続・通常問わずピン留めを完全に解除
             updatesToD1.push({ id: targetId, updates: { isPinned: false, forceFetch: false, persistedData: null }});
-          } else {
+          } else if (config.forceFetch) {
             pMsgs.push({ ...msg, senderRoom: config.roomId });
           }
         } else {
-          // チャットピンの場合は受信箱のメールだけを抽出して再構築
-          const chatEmails = latestEmails.filter(e => {
-             const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
-             return room === targetId && e.labelIds?.includes("INBOX");
-          }).map(e => ({...e, senderRoom: targetId}));
-          
-          const oldIds = (config.persistedData || []).map((e:any)=>e.id).join(",");
-          const newIds = chatEmails.map((e:any)=>e.id).join(",");
-          
-          if (oldIds !== newIds) {
-             updatesToD1.push({ id: targetId, updates: { persistedData: chatEmails }});
+          // チャットピンの場合
+          if (config.forceFetch) {
+            const chatEmails = latestEmails.filter(e => {
+               const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
+               return room === targetId && e.labelIds?.includes("INBOX");
+            }).map(e => ({...e, senderRoom: targetId}));
+            
+            const oldIds = (config.persistedData || []).map((e:any)=>e.id).join(",");
+            const newIds = chatEmails.map((e:any)=>e.id).join(",");
+            
+            if (oldIds !== newIds) {
+               updatesToD1.push({ id: targetId, updates: { persistedData: chatEmails.length > 0 ? chatEmails : null }});
+            }
+            pMsgs.push(...chatEmails);
           }
-          pMsgs.push(...chatEmails);
         }
       }
     });
@@ -252,7 +253,6 @@ export function useMailApp() {
           updatedEmails = Array.from(emailMap.values());
         }
         
-        // ★修正: 受信などでメール一覧が更新された時も、ピン留めデータを最新に同期する
         const nextPMsgs = syncPins(updatedEmails, chatConfigsRef.current);
         setPersistedEmails(nextPMsgs);
         setEmails(updatedEmails);
@@ -409,7 +409,6 @@ export function useMailApp() {
         return checkInbox;
       });
 
-      // ★修正: 永続ピン留めであっても、受信箱のチェックが外れていればリストに表示しない
       if (!hasDisplayableEmail && (!config?.isPinned || !checkInbox)) return false;
 
       if (checkHasSent) {
@@ -515,7 +514,6 @@ export function useMailApp() {
         let pData = null;
         if (forceFetch) {
             if (modal.targetMode === "chat") { 
-                // ★修正: 永続化するのは受信箱のメールのみ！
                 pData = (groupedEmails[targetId] || [])
                            .filter(e => e.labelIds?.includes("INBOX"))
                            .map(e => ({ ...e, senderRoom: targetId })); 
