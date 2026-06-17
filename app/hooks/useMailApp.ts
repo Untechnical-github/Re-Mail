@@ -363,7 +363,10 @@ export function useMailApp() {
       const targetEmails = groupedEmails[selectedSender]; const actualTo = targetEmails ? targetEmails[0]?.from : selectedSender;
       let finalBody = replyBody; let threadId = undefined; let finalSubject = replySubject;
       if (replyToMessage) { finalBody = `${replyBody}\n\n> ${replyToMessage.body.replace(/\n/g, "\n> ")}`; threadId = replyToMessage.threadId; if (!finalSubject) finalSubject = replyToMessage.subject.startsWith("Re:") ? replyToMessage.subject : `Re: ${replyToMessage.subject}`; }
-      const res = await fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: actualTo, subject: finalSubject, body: finalBody, threadId }) });
+      const res = await fetch("/api/emails", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "send", to: actualTo, subject: finalSubject, body: finalBody, threadId })
+      });
       if (res.ok) {
         const sentFake = { id: `fake-${Date.now()}`, threadId: threadId || "", subject: finalSubject || "(件名なし)", from: session?.user?.email || "自分", date: new Date().toUTCString(), body: finalBody, snippet: finalBody.slice(0, 60), senderRoom: selectedSender, isMe: true, labelIds: ["SENT"] };
         setEmails([sentFake, ...emails]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null);
@@ -398,7 +401,7 @@ export function useMailApp() {
 
       if (permanentIds.length > 0 || trashIds.length > 0) {
         try {
-          await fetch("/api/emails", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ permanentIds, trashIds }) });
+          await fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", permanentIds, trashIds }) });
           const allDeletedIds = [...permanentIds, ...trashIds];
           setEmails(emails.filter(e => !allDeletedIds.includes(e.id))); setPersistedEmails(persistedEmails.filter(e => !allDeletedIds.includes(e.id)));
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
@@ -413,7 +416,7 @@ export function useMailApp() {
       
       if (idsToMove.length > 0) {
         try {
-          await fetch("/api/emails", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: idsToMove, destination: moveDestination }) });
+          await fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "move", ids: idsToMove, destination: moveDestination }) });
           const applyNewLabels = (e: any) => {
             if (idsToMove.includes(e.id)) { let newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "TRASH" && l !== "SPAM"); newLabels.push(moveDestination); return { ...e, labelIds: newLabels }; }
             return e;

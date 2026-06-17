@@ -121,70 +121,65 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const session = await auth() as any;
   if (!session || !session.accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  
   try {
-    const { to, subject, body, threadId } = await request.json();
-    const rawMessage = [`To: ${to}`, `Subject: =?utf-8?B?${encodeBase64(subject || "")}?=`, "Content-Type: text/plain; charset=utf-8", "", body].join("\r\n");
-    const encodedMessage = encodeBase64(rawMessage).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    const requestBody: any = { raw: encodedMessage };
-    if (threadId) requestBody.threadId = threadId;
+    const bodyData = await request.json();
+    const { action } = bodyData;
 
-    const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-      method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-    });
-    if (!res.ok) throw new Error("Failed to send email");
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
-  }
-}
+    // ① メールの送信 (actionがない、またはsendの場合)
+    if (action === "send" || !action) {
+      const { to, subject, body, threadId } = bodyData;
+      const rawMessage = [`To: ${to}`, `Subject: =?utf-8?B?${encodeBase64(subject || "")}?=`, "Content-Type: text/plain; charset=utf-8", "", body].join("\r\n");
+      const encodedMessage = encodeBase64(rawMessage).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      const requestBody: any = { raw: encodedMessage };
+      if (threadId) requestBody.threadId = threadId;
 
-// ★ 追加: メールの移動（ラベル変更）用エンドポイント
-export async function PUT(request: Request) {
-  const session = await auth() as any;
-  if (!session || !session.accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  try {
-    const { ids, destination } = await request.json();
-    let addLabelIds: string[] = [];
-    let removeLabelIds: string[] = [];
-    
-    if (destination === "INBOX") { addLabelIds = ["INBOX"]; removeLabelIds = ["TRASH", "SPAM"]; }
-    else if (destination === "TRASH") { addLabelIds = ["TRASH"]; removeLabelIds = ["INBOX", "SPAM"]; }
-    else if (destination === "SPAM") { addLabelIds = ["SPAM"]; removeLabelIds = ["INBOX", "TRASH"]; }
-
-    const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
-      method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ ids, addLabelIds, removeLabelIds }),
-    });
-
-    if (!res.ok) throw new Error("Failed to move emails");
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
-  }
-}
-
-// ★ 修正: ゴミ箱への移動と完全削除を仕分ける
-export async function DELETE(request: Request) {
-  const session = await auth() as any; 
-  if (!session || !session.accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  try {
-    const { permanentIds, trashIds } = await request.json();
-    // 完全に削除（既にゴミ箱にあったもの）
-    if (permanentIds && permanentIds.length > 0) {
-      await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
+      const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
         method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: permanentIds }),
+        body: JSON.stringify(requestBody),
       });
+      if (!res.ok) throw new Error("Failed to send email");
+      return NextResponse.json({ success: true });
     }
-    // ゴミ箱へ移動（受信箱や迷惑メールにあったもの）
-    if (trashIds && trashIds.length > 0) {
-      await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
+
+    // ② メールの移動 (旧PUTのロジックを集約)
+    if (action === "move") {
+      const { ids, destination } = bodyData;
+      let addLabelIds: string[] = [];
+      let removeLabelIds: string[] = [];
+      
+      if (destination === "INBOX") { addLabelIds = ["INBOX"]; removeLabelIds = ["TRASH", "SPAM"]; }
+      else if (destination === "TRASH") { addLabelIds = ["TRASH"]; removeLabelIds = ["INBOX", "SPAM"]; }
+      else if (destination === "SPAM") { addLabelIds = ["SPAM"]; removeLabelIds = ["INBOX", "TRASH"]; }
+
+      const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
         method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: trashIds, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX", "SPAM"] }),
+        body: JSON.stringify({ ids, addLabelIds, removeLabelIds }),
       });
+
+      if (!res.ok) throw new Error("Failed to move emails");
+      return NextResponse.json({ success: true });
     }
-    return NextResponse.json({ success: true });
+
+    // ③ メールの削除 (旧DELETEのロジックを集約)
+    if (action === "delete") {
+      const { permanentIds, trashIds } = bodyData;
+      if (permanentIds && permanentIds.length > 0) {
+        await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
+          method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: permanentIds }),
+        });
+      }
+      if (trashIds && trashIds.length > 0) {
+        await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
+          method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: trashIds, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX", "SPAM"] }),
+        });
+      }
+      return NextResponse.json({ success: true });
+    }
+
+    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   } catch (error) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
