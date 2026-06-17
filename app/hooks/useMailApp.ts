@@ -38,6 +38,7 @@ export function useMailApp() {
   const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true });
   const [moveDestination, setMoveDestination] = useState<"INBOX" | "SPAM" | "TRASH" | null>(null);
   const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
+  const [pinType, setPinType] = useState<boolean | null>(null); // ★追加: ピン留めの種類（true: 永続, false: 通常）
 
   const [boxColors, setBoxColors] = useState({
     inbox: "#5865F2", 
@@ -410,14 +411,20 @@ export function useMailApp() {
       const targetMode = mode.startsWith("chat") ? "chat" : "msg";
       let actionType: any = "confirm_hide";
       if (mode.includes("delete")) actionType = "confirm_delete"; 
-      if (mode.includes("pin")) actionType = "confirm_pin"; 
+      if (mode.includes("pin")) actionType = "confirm_pin_execute"; // ★修正: アクションバーからの実行時は専用の最終確認モーダルへ
       if (mode.includes("move")) actionType = "confirm_move";
       
       setModal({ type: actionType, targetMode, targets: selectedIds });
       window.history.replaceState({ action: "modal" }, "", window.location.href); 
     } else {
       if (mode.includes("move")) { 
-        setModal({ type: "select_move_dest", targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] }); 
+        setModal({ type: "select_move_dest" as any, targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] }); 
+        window.history.pushState({ action: "modal" }, "", window.location.href); 
+        return; 
+      }
+      // ★追加: ピン留め時も先に種類選択モーダルを開く
+      if (mode.includes("pin")) { 
+        setModal({ type: "select_pin_type" as any, targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] }); 
         window.history.pushState({ action: "modal" }, "", window.location.href); 
         return; 
       }
@@ -658,7 +665,7 @@ export function useMailApp() {
       currentNextPageToken, chatStatusMessage, msgStatusMessage, isLoadingMoreChats,
       replySubject, replyBody, isSending, replyToMessage,
       hasMouse, isMobile, selectionMode, selectedIds, contextMenu, modal, renameInput,
-      resetOptions, moveDestination, revealedCrossPrompts, boxColors
+      resetOptions, moveDestination, revealedCrossPrompts, boxColors, pinType // ★追加
     },
     actions: {
       setSearchKeyword, setCheckInbox, setCheckSpam, setCheckTrash, setCheckHasSent,
@@ -666,7 +673,7 @@ export function useMailApp() {
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,
       handleSend, executePin, executeConfirmedAction, handleContextMenuAction,
-      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack
+      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, setPinType // ★追加
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
     refs: { touchTimer, hasPushedSelectRef, hasPushedSearchRef, activeLoadRef, searchTimeoutRef }
