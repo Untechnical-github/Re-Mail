@@ -214,6 +214,39 @@ export function useMailApp() {
     } catch (error) { return false; } finally { if (!isSilent && !getIsCancelled()) setIsLoading(false); }
   };
 
+  // ★修正: 他ボックスのメールを確実に一本釣りする強力なバックグラウンドフェッチ
+  const fetchChatCrossbox = async (sender: string) => {
+    try {
+      const addrSet = new Set<string>();
+      emails.forEach(e => {
+        if (e.from.includes(sender) || (e.to && e.to.includes(sender)) || e.senderRoom === sender) {
+          if (!e.isMe) {
+            const match = e.from.match(/<([^>]+)>/);
+            if (match) addrSet.add(match[1].trim());
+          }
+        }
+      });
+      let q = `(from:"${sender}" OR to:"${sender}")`;
+      if (addrSet.size > 0) {
+         const addrs = Array.from(addrSet).map(a => `from:${a} OR to:${a}`).join(" OR ");
+         q = `(${q} OR ${addrs})`;
+      }
+      const params = new URLSearchParams({ maxResults: "150", q, includeTrash: "true" });
+      const res = await fetch(`/api/emails?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        const newMsgs = data.messages || [];
+        if (newMsgs.length > 0) {
+          setEmails(prev => {
+            const map = new Map(prev.map(e => [e.id, e]));
+            newMsgs.forEach((m: any) => map.set(m.id, m));
+            return Array.from(map.values());
+          });
+        }
+      }
+    } catch(e) {}
+  };
+
   useEffect(() => {
     if (!session) return;
     let isCancelled = false; 
@@ -227,11 +260,36 @@ export function useMailApp() {
         if (!searchKeyword) {
           let snapshot: any = null;
           try { snapshot = await localforage.getItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash })); } catch (e) {}
-          if (snapshot && snapshot.emails) { loadedEmails = snapshot.emails; if (!isCancelled) setEmails(loadedEmails); } 
-          else { loadedEmails = []; if (!isCancelled) setEmails([]); }
+          
+          // ★修正: キャッシュ復元時に、開いているチャットのメールと許可済みのメールを上書きから「保護」する
+          const protectedEmails = emails.filter(e => {
+             if (revealedCrossPrompts.includes(e.id)) return true;
+             if (selectedSender) {
+                const sLower = selectedSender.toLowerCase();
+                if (e.senderRoom === selectedSender) return true;
+                if (e.from.toLowerCase().includes(sLower) || (e.to && e.to.toLowerCase().includes(sLower))) return true;
+             }
+             return false;
+          });
+          
+          if (snapshot && snapshot.emails) { 
+             const map = new Map(protectedEmails.map(e => [e.id, e]));
+             snapshot.emails.forEach((e: any) => { if (!map.has(e.id)) map.set(e.id, e); });
+             loadedEmails = Array.from(map.values());
+             if (!isCancelled) setEmails(loadedEmails); 
+          } else { 
+             loadedEmails = protectedEmails; 
+             if (!isCancelled) setEmails(protectedEmails); 
+          }
         }
+        
         if (!isCancelled) setChatStatusMessage(null);
         await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled);
+        
+        // ★修正: フィルター切り替え後、開いているチャットの別ボックスメールを再確保する
+        if (selectedSender && !isCancelled) {
+           fetchChatCrossbox(selectedSender);
+        }
       }, searchKeyword ? 300 : 0);
     };
     handleFilterChange();
@@ -335,22 +393,7 @@ export function useMailApp() {
     setReplyToMessage(null);
     setMsgStatusMessage(null); 
     if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`);
-
-    try {
-      const params = new URLSearchParams({ maxResults: "60", q: `(from:"${sender}" OR to:"${sender}")`, includeTrash: "true" });
-      const res = await fetch(`/api/emails?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
-        const newMsgs = data.messages || [];
-        if (newMsgs.length > 0) {
-          setEmails(prev => {
-            const map = new Map(prev.map(e => [e.id, e]));
-            newMsgs.forEach((m: any) => map.set(m.id, m));
-            return Array.from(map.values());
-          });
-        }
-      }
-    } catch (e) { console.error(e); }
+    fetchChatCrossbox(sender);
   };
 
   const handleMenuBarClick = (mode: SelectionMode) => {
@@ -429,7 +472,7 @@ export function useMailApp() {
     if (!modal) return;
     const { type, targets, targetMode } = modal;
     
-    // ★修正: 削除や移動時に「消す」のではなく「ラベルを書き換えて残す」ことで、他ボックスからのプロンプト化をリアルタイムで発動させる
+    // ★修正: 削除や移動時にオプティミスティック更新（即時反映）を行い、体感速度をMAXにする
     if (type === "confirm_delete") {
       let deleteEmails: any[] = [];
       if (targetMode === "chat") { targets.forEach(chat => deleteEmails.push(...(groupedEmails[chat] || []))); } 
@@ -439,8 +482,6 @@ export function useMailApp() {
 
       if (permanentIds.length > 0 || trashIds.length > 0) {
         try {
-          await fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", permanentIds, trashIds }) });
-          
           const applyTrashLabels = (e: any) => {
             if (trashIds.includes(e.id)) {
               let newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "SPAM");
@@ -453,13 +494,12 @@ export function useMailApp() {
           const nextEmails = emails.map(applyTrashLabels).filter(e => !permanentIds.includes(e.id));
           setEmails(nextEmails); 
           setPersistedEmails(persistedEmails.map(applyTrashLabels).filter(e => !permanentIds.includes(e.id)));
-          
-          // 削除されたメールのプロンプト許可状態をリセットし、即座にボタンに戻す
           setRevealedCrossPrompts(prev => prev.filter(id => !permanentIds.includes(id) && !trashIds.includes(id)));
 
-          await localforage.setItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash }), { emails: nextEmails.slice(0, 100), flags: { inbox: checkInbox, spam: checkSpam, trash: checkTrash } });
-          
+          localforage.setItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash }), { emails: nextEmails.slice(0, 100), flags: { inbox: checkInbox, spam: checkSpam, trash: checkTrash } });
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
+          
+          fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", permanentIds, trashIds }) }).catch(e => console.error(e));
         } catch (e) { console.error(e); }
       }
     } 
@@ -471,8 +511,6 @@ export function useMailApp() {
       
       if (idsToMove.length > 0) {
         try {
-          await fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "move", ids: idsToMove, destination: moveDestination }) });
-          
           const applyNewLabels = (e: any) => {
             if (idsToMove.includes(e.id)) { let newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "TRASH" && l !== "SPAM"); newLabels.push(moveDestination); return { ...e, labelIds: newLabels }; }
             return e;
@@ -481,13 +519,12 @@ export function useMailApp() {
           const nextEmails = emails.map(applyNewLabels);
           setEmails(nextEmails); 
           setPersistedEmails(persistedEmails.map(applyNewLabels));
-          
-          // 移動されたメールのプロンプト許可状態をリセット
           setRevealedCrossPrompts(prev => prev.filter(id => !idsToMove.includes(id)));
 
-          await localforage.setItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash }), { emails: nextEmails.slice(0, 100), flags: { inbox: checkInbox, spam: checkSpam, trash: checkTrash } });
-          
+          localforage.setItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash }), { emails: nextEmails.slice(0, 100), flags: { inbox: checkInbox, spam: checkSpam, trash: checkTrash } });
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
+
+          fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "move", ids: idsToMove, destination: moveDestination }) }).catch(e => console.error(e));
         } catch (e) { console.error(e); }
       }
     }

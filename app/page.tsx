@@ -254,6 +254,7 @@ export default function Home() {
                     }
 
                     const isMoveGrayedOut = state.selectionMode === "msg_move" && state.moveDestination && email.labelIds?.includes(state.moveDestination);
+                    const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : state.boxColors.inbox;
 
                     return (
                       <div 
@@ -269,7 +270,7 @@ export default function Home() {
                         {state.selectionMode.startsWith("msg_") && (
                           <div className="flex-shrink-0 w-8 flex justify-center pt-3 mr-2">
                             <div className={`w-5 h-5 rounded-sm flex items-center justify-center border cursor-pointer ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500'}`}>
-                              {isSelected && <div className="w-2.5 h-2.5 bg-white rounded-sm"></div>}
+                              {isSelected && <div className="w-2 h-2 bg-white rounded-sm"></div>}
                             </div>
                           </div>
                         )}
@@ -285,7 +286,7 @@ export default function Home() {
                            </div>
                            <div 
                               className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
-                              style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', border: `2px solid ${boxColor}` }}
+                              style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', border: `2px solid ${msgColor}` }}
                               onContextMenu={(e) => { e.preventDefault(); actions.setContextMenu({ type: "msg", target: email, x: e.clientX, y: e.clientY }); }}
                               onTouchStart={(e) => { if (!state.hasMouse) refs.touchTimer.current = setTimeout(() => { actions.setContextMenu({ type: "msg", target: email, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
                               onTouchEnd={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
