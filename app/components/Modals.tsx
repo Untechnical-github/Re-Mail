@@ -1,21 +1,39 @@
 import { SelectionMode } from "../types/mail";
 
 export function Modals({ app }: { app: any }) {
-  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, pinType } = app.state;
+  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, pinType, checkTrash, checkSpam, checkInbox, revealedCrossPrompts } = app.state;
   const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack, setPinType } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
 
   if (!modal) return null;
 
+  // ★追加: 未許可のメールをアクション対象から除外するフィルター関数
+  const getActionableEmails = (targets: string[], targetMode: string) => {
+    let result: any[] = [];
+    if (targetMode === "chat") {
+      targets.forEach((chat: string) => {
+        const chatEmails = groupedEmails[chat] || [];
+        result.push(...chatEmails.filter((e: any) => {
+          const isTrash = e.labelIds?.includes("TRASH");
+          const isSpam = e.labelIds?.includes("SPAM");
+          const isInbox = !isTrash && !isSpam;
+          const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox);
+          return isCurrentBox || revealedCrossPrompts.includes(e.id);
+        }));
+      });
+    } else {
+      result = allUniqueEmails.filter((e: any) => targets.includes(e.id));
+    }
+    return result;
+  };
+
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
       <div className="bg-[#313338] rounded-md shadow-2xl w-full max-w-sm border border-[#1E1F22]">
         
-        {/* ★追加: アクションバーから開く「ピン留めの種類」選択モーダル */}
         {modal.type === "select_pin_type" && (() => {
           const isChatMode = modal.targetMode === "chat";
           const existingForcePinnedChats = Object.keys(chatConfigs).filter(k => !k.includes("-") && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch);
-          // 選択前の段階ですでに10件に達している場合は永続ボタンをグレーアウト
           const willExceedLimit = isChatMode && (existingForcePinnedChats.length >= 10);
           
           return (
@@ -53,19 +71,18 @@ export function Modals({ app }: { app: any }) {
           );
         })()}
 
-        {/* ★追加: アクションバーからの実行時の最終確認モーダル */}
         {modal.type === "confirm_pin_execute" && (() => {
           const isChatMode = modal.targetMode === "chat";
           const existingForcePinnedChats = Object.keys(chatConfigs).filter(k => !k.includes("-") && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch);
           const newChatsToPin = isChatMode ? modal.targets.filter((t: string) => !existingForcePinnedChats.includes(t)) : [];
-          // 選択された件数を含めて11件以上になるなら実行ボタンをグレーアウト
           const willExceedLimit = isChatMode && pinType && (existingForcePinnedChats.length + newChatsToPin.length > 10);
           
           return (
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-2">ピン留めの確認</h2>
               <p className="text-sm text-gray-300 mb-6 leading-relaxed">
-                選択したアイテムを<span className="font-bold text-white">{pinType ? "永続読み込み" : "通常の設定"}</span>でピン留めします。よろしいですか？
+                選択したアイテムを<span className="font-bold text-white">{pinType ? "永続読み込み" : "通常の設定"}</span>でピン留めします。よろしいですか？<br/>
+                <span className="text-xs text-gray-400">※受信箱に存在するメールのみが対象となります。</span>
               </p>
               <div className="flex justify-end gap-3">
                 <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
@@ -81,7 +98,6 @@ export function Modals({ app }: { app: any }) {
           );
         })()}
 
-        {/* 右クリックから開く従来のモーダル（仕様をそのまま維持） */}
         {modal.type === "confirm_pin" && (() => {
           const isChatMode = modal.targetMode === "chat";
           const existingForcePinnedChats = Object.keys(chatConfigs).filter(k => !k.includes("-") && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch);
@@ -90,7 +106,10 @@ export function Modals({ app }: { app: any }) {
           return (
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-2">ピン留め</h2>
-              <p className="text-sm text-gray-300 mb-6 leading-relaxed">読み込み対象外（期間外や件数制限など）になった際も、この{modal.targetMode === "chat" ? "チャット" : "メッセージ"}を表示させますか？</p>
+              <p className="text-sm text-gray-300 mb-6 leading-relaxed">
+                読み込み対象外（期間外や件数制限など）になった際も、この{modal.targetMode === "chat" ? "チャット" : "メッセージ"}を表示させますか？<br/>
+                <span className="text-xs text-gray-400">※受信箱に存在するメールのみが対象となります。</span>
+              </p>
               <div className="flex flex-col gap-2">
                 <button onClick={() => executePin(true)} disabled={willExceedLimit} className={`w-full py-2.5 rounded text-sm font-bold transition ${willExceedLimit ? 'bg-[#3f4147] text-gray-500 cursor-not-allowed' : 'bg-[#5865F2] text-white hover:bg-[#4752C4] active:scale-95'}`}>
                   {willExceedLimit ? "永続読み込みは10件までです" : "対象外になっても常に表示する"}
@@ -103,20 +122,33 @@ export function Modals({ app }: { app: any }) {
         })()}
 
         {modal.type === "confirm_delete" && (() => {
-          let deleteEmails: any[] = [];
-          if (modal.targetMode === "chat") { modal.targets.forEach((chat: string) => deleteEmails.push(...(groupedEmails[chat] || []))); } 
-          else { deleteEmails = allUniqueEmails.filter((e: any) => modal.targets.includes(e.id)); }
-          const permanentCount = deleteEmails.filter(e => e.labelIds?.includes("TRASH")).length;
-          const trashCount = deleteEmails.filter(e => !e.labelIds?.includes("TRASH")).length;
+          const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
+          const inboxCount = targetEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
+          const spamCount = targetEmails.filter(e => e.labelIds?.includes("SPAM")).length;
+          const trashCount = targetEmails.filter(e => e.labelIds?.includes("TRASH")).length;
+          const toTrashCount = inboxCount + spamCount;
           
           return (
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-2">削除の確認</h2>
-              <p className="text-sm text-gray-300 mb-6 leading-relaxed">
-                選択した{modal.targetMode === "chat" ? "チャット内の" : ""}メッセージを削除します。<br/>
-                {trashCount > 0 && <span className="block mt-2 font-bold">・{trashCount}件のメールをゴミ箱へ移動します。</span>}
-                {permanentCount > 0 && <span className="block mt-2 text-[#DA373C] font-bold">・{permanentCount}件のメール（既にゴミ箱にあるもの）は完全に削除され、元に戻せません。</span>}
+              <p className="text-sm text-gray-300 mb-4 leading-relaxed">
+                選択したアイテムを削除します。(対象: 合計 {targetEmails.length} 件)
               </p>
+              <div className="bg-[#2B2D31] p-3 rounded border border-[#1E1F22] mb-5 space-y-2 text-[13px] text-gray-300">
+                <div className="font-bold text-gray-400 border-b border-[#1E1F22] pb-1 mb-2 text-xs">【処理の内訳】</div>
+                {toTrashCount > 0 && (
+                  <div>
+                    ・受信箱: {inboxCount}件 / 迷惑メール: {spamCount}件 <br/>
+                    <span className="text-[#FEE75C] ml-3">→ ゴミ箱へ移動します。</span>
+                  </div>
+                )}
+                {trashCount > 0 && (
+                  <div>
+                    ・ゴミ箱: {trashCount}件 <br/>
+                    <span className="text-[#DA373C] font-bold ml-3">→ 完全に削除します（復元不可）。</span>
+                  </div>
+                )}
+              </div>
               <div className="flex justify-end gap-3">
                 <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
                 <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c]">削除する</button>
@@ -125,16 +157,24 @@ export function Modals({ app }: { app: any }) {
           );
         })()}
 
-        {modal.type === "confirm_hide" && (
-          <div className="p-5">
-            <h2 className="text-lg font-bold text-white mb-2">非表示(Re:Mailのみ)</h2>
-            <p className="text-sm text-gray-300 mb-6 leading-relaxed">選択した項目をRe:Mailの画面上から隠します。（Gmailからは削除されません）</p>
-            <div className="flex justify-end gap-3">
-              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-              <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">非表示にする</button>
+        {modal.type === "confirm_hide" && (() => {
+          const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
+          const inboxCount = targetEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
+
+          return (
+            <div className="p-5">
+              <h2 className="text-lg font-bold text-white mb-2">非表示(Re:Mailのみ)</h2>
+              <p className="text-sm text-gray-300 mb-6 leading-relaxed">
+                選択した項目をRe:Mailの画面上から隠します。<br/>
+                <span className="text-[#5865F2] font-bold">（対象となる受信箱のメール: {inboxCount}件）</span>
+              </p>
+              <div className="flex justify-end gap-3">
+                <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+                <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">非表示にする</button>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {modal.type === "confirm_unhide" && (
           <div className="p-5">
@@ -278,23 +318,27 @@ export function Modals({ app }: { app: any }) {
         )}
 
         {modal.type === "select_move_dest_context" && (() => {
-          let items = modal.targetMode === "chat" ? groupedEmails[modal.targets[0]] : allUniqueEmails.filter((e: any) => e.id === modal.targets[0]);
-          if (!items) items = [];
+          const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
+          const inboxCount = targetEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
+          const spamCount = targetEmails.filter(e => e.labelIds?.includes("SPAM")).length;
+          const trashCount = targetEmails.filter(e => e.labelIds?.includes("TRASH")).length;
+
           return (
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-4">移動先の選択</h2>
               <div className="flex flex-col gap-2 mb-4">
                 {["INBOX", "SPAM", "TRASH"].map(dest => {
-                  const isAllInDest = items.length > 0 && items.every((e: any) => e.labelIds?.includes(dest));
+                  const isAllInDest = targetEmails.length > 0 && targetEmails.every((e: any) => e.labelIds?.includes(dest));
                   const labels: Record<string, string> = { "INBOX": "受信箱", "SPAM": "迷惑メール", "TRASH": "ゴミ箱" };
                   return (
                     <button 
                       key={dest} 
                       disabled={isAllInDest}
                       onClick={() => { setMoveDestination(dest as any); setModal({ type: "confirm_move", targetMode: modal.targetMode, targets: modal.targets }); }} 
-                      className={`w-full py-2.5 border rounded font-bold transition ${isAllInDest ? 'bg-[#1E1F22] text-gray-600 border-[#1E1F22] cursor-not-allowed' : 'bg-[#2B2D31] hover:bg-[#3f4147] border-[#1E1F22] text-white'}`}
+                      className={`w-full py-2.5 border rounded font-bold transition flex justify-between px-4 ${isAllInDest ? 'bg-[#1E1F22] text-gray-600 border-[#1E1F22] cursor-not-allowed' : 'bg-[#2B2D31] hover:bg-[#3f4147] border-[#1E1F22] text-white'}`}
                     >
-                      {labels[dest]} {isAllInDest && "(既に存在します)"}
+                      <span>{labels[dest]}</span>
+                      <span className="text-xs font-normal opacity-70 mt-0.5">{isAllInDest ? "(既に存在します)" : `${targetEmails.length}件`}</span>
                     </button>
                   );
                 })}
@@ -304,18 +348,33 @@ export function Modals({ app }: { app: any }) {
           );
         })()}
 
-        {modal.type === "confirm_move" && (
-          <div className="p-5">
-            <h2 className="text-lg font-bold text-white mb-2">移動の確認</h2>
-            <p className="text-sm text-gray-300 mb-6 leading-relaxed">
-              選択したアイテムを「{moveDestination === "INBOX" ? "受信箱" : moveDestination === "SPAM" ? "迷惑メール" : "ゴミ箱"}」へ移動します。よろしいですか？
-            </p>
-            <div className="flex justify-end gap-3">
-              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-              <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">移動する</button>
+        {modal.type === "confirm_move" && (() => {
+          const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
+          const inboxCount = targetEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
+          const spamCount = targetEmails.filter(e => e.labelIds?.includes("SPAM")).length;
+          const trashCount = targetEmails.filter(e => e.labelIds?.includes("TRASH")).length;
+          const destName = moveDestination === "INBOX" ? "受信箱" : moveDestination === "SPAM" ? "迷惑メール" : "ゴミ箱";
+
+          return (
+            <div className="p-5">
+              <h2 className="text-lg font-bold text-white mb-2">移動の確認</h2>
+              <p className="text-sm text-gray-300 mb-4 leading-relaxed">
+                選択したアイテムを「{destName}」へ移動します。(対象: 合計 {targetEmails.length} 件)
+              </p>
+              <div className="bg-[#2B2D31] p-3 rounded border border-[#1E1F22] mb-5 space-y-2 text-[13px] text-gray-300">
+                <div className="font-bold text-gray-400 border-b border-[#1E1F22] pb-1 mb-1 text-xs">【移動元の内訳】</div>
+                <div className="flex justify-between items-center px-1"><span>受信箱:</span> <span>{inboxCount} 件</span></div>
+                <div className="flex justify-between items-center px-1"><span>迷惑メール:</span> <span>{spamCount} 件</span></div>
+                <div className="flex justify-between items-center px-1"><span>ゴミ箱:</span> <span>{trashCount} 件</span></div>
+              </div>
+              <div className="flex justify-end gap-3">
+                <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+                <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">移動する</button>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
+
       </div>
     </div>
   );

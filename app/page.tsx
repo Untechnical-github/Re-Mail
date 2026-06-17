@@ -66,21 +66,26 @@ export default function Home() {
               const allEmails = computed.groupedEmails[sender] || [];
               const config = state.chatConfigs[sender];
 
-              // ★修正: 非表示の適用はINBOXのメールのみ
+              // ★修正: 未許可のプロンプトメールを完全に除外した「実質的な表示メール」リストを作成
               const visibleEmails = allEmails.filter((e: any) => {
                  const isTrash = e.labelIds?.includes("TRASH");
                  const isSpam = e.labelIds?.includes("SPAM");
                  const isInbox = !isTrash && !isSpam;
+                 
                  if (isInbox && (config?.isHidden || state.chatConfigs[e.id]?.isHidden)) return false;
+
+                 const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox);
+                 if (!isCurrentBox && !state.revealedCrossPrompts.includes(e.id)) return false;
+
                  return true;
               });
 
-              const latestEmail = visibleEmails[0] || allEmails[0];
+              const latestEmail = visibleEmails[0];
               if (!latestEmail) return null;
 
               const isSelected = state.selectedIds.includes(sender);
               const isOpened = state.selectedSender === sender && !state.isMobile;
-              const count = visibleEmails.length;
+              const count = visibleEmails.length; // ★修正: カウントは許可済みのもののみ
               const latestDate = new Date(latestEmail.date).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
               let previewSubject = latestEmail.subject || "No Subject";
@@ -100,8 +105,8 @@ export default function Home() {
                  }
               }
 
-              const isMoveGrayedOut = state.selectionMode === "chat_move" && state.moveDestination && allEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!));
-              const hasInbox = allEmails.some((e: any) => e.labelIds?.includes("INBOX"));
+              const isMoveGrayedOut = state.selectionMode === "chat_move" && state.moveDestination && visibleEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!));
+              const hasInbox = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
               const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasInbox;
               const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasInbox;
               const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut;
@@ -110,13 +115,9 @@ export default function Home() {
               visibleEmails.forEach((e: any) => {
                  const isTrash = e.labelIds?.includes("TRASH");
                  const isSpam = e.labelIds?.includes("SPAM");
-                 const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (!isTrash && !isSpam && state.checkInbox);
-                 
-                 if (isCurrentBox || state.revealedCrossPrompts.includes(e.id)) {
-                     if (isTrash) colorsSet.add(state.boxColors.trash);
-                     else if (isSpam) colorsSet.add(state.boxColors.spam);
-                     else colorsSet.add(state.boxColors.inbox);
-                 }
+                 if (isTrash) colorsSet.add(state.boxColors.trash);
+                 else if (isSpam) colorsSet.add(state.boxColors.spam);
+                 else colorsSet.add(state.boxColors.inbox);
               });
               const colors = Array.from(colorsSet);
               
@@ -227,7 +228,6 @@ export default function Home() {
                     const isSpam = email.labelIds?.includes("SPAM");
                     const isInbox = !isTrash && !isSpam;
 
-                    // ★修正: 非表示の適用はINBOXのメールのみ
                     if (isInbox && (state.chatConfigs[state.selectedSender!]?.isHidden || state.chatConfigs[email.id]?.isHidden)) return null;
 
                     const isMe = email.isMe || email.from.includes(auth.session?.user?.email || "");
