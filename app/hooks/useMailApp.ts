@@ -420,7 +420,7 @@ export function useMailApp() {
         const isSpam = e.labelIds?.includes("SPAM");
         const isInbox = !isTrash && !isSpam;
 
-        if (isInbox && (chatConfigs[e.id]?.isHidden || config?.isHidden)) return false;
+        if (isInbox && (config?.isHidden || chatConfigs[e.id]?.isHidden)) return false;
 
         if (revealedCrossPrompts.includes(e.id)) return true;
         if (isTrash) return checkTrash;
@@ -555,13 +555,12 @@ export function useMailApp() {
     setPersistedEmails(pMsgs); safeBack(); 
   };
 
-  // ★追加: 実行可能な（読み込まれている）メールだけを対象とするフィルター関数
   const getActionableEmails = (targets: string[], targetMode: string) => {
     let result: any[] = [];
     if (targetMode === "chat") {
-      targets.forEach(chat => {
+      targets.forEach((chat: string) => {
         const chatEmails = groupedEmails[chat] || [];
-        result.push(...chatEmails.filter(e => {
+        result.push(...chatEmails.filter((e: any) => {
           const isTrash = e.labelIds?.includes("TRASH");
           const isSpam = e.labelIds?.includes("SPAM");
           const isInbox = !isTrash && !isSpam;
@@ -570,7 +569,7 @@ export function useMailApp() {
         }));
       });
     } else {
-      result = allUniqueEmails.filter(e => targets.includes(e.id));
+      result = allUniqueEmails.filter((e: any) => targets.includes(e.id));
     }
     return result;
   };
@@ -579,8 +578,8 @@ export function useMailApp() {
     if (!modal) return;
     const { type, targets, targetMode } = modal;
     
+    // ★修正: 対象メールのラベル書き換えを「emails」と「persistedEmails」両方に直接マッピングして更新漏れをゼロにする
     if (type === "confirm_delete") {
-      // ★修正: 対象となる実行可能なメールだけを抽出
       const deleteEmails = getActionableEmails(targets, targetMode);
       const permanentIds = deleteEmails.filter(e => e.labelIds?.includes("TRASH")).map(e => e.id);
       const trashIds = deleteEmails.filter(e => !e.labelIds?.includes("TRASH")).map(e => e.id);
@@ -597,7 +596,13 @@ export function useMailApp() {
           };
           
           const nextEmails = emails.map(applyTrashLabels).filter(e => !permanentIds.includes(e.id));
-          const nextPMsgs = syncConfigs(nextEmails, chatConfigsRef.current);
+          const nextPersisted = persistedEmails.map(applyTrashLabels).filter(e => !permanentIds.includes(e.id));
+          
+          const combined = new Map();
+          nextPersisted.forEach(e => combined.set(e.id, e));
+          nextEmails.forEach(e => combined.set(e.id, e));
+          
+          const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current);
           
           setEmails(nextEmails); 
           setPersistedEmails(nextPMsgs);
@@ -611,7 +616,6 @@ export function useMailApp() {
       }
     } 
     else if (type === "confirm_move") {
-      // ★修正: 対象となる実行可能なメールだけを抽出
       const emailsToMove = getActionableEmails(targets, targetMode);
       const idsToMove = emailsToMove.filter(e => !e.labelIds?.includes(moveDestination!)).map(e => e.id);
       
@@ -623,7 +627,13 @@ export function useMailApp() {
           };
           
           const nextEmails = emails.map(applyNewLabels);
-          const nextPMsgs = syncConfigs(nextEmails, chatConfigsRef.current);
+          const nextPersisted = persistedEmails.map(applyNewLabels);
+          
+          const combined = new Map();
+          nextPersisted.forEach(e => combined.set(e.id, e));
+          nextEmails.forEach(e => combined.set(e.id, e));
+          
+          const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current);
           
           setEmails(nextEmails); 
           setPersistedEmails(nextPMsgs);
