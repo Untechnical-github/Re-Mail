@@ -63,11 +63,16 @@ export default function Home() {
           <div className="flex-1 overflow-y-auto p-2 space-y-0.5 min-h-0 cursor-default">
              {state.isLoading && <div className="text-xs text-[#5865F2] font-bold p-2 text-center animate-pulse">読み込み中...</div>}
              {computed.senderList.map((sender) => {
-              const latestEmail = computed.groupedEmails[sender][0];
+              const allEmails = computed.groupedEmails[sender] || [];
+              // ★修正: メッセージ非表示を除外した表示用リストを基準にする
+              const visibleEmails = allEmails.filter(e => !state.chatConfigs[e.id]?.isHidden);
+              const latestEmail = visibleEmails[0] || allEmails[0];
+              if (!latestEmail) return null;
+
               const isSelected = state.selectedIds.includes(sender);
               const isOpened = state.selectedSender === sender && !state.isMobile;
               const config = state.chatConfigs[sender];
-              const count = computed.groupedEmails[sender].length;
+              const count = visibleEmails.length; // ★修正: カウントも非表示分を差し引く
               const latestDate = new Date(latestEmail.date).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
               let previewSubject = latestEmail.subject || "No Subject";
@@ -75,7 +80,7 @@ export default function Home() {
               
               if (state.searchKeyword) {
                  const kwLower = state.searchKeyword.toLowerCase();
-                 const matched = computed.groupedEmails[sender].find(e => e.subject?.toLowerCase().includes(kwLower) || e.body?.toLowerCase().includes(kwLower) || e.from?.toLowerCase().includes(kwLower) || e.to?.toLowerCase().includes(kwLower));
+                 const matched = visibleEmails.find(e => e.subject?.toLowerCase().includes(kwLower) || e.body?.toLowerCase().includes(kwLower) || e.from?.toLowerCase().includes(kwLower) || e.to?.toLowerCase().includes(kwLower));
                  if (matched) {
                     previewSubject = matched.subject || "No Subject";
                     const bodyStr = matched.body || "";
@@ -167,6 +172,9 @@ export default function Home() {
 
               <div className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin cursor-default">
                 {computed.groupedEmails[state.selectedSender!].map((email) => {
+                    // ★追加: メッセージ単位で非表示にされたものはトーク画面で描画しない
+                    if (state.chatConfigs[email.id]?.isHidden) return null;
+
                     const isMe = email.isMe || email.from.includes(auth.session?.user?.email || "");
                     const isSelected = state.selectedIds.includes(email.id);
                     
@@ -219,7 +227,13 @@ export default function Home() {
 
                         <div className={`flex flex-col max-w-[75%] ${isMe ? 'items-end' : 'items-start'}`}>
                            <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
-                              {!isMe && <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>}
+                              {/* ★修正: 宛先名の右側にメールアドレスを表示する */}
+                              {!isMe && (
+                                <>
+                                  <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>
+                                  <span className="text-gray-500 font-normal">{email.from.includes("<") ? ` <${email.from.split("<")[1].replace(/>/g, "").trim()}>` : ""}</span>
+                                </>
+                              )}
                               <span>{new Date(email.date).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                            </div>
                            <div 
@@ -248,7 +262,7 @@ export default function Home() {
                 {computed.groupedEmails[state.selectedSender!] && (
                   <div className="flex justify-center my-4 w-full">
                     {state.msgStatusMessage ? (
-                      <span className="text-xs text-gray-500 font-medium px-3 py-1.5 bg-[#2B2D31] rounded-full border border-[#1E1F22]">{state.msgStatusMessage}</span>
+                      <span className="text-xs text-gray-500 font-medium px-3 py-1.5 bg-[#2B2D31] rounded-full border border-[#1E1F22]/10">{state.msgStatusMessage}</span>
                     ) : (
                       <button onClick={(e) => { e.stopPropagation(); actions.handleLoadMoreMessage(); }} disabled={state.isLoadingMore} className="bg-[#2B2D31] text-gray-300 hover:text-white px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] shadow-sm active:scale-95 transition disabled:opacity-50">
                         {state.isLoadingMore ? "読み込み中..." : "過去のメッセージを読み込む"}

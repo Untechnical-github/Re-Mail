@@ -259,7 +259,6 @@ export function useMailApp() {
     const groups: Record<string, any[]> = {};
     const tempSentEmails: any[] = [];
     allUniqueEmails.forEach((email) => {
-      if (chatConfigs[email.id]?.isHidden) return;
       if (email.senderRoom) { if (!groups[email.senderRoom]) groups[email.senderRoom] = []; groups[email.senderRoom].push(email); return; }
       const isMe = email.isMe || email.from.includes(session?.user?.email || "");
       if (!isMe) {
