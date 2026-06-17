@@ -124,7 +124,6 @@ export function useMailApp() {
     try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
   };
 
-  // ★修正: 永続・通常に関わらず、すべてのピン留めに対して受信箱にあるかチェックして同期する
   const syncPins = (latestEmails: any[], currentConfigs: Record<string, ChatConfig>) => {
     const pMsgs: any[] = [];
     const updatesToD1: {id: string, updates: any}[] = [];
@@ -137,13 +136,11 @@ export function useMailApp() {
         if (isMsgPin) {
           const msg = latestEmails.find(e => e.id === targetId);
           if (!msg || !msg.labelIds?.includes("INBOX")) {
-            // 受信箱から消えたら、永続・通常問わずピン留めを完全に解除
             updatesToD1.push({ id: targetId, updates: { isPinned: false, forceFetch: false, persistedData: null }});
           } else if (config.forceFetch) {
             pMsgs.push({ ...msg, senderRoom: config.roomId });
           }
         } else {
-          // チャットピンの場合
           if (config.forceFetch) {
             const chatEmails = latestEmails.filter(e => {
                const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
@@ -417,8 +414,13 @@ export function useMailApp() {
       }
       return true;
     }).sort((a, b) => {
-      const pinA = chatConfigs[a]?.isPinned ? 1 : 0; const pinB = chatConfigs[b]?.isPinned ? 1 : 0; if (pinA !== pinB) return pinB - pinA;
-      const timeA = new Date(groupedEmails[a][0].date).getTime(); const timeB = new Date(groupedEmails[b][0].date).getTime(); return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
+      // ★修正: 受信箱にチェックが入っている時のみ、ピン留めを優先ソートする
+      const pinA = (chatConfigs[a]?.isPinned && checkInbox) ? 1 : 0; 
+      const pinB = (chatConfigs[b]?.isPinned && checkInbox) ? 1 : 0; 
+      if (pinA !== pinB) return pinB - pinA;
+      const timeA = new Date(groupedEmails[a][0].date).getTime(); 
+      const timeB = new Date(groupedEmails[b][0].date).getTime(); 
+      return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
   }, [groupedEmails, chatConfigs, checkHasSent, checkInbox, checkSpam, checkTrash, revealedCrossPrompts]); 
 
@@ -715,7 +717,8 @@ export function useMailApp() {
     } catch (error) { setMsgStatusMessage("エラーが発生しました。"); } finally { setIsLoadingMore(false); }
   };
 
-  const pinnedMsgsInChat = (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned && e.labelIds?.includes("INBOX"));
+  // ★修正: 📌も受信箱にチェックが入っている時だけ表示するよう連動
+  const pinnedMsgsInChat = checkInbox ? (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned && e.labelIds?.includes("INBOX")) : [];
 
   return {
     auth: { session, status },
