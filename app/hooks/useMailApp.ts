@@ -1,5 +1,3 @@
-"use client";
-
 import { useSession } from "next-auth/react";
 import { useState, useEffect, useMemo, useRef } from "react";
 import localforage from "localforage";
@@ -56,7 +54,6 @@ export function useMailApp() {
     return `remail_feed_cache_v2_i${flags.inbox ? 1 : 0}s${flags.spam ? 1 : 0}t${flags.trash ? 1 : 0}`;
   };
 
-  // ★修正：リアルタイム反映のため、チェック状態や許可ボタンのStateをしっかりと監視させる
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
     const isDisplayable = (e: any) => {
@@ -331,7 +328,6 @@ export function useMailApp() {
     }
   };
 
-  // ★修正: チャットを開いた瞬間に、その送信者宛て・送信者からのメールを全ボックスから一本釣り（横断フェッチ）してマージする
   const openChat = async (sender: string) => {
     setSelectedSender(sender);
     setSelectionMode("none");
@@ -433,6 +429,7 @@ export function useMailApp() {
     if (!modal) return;
     const { type, targets, targetMode } = modal;
     
+    // ★修正: 削除や移動時に「消す」のではなく「ラベルを書き換えて残す」ことで、他ボックスからのプロンプト化をリアルタイムで発動させる
     if (type === "confirm_delete") {
       let deleteEmails: any[] = [];
       if (targetMode === "chat") { targets.forEach(chat => deleteEmails.push(...(groupedEmails[chat] || []))); } 
@@ -443,12 +440,23 @@ export function useMailApp() {
       if (permanentIds.length > 0 || trashIds.length > 0) {
         try {
           await fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", permanentIds, trashIds }) });
-          const allDeletedIds = [...permanentIds, ...trashIds];
-          const nextEmails = emails.filter(e => !allDeletedIds.includes(e.id));
-          setEmails(nextEmails); 
-          setPersistedEmails(persistedEmails.filter(e => !allDeletedIds.includes(e.id)));
           
-          // ★修正: メモリだけでなくローカルキャッシュデータも即時上書き保存して同期不全を破壊
+          const applyTrashLabels = (e: any) => {
+            if (trashIds.includes(e.id)) {
+              let newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "SPAM");
+              if (!newLabels.includes("TRASH")) newLabels.push("TRASH");
+              return { ...e, labelIds: newLabels };
+            }
+            return e;
+          };
+          
+          const nextEmails = emails.map(applyTrashLabels).filter(e => !permanentIds.includes(e.id));
+          setEmails(nextEmails); 
+          setPersistedEmails(persistedEmails.map(applyTrashLabels).filter(e => !permanentIds.includes(e.id)));
+          
+          // 削除されたメールのプロンプト許可状態をリセットし、即座にボタンに戻す
+          setRevealedCrossPrompts(prev => prev.filter(id => !permanentIds.includes(id) && !trashIds.includes(id)));
+
           await localforage.setItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash }), { emails: nextEmails.slice(0, 100), flags: { inbox: checkInbox, spam: checkSpam, trash: checkTrash } });
           
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
@@ -464,15 +472,19 @@ export function useMailApp() {
       if (idsToMove.length > 0) {
         try {
           await fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "move", ids: idsToMove, destination: moveDestination }) });
+          
           const applyNewLabels = (e: any) => {
             if (idsToMove.includes(e.id)) { let newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "TRASH" && l !== "SPAM"); newLabels.push(moveDestination); return { ...e, labelIds: newLabels }; }
             return e;
           };
+          
           const nextEmails = emails.map(applyNewLabels);
           setEmails(nextEmails); 
           setPersistedEmails(persistedEmails.map(applyNewLabels));
           
-          // ★修正: 移動後のメールデータをローカルキャッシュへ即時同期保存（枠色・状態のリアクティブ化）
+          // 移動されたメールのプロンプト許可状態をリセット
+          setRevealedCrossPrompts(prev => prev.filter(id => !idsToMove.includes(id)));
+
           await localforage.setItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash }), { emails: nextEmails.slice(0, 100), flags: { inbox: checkInbox, spam: checkSpam, trash: checkTrash } });
           
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
@@ -562,9 +574,7 @@ export function useMailApp() {
     const currentLoadId = activeLoadRef.current;
 
     try {
-      const targetSenderLower = selectedSender!.toLowerCase(); // ★この1行を追加（復活）してください！
-
-      // ★修正: 過去ログを追加で掘る際も、このチャット相手のメールを横断（全ボックス）して一本釣りするよう明示
+      const targetSenderLower = selectedSender!.toLowerCase();
       while (!hasFoundTargetMsg && tempToken && loopCount < maxLoops) {
         if (activeLoadRef.current !== currentLoadId) break;
         loopCount++; 
