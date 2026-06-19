@@ -60,7 +60,16 @@ export default function Home() {
 
           <ActionBar app={app} isChat={true} />
 
-          <div className="flex-1 overflow-y-auto p-2 space-y-0.5 min-h-0 cursor-default">
+          <div 
+            className="flex-1 overflow-y-auto p-2 space-y-0.5 min-h-0 cursor-default"
+            onScroll={(e) => {
+              const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
+              // 一番下から50px手前に達したら自動で次のチャットを読み込む
+              if (scrollHeight - scrollTop - clientHeight < 50 && !state.isLoadingMoreChats && !state.chatStatusMessage) {
+                actions.handleLoadMoreChats();
+              }
+            }}
+          >
              {state.isLoading && <div className="text-xs text-[#5865F2] font-bold p-2 text-center animate-pulse">読み込み中...</div>}
              {computed.senderList.map((sender) => {
               const allEmails = computed.groupedEmails[sender] || [];
@@ -178,11 +187,9 @@ export default function Home() {
                <div className="flex flex-col items-center p-3 mt-2 border-t border-[#1E1F22]/50">
                  {state.chatStatusMessage ? (
                    <span className="text-xs text-gray-500 font-medium px-2 py-1 bg-[#232428] rounded text-center">{state.chatStatusMessage}</span>
-                 ) : (
-                   <button onClick={(e) => { e.stopPropagation(); actions.handleLoadMoreChats(); }} disabled={state.isLoadingMoreChats} className="w-full bg-[#1E1F22] hover:bg-[#3f4147] text-gray-400 hover:text-gray-200 py-2 rounded text-xs font-bold transition active:scale-[0.98] disabled:opacity-50">
-                     {state.isLoadingMoreChats ? "新しいチャットを探索中..." : "さらにチャットを読み込む"}
-                   </button>
-                 )}
+                 ) : state.isLoadingMoreChats ? (
+                   <span className="text-xs text-gray-500 font-medium animate-pulse">チャットを読み込み中...</span>
+                 ) : null}
                </div>
              )}
           </div>
@@ -222,7 +229,16 @@ export default function Home() {
                 </div>
               )}
 
-              <div className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin cursor-default">
+              <div 
+                className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin cursor-default"
+                onScroll={(e) => {
+                  const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
+                  // flex-col-reverseの特性に合わせ、上（過去方向）の端に達したら自動で過去ログを読み込む
+                  if (scrollHeight - scrollTop - clientHeight < 50 && !state.isLoadingMore && !state.msgStatusMessage) {
+                    actions.handleLoadMoreMessage();
+                  }
+                }}
+              >
                 {computed.groupedEmails[state.selectedSender!].map((email: any) => {
                     const isTrash = email.labelIds?.includes("TRASH");
                     const isSpam = email.labelIds?.includes("SPAM");
@@ -329,11 +345,9 @@ export default function Home() {
                   <div className="flex justify-center my-4 w-full">
                     {state.msgStatusMessage ? (
                       <span className="text-xs text-gray-500 font-medium px-3 py-1.5 bg-[#2B2D31] rounded-full border border-[#1E1F22]/10">{state.msgStatusMessage}</span>
-                    ) : (
-                      <button onClick={(e) => { e.stopPropagation(); actions.handleLoadMoreMessage(); }} disabled={state.isLoadingMore} className="bg-[#2B2D31] text-gray-300 hover:text-white px-4 py-2 rounded-full text-xs font-bold border border-[#1E1F22] shadow-sm active:scale-95 transition disabled:opacity-50">
-                        {state.isLoadingMore ? "読み込み中..." : "過去のメッセージを読み込む"}
-                      </button>
-                    )}
+                    ) : state.isLoadingMore ? (
+                      <span className="text-xs text-gray-500 font-medium animate-pulse">過去のメッセージを読み込み中...</span>
+                    ) : null}
                   </div>
                 )}
               </div>
