@@ -531,6 +531,39 @@ export function useMailApp() {
     return groups;
   }, [allUniqueEmails, session, chatConfigs]);
 
+  const prevFiltersRef = useRef({ checkInbox, checkArchive, checkSpam, checkTrash });
+
+  // ★修正: リロード時のフライング誤作動を防ぎつつ、フィルター切り替え時のみ対象外の画面を閉じる安全な監視エンジン
+  useEffect(() => {
+    const prev = prevFiltersRef.current;
+    const changed = prev.checkInbox !== checkInbox || prev.checkArchive !== checkArchive || prev.checkSpam !== checkSpam || prev.checkTrash !== checkTrash;
+
+    if (changed) {
+      prevFiltersRef.current = { checkInbox, checkArchive, checkSpam, checkTrash };
+
+      // ローディング中（リロード直後など）は判定をスキップし、ユーザーが手動で切り替えた時のみ処理する
+      if (selectedSender && !isLoading) {
+        const targetEmails = groupedEmails[selectedSender] || [];
+        const hasVisible = targetEmails.some((e: any) => {
+          const isTrash = e.labelIds?.includes("TRASH");
+          const isSpam = e.labelIds?.includes("SPAM");
+          const isInbox = e.labelIds?.includes("INBOX");
+          const isArchive = !isTrash && !isSpam && !isInbox;
+          return (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive) || revealedCrossPrompts.includes(e.id);
+        });
+
+        // 現在のフィルター条件に合致するメールが1件もなく、ピン留めもされていなければ閉じる
+        if (!hasVisible && !chatConfigs[selectedSender]?.isPinned) {
+          setSelectedSender(null);
+          if (typeof window !== "undefined") {
+            sessionStorage.removeItem("remail_selected_sender");
+            sessionStorage.removeItem("remail_scroll_main");
+          }
+        }
+      }
+    }
+  }, [checkInbox, checkArchive, checkSpam, checkTrash, selectedSender, groupedEmails, chatConfigs, revealedCrossPrompts, isLoading]);
+
   const senderList = useMemo(() => {
     // ★追加: 「ボタンを押して許可したメール」または「現在のボックスのメール」の最新日時だけを抽出するヘルパー
     const getLatestValidDate = (sender: string) => {
@@ -589,19 +622,6 @@ export function useMailApp() {
       return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
   }, [groupedEmails, chatConfigs, checkHasSent, checkInbox, checkArchive, checkSpam, checkTrash, revealedCrossPrompts]);
-
-  // ★追加: ボックス切り替え時、現在開いているチャットが新リストの中に存在しなくなっていたら、詳細画面をクリーンに閉じる
-  useEffect(() => {
-    if (selectedSender) {
-      if (senderList.length === 0 || !senderList.includes(selectedSender)) {
-        setSelectedSender(null);
-        if (typeof window !== "undefined") {
-          sessionStorage.removeItem("remail_selected_sender");
-          sessionStorage.removeItem("remail_scroll_main");
-        }
-      }
-    }
-  }, [senderList, selectedSender]);
 
   const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined); 
   const hiddenMsgs = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId !== undefined).map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ", date: new Date().toISOString() });
@@ -863,6 +883,16 @@ export function useMailApp() {
     setIsLoadingMoreChats(true); 
     setChatStatusMessage(null);
 
+    let tempToken = currentNextPageToken;
+    let loopCount = 0;
+    const maxLoops = 5; // 新しいチャットが見つかるまで最大500件まで自動で掘り進める
+    let hasNewValidSender = false;
+    const accumulatedEmails: any[] = [];
+    const currentLoadId = activeLoadRef.current;
+    
+    // 既存のチャット一覧を取得
+    const existingSenders = new Set(Object.keys(groupedEmails));
+
     try {
       let qParts = []; let orLabels = [];
       if (checkInbox) orLabels.push("in:inbox", "in:sent"); 
@@ -872,30 +902,68 @@ export function useMailApp() {
       if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`); 
       if (searchKeyword) qParts.push(searchKeyword);
 
-      const params = new URLSearchParams({ maxResults: "100", q: qParts.join(" ").trim(), includeTrash: "true", pageToken: currentNextPageToken });
-      const res = await fetch(`/api/emails?${params.toString()}`);
-      
-      if (!res.ok) { 
-        setChatStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。"); 
-        return; 
-      }
+      const baseQuery = qParts.join(" ").trim();
 
-      const data = await res.json(); 
-      const newMessages = data.messages || []; 
-      const nextToken = data.nextPageToken || null;
+      // 新しいチャットが見つかるか、メールが尽きるまでループ検索
+      while (!hasNewValidSender && tempToken && loopCount < maxLoops) {
+        if (activeLoadRef.current !== currentLoadId) break;
+        loopCount++;
 
-      if (newMessages.length === 0 || !nextToken) { 
-        setChatStatusMessage("すべてのメールを読み込みました"); 
-        setCurrentNextPageToken(null); 
-        if (newMessages.length > 0) {
-          setEmails(prev => [...prev, ...newMessages]);
+        const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: "true", pageToken: tempToken });
+        const res = await fetch(`/api/emails?${params.toString()}`);
+        
+        if (!res.ok) { 
+          setChatStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。"); 
+          break; 
         }
-        return; 
+
+        const data = await res.json(); 
+        const newMessages = data.messages || []; 
+        tempToken = data.nextPageToken || null;
+
+        if (newMessages.length > 0) {
+          accumulatedEmails.push(...newMessages);
+
+          // 取得したメールの中に、まだ画面にない新しいチャットが存在するかチェック
+          for (const email of newMessages) {
+            const senderRoom = email.senderRoom || (
+              (email.isMe || email.from.includes(session?.user?.email || ""))
+              ? (email.to ? email.to.split(",")[0].split("<")[0].replace(/"/g, "").trim() : "Unknown")
+              : (email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown")
+            );
+
+            if (!existingSenders.has(senderRoom)) {
+              const isTrash = email.labelIds?.includes("TRASH");
+              const isSpam = email.labelIds?.includes("SPAM");
+              const isInbox = email.labelIds?.includes("INBOX");
+              const isArchive = !isTrash && !isSpam && !isInbox;
+              const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive);
+
+              if (isCurrentBox && !chatConfigs[email.id]?.isHidden) {
+                hasNewValidSender = true;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!tempToken) break;
       }
 
-      // ★修正: 内部ループによる独断を廃止し、取得した100件のパケットをそのまま結合。これにより複数ボックス間の時系列データが漏れなく綺麗にマージされます
-      setEmails(prev => [...prev, ...newMessages]); 
-      setCurrentNextPageToken(nextToken);
+      // ループで蓄積したメール（最大500件分）を一気に画面へ反映
+      if (accumulatedEmails.length > 0) {
+        setEmails(prev => {
+          const map = new Map(prev.map(e => [e.id, e]));
+          accumulatedEmails.forEach((m: any) => map.set(m.id, m));
+          return Array.from(map.values());
+        });
+      }
+
+      setCurrentNextPageToken(tempToken);
+
+      if (!tempToken && !hasNewValidSender) {
+        setChatStatusMessage("すべてのメールを読み込みました");
+      }
 
     } catch (error) { 
       setChatStatusMessage("エラーが発生しました。"); 
