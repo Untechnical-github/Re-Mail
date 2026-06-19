@@ -316,8 +316,12 @@ export function useMailApp() {
     }
   };
 
+  const initLoadDoneRef = useRef(false);
+
   useEffect(() => {
-    if (session) {
+    // ★修正: セッションが存在し、かつ「まだ1回もロードしていない時」だけ実行する
+    if (session && !initLoadDoneRef.current) {
+      initLoadDoneRef.current = true;
       const initLoad = async () => {
         try {
           setIsLoading(true);
@@ -894,17 +898,16 @@ export function useMailApp() {
 
     let tempToken = currentNextPageToken;
     let loopCount = 0;
-    const maxLoops = 5; 
+    const maxLoops = 3; 
     let hasNewValidSender = false;
     const accumulatedEmails: any[] = [];
     const currentLoadId = activeLoadRef.current;
     
-    const existingSenders = new Set(Object.keys(groupedEmails));
+    const existingSenders = new Set(senderList);
 
     try {
       let qParts = []; 
       
-      // ★修正: 追加読み込み側も同様にスマートな引き算クエリで生成
       if (checkArchive) {
         if (!checkInbox) qParts.push("-in:inbox", "-in:sent");
         if (!checkSpam) qParts.push("-in:spam");
@@ -924,7 +927,8 @@ export function useMailApp() {
         if (activeLoadRef.current !== currentLoadId) break;
         loopCount++;
 
-        const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: "true", pageToken: tempToken });
+        // ★修正: API側の限界エラーを回避するため、安全マージンを取り 500 -> 490 に設定
+        const params = new URLSearchParams({ maxResults: "490", q: baseQuery, includeTrash: "true", pageToken: tempToken });
         const res = await fetch(`/api/emails?${params.toString()}`);
         
         if (!res.ok) { 
@@ -974,7 +978,7 @@ export function useMailApp() {
 
       setCurrentNextPageToken(tempToken);
 
-      if (!tempToken && !hasNewValidSender) {
+      if (!tempToken) {
         setChatStatusMessage("すべてのメールを読み込みました");
       }
 
