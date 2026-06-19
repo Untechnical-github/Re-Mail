@@ -235,6 +235,7 @@ export default function Home() {
               )}
 
               <div 
+                key={state.selectedSender} // ★追加: 宛先が変わるたびにスクロール枠を完全に作り直し、位置を一番下へリセットする
                 className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin cursor-default"
                 onScroll={(e) => {
                   const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;

@@ -605,6 +605,7 @@ export function useMailApp() {
     setSelectedSender(sender);
     if (typeof window !== "undefined") {
       sessionStorage.setItem("remail_selected_sender", sender);
+      sessionStorage.removeItem("remail_scroll_main"); // ★追加: 別のチャットを開いた瞬間、メッセージ画面のスクロール記憶を破棄
     }
     setSelectionMode("none");
     setSelectedIds([]);
