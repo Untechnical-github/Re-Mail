@@ -46,10 +46,12 @@ export default function Home() {
                {state.searchKeyword && <button onClick={(e) => { e.stopPropagation(); actions.safeBack(); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs font-bold px-1 transition">✕</button>}
              </div>
              
-             <div className="flex gap-1 text-xs mt-2">
+             {/* ★追加: アーカイブのチェックボックス */}
+             <div className="flex flex-wrap gap-1 text-[11px] mt-2 font-bold">
                 <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkInbox} onChange={(e) => actions.setCheckInbox(e.target.checked)} className="accent-[#5865F2]" /> 受信箱</label>
-                <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkSpam} onChange={(e) => actions.setCheckSpam(e.target.checked)} className="accent-[#5865F2]" /> 迷惑メール</label>
-                <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkTrash} onChange={(e) => actions.setCheckTrash(e.target.checked)} className="accent-[#5865F2]" /> ゴミ箱</label>
+                <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkArchive} onChange={(e) => actions.setCheckArchive(e.target.checked)} className="accent-[#95A5A6]" /> アーカイブ</label>
+                <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkSpam} onChange={(e) => actions.setCheckSpam(e.target.checked)} className="accent-[#FEE75C]" /> 迷惑</label>
+                <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkTrash} onChange={(e) => actions.setCheckTrash(e.target.checked)} className="accent-[#DA373C]" /> ゴミ箱</label>
              </div>
              <div className="mt-2">
                 <button onClick={(e) => { e.stopPropagation(); actions.setCheckHasSent(!state.checkHasSent); }} className={`w-full py-1.5 text-xs font-bold rounded border transition shadow-sm ${state.checkHasSent ? 'bg-[#5865F2] text-white border-[#5865F2]' : 'bg-[#1E1F22] text-gray-400 border-[#35373C] hover:bg-[#3f4147] hover:text-white'}`}>
@@ -64,8 +66,7 @@ export default function Home() {
             className="flex-1 overflow-y-auto p-2 space-y-0.5 min-h-0 cursor-default"
             onScroll={(e) => {
               const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
-              // 一番下から50px手前に達したら自動で次のチャットを読み込む
-              if (scrollHeight - scrollTop - clientHeight < 50 && !state.isLoadingMoreChats && !state.chatStatusMessage) {
+              if (scrollHeight - Math.abs(scrollTop) - clientHeight < 50 && !state.isLoadingMoreChats && !state.chatStatusMessage) {
                 actions.handleLoadMoreChats();
               }
             }}
@@ -75,15 +76,15 @@ export default function Home() {
               const allEmails = computed.groupedEmails[sender] || [];
               const config = state.chatConfigs[sender];
 
-              // ★修正: 未許可のプロンプトメールを完全に除外した「実質的な表示メール」リストを作成
               const visibleEmails = allEmails.filter((e: any) => {
                  const isTrash = e.labelIds?.includes("TRASH");
                  const isSpam = e.labelIds?.includes("SPAM");
-                 const isInbox = !isTrash && !isSpam;
+                 const isInbox = e.labelIds?.includes("INBOX");
+                 const isArchive = !isTrash && !isSpam && !isInbox;
                  
-                 if (isInbox && (config?.isHidden || state.chatConfigs[e.id]?.isHidden)) return false;
+                 if ((isInbox || isArchive) && (config?.isHidden || state.chatConfigs[e.id]?.isHidden)) return false;
 
-                 const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox);
+                 const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox) || (isArchive && state.checkArchive);
                  if (!isCurrentBox && !state.revealedCrossPrompts.includes(e.id)) return false;
 
                  return true;
@@ -94,7 +95,7 @@ export default function Home() {
 
               const isSelected = state.selectedIds.includes(sender);
               const isOpened = state.selectedSender === sender && !state.isMobile;
-              const count = visibleEmails.length; // ★修正: カウントは許可済みのもののみ
+              const count = visibleEmails.length;
               const latestDate = new Date(latestEmail.date).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
               let previewSubject = latestEmail.subject || "No Subject";
@@ -114,18 +115,22 @@ export default function Home() {
                  }
               }
 
-              const isMoveGrayedOut = state.selectionMode === "chat_move" && state.moveDestination && visibleEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!));
-              const hasInbox = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
-              const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasInbox;
-              const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasInbox;
+              const isMoveGrayedOut = state.selectionMode === "chat_move" && state.moveDestination && visibleEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!) || (state.moveDestination === "ARCHIVE" && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("INBOX")));
+              const hasPinTarget = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+              const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasPinTarget;
+              const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasPinTarget;
               const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut;
 
               const colorsSet = new Set<string>();
               visibleEmails.forEach((e: any) => {
                  const isTrash = e.labelIds?.includes("TRASH");
                  const isSpam = e.labelIds?.includes("SPAM");
+                 const isInbox = e.labelIds?.includes("INBOX");
+                 const isArchive = !isTrash && !isSpam && !isInbox;
+
                  if (isTrash) colorsSet.add(state.boxColors.trash);
                  else if (isSpam) colorsSet.add(state.boxColors.spam);
+                 else if (isArchive) colorsSet.add(state.boxColors.archive);
                  else colorsSet.add(state.boxColors.inbox);
               });
               const colors = Array.from(colorsSet);
@@ -168,7 +173,7 @@ export default function Home() {
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-baseline">
                         <div className="flex items-center gap-1 truncate pr-2">
-                          {config?.isPinned && state.checkInbox && <span className="text-[#FEE75C] text-[10px]">📌</span>}
+                          {config?.isPinned && (state.checkInbox || state.checkArchive) && <span className="text-[#FEE75C] text-[10px]">📌</span>}
                           <span className="font-bold text-sm truncate"><HighlightText text={config?.customName || sender} highlight={state.searchKeyword} /></span>
                         </div>
                         <span className="text-[10px] text-gray-500 flex-shrink-0">{latestDate}</span>
@@ -188,7 +193,7 @@ export default function Home() {
                  {state.chatStatusMessage ? (
                    <span className="text-xs text-gray-500 font-medium px-2 py-1 bg-[#232428] rounded text-center">{state.chatStatusMessage}</span>
                  ) : state.isLoadingMoreChats ? (
-                   <span className="text-xs text-gray-500 font-medium animate-pulse">チャットを読み込み中...</span>
+                   <span className="text-xs text-[#5865F2] font-medium animate-pulse">チャットを読み込み中...</span>
                  ) : null}
                </div>
              )}
@@ -233,8 +238,7 @@ export default function Home() {
                 className="flex-1 overflow-y-auto px-4 py-6 flex flex-col-reverse scrollbar-thin cursor-default"
                 onScroll={(e) => {
                   const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
-                  // flex-col-reverseの特性に合わせ、上（過去方向）の端に達したら自動で過去ログを読み込む
-                  if (scrollHeight - scrollTop - clientHeight < 50 && !state.isLoadingMore && !state.msgStatusMessage) {
+                  if (scrollHeight - Math.abs(scrollTop) - clientHeight < 50 && !state.isLoadingMore && !state.msgStatusMessage) {
                     actions.handleLoadMoreMessage();
                   }
                 }}
@@ -242,16 +246,17 @@ export default function Home() {
                 {computed.groupedEmails[state.selectedSender!].map((email: any) => {
                     const isTrash = email.labelIds?.includes("TRASH");
                     const isSpam = email.labelIds?.includes("SPAM");
-                    const isInbox = !isTrash && !isSpam;
+                    const isInbox = email.labelIds?.includes("INBOX");
+                    const isArchive = !isTrash && !isSpam && !isInbox;
 
-                    if (isInbox && (state.chatConfigs[state.selectedSender!]?.isHidden || state.chatConfigs[email.id]?.isHidden)) return null;
+                    if ((isInbox || isArchive) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.chatConfigs[email.id]?.isHidden)) return null;
 
                     const isMe = email.isMe || email.from.includes(auth.session?.user?.email || "");
                     const isSelected = state.selectedIds.includes(email.id);
-                    const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox);
+                    const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox) || (isArchive && state.checkArchive);
 
-                    const boxName = isTrash ? "ゴミ箱" : isSpam ? "迷惑メール" : "受信箱";
-                    const boxColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : state.boxColors.inbox;
+                    const boxName = isTrash ? "ゴミ箱" : isSpam ? "迷惑メール" : isArchive ? "アーカイブ" : "受信箱";
+                    const boxColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isArchive ? state.boxColors.archive : state.boxColors.inbox;
 
                     if (!isCurrentBox && !state.revealedCrossPrompts.includes(email.id)) {
                         const roundedClass = isMe ? 'rounded-2xl rounded-tr-sm' : 'rounded-2xl rounded-tl-sm';
@@ -283,12 +288,12 @@ export default function Home() {
                         );
                     }
 
-                    const isMoveGrayedOut = state.selectionMode === "msg_move" && state.moveDestination && email.labelIds?.includes(state.moveDestination);
-                    const isMsgPinGrayedOut = state.selectionMode === "msg_pin" && !isInbox;
-                    const isMsgHideGrayedOut = state.selectionMode === "msg_hide" && !isInbox;
+                    const isMoveGrayedOut = state.selectionMode === "msg_move" && state.moveDestination && (email.labelIds?.includes(state.moveDestination) || (state.moveDestination === "ARCHIVE" && isArchive));
+                    const isMsgPinGrayedOut = state.selectionMode === "msg_pin" && !(isInbox || isArchive);
+                    const isMsgHideGrayedOut = state.selectionMode === "msg_hide" && !(isInbox || isArchive);
                     const isActionGrayedOut = isMoveGrayedOut || isMsgPinGrayedOut || isMsgHideGrayedOut;
                     
-                    const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : state.boxColors.inbox;
+                    const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isArchive ? state.boxColors.archive : state.boxColors.inbox;
 
                     return (
                       <div 
@@ -326,7 +331,7 @@ export default function Home() {
                               onTouchEnd={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
                               onTouchMove={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
                            >
-                              {state.chatConfigs[email.id]?.isPinned && state.checkInbox && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
+                              {state.chatConfigs[email.id]?.isPinned && (state.checkInbox || state.checkArchive) && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
                               {email.subject && !email.subject.startsWith("Re:") && (
                                 <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={email.subject} highlight={state.searchKeyword} /></div>
                               )}
@@ -346,7 +351,7 @@ export default function Home() {
                     {state.msgStatusMessage ? (
                       <span className="text-xs text-gray-500 font-medium px-3 py-1.5 bg-[#2B2D31] rounded-full border border-[#1E1F22]/10">{state.msgStatusMessage}</span>
                     ) : state.isLoadingMore ? (
-                      <span className="text-xs text-gray-500 font-medium animate-pulse">過去のメッセージを読み込み中...</span>
+                      <span className="text-xs text-[#5865F2] font-medium animate-pulse">過去のメッセージを読み込み中...</span>
                     ) : null}
                   </div>
                 )}

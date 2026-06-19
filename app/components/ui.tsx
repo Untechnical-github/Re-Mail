@@ -16,26 +16,24 @@ export const HighlightText = ({ text, highlight }: { text: string, highlight: st
 
 export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
-  const { selectionMode, selectedIds, checkInbox } = app.state;
+  const { selectionMode, selectedIds, checkInbox, checkArchive } = app.state;
   const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode } = app.actions;
 
   const isMode = (action: string) => selectionMode === `${modePrefix}_${action}`;
   
-  // ★修正: 選択されたアイテムに受信箱のメールが含まれているかチェック
-  const hasSelectedInbox = selectedIds.some((id: string) => {
+  const hasSelectedTarget = selectedIds.some((id: string) => {
       if (isChat) {
-          return app.computed.groupedEmails[id]?.some((e:any) => e.labelIds?.includes("INBOX"));
+          return app.computed.groupedEmails[id]?.some((e:any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
       } else {
           const msg = app.computed.allUniqueEmails.find((e:any) => e.id === id);
-          return msg?.labelIds?.includes("INBOX");
+          return msg && !msg.labelIds?.includes("TRASH") && !msg.labelIds?.includes("SPAM");
       }
   });
 
   const isDisabled = (action: string) => {
       if (selectionMode !== "none" && selectionMode !== `${modePrefix}_${action}`) return true;
-      // ★修正: 非表示もピン留めと同様に、INBOXがないアイテムでは実行させない
-      if (action === "pin" && selectionMode === `${modePrefix}_pin` && !hasSelectedInbox) return true;
-      if (action === "hide" && selectionMode === `${modePrefix}_hide` && !hasSelectedInbox) return true;
+      if (action === "pin" && selectionMode === `${modePrefix}_pin` && !hasSelectedTarget) return true;
+      if (action === "hide" && selectionMode === `${modePrefix}_hide` && !hasSelectedTarget) return true;
       return false;
   };
 
@@ -55,16 +53,16 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     ? "flex flex-wrap p-2 gap-1 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default"
     : "flex flex-wrap px-4 py-2 gap-2 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default";
 
+  const showAction = checkInbox || checkArchive;
+
   return (
     <div className={containerClass} onClick={(e) => e.stopPropagation()}>
-      {checkInbox && <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin", "bg-[#5865F2]")}>{renderText("pin", "ピン留め")}</button>}
+      {showAction && <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin", "bg-[#5865F2]")}>{renderText("pin", "ピン留め")}</button>}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_move`)} className={getBtnClass("move", "bg-[#5865F2]")}>{renderText("move", "移動")}</button>
-      {/* ★修正: 「非表示」も受信箱にチェックが入っている時のみ表示 */}
-      {checkInbox && <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>{renderText("hide", "非表示(Re:Mail)")}</button>}
+      {showAction && <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>{renderText("hide", "非表示(Re:Mail)")}</button>}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", "bg-[#DA373C]")}>{renderText("delete", "削除(Gmail)")}</button>
       <button onClick={() => handleMenuBarClick(`${modePrefix}_reset`)} className={getBtnClass("reset", "bg-[#DA373C]")}>リセット</button>
-      {/* ★修正: 非表示解除も受信箱にチェックが入っている時のみ表示 */}
-      {checkInbox && (
+      {showAction && (
         <button
           onClick={() => {
             setModal({ type: "unhide_select", targetMode: modePrefix, targets: [] });

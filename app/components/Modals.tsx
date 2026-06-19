@@ -1,13 +1,12 @@
 import { SelectionMode } from "../types/mail";
 
 export function Modals({ app }: { app: any }) {
-  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, pinType, checkTrash, checkSpam, checkInbox, revealedCrossPrompts } = app.state;
+  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, pinType, checkTrash, checkSpam, checkInbox, checkArchive, revealedCrossPrompts } = app.state;
   const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack, setPinType } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
 
   if (!modal) return null;
 
-  // ★追加: 未許可のメールをアクション対象から除外するフィルター関数
   const getActionableEmails = (targets: string[], targetMode: string) => {
     let result: any[] = [];
     if (targetMode === "chat") {
@@ -16,8 +15,9 @@ export function Modals({ app }: { app: any }) {
         result.push(...chatEmails.filter((e: any) => {
           const isTrash = e.labelIds?.includes("TRASH");
           const isSpam = e.labelIds?.includes("SPAM");
-          const isInbox = !isTrash && !isSpam;
-          const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox);
+          const isInbox = e.labelIds?.includes("INBOX");
+          const isArchive = !isTrash && !isSpam && !isInbox;
+          const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive);
           return isCurrentBox || revealedCrossPrompts.includes(e.id);
         }));
       });
@@ -82,7 +82,7 @@ export function Modals({ app }: { app: any }) {
               <h2 className="text-lg font-bold text-white mb-2">ピン留めの確認</h2>
               <p className="text-sm text-gray-300 mb-6 leading-relaxed">
                 選択したアイテムを<span className="font-bold text-white">{pinType ? "永続読み込み" : "通常の設定"}</span>でピン留めします。よろしいですか？<br/>
-                <span className="text-xs text-gray-400">※受信箱に存在するメールのみが対象となります。</span>
+                <span className="text-xs text-gray-400">※受信箱またはアーカイブに存在するメールのみが対象となります。</span>
               </p>
               <div className="flex justify-end gap-3">
                 <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
@@ -108,7 +108,7 @@ export function Modals({ app }: { app: any }) {
               <h2 className="text-lg font-bold text-white mb-2">ピン留め</h2>
               <p className="text-sm text-gray-300 mb-6 leading-relaxed">
                 読み込み対象外（期間外や件数制限など）になった際も、この{modal.targetMode === "chat" ? "チャット" : "メッセージ"}を表示させますか？<br/>
-                <span className="text-xs text-gray-400">※受信箱に存在するメールのみが対象となります。</span>
+                <span className="text-xs text-gray-400">※受信箱またはアーカイブのメールのみが対象となります。</span>
               </p>
               <div className="flex flex-col gap-2">
                 <button onClick={() => executePin(true)} disabled={willExceedLimit} className={`w-full py-2.5 rounded text-sm font-bold transition ${willExceedLimit ? 'bg-[#3f4147] text-gray-500 cursor-not-allowed' : 'bg-[#5865F2] text-white hover:bg-[#4752C4] active:scale-95'}`}>
@@ -123,10 +123,11 @@ export function Modals({ app }: { app: any }) {
 
         {modal.type === "confirm_delete" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
-          const inboxCount = targetEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
+          const inboxCount = targetEmails.filter(e => e.labelIds?.includes("INBOX")).length;
+          const archiveCount = targetEmails.filter(e => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
           const spamCount = targetEmails.filter(e => e.labelIds?.includes("SPAM")).length;
           const trashCount = targetEmails.filter(e => e.labelIds?.includes("TRASH")).length;
-          const toTrashCount = inboxCount + spamCount;
+          const toTrashCount = inboxCount + archiveCount + spamCount;
           
           return (
             <div className="p-5">
@@ -138,7 +139,7 @@ export function Modals({ app }: { app: any }) {
                 <div className="font-bold text-gray-400 border-b border-[#1E1F22] pb-1 mb-2 text-xs">【処理の内訳】</div>
                 {toTrashCount > 0 && (
                   <div>
-                    ・受信箱: {inboxCount}件 / 迷惑メール: {spamCount}件 <br/>
+                    ・受信箱: {inboxCount}件 / アーカイブ: {archiveCount}件 / 迷惑メール: {spamCount}件 <br/>
                     <span className="text-[#FEE75C] ml-3">→ ゴミ箱へ移動します。</span>
                   </div>
                 )}
@@ -159,14 +160,14 @@ export function Modals({ app }: { app: any }) {
 
         {modal.type === "confirm_hide" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
-          const inboxCount = targetEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
+          const hideableCount = targetEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
 
           return (
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-2">非表示(Re:Mailのみ)</h2>
               <p className="text-sm text-gray-300 mb-6 leading-relaxed">
                 選択した項目をRe:Mailの画面上から隠します。<br/>
-                <span className="text-[#5865F2] font-bold">（対象となる受信箱のメール: {inboxCount}件）</span>
+                <span className="text-[#5865F2] font-bold">（対象となる受信箱・アーカイブのメール: {hideableCount}件）</span>
               </p>
               <div className="flex justify-end gap-3">
                 <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
@@ -279,23 +280,13 @@ export function Modals({ app }: { app: any }) {
           </div>
         )}
 
-        {modal.type === "rename" && (
-          <div className="p-5">
-            <h2 className="text-lg font-bold text-white mb-4">チャット名の変更</h2>
-            <input type="text" value={renameInput} onChange={(e) => setRenameInput(e.target.value)} className="w-full bg-[#1E1F22] text-gray-200 px-3 py-2 rounded focus:outline-none focus:ring-2 focus:ring-[#5865F2] mb-4" />
-            <div className="flex justify-end gap-3">
-              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-              <button onClick={() => { updateChatConfig(modal.targets[0], { customName: renameInput.trim() }); safeBack(); }} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">変更</button>
-            </div>
-          </div>
-        )}
-
         {modal.type === "select_move_dest" && (
           <div className="p-5">
             <h2 className="text-lg font-bold text-white mb-4">移動先の選択</h2>
             <div className="flex flex-col gap-2 mb-4">
-              {["INBOX", "SPAM", "TRASH"].map(dest => {
-                const labels: Record<string, string> = { "INBOX": "受信箱", "SPAM": "迷惑メール", "TRASH": "ゴミ箱" };
+              {/* ★追加: アーカイブ移動の選択肢 */}
+              {["INBOX", "ARCHIVE", "SPAM", "TRASH"].map(dest => {
+                const labels: Record<string, string> = { "INBOX": "受信箱", "ARCHIVE": "アーカイブ", "SPAM": "迷惑メール", "TRASH": "ゴミ箱" };
                 return (
                   <button 
                     key={dest} 
@@ -319,17 +310,16 @@ export function Modals({ app }: { app: any }) {
 
         {modal.type === "select_move_dest_context" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
-          const inboxCount = targetEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
-          const spamCount = targetEmails.filter(e => e.labelIds?.includes("SPAM")).length;
-          const trashCount = targetEmails.filter(e => e.labelIds?.includes("TRASH")).length;
-
           return (
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-4">移動先の選択</h2>
               <div className="flex flex-col gap-2 mb-4">
-                {["INBOX", "SPAM", "TRASH"].map(dest => {
-                  const isAllInDest = targetEmails.length > 0 && targetEmails.every((e: any) => e.labelIds?.includes(dest));
-                  const labels: Record<string, string> = { "INBOX": "受信箱", "SPAM": "迷惑メール", "TRASH": "ゴミ箱" };
+                {["INBOX", "ARCHIVE", "SPAM", "TRASH"].map(dest => {
+                  const isAllInDest = targetEmails.length > 0 && targetEmails.every((e: any) => {
+                     if (dest === "ARCHIVE") return !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
+                     return e.labelIds?.includes(dest);
+                  });
+                  const labels: Record<string, string> = { "INBOX": "受信箱", "ARCHIVE": "アーカイブ", "SPAM": "迷惑メール", "TRASH": "ゴミ箱" };
                   return (
                     <button 
                       key={dest} 
@@ -350,10 +340,11 @@ export function Modals({ app }: { app: any }) {
 
         {modal.type === "confirm_move" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
-          const inboxCount = targetEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
+          const inboxCount = targetEmails.filter(e => e.labelIds?.includes("INBOX")).length;
+          const archiveCount = targetEmails.filter(e => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
           const spamCount = targetEmails.filter(e => e.labelIds?.includes("SPAM")).length;
           const trashCount = targetEmails.filter(e => e.labelIds?.includes("TRASH")).length;
-          const destName = moveDestination === "INBOX" ? "受信箱" : moveDestination === "SPAM" ? "迷惑メール" : "ゴミ箱";
+          const destName = moveDestination === "INBOX" ? "受信箱" : moveDestination === "ARCHIVE" ? "アーカイブ" : moveDestination === "SPAM" ? "迷惑メール" : "ゴミ箱";
 
           return (
             <div className="p-5">
@@ -364,6 +355,7 @@ export function Modals({ app }: { app: any }) {
               <div className="bg-[#2B2D31] p-3 rounded border border-[#1E1F22] mb-5 space-y-2 text-[13px] text-gray-300">
                 <div className="font-bold text-gray-400 border-b border-[#1E1F22] pb-1 mb-1 text-xs">【移動元の内訳】</div>
                 <div className="flex justify-between items-center px-1"><span>受信箱:</span> <span>{inboxCount} 件</span></div>
+                <div className="flex justify-between items-center px-1"><span>アーカイブ:</span> <span>{archiveCount} 件</span></div>
                 <div className="flex justify-between items-center px-1"><span>迷惑メール:</span> <span>{spamCount} 件</span></div>
                 <div className="flex justify-between items-center px-1"><span>ゴミ箱:</span> <span>{trashCount} 件</span></div>
               </div>

@@ -1,7 +1,7 @@
 import { MailAppHook } from "../hooks/useMailApp";
 
 export function ContextMenu({ app }: { app: MailAppHook }) {
-  const { contextMenu, isMobile, chatConfigs, checkInbox } = app.state;
+  const { contextMenu, isMobile, chatConfigs, checkInbox, checkArchive } = app.state;
   const { setContextMenu, handleContextMenuAction } = app.actions;
 
   if (!contextMenu) return null;
@@ -16,8 +16,8 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
       >
         {contextMenu.type === "chat" && (() => {
           const tId = typeof contextMenu.target === "string" ? contextMenu.target : contextMenu.target.id;
-          const hasInbox = app.computed.groupedEmails[tId]?.some((e: any) => e.labelIds?.includes("INBOX"));
-          const showAction = checkInbox && hasInbox; // ★修正: ピン留めと非表示はINBOXがある時だけ
+          const hasTarget = app.computed.groupedEmails[tId]?.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+          const showAction = (checkInbox || checkArchive) && hasTarget;
           
           return (
             <div className="flex flex-col p-1">
@@ -36,8 +36,8 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
         
         {contextMenu.type === "msg" && (() => {
           const mId = contextMenu.target.id;
-          const isInbox = contextMenu.target.labelIds?.includes("INBOX");
-          const showAction = checkInbox && isInbox;
+          const isTarget = !contextMenu.target.labelIds?.includes("TRASH") && !contextMenu.target.labelIds?.includes("SPAM");
+          const showAction = (checkInbox || checkArchive) && isTarget;
           
           return (
             <div className="flex flex-col p-1">
