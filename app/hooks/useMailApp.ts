@@ -236,7 +236,8 @@ export function useMailApp() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emails, getIsCancelled = () => false) => {
+  // ★修正: currentEmailsState のデフォルト値を emails から emailsRef.current に変更
+  const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emailsRef.current, getIsCancelled = () => false) => {
     if (!flags.inbox && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return { success: false, emails: [] }; }
     if (!isSilent) setIsLoading(true);
     const isCacheTarget = !query && !pageToken && !isLoadMore;
@@ -371,13 +372,19 @@ export function useMailApp() {
           const initInbox = settings?.inbox ?? true; const initSpam = settings?.spam ?? false; const initTrash = settings?.trash ?? false;
           setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
           let snapshot: any = null;
+          let initialEmails: any[] = []; // ★追加
           try { 
             snapshot = await localforage.getItem(getCacheKey({ inbox: initInbox, spam: initSpam, trash: initTrash })); 
             if (snapshot && snapshot.emails && snapshot.emails.length > 0 && !snapshot.emails[0].labelIds) { await localforage.clear(); snapshot = null; }
           } catch (e) {}
-          if (snapshot && snapshot.emails && snapshot.emails.length > 0) setEmails(snapshot.emails);
           
-          const res = await fetchEmails(100, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
+          if (snapshot && snapshot.emails && snapshot.emails.length > 0) {
+            initialEmails = snapshot.emails; // ★追加
+            setEmails(initialEmails);
+          }
+          
+          // ★修正: initialEmailsを引数として渡し、キャッシュの消失を防ぐ
+          const res = await fetchEmails(100, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true, initialEmails);
           if (!res.success && status === "authenticated") {
              setEmails([]);
              await localforage.clear();
@@ -418,7 +425,7 @@ export function useMailApp() {
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
       searchTimeoutRef.current = setTimeout(async () => {
         await saveGlobalSettings(checkInbox, checkSpam, checkTrash);
-        let loadedEmails = emails;
+        let loadedEmails = emailsRef.current; // ★修正: emails から emailsRef.current に変更
         if (!searchKeyword) {
           let snapshot: any = null;
           try { snapshot = await localforage.getItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash })); } catch (e) {}
