@@ -8,7 +8,15 @@ export function useMailApp() {
   const [emails, setEmails] = useState<any[]>([]);
   const [persistedEmails, setPersistedEmails] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedSender, setSelectedSender] = useState<string | null>(null);
+  
+  // ★修正: リロード後も開いていたチャットをsessionStorageから自動復元
+  const [selectedSender, setSelectedSender] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      return sessionStorage.getItem("remail_selected_sender");
+    }
+    return null;
+  });
+  
   const [chatConfigs, setChatConfigs] = useState<Record<string, ChatConfig>>({});
 
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -57,6 +65,19 @@ export function useMailApp() {
   const getCacheKey = (flags: { inbox: boolean; spam: boolean; trash: boolean }) => {
     return `remail_feed_cache_v2_i${flags.inbox ? 1 : 0}s${flags.spam ? 1 : 0}t${flags.trash ? 1 : 0}`;
   };
+
+  // ★追加: チャット一覧とメッセージ画面のスクロール位置をリアルタイムで保存する副作用
+  useEffect(() => {
+    const handleScrollSave = () => {
+      const asideEl = document.querySelector("aside > div.flex-1");
+      const mainEl = document.querySelector("main > div.flex-1");
+      if (asideEl) sessionStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
+      if (mainEl) sessionStorage.setItem("remail_scroll_main", mainEl.scrollTop.toString());
+    };
+
+    window.addEventListener("beforeunload", handleScrollSave);
+    return () => window.removeEventListener("beforeunload", handleScrollSave);
+  }, [selectedSender]);
 
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
@@ -203,7 +224,10 @@ export function useMailApp() {
       setModal(null); setContextMenu(null);
       if (!state || state.action !== "select") { setSelectionMode("none"); setSelectedIds([]); hasPushedSelectRef.current = false; } else { hasPushedSelectRef.current = true; }
       if (!state || state.action !== "search") { setSearchKeyword(""); hasPushedSearchRef.current = false; } else { hasPushedSearchRef.current = true; }
-      if (window.innerWidth < 768 && window.location.hash !== '#chat') setSelectedSender(null);
+      if (window.innerWidth < 768 && window.location.hash !== '#chat') {
+        setSelectedSender(null);
+        sessionStorage.removeItem("remail_selected_sender");
+      }
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -223,7 +247,24 @@ export function useMailApp() {
             if (snapshot && snapshot.emails && snapshot.emails.length > 0 && !snapshot.emails[0].labelIds) { await localforage.clear(); snapshot = null; }
           } catch (e) {}
           if (snapshot && snapshot.emails && snapshot.emails.length > 0) setEmails(snapshot.emails);
-          await fetchEmails(100, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
+          
+          // ★修正: 長期放置やデプロイ跨ぎ対策。最新データの取得（fetchEmails）が失敗した場合は古いキャッシュを消去して認証不全を防ぐ
+          const isSuccess = await fetchEmails(100, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
+          if (!isSuccess && status === "authenticated") {
+             setEmails([]);
+             await localforage.clear();
+          }
+
+          // ★追加: リロード完了時に、退避させていたスクロール位置をミリ秒ずらして復元
+          setTimeout(() => {
+            const asideScroll = sessionStorage.getItem("remail_scroll_aside");
+            const mainScroll = sessionStorage.getItem("remail_scroll_main");
+            const asideEl = document.querySelector("aside > div.flex-1");
+            const mainEl = document.querySelector("main > div.flex-1");
+            if (asideScroll && asideEl) asideEl.scrollTop = parseInt(asideScroll, 10);
+            if (mainScroll && mainEl) mainEl.scrollTop = parseInt(mainScroll, 10);
+          }, 150);
+
         } catch (err) { console.error(err); } finally { setIsLoading(false); }
       };
       initLoad();
@@ -459,6 +500,9 @@ export function useMailApp() {
 
   const openChat = async (sender: string) => {
     setSelectedSender(sender);
+    if (typeof window !== "undefined") {
+      sessionStorage.setItem("remail_selected_sender", sender); // ★追加: リロード対策
+    }
     setSelectionMode("none");
     setSelectedIds([]);
     setReplyToMessage(null);
