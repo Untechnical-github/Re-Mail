@@ -403,7 +403,8 @@ export function useMailApp() {
           });
         }
 
-        if (isLoadMore && newMsgs.length === 0 && nextToken === "END") {
+        // ★修正: 追加スクロール時だけでなく、最初の1ページ目の読み込み時点で既にメールが尽きていた（nextTokenがEND）場合も、即座にメッセージを表示させる
+        if (nextToken === "END") {
           setMsgStatusMessage("すべてのメールを読み込みました");
         }
         
@@ -588,6 +589,19 @@ export function useMailApp() {
       return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
   }, [groupedEmails, chatConfigs, checkHasSent, checkInbox, checkArchive, checkSpam, checkTrash, revealedCrossPrompts]);
+
+  // ★追加: ボックス切り替え時、現在開いているチャットが新リストの中に存在しなくなっていたら、詳細画面をクリーンに閉じる
+  useEffect(() => {
+    if (selectedSender) {
+      if (senderList.length === 0 || !senderList.includes(selectedSender)) {
+        setSelectedSender(null);
+        if (typeof window !== "undefined") {
+          sessionStorage.removeItem("remail_selected_sender");
+          sessionStorage.removeItem("remail_scroll_main");
+        }
+      }
+    }
+  }, [senderList, selectedSender]);
 
   const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined); 
   const hiddenMsgs = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId !== undefined).map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ", date: new Date().toISOString() });
@@ -846,44 +860,48 @@ export function useMailApp() {
         return; 
     }
     loadingMoreChatsRef.current = true;
-    setIsLoadingMoreChats(true); setChatStatusMessage(null);
-    let tempToken = currentNextPageToken; let hasNewSender = false; let loopCount = 0; const maxLoops = 5; 
-    const currentLoadId = activeLoadRef.current;
+    setIsLoadingMoreChats(true); 
+    setChatStatusMessage(null);
 
     try {
-      const currentSenders = new Set(Object.keys(groupedEmails));
-      while (!hasNewSender && tempToken && loopCount < maxLoops) {
-        if (activeLoadRef.current !== currentLoadId) break;
-        loopCount++; let qParts = []; let orLabels = [];
-        if (checkInbox) orLabels.push("in:inbox", "in:sent"); 
-        if (checkSpam) orLabels.push("in:spam"); 
-        if (checkTrash) orLabels.push("in:trash");
-        if (checkArchive) orLabels.push("(-in:inbox -in:spam -in:trash)");
-        if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`); if (searchKeyword) qParts.push(searchKeyword);
+      let qParts = []; let orLabels = [];
+      if (checkInbox) orLabels.push("in:inbox", "in:sent"); 
+      if (checkSpam) orLabels.push("in:spam"); 
+      if (checkTrash) orLabels.push("in:trash");
+      if (checkArchive) orLabels.push("(-in:inbox -in:spam -in:trash)");
+      if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`); 
+      if (searchKeyword) qParts.push(searchKeyword);
 
-        const params = new URLSearchParams({ maxResults: "100", q: qParts.join(" ").trim(), includeTrash: "true", pageToken: tempToken });
-        const res = await fetch(`/api/emails?${params.toString()}`);
-        if (!res.ok) { setChatStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。"); break; }
-
-        const data = await res.json(); const newMessages = data.messages || []; tempToken = data.nextPageToken || null;
-        if (newMessages.length === 0) { setChatStatusMessage("すべてのメールを読み込みました"); setCurrentNextPageToken(null); break; }
-
-        const hasNew = newMessages.some((email: any) => {
-          if (chatConfigs[email.id]?.isHidden) return false;
-          if (email.senderRoom) return !currentSenders.has(email.senderRoom);
-          const isMe = email.isMe || email.from.includes(session?.user?.email || "");
-          if (!isMe) { const roomName = email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"; return !currentSenders.has(roomName); } 
-          else { const toClean = email.to ? email.to.split(",")[0].split("<")[0].replace(/"/g, "").trim() : ""; return toClean && !currentSenders.has(toClean); }
-        });
-
-        setEmails(prev => [...prev, ...newMessages]); setCurrentNextPageToken(tempToken);
-        if (hasNew) { hasNewSender = true; }
+      const params = new URLSearchParams({ maxResults: "100", q: qParts.join(" ").trim(), includeTrash: "true", pageToken: currentNextPageToken });
+      const res = await fetch(`/api/emails?${params.toString()}`);
+      
+      if (!res.ok) { 
+        setChatStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。"); 
+        return; 
       }
-      if (loopCount >= maxLoops && !hasNewSender) setChatStatusMessage("APIの上限に達しました。しばらくしてからもう一度お試しください。");
-      else if (!tempToken && !hasNewSender) setChatStatusMessage("すべてのメールを読み込みました");
-    } catch (error) { setChatStatusMessage("エラーが発生しました。"); } finally { 
-        setIsLoadingMoreChats(false); 
-        loadingMoreChatsRef.current = false;
+
+      const data = await res.json(); 
+      const newMessages = data.messages || []; 
+      const nextToken = data.nextPageToken || null;
+
+      if (newMessages.length === 0 || !nextToken) { 
+        setChatStatusMessage("すべてのメールを読み込みました"); 
+        setCurrentNextPageToken(null); 
+        if (newMessages.length > 0) {
+          setEmails(prev => [...prev, ...newMessages]);
+        }
+        return; 
+      }
+
+      // ★修正: 内部ループによる独断を廃止し、取得した100件のパケットをそのまま結合。これにより複数ボックス間の時系列データが漏れなく綺麗にマージされます
+      setEmails(prev => [...prev, ...newMessages]); 
+      setCurrentNextPageToken(nextToken);
+
+    } catch (error) { 
+      setChatStatusMessage("エラーが発生しました。"); 
+    } finally { 
+      setIsLoadingMoreChats(false); 
+      loadingMoreChatsRef.current = false;
     }
   };
 
