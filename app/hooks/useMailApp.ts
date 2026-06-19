@@ -250,12 +250,21 @@ export function useMailApp() {
     const targetLimit = isCacheTarget ? 100 : limit;
 
     try {
-      let qParts = []; let orLabels = [];
-      if (flags.inbox) orLabels.push("in:inbox", "in:sent");
-      if (flags.spam) orLabels.push("in:spam");
-      if (flags.trash) orLabels.push("in:trash");
-      if (flags.archive) orLabels.push("(-in:inbox -in:spam -in:trash)"); // アーカイブ用の検索式
-      if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
+      let qParts = []; 
+      
+      // ★修正: Gmail APIがパンクしないよう、アーカイブを含む場合は「チェックされていない箱を引き算する」論理へ変更
+      if (flags.archive) {
+        if (!flags.inbox) qParts.push("-in:inbox", "-in:sent");
+        if (!flags.spam) qParts.push("-in:spam");
+        if (!flags.trash) qParts.push("-in:trash");
+      } else {
+        let orLabels = [];
+        if (flags.inbox) orLabels.push("in:inbox", "in:sent");
+        if (flags.spam) orLabels.push("in:spam");
+        if (flags.trash) orLabels.push("in:trash");
+        if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
+      }
+      
       if (query) qParts.push(query);
 
       const params = new URLSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
@@ -875,11 +884,7 @@ export function useMailApp() {
   };
 
   const handleLoadMoreChats = async () => {
-    console.log("=== 🔽 handleLoadMoreChats 開始 🔽 ===");
-    console.log(`[ステータス] 現在のトークン: ${currentNextPageToken ? currentNextPageToken.substring(0, 10) + "..." : "null"}`);
-    
     if (loadingMoreChatsRef.current || !currentNextPageToken) { 
-        console.log(`[スキップ] 読込中ロック: ${loadingMoreChatsRef.current}, トークン有無: ${!!currentNextPageToken}`);
         if (!currentNextPageToken) setChatStatusMessage("すべてのメールを読み込みました"); 
         return; 
     }
@@ -895,33 +900,34 @@ export function useMailApp() {
     const currentLoadId = activeLoadRef.current;
     
     const existingSenders = new Set(Object.keys(groupedEmails));
-    console.log(`[状態] 現在の画面に表示されているチャット(Sender)数: ${existingSenders.size}`);
 
     try {
-      let qParts = []; let orLabels = [];
-      if (checkInbox) orLabels.push("in:inbox", "in:sent"); 
-      if (checkSpam) orLabels.push("in:spam"); 
-      if (checkTrash) orLabels.push("in:trash");
-      if (checkArchive) orLabels.push("(-in:inbox -in:spam -in:trash)");
-      if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`); 
+      let qParts = []; 
+      
+      // ★修正: 追加読み込み側も同様にスマートな引き算クエリで生成
+      if (checkArchive) {
+        if (!checkInbox) qParts.push("-in:inbox", "-in:sent");
+        if (!checkSpam) qParts.push("-in:spam");
+        if (!checkTrash) qParts.push("-in:trash");
+      } else {
+        let orLabels = [];
+        if (checkInbox) orLabels.push("in:inbox", "in:sent"); 
+        if (checkSpam) orLabels.push("in:spam"); 
+        if (checkTrash) orLabels.push("in:trash");
+        if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
+      }
       if (searchKeyword) qParts.push(searchKeyword);
 
       const baseQuery = qParts.join(" ").trim();
-      console.log(`[API要求] Gmail検索クエリ(q): ${baseQuery}`);
 
       while (!hasNewValidSender && tempToken && loopCount < maxLoops) {
-        if (activeLoadRef.current !== currentLoadId) {
-          console.log("[中断] 別の読み込み処理が割り込んだためループを強制終了");
-          break;
-        }
+        if (activeLoadRef.current !== currentLoadId) break;
         loopCount++;
-        console.log(`--- 🔄 ループ ${loopCount}/${maxLoops} 回目 ---`);
 
         const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: "true", pageToken: tempToken });
         const res = await fetch(`/api/emails?${params.toString()}`);
         
         if (!res.ok) { 
-          console.error(`[エラー] API通信失敗: ステータス ${res.status}`);
           setChatStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。"); 
           break; 
         }
@@ -929,7 +935,6 @@ export function useMailApp() {
         const data = await res.json(); 
         const newMessages = data.messages || []; 
         tempToken = data.nextPageToken || null;
-        console.log(`[取得結果] 今回取得したメール件数: ${newMessages.length}, 次のトークン: ${tempToken ? "あり" : "なし"}`);
 
         if (newMessages.length > 0) {
           accumulatedEmails.push(...newMessages);
@@ -949,23 +954,15 @@ export function useMailApp() {
               const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive);
 
               if (isCurrentBox && !chatConfigs[email.id]?.isHidden) {
-                console.log(`[✨ヒット] 新しいチャットを発見しました！: ${senderRoom}`);
                 hasNewValidSender = true;
-                break; // 新しいチャットを見つけたらループを抜ける
+                break;
               }
             }
           }
         }
 
-        if (!tempToken) {
-          console.log("[通知] トークンが枯渇しました（全件取得完了）");
-          break;
-        }
+        if (!tempToken) break;
       }
-
-      console.log("=== 🏁 ループ処理終了 🏁 ===");
-      console.log(`[結果] 蓄積された総メール数: ${accumulatedEmails.length}`);
-      console.log(`[終了理由] 新規チャット発見: ${hasNewValidSender}, トークン切れ: ${!tempToken}, ループ上限到達: ${loopCount >= maxLoops}`);
 
       if (accumulatedEmails.length > 0) {
         setEmails(prev => {
@@ -978,17 +975,14 @@ export function useMailApp() {
       setCurrentNextPageToken(tempToken);
 
       if (!tempToken && !hasNewValidSender) {
-        console.log("[UI更新] すべてのメールを読み込みました を表示");
         setChatStatusMessage("すべてのメールを読み込みました");
       }
 
     } catch (error) { 
-      console.error("[例外エラー] フェッチ中にエラーが発生:", error);
       setChatStatusMessage("エラーが発生しました。"); 
     } finally { 
       setIsLoadingMoreChats(false); 
       loadingMoreChatsRef.current = false;
-      console.log("=== 🔼 handleLoadMoreChats 終了 🔼 ===");
     }
   };
 
