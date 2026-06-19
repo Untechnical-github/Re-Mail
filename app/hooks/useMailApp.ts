@@ -1,7 +1,8 @@
-import { useSession } from "next-auth/react";
+import { useSession, signOut } from "next-auth/react"; // ★ signOut を追加
 import { useState, useEffect, useMemo, useRef } from "react";
 import localforage from "localforage";
 import { ChatConfig, SelectionMode, ContextMenuState, ModalState } from "../types/mail";
+
 
 export function useMailApp() {
   const { data: session, status } = useSession();
@@ -293,6 +294,11 @@ export function useMailApp() {
       }
 
       const res = await fetch(`/api/emails?${params.toString()}`);
+      if (res.status === 401 || res.status === 403) {
+        await localforage.clear();
+        signOut({ callbackUrl: "/" });
+        return false;
+      }
       if (res.ok) {
         if (getIsCancelled()) return false;
         const data = await res.json();
@@ -411,8 +417,34 @@ export function useMailApp() {
 
   useEffect(() => {
     if (!session) return;
-    const interval = setInterval(() => { fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, true); }, 60000);
-    return () => clearInterval(interval);
+
+    // 1. 通常の60秒ごとの定期フェッチ
+    const interval = setInterval(() => { 
+      if (document.visibilityState === 'visible') { // ★見えている時だけ実行してメモリを節約
+        fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, true); 
+      }
+    }, 60000);
+
+    // 2. スリープや別タブから「戻ってきた瞬間」に即時同期
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, true);
+      }
+    };
+
+    // 3. トンネルなど「オフラインから復帰した瞬間」に即時同期
+    const handleOnline = () => {
+      fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, true);
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("online", handleOnline);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("online", handleOnline);
+    };
   }, [session, searchKeyword, checkInbox, checkSpam, checkTrash]);
 
   const groupedEmails = useMemo(() => {
