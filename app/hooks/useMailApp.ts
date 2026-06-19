@@ -531,6 +531,27 @@ export function useMailApp() {
   }, [allUniqueEmails, session, chatConfigs]);
 
   const senderList = useMemo(() => {
+    // ★追加: 「ボタンを押して許可したメール」または「現在のボックスのメール」の最新日時だけを抽出するヘルパー
+    const getLatestValidDate = (sender: string) => {
+      const allEmails = groupedEmails[sender] || [];
+      const config = chatConfigs[sender];
+      
+      const validEmails = allEmails.filter((e: any) => {
+        const isTrash = e.labelIds?.includes("TRASH");
+        const isSpam = e.labelIds?.includes("SPAM");
+        const isInbox = e.labelIds?.includes("INBOX");
+        const isArchive = !isTrash && !isSpam && !isInbox;
+
+        if ((isInbox || isArchive) && (config?.isHidden || chatConfigs[e.id]?.isHidden)) return false;
+
+        const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive);
+        // ボタンを押して明示的に読み込まれた(revealed)メール、または現在のボックスに属するメールのみソート対象にする
+        return isCurrentBox || revealedCrossPrompts.includes(e.id);
+      });
+      
+      return validEmails[0] ? new Date(validEmails[0].date).getTime() : 0;
+    };
+
     return Object.keys(groupedEmails).filter((sender) => {
       const config = chatConfigs[sender];
 
@@ -560,11 +581,13 @@ export function useMailApp() {
       const pinA = (chatConfigs[a]?.isPinned && (checkInbox || checkArchive)) ? 1 : 0; 
       const pinB = (chatConfigs[b]?.isPinned && (checkInbox || checkArchive)) ? 1 : 0; 
       if (pinA !== pinB) return pinB - pinA;
-      const timeA = new Date(groupedEmails[a][0].date).getTime(); 
-      const timeB = new Date(groupedEmails[b][0].date).getTime(); 
+      
+      // ★修正: 自動一本釣りメールを無視し、確定した有効なメール日時(timeA, timeB)のみで比較ソート
+      const timeA = getLatestValidDate(a);
+      const timeB = getLatestValidDate(b);
       return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
-  }, [groupedEmails, chatConfigs, checkHasSent, checkInbox, checkArchive, checkSpam, checkTrash, revealedCrossPrompts]); 
+  }, [groupedEmails, chatConfigs, checkHasSent, checkInbox, checkArchive, checkSpam, checkTrash, revealedCrossPrompts]);
 
   const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined); 
   const hiddenMsgs = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId !== undefined).map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ", date: new Date().toISOString() });
