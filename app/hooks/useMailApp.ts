@@ -339,7 +339,15 @@ export function useMailApp() {
           setEmails(prev => {
             const map = new Map(prev.map(e => [e.id, e]));
             newMsgs.forEach((m: any) => map.set(m.id, m));
-            return Array.from(map.values());
+            const updated = Array.from(map.values());
+            
+            // 一本釣りしたメール情報（ボタンの存在）を現在のボックスのローカルキャッシュに即時マージ
+            localforage.setItem(getCacheKey({ inbox: checkInbox, spam: checkSpam, trash: checkTrash }), { 
+              emails: updated.slice(0, 100), 
+              flags: { inbox: checkInbox, spam: checkSpam, trash: checkTrash } 
+            }).catch(err => console.error("Cache merge error:", err));
+            
+            return updated;
           });
         }
 
