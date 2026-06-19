@@ -875,7 +875,11 @@ export function useMailApp() {
   };
 
   const handleLoadMoreChats = async () => {
+    console.log("=== 🔽 handleLoadMoreChats 開始 🔽 ===");
+    console.log(`[ステータス] 現在のトークン: ${currentNextPageToken ? currentNextPageToken.substring(0, 10) + "..." : "null"}`);
+    
     if (loadingMoreChatsRef.current || !currentNextPageToken) { 
+        console.log(`[スキップ] 読込中ロック: ${loadingMoreChatsRef.current}, トークン有無: ${!!currentNextPageToken}`);
         if (!currentNextPageToken) setChatStatusMessage("すべてのメールを読み込みました"); 
         return; 
     }
@@ -885,13 +889,13 @@ export function useMailApp() {
 
     let tempToken = currentNextPageToken;
     let loopCount = 0;
-    const maxLoops = 5; // 新しいチャットが見つかるまで最大500件まで自動で掘り進める
+    const maxLoops = 5; 
     let hasNewValidSender = false;
     const accumulatedEmails: any[] = [];
     const currentLoadId = activeLoadRef.current;
     
-    // 既存のチャット一覧を取得
     const existingSenders = new Set(Object.keys(groupedEmails));
+    console.log(`[状態] 現在の画面に表示されているチャット(Sender)数: ${existingSenders.size}`);
 
     try {
       let qParts = []; let orLabels = [];
@@ -903,16 +907,21 @@ export function useMailApp() {
       if (searchKeyword) qParts.push(searchKeyword);
 
       const baseQuery = qParts.join(" ").trim();
+      console.log(`[API要求] Gmail検索クエリ(q): ${baseQuery}`);
 
-      // 新しいチャットが見つかるか、メールが尽きるまでループ検索
       while (!hasNewValidSender && tempToken && loopCount < maxLoops) {
-        if (activeLoadRef.current !== currentLoadId) break;
+        if (activeLoadRef.current !== currentLoadId) {
+          console.log("[中断] 別の読み込み処理が割り込んだためループを強制終了");
+          break;
+        }
         loopCount++;
+        console.log(`--- 🔄 ループ ${loopCount}/${maxLoops} 回目 ---`);
 
         const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: "true", pageToken: tempToken });
         const res = await fetch(`/api/emails?${params.toString()}`);
         
         if (!res.ok) { 
+          console.error(`[エラー] API通信失敗: ステータス ${res.status}`);
           setChatStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。"); 
           break; 
         }
@@ -920,11 +929,11 @@ export function useMailApp() {
         const data = await res.json(); 
         const newMessages = data.messages || []; 
         tempToken = data.nextPageToken || null;
+        console.log(`[取得結果] 今回取得したメール件数: ${newMessages.length}, 次のトークン: ${tempToken ? "あり" : "なし"}`);
 
         if (newMessages.length > 0) {
           accumulatedEmails.push(...newMessages);
 
-          // 取得したメールの中に、まだ画面にない新しいチャットが存在するかチェック
           for (const email of newMessages) {
             const senderRoom = email.senderRoom || (
               (email.isMe || email.from.includes(session?.user?.email || ""))
@@ -940,17 +949,24 @@ export function useMailApp() {
               const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive);
 
               if (isCurrentBox && !chatConfigs[email.id]?.isHidden) {
+                console.log(`[✨ヒット] 新しいチャットを発見しました！: ${senderRoom}`);
                 hasNewValidSender = true;
-                break;
+                break; // 新しいチャットを見つけたらループを抜ける
               }
             }
           }
         }
 
-        if (!tempToken) break;
+        if (!tempToken) {
+          console.log("[通知] トークンが枯渇しました（全件取得完了）");
+          break;
+        }
       }
 
-      // ループで蓄積したメール（最大500件分）を一気に画面へ反映
+      console.log("=== 🏁 ループ処理終了 🏁 ===");
+      console.log(`[結果] 蓄積された総メール数: ${accumulatedEmails.length}`);
+      console.log(`[終了理由] 新規チャット発見: ${hasNewValidSender}, トークン切れ: ${!tempToken}, ループ上限到達: ${loopCount >= maxLoops}`);
+
       if (accumulatedEmails.length > 0) {
         setEmails(prev => {
           const map = new Map(prev.map(e => [e.id, e]));
@@ -962,14 +978,17 @@ export function useMailApp() {
       setCurrentNextPageToken(tempToken);
 
       if (!tempToken && !hasNewValidSender) {
+        console.log("[UI更新] すべてのメールを読み込みました を表示");
         setChatStatusMessage("すべてのメールを読み込みました");
       }
 
     } catch (error) { 
+      console.error("[例外エラー] フェッチ中にエラーが発生:", error);
       setChatStatusMessage("エラーが発生しました。"); 
     } finally { 
       setIsLoadingMoreChats(false); 
       loadingMoreChatsRef.current = false;
+      console.log("=== 🔼 handleLoadMoreChats 終了 🔼 ===");
     }
   };
 
