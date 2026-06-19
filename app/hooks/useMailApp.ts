@@ -1,23 +1,19 @@
-import { useSession, signOut } from "next-auth/react"; // ★ signOut を追加
+import { useSession, signOut } from "next-auth/react";
 import { useState, useEffect, useMemo, useRef } from "react";
 import localforage from "localforage";
 import { ChatConfig, SelectionMode, ContextMenuState, ModalState } from "../types/mail";
-
 
 export function useMailApp() {
   const { data: session, status } = useSession();
   const [emails, setEmails] = useState<any[]>([]);
   const [persistedEmails, setPersistedEmails] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  
-  // ★修正: リロード後も開いていたチャットをsessionStorageから自動復元
   const [selectedSender, setSelectedSender] = useState<string | null>(() => {
     if (typeof window !== "undefined") {
       return sessionStorage.getItem("remail_selected_sender");
     }
     return null;
   });
-  
   const [chatConfigs, setChatConfigs] = useState<Record<string, ChatConfig>>({});
 
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -27,6 +23,10 @@ export function useMailApp() {
   const [checkTrash, setCheckTrash] = useState<boolean>(false);
   const [checkHasSent, setCheckHasSent] = useState<boolean>(false);
   const [currentNextPageToken, setCurrentNextPageToken] = useState<string | null>(null);
+  
+  // ★追加: チャット専用のページネーショントークン（バグ②の修正）
+  const [chatNextPageToken, setChatNextPageToken] = useState<string | null>(null);
+  
   const [chatStatusMessage, setChatStatusMessage] = useState<string | null>(null);
   const [msgStatusMessage, setMsgStatusMessage] = useState<string | null>(null);
   const [isLoadingMoreChats, setIsLoadingMoreChats] = useState(false);
@@ -67,7 +67,6 @@ export function useMailApp() {
     return `remail_feed_cache_v2_i${flags.inbox ? 1 : 0}s${flags.spam ? 1 : 0}t${flags.trash ? 1 : 0}`;
   };
 
-  // ★追加: チャット一覧とメッセージ画面のスクロール位置をリアルタイムで保存する副作用
   useEffect(() => {
     const handleScrollSave = () => {
       const asideEl = document.querySelector("aside > div.flex-1");
@@ -234,46 +233,9 @@ export function useMailApp() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  useEffect(() => {
-    if (session) {
-      const initLoad = async () => {
-        try {
-          setIsLoading(true);
-          const settings = await loadD1Configs();
-          const initInbox = settings?.inbox ?? true; const initSpam = settings?.spam ?? false; const initTrash = settings?.trash ?? false;
-          setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
-          let snapshot: any = null;
-          try { 
-            snapshot = await localforage.getItem(getCacheKey({ inbox: initInbox, spam: initSpam, trash: initTrash })); 
-            if (snapshot && snapshot.emails && snapshot.emails.length > 0 && !snapshot.emails[0].labelIds) { await localforage.clear(); snapshot = null; }
-          } catch (e) {}
-          if (snapshot && snapshot.emails && snapshot.emails.length > 0) setEmails(snapshot.emails);
-          
-          // ★修正: 長期放置やデプロイ跨ぎ対策。最新データの取得（fetchEmails）が失敗した場合は古いキャッシュを消去して認証不全を防ぐ
-          const isSuccess = await fetchEmails(100, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
-          if (!isSuccess && status === "authenticated") {
-             setEmails([]);
-             await localforage.clear();
-          }
-
-          // ★追加: リロード完了時に、退避させていたスクロール位置をミリ秒ずらして復元
-          setTimeout(() => {
-            const asideScroll = sessionStorage.getItem("remail_scroll_aside");
-            const mainScroll = sessionStorage.getItem("remail_scroll_main");
-            const asideEl = document.querySelector("aside > div.flex-1");
-            const mainEl = document.querySelector("main > div.flex-1");
-            if (asideScroll && asideEl) asideEl.scrollTop = parseInt(asideScroll, 10);
-            if (mainScroll && mainEl) mainEl.scrollTop = parseInt(mainScroll, 10);
-          }, 150);
-
-        } catch (err) { console.error(err); } finally { setIsLoading(false); }
-      };
-      initLoad();
-    }
-  }, [session]);
-
+  // ★修正: fetchEmails が更新後の最新メール配列を返すように変更（バグ①の修正の要）
   const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emails, getIsCancelled = () => false) => {
-    if (!flags.inbox && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return false; }
+    if (!flags.inbox && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return { success: false, emails: [] }; }
     if (!isSilent) setIsLoading(true);
     const isCacheTarget = !query && !pageToken && !isLoadMore;
     const targetLimit = isCacheTarget ? 100 : limit;
@@ -297,10 +259,11 @@ export function useMailApp() {
       if (res.status === 401 || res.status === 403) {
         await localforage.clear();
         signOut({ callbackUrl: "/" });
-        return false;
+        return { success: false, emails: currentEmailsState };
       }
+
       if (res.ok) {
-        if (getIsCancelled()) return false;
+        if (getIsCancelled()) return { success: false, emails: currentEmailsState };
         const data = await res.json();
         const newMessages = data.messages || [];
         const topIds = data.topIds || [];
@@ -324,16 +287,57 @@ export function useMailApp() {
         
         if (!isSilent || updatedEmails.length <= targetLimit) setCurrentNextPageToken(data.nextPageToken || null);
         if (isCacheTarget) await localforage.setItem(getCacheKey(flags), { emails: updatedEmails.slice(0, 100), flags: flags });
-        return true;
+        return { success: true, emails: updatedEmails };
       }
-      return false;
-    } catch (error) { return false; } finally { if (!isSilent && !getIsCancelled()) setIsLoading(false); }
+      return { success: false, emails: currentEmailsState };
+    } catch (error) { 
+      return { success: false, emails: currentEmailsState }; 
+    } finally { 
+      if (!isSilent && !getIsCancelled()) setIsLoading(false); 
+    }
   };
 
-  const fetchChatCrossbox = async (sender: string) => {
+  useEffect(() => {
+    if (session) {
+      const initLoad = async () => {
+        try {
+          setIsLoading(true);
+          const settings = await loadD1Configs();
+          const initInbox = settings?.inbox ?? true; const initSpam = settings?.spam ?? false; const initTrash = settings?.trash ?? false;
+          setCheckInbox(initInbox); setCheckSpam(initSpam); setCheckTrash(initTrash);
+          let snapshot: any = null;
+          try { 
+            snapshot = await localforage.getItem(getCacheKey({ inbox: initInbox, spam: initSpam, trash: initTrash })); 
+            if (snapshot && snapshot.emails && snapshot.emails.length > 0 && !snapshot.emails[0].labelIds) { await localforage.clear(); snapshot = null; }
+          } catch (e) {}
+          if (snapshot && snapshot.emails && snapshot.emails.length > 0) setEmails(snapshot.emails);
+          
+          const res = await fetchEmails(100, "", { inbox: initInbox, spam: initSpam, trash: initTrash }, null, false, true);
+          if (!res.success && status === "authenticated") {
+             setEmails([]);
+             await localforage.clear();
+          }
+
+          setTimeout(() => {
+            const asideScroll = sessionStorage.getItem("remail_scroll_aside");
+            const mainScroll = sessionStorage.getItem("remail_scroll_main");
+            const asideEl = document.querySelector("aside > div.flex-1");
+            const mainEl = document.querySelector("main > div.flex-1");
+            if (asideScroll && asideEl) asideEl.scrollTop = parseInt(asideScroll, 10);
+            if (mainScroll && mainEl) mainEl.scrollTop = parseInt(mainScroll, 10);
+          }, 150);
+
+        } catch (err) { console.error(err); } finally { setIsLoading(false); }
+      };
+      initLoad();
+    }
+  }, [session]);
+
+  // ★修正: pageTokenを受け取り、次のトークンを返すようにアップグレード（バグ②の修正の要）
+  const fetchChatCrossbox = async (sender: string, sourceEmails: any[], pageToken: string | null = null) => {
     try {
       const addrSet = new Set<string>();
-      emails.forEach(e => {
+      sourceEmails.forEach(e => {
         if (e.from.includes(sender) || (e.to && e.to.includes(sender)) || e.senderRoom === sender) {
           if (!e.isMe) {
             const match = e.from.match(/<([^>]+)>/);
@@ -346,11 +350,17 @@ export function useMailApp() {
          const addrs = Array.from(addrSet).map(a => `from:${a} OR to:${a}`).join(" OR ");
          q = `(${q} OR ${addrs})`;
       }
-      const params = new URLSearchParams({ maxResults: "150", q, includeTrash: "true" });
+      
+      const params = new URLSearchParams({ maxResults: "100", q, includeTrash: "true" });
+      if (pageToken) params.append("pageToken", pageToken);
+
       const res = await fetch(`/api/emails?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
         const newMsgs = data.messages || [];
+        const nextToken = data.nextPageToken || null;
+        setChatNextPageToken(nextToken); // 専用トークンを更新
+        
         if (newMsgs.length > 0) {
           setEmails(prev => {
             const map = new Map(prev.map(e => [e.id, e]));
@@ -358,8 +368,10 @@ export function useMailApp() {
             return Array.from(map.values());
           });
         }
+        return { found: newMsgs.length > 0, nextToken };
       }
-    } catch(e) {}
+    } catch(e) { console.error(e); }
+    return { found: false, nextToken: pageToken };
   };
 
   useEffect(() => {
@@ -398,10 +410,12 @@ export function useMailApp() {
         }
         
         if (!isCancelled) setChatStatusMessage(null);
-        await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled);
         
-        if (selectedSender && !isCancelled) {
-           fetchChatCrossbox(selectedSender);
+        // ★修正: fetchEmailsの戻り値から最新のemailsを受け取り、アドレス抽出に使う（バグ①の修正）
+        const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled);
+        
+        if (selectedSender && !isCancelled && res.success) {
+           fetchChatCrossbox(selectedSender, res.emails);
         }
       }, searchKeyword ? 300 : 0);
     };
@@ -417,22 +431,17 @@ export function useMailApp() {
 
   useEffect(() => {
     if (!session) return;
-
-    // 1. 通常の60秒ごとの定期フェッチ
     const interval = setInterval(() => { 
-      if (document.visibilityState === 'visible') { // ★見えている時だけ実行してメモリを節約
+      if (document.visibilityState === 'visible') { 
         fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, true); 
       }
     }, 60000);
 
-    // 2. スリープや別タブから「戻ってきた瞬間」に即時同期
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, true);
       }
     };
-
-    // 3. トンネルなど「オフラインから復帰した瞬間」に即時同期
     const handleOnline = () => {
       fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, true);
     };
@@ -533,14 +542,15 @@ export function useMailApp() {
   const openChat = async (sender: string) => {
     setSelectedSender(sender);
     if (typeof window !== "undefined") {
-      sessionStorage.setItem("remail_selected_sender", sender); // ★追加: リロード対策
+      sessionStorage.setItem("remail_selected_sender", sender);
     }
     setSelectionMode("none");
     setSelectedIds([]);
     setReplyToMessage(null);
     setMsgStatusMessage(null); 
+    setChatNextPageToken(null); // ★追加: チャットを切り替えたらページネーションをリセット
     if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`);
-    fetchChatCrossbox(sender);
+    fetchChatCrossbox(sender, emails);
   };
 
   const handleMenuBarClick = (mode: SelectionMode) => {
@@ -654,7 +664,6 @@ export function useMailApp() {
     if (!modal) return;
     const { type, targets, targetMode } = modal;
     
-    // ★修正: 対象メールのラベル書き換えを「emails」と「persistedEmails」両方に直接マッピングして更新漏れをゼロにする
     if (type === "confirm_delete") {
       const deleteEmails = getActionableEmails(targets, targetMode);
       const permanentIds = deleteEmails.filter(e => e.labelIds?.includes("TRASH")).map(e => e.id);
@@ -798,48 +807,20 @@ export function useMailApp() {
     } catch (error) { setChatStatusMessage("エラーが発生しました。"); } finally { setIsLoadingMoreChats(false); }
   };
 
+  // ★修正: チャット専用ページネーションを使った過去ログの読み込み（バグ②の修正）
   const handleLoadMoreMessage = async () => {
-    if (isLoadingMore || !currentNextPageToken) { if (!currentNextPageToken) setMsgStatusMessage("すべてのメールを読み込みました"); return; }
-    setIsLoadingMore(true); setMsgStatusMessage(null);
-    let tempToken = currentNextPageToken; let hasFoundTargetMsg = false; let loopCount = 0; const maxLoops = 5; 
-    const currentLoadId = activeLoadRef.current;
-
-    try {
-      const targetSenderLower = selectedSender!.toLowerCase();
-      while (!hasFoundTargetMsg && tempToken && loopCount < maxLoops) {
-        if (activeLoadRef.current !== currentLoadId) break;
-        loopCount++; 
-        
-        let qParts = [`(from:"${selectedSender}" OR to:"${selectedSender}")`]; 
-        if (searchKeyword) qParts.push(searchKeyword);
-
-        const params = new URLSearchParams({ maxResults: "100", q: qParts.join(" ").trim(), includeTrash: "true", pageToken: tempToken });
-        const res = await fetch(`/api/emails?${params.toString()}`);
-        if (!res.ok) { setMsgStatusMessage("エラーが発生しました。"); break; }
-
-        const data = await res.json(); const newMessages = data.messages || []; tempToken = data.nextPageToken || null;
-        if (newMessages.length === 0) { setMsgStatusMessage("すべてのメールを読み込みました"); setCurrentNextPageToken(null); break; }
-
-        const found = newMessages.some((email: any) => {
-          if (chatConfigs[email.id]?.isHidden) return false;
-          const fromName = email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown";
-          if (fromName === selectedSender || email.senderRoom === selectedSender) return true;
-          const isMe = email.isMe || email.from.includes(session?.user?.email || "");
-          if (isMe) { const toClean = email.to ? email.to.toLowerCase() : ""; if (toClean.includes(targetSenderLower)) return true; }
-          return false;
-        });
-
-        setEmails(prev => {
-          const map = new Map(prev.map(e => [e.id, e]));
-          newMessages.forEach((m: any) => map.set(m.id, m));
-          return Array.from(map.values());
-        });
-        
-        setCurrentNextPageToken(tempToken);
-        if (found) { hasFoundTargetMsg = true; }
-      }
-      if (!tempToken) setMsgStatusMessage("すべてのメールを読み込みました");
-    } catch (error) { setMsgStatusMessage("エラーが発生しました。"); } finally { setIsLoadingMore(false); }
+    if (isLoadingMore || !chatNextPageToken) { 
+        if (!chatNextPageToken) setMsgStatusMessage("すべてのメールを読み込みました"); 
+        return; 
+    }
+    setIsLoadingMore(true); 
+    setMsgStatusMessage(null);
+    
+    const result = await fetchChatCrossbox(selectedSender!, emails, chatNextPageToken);
+    if (!result.found && !result.nextToken) {
+        setMsgStatusMessage("すべてのメールを読み込みました");
+    }
+    setIsLoadingMore(false);
   };
 
   const pinnedMsgsInChat = checkInbox ? (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned && e.labelIds?.includes("INBOX")) : [];
