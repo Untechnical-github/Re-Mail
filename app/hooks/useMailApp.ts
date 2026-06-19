@@ -24,8 +24,8 @@ export function useMailApp() {
   const [checkHasSent, setCheckHasSent] = useState<boolean>(false);
   const [currentNextPageToken, setCurrentNextPageToken] = useState<string | null>(null);
   
-  // チャット専用のページネーショントークン
-  const [chatNextPageToken, setChatNextPageToken] = useState<string | null>(null);
+  // ★修正: 初期状態、フェッチ前、全件読込完了の「null」の混同を防ぐため、初期値を "INITIAL" に変更
+  const [chatNextPageToken, setChatNextPageToken] = useState<string | null>("INITIAL");
   
   const [chatStatusMessage, setChatStatusMessage] = useState<string | null>(null);
   const [msgStatusMessage, setMsgStatusMessage] = useState<string | null>(null);
@@ -63,7 +63,6 @@ export function useMailApp() {
   const chatConfigsRef = useRef(chatConfigs);
   useEffect(() => { chatConfigsRef.current = chatConfigs; }, [chatConfigs]);
 
-  // ★追加: 非同期処理中のクロージャ問題（アドレスの抽出漏れ）を完全に破壊するリアルタイム参照
   const emailsRef = useRef(emails);
   useEffect(() => { emailsRef.current = emails; }, [emails]);
 
@@ -336,7 +335,6 @@ export function useMailApp() {
     }
   }, [session]);
 
-  // ★修正: 引数の sourceEmails を廃止し、emailsRef.current から安全にアドレスを引っ張る（タイミングバグの完全破壊）
   const fetchChatCrossbox = async (sender: string, pageToken: string | null = null) => {
     try {
       const addrSet = new Set<string>();
@@ -354,8 +352,9 @@ export function useMailApp() {
          q = `(${q} OR ${addrs})`;
       }
       
-      const params = new URLSearchParams({ maxResults: "100", q, includeTrash: "true" });
-      if (pageToken) params.append("pageToken", pageToken);
+      const params = new URLSearchParams({ maxResults: "60", q, includeTrash: "true" });
+      const actualToken = pageToken === "INITIAL" ? null : pageToken;
+      if (actualToken) params.append("pageToken", actualToken);
 
       const res = await fetch(`/api/emails?${params.toString()}`);
       if (res.ok) {
@@ -377,10 +376,9 @@ export function useMailApp() {
     return { found: false, nextToken: pageToken };
   };
 
-  // ★追加: リロード復元時や、チャット切り替え時に「確実に横断一本釣り」を自動実行する専用の監視エンジン
   useEffect(() => {
     if (!session || !selectedSender) return;
-    fetchChatCrossbox(selectedSender, null);
+    fetchChatCrossbox(selectedSender, "INITIAL");
   }, [selectedSender, session]);
 
   useEffect(() => {
@@ -419,7 +417,12 @@ export function useMailApp() {
         }
         
         if (!isCancelled) setChatStatusMessage(null);
-        await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled);
+        const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled);
+        
+        // ★修正: 第2引数にオブジェクト配列を渡してバグらせていた部分を "INITIAL" に修正
+        if (selectedSender && !isCancelled && res.success) {
+           fetchChatCrossbox(selectedSender, "INITIAL");
+        }
       }, searchKeyword ? 300 : 0);
     };
     handleFilterChange();
@@ -551,8 +554,7 @@ export function useMailApp() {
     setSelectedIds([]);
     setReplyToMessage(null);
     setMsgStatusMessage(null); 
-    setChatNextPageToken(null); 
-    if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`);
+    setChatNextPageToken("INITIAL"); // ★修正: 新規選択時は INITIAL に戻す
   };
 
   const handleMenuBarClick = (mode: SelectionMode) => {
@@ -564,6 +566,7 @@ export function useMailApp() {
       return;
     }
 
+    // ★修正: app.state. を削除し、直接 selectionMode を参照します
     if (selectionMode === mode) {
       if (selectedIds.length === 0) { safeBack(); return; } 
       const targetMode = mode.startsWith("chat") ? "chat" : "msg";
@@ -763,7 +766,7 @@ export function useMailApp() {
     if (action === "pin") newModal = { type: "confirm_pin", targetMode: mode, targets: [targetId] };
     if (action === "move") newModal = { type: "select_move_dest_context", targetMode: mode, targets: [targetId] };
     if (action === "reset") { setResetOptions({ pin: true, hide: true, name: true }); newModal = { type: "confirm_reset", targetMode: "specific_chat", targets: [targetId] }; }
-    if (action === "rename") { setRenameInput(chatConfigs[targetId]?.customName || targetId); newModal = { type: "rename", textTargetMode: mode, targets: [targetId] }; }
+    if (action === "rename") { setRenameInput(chatConfigs[targetId]?.customName || targetId); newModal = { type: "rename", targetMode: mode, targets: [targetId] }; }
     
     if (newModal) { setModal(newModal as ModalState); window.history.pushState({ action: "modal" }, "", window.location.href); }
     if (action === "unpin") { updateChatConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null }); setPersistedEmails(prev => prev.filter(e => e.id !== targetId && e.senderRoom !== targetId)); }
@@ -809,14 +812,18 @@ export function useMailApp() {
     } catch (error) { setChatStatusMessage("エラーが発生しました。"); } finally { setIsLoadingMoreChats(false); }
   };
 
-  // ★修正: ガード条件を緩和し、リロード直後のトークンが無い状態（null）からの1ページ目の再検索を許可する（バグ②の修正）
+  // ★修正: トークン判定を厳格化し、全件読み込み完了後の null 状態を正確にキャッチ
   const handleLoadMoreMessage = async () => {
     if (isLoadingMore) return;
+    if (chatNextPageToken === null) {
+      setMsgStatusMessage("すべてのメールを読み込みました");
+      return;
+    }
     setIsLoadingMore(true); 
     setMsgStatusMessage(null);
     
     const result = await fetchChatCrossbox(selectedSender!, chatNextPageToken);
-    if (!result.found && !result.nextToken) {
+    if (!result.nextToken) {
         setMsgStatusMessage("すべてのメールを読み込みました");
     }
     setIsLoadingMore(false);
