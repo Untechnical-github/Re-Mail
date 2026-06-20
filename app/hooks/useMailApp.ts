@@ -249,12 +249,15 @@ export function useMailApp() {
     const isCacheTarget = !query && !pageToken && !isLoadMore;
     const targetLimit = isCacheTarget ? 100 : limit;
 
-    try {
+   try {
       let qParts = []; 
       
-      // ★修正: アーカイブを含む場合はAPIエラーを避けるため箱フィルターをかけず全件取得（クライアント側で弾く）
-      // アーカイブを含まない場合は、APIを効率化するために明示的にOR検索を行う
-      if (!flags.archive) {
+      // ★修正: 全件取得によるデータの希釈（空振り）を完全に防ぐため、引き算クエリを復活
+      if (flags.archive) {
+        if (!flags.inbox) qParts.push("-in:inbox");
+        if (!flags.spam) qParts.push("-in:spam");
+        if (!flags.trash) qParts.push("-in:trash");
+      } else {
         let orLabels = [];
         if (flags.inbox) orLabels.push("in:inbox", "in:sent");
         if (flags.spam) orLabels.push("in:spam");
@@ -394,24 +397,10 @@ export function useMailApp() {
       const res = await fetch(`/api/emails?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        const rawMessages = data.messages || [];
-        const validMessages: any[] = [];
-        let reachedYearLimit = false;
-
-        // ★追加: 1年前のタイムスタンプ
-        const oneYearAgoMs = new Date().setFullYear(new Date().getFullYear() - 1);
-
-        for (const email of rawMessages) {
-          if (new Date(email.date).getTime() < oneYearAgoMs) {
-            reachedYearLimit = true;
-          } else {
-            validMessages.push(email);
-          }
-        }
-
-        // ★修正: 終了ステータスを区別してトークンに記録する
+        const validMessages = data.messages || []; // ★修正: 個別チャットは制限せずすべて有効とする
+        
+        // ★修正: 個別チャットの過去ログは1年で打ち切らず、最後まで読み切る仕様に戻す
         let nextToken = data.nextPageToken || "END_ALL";
-        if (reachedYearLimit) nextToken = "END_LIMIT";
         
         setChatNextPageToken(nextToken); 
         
@@ -922,11 +911,15 @@ export function useMailApp() {
     try {
       let qParts = []; 
       
-      // ★修正: fetchEmailsと同様、アーカイブが含まれない時だけ高効率な箱指定検索を行う
-      if (!checkArchive) {
+      // ★修正: 希釈化を防ぎ、純度100%で指定ボックスのメールだけを1500件奥深くまで掘り進める
+      if (checkArchive) {
+        if (!checkInbox) qParts.push("-in:inbox");
+        if (!checkSpam) qParts.push("-in:spam");
+        if (!checkTrash) qParts.push("-in:trash");
+      } else {
         let orLabels = [];
-        if (checkInbox) orLabels.push("in:inbox", "in:sent");
-        if (checkSpam) orLabels.push("in:spam");
+        if (checkInbox) orLabels.push("in:inbox", "in:sent"); 
+        if (checkSpam) orLabels.push("in:spam"); 
         if (checkTrash) orLabels.push("in:trash");
         if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
       }
