@@ -905,40 +905,29 @@ export function useMailApp() {
     setIsLoadingMoreChats(true); 
     setChatStatusMessage(null);
 
-    let tempToken: string | null = currentNextPageToken; // ★型を明示
+    let tempToken: string | null = currentNextPageToken;
     let loopCount = 0;
-    const maxLoops = 10; // ★1回で最大2500件まで掘る
+    const maxLoops = 15; // 100件ずつ、最大1500件の深さまで安全に掘り進める
     let hasNewValidSender = false;
-    let reachedYearLimit = false; // ★追加
+    let reachedYearLimit = false; 
     const accumulatedEmails: any[] = [];
     const currentLoadId = activeLoadRef.current;
     
     const existingSenders = new Set(senderList);
-    const oneYearAgoMs = new Date().setFullYear(new Date().getFullYear() - 1); // ★追加
+    const oneYearAgoMs = new Date().setFullYear(new Date().getFullYear() - 1); 
 
     try {
+      // ★修正: Gmail APIのインデックス走査バグを100%回避するため、ボックスごとのクエリ条件を完全撤廃
+      // includeTrash: "true" と併用し、全ボックスのメールを混じり気のない「純粋な時系列順」で深く掘り進めます。
       let qParts = []; 
-      
-      if (checkArchive) {
-        if (!checkInbox) qParts.push("-in:inbox");
-        if (!checkSpam) qParts.push("-in:spam");
-        if (!checkTrash) qParts.push("-in:trash");
-      } else {
-        let orLabels = [];
-        if (checkInbox) orLabels.push("in:inbox", "in:sent"); 
-        if (checkSpam) orLabels.push("in:spam"); 
-        if (checkTrash) orLabels.push("in:trash");
-        if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
-      }
       if (searchKeyword) qParts.push(searchKeyword);
-
       const baseQuery = qParts.join(" ").trim();
 
       while (!hasNewValidSender && tempToken && loopCount < maxLoops) {
         if (activeLoadRef.current !== currentLoadId) break;
         loopCount++;
 
-        const params: URLSearchParams = new URLSearchParams({ maxResults: "250", q: baseQuery, includeTrash: "true", pageToken: tempToken });
+        const params: URLSearchParams = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: "true", pageToken: tempToken });
         const res: Response = await fetch(`/api/emails?${params.toString()}`);
         
         if (!res.ok) { 
@@ -946,12 +935,11 @@ export function useMailApp() {
           break; 
         }
 
-        const data: any = await res.json();
+        const data: any = await res.json(); 
         const rawMessages = data.messages || []; 
         tempToken = data.nextPageToken || null;
         const validMessages: any[] = [];
 
-        // ★追加: 1年前の境界線をチェックする
         for (const email of rawMessages) {
           if (new Date(email.date).getTime() < oneYearAgoMs) {
             reachedYearLimit = true;
@@ -1002,9 +990,8 @@ export function useMailApp() {
 
       setCurrentNextPageToken(tempToken);
 
-      // ★修正: ループ終了後、到達した結果に基づいてメッセージを出し分ける
       if (reachedYearLimit) {
-        setChatStatusMessage("re:mailの読み込み上限に達しました");
+        setChatStatusMessage("Re:Mailの読み込み上限に達しました");
       } else if (!tempToken) {
         setChatStatusMessage("すべてのメールを読み込みました");
       }
