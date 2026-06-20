@@ -371,9 +371,8 @@ export function useMailApp() {
 
   const fetchChatCrossbox = async (sender: string, isLoadMore = false) => {
     try {
-      if (isLoadMore && chatNextPageToken === "END") {
-        setMsgStatusMessage("すべてのメールを読み込みました");
-        return { found: false, nextToken: "END" };
+      if (isLoadMore && chatNextPageToken?.startsWith("END")) {
+        return { found: false, nextToken: chatNextPageToken };
       }
 
       const addrSet = new Set<string>();
@@ -391,23 +390,38 @@ export function useMailApp() {
          q = `(${q} OR ${addrs})`;
       }
       
-      const params = new URLSearchParams({ maxResults: "50", q, includeTrash: "true" });
-      
+      const params = new URLSearchParams({ maxResults: "100", q, includeTrash: "true" });
       const tokenToUse = isLoadMore ? (chatNextPageToken === "FIRST_PAGE" ? null : chatNextPageToken) : null;
       if (tokenToUse) params.append("pageToken", tokenToUse);
 
       const res = await fetch(`/api/emails?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        const newMsgs = data.messages || [];
-        const nextToken = data.nextPageToken || "END";
+        const rawMessages = data.messages || [];
+        const validMessages: any[] = [];
+        let reachedYearLimit = false;
+
+        // ★追加: 1年前のタイムスタンプ
+        const oneYearAgoMs = new Date().setFullYear(new Date().getFullYear() - 1);
+
+        for (const email of rawMessages) {
+          if (new Date(email.date).getTime() < oneYearAgoMs) {
+            reachedYearLimit = true;
+          } else {
+            validMessages.push(email);
+          }
+        }
+
+        // ★修正: 終了ステータスを区別してトークンに記録する
+        let nextToken = data.nextPageToken || "END_ALL";
+        if (reachedYearLimit) nextToken = "END_LIMIT";
         
         setChatNextPageToken(nextToken); 
         
-        if (newMsgs.length > 0) {
+        if (validMessages.length > 0) {
           setEmails(prev => {
             const map = new Map(prev.map(e => [e.id, e]));
-            newMsgs.forEach((m: any) => map.set(m.id, m));
+            validMessages.forEach((m: any) => map.set(m.id, m));
             const updated = Array.from(map.values());
             localforage.setItem(getCacheKey({ inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }), { 
               emails: updated.slice(0, 100), flags: { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash } 
@@ -415,13 +429,8 @@ export function useMailApp() {
             return updated;
           });
         }
-
-        // ★修正: 追加スクロール時だけでなく、最初の1ページ目の読み込み時点で既にメールが尽きていた（nextTokenがEND）場合も、即座にメッセージを表示させる
-        if (nextToken === "END") {
-          setMsgStatusMessage("すべてのメールを読み込みました");
-        }
         
-        return { found: newMsgs.length > 0, nextToken };
+        return { found: validMessages.length > 0, nextToken };
       }
     } catch(e) { console.error(e); }
     return { found: false, nextToken: isLoadMore ? chatNextPageToken : "FIRST_PAGE" };
@@ -889,26 +898,27 @@ export function useMailApp() {
 
   const handleLoadMoreChats = async () => {
     if (loadingMoreChatsRef.current || !currentNextPageToken) { 
-        if (!currentNextPageToken) setChatStatusMessage("すべてのメールを読み込みました"); 
+        if (!currentNextPageToken && !chatStatusMessage) setChatStatusMessage("すべてのメールを読み込みました"); 
         return; 
     }
     loadingMoreChatsRef.current = true;
     setIsLoadingMoreChats(true); 
     setChatStatusMessage(null);
 
-    let tempToken = currentNextPageToken;
+    let tempToken: string | null = currentNextPageToken; // ★型を明示
     let loopCount = 0;
-    const maxLoops = 15; // ★修正: 100件ずつ、最大1500件までAPIを確実に走らせて深く掘り進める
+    const maxLoops = 10; // ★1回で最大2500件まで掘る
     let hasNewValidSender = false;
+    let reachedYearLimit = false; // ★追加
     const accumulatedEmails: any[] = [];
     const currentLoadId = activeLoadRef.current;
     
     const existingSenders = new Set(senderList);
+    const oneYearAgoMs = new Date().setFullYear(new Date().getFullYear() - 1); // ★追加
 
     try {
       let qParts = []; 
       
-      // ★修正: アーカイブ検索時も送信済み(-in:sent)を除外しない
       if (checkArchive) {
         if (!checkInbox) qParts.push("-in:inbox");
         if (!checkSpam) qParts.push("-in:spam");
@@ -928,23 +938,32 @@ export function useMailApp() {
         if (activeLoadRef.current !== currentLoadId) break;
         loopCount++;
 
-        // ★修正: API側の限界エラー（トークン消失）を回避するため、取得サイズを安全な100件に戻す
-        const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: "true", pageToken: tempToken });
-        const res = await fetch(`/api/emails?${params.toString()}`);
+        const params: URLSearchParams = new URLSearchParams({ maxResults: "250", q: baseQuery, includeTrash: "true", pageToken: tempToken });
+        const res: Response = await fetch(`/api/emails?${params.toString()}`);
         
         if (!res.ok) { 
           setChatStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。"); 
           break; 
         }
 
-        const data = await res.json(); 
-        const newMessages = data.messages || []; 
+        const data: any = await res.json();
+        const rawMessages = data.messages || []; 
         tempToken = data.nextPageToken || null;
+        const validMessages: any[] = [];
 
-        if (newMessages.length > 0) {
-          accumulatedEmails.push(...newMessages);
+        // ★追加: 1年前の境界線をチェックする
+        for (const email of rawMessages) {
+          if (new Date(email.date).getTime() < oneYearAgoMs) {
+            reachedYearLimit = true;
+          } else {
+            validMessages.push(email);
+          }
+        }
 
-          for (const email of newMessages) {
+        if (validMessages.length > 0) {
+          accumulatedEmails.push(...validMessages);
+
+          for (const email of validMessages) {
             const senderRoom = email.senderRoom || (
               (email.isMe || email.from.includes(session?.user?.email || ""))
               ? (email.to ? email.to.split(",")[0].split("<")[0].replace(/"/g, "").trim() : "Unknown")
@@ -966,6 +985,10 @@ export function useMailApp() {
           }
         }
 
+        if (reachedYearLimit) {
+          tempToken = null;
+          break;
+        }
         if (!tempToken) break;
       }
 
@@ -979,7 +1002,10 @@ export function useMailApp() {
 
       setCurrentNextPageToken(tempToken);
 
-      if (!tempToken) {
+      // ★修正: ループ終了後、到達した結果に基づいてメッセージを出し分ける
+      if (reachedYearLimit) {
+        setChatStatusMessage("re:mailの読み込み上限に達しました");
+      } else if (!tempToken) {
         setChatStatusMessage("すべてのメールを読み込みました");
       }
 
@@ -992,8 +1018,10 @@ export function useMailApp() {
   };
 
   const handleLoadMoreMessage = async () => {
-    if (loadingMoreMsgRef.current || chatNextPageToken === "END") {
-        if (chatNextPageToken === "END") setMsgStatusMessage("すべてのメールを読み込みました");
+    // ★修正: トークンの状態でメッセージを出し分ける
+    if (loadingMoreMsgRef.current || chatNextPageToken?.startsWith("END")) {
+        if (chatNextPageToken === "END_LIMIT") setMsgStatusMessage("re:mailの読み込み上限に達しました");
+        else if (chatNextPageToken === "END_ALL") setMsgStatusMessage("すべてのメールを読み込みました");
         return;
     }
     loadingMoreMsgRef.current = true;
@@ -1001,9 +1029,14 @@ export function useMailApp() {
     setMsgStatusMessage(null);
     
     const result = await fetchChatCrossbox(selectedSender!, true);
-    if (result.nextToken === "END") {
+    
+    // ★修正: 取得後の結果メッセージも出し分ける
+    if (result.nextToken === "END_LIMIT") {
+        setMsgStatusMessage("re:mailの読み込み上限に達しました");
+    } else if (result.nextToken === "END_ALL") {
         setMsgStatusMessage("すべてのメールを読み込みました");
     }
+    
     setIsLoadingMore(false);
     loadingMoreMsgRef.current = false;
   };
