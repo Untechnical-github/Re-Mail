@@ -252,9 +252,9 @@ export function useMailApp() {
     try {
       let qParts = []; 
       
-      // ★修正: Gmail APIがパンクしないよう、アーカイブを含む場合は「チェックされていない箱を引き算する」論理へ変更
+      // ★修正: 「-in:sent」を除外しないように変更（自分が最後に返信してアーカイブした古いチャットを取りこぼさないため）
       if (flags.archive) {
-        if (!flags.inbox) qParts.push("-in:inbox", "-in:sent");
+        if (!flags.inbox) qParts.push("-in:inbox");
         if (!flags.spam) qParts.push("-in:spam");
         if (!flags.trash) qParts.push("-in:trash");
       } else {
@@ -898,7 +898,7 @@ export function useMailApp() {
 
     let tempToken = currentNextPageToken;
     let loopCount = 0;
-    const maxLoops = 3; 
+    const maxLoops = 15; // ★修正: 100件ずつ、最大1500件までAPIを確実に走らせて深く掘り進める
     let hasNewValidSender = false;
     const accumulatedEmails: any[] = [];
     const currentLoadId = activeLoadRef.current;
@@ -908,8 +908,9 @@ export function useMailApp() {
     try {
       let qParts = []; 
       
+      // ★修正: アーカイブ検索時も送信済み(-in:sent)を除外しない
       if (checkArchive) {
-        if (!checkInbox) qParts.push("-in:inbox", "-in:sent");
+        if (!checkInbox) qParts.push("-in:inbox");
         if (!checkSpam) qParts.push("-in:spam");
         if (!checkTrash) qParts.push("-in:trash");
       } else {
@@ -927,8 +928,8 @@ export function useMailApp() {
         if (activeLoadRef.current !== currentLoadId) break;
         loopCount++;
 
-        // ★修正: API側の限界エラーを回避するため、安全マージンを取り 500 -> 490 に設定
-        const params = new URLSearchParams({ maxResults: "490", q: baseQuery, includeTrash: "true", pageToken: tempToken });
+        // ★修正: API側の限界エラー（トークン消失）を回避するため、取得サイズを安全な100件に戻す
+        const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: "true", pageToken: tempToken });
         const res = await fetch(`/api/emails?${params.toString()}`);
         
         if (!res.ok) { 
