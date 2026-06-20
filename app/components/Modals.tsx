@@ -310,11 +310,20 @@ export function Modals({ app }: { app: any }) {
 
         {modal.type === "select_move_dest_context" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
+          
+          // ★追加: 対象メールが自分が送った送信済みメールか判定
+          const isMySentMail = targetEmails.some(e => e.isMe || e.labelIds?.includes("SENT"));
+          
           return (
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-4">移動先の選択</h2>
               <div className="flex flex-col gap-2 mb-4">
                 {["INBOX", "ARCHIVE", "SPAM", "TRASH"].map(dest => {
+                  // ★追加: 自分が送信したメールの場合、移動先メニューから「アーカイブ」と「迷惑メール」を完全非表示にする
+                  if (isMySentMail && (dest === "ARCHIVE" || dest === "SPAM")) {
+                    return null;
+                  }
+
                   const isAllInDest = targetEmails.length > 0 && targetEmails.every((e: any) => {
                      if (dest === "ARCHIVE") return !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
                      return e.labelIds?.includes(dest);
@@ -346,12 +355,23 @@ export function Modals({ app }: { app: any }) {
           const trashCount = targetEmails.filter(e => e.labelIds?.includes("TRASH")).length;
           const destName = moveDestination === "INBOX" ? "受信箱" : moveDestination === "ARCHIVE" ? "アーカイブ" : moveDestination === "SPAM" ? "迷惑メール" : "ゴミ箱";
 
+          // ★追加: 選択されたメール群の中に自分が送信したメールが何件あるか計算
+          const mySentCount = targetEmails.filter(e => e.isMe || e.labelIds?.includes("SENT")).length;
+          const isRestrictedDest = moveDestination === "SPAM" || moveDestination === "ARCHIVE";
+
           return (
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-2">移動の確認</h2>
               <p className="text-sm text-gray-300 mb-4 leading-relaxed">
                 選択したアイテムを「{destName}」へ移動します。(対象: 合計 {targetEmails.length} 件)
               </p>
+              
+              {/* ★追加: 制限対象の箱への一括移動時、自分の送信メールが含まれる場合のみ警告枠を差し込む */}
+              {isRestrictedDest && mySentCount > 0 && (
+                <div className="bg-[#DA373C]/20 border border-[#DA373C] p-3 rounded text-xs text-gray-200 mb-4 leading-relaxed font-bold">
+                  ⚠️ 選択されたチャット内に、自分が送信・返信したメールが {mySentCount} 件含まれています。Gmailの仕様上、送信メールは迷惑メールやアーカイブへ移動できないため、これらのメールを除外して移動を実行します。
+                </div>
+              )}
               <div className="bg-[#2B2D31] p-3 rounded border border-[#1E1F22] mb-5 space-y-2 text-[13px] text-gray-300">
                 <div className="font-bold text-gray-400 border-b border-[#1E1F22] pb-1 mb-1 text-xs">【移動元の内訳】</div>
                 <div className="flex justify-between items-center px-1"><span>受信箱:</span> <span>{inboxCount} 件</span></div>

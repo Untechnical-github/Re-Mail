@@ -292,7 +292,11 @@ export default function Home() {
                     const isMoveGrayedOut = state.selectionMode === "msg_move" && state.moveDestination && (email.labelIds?.includes(state.moveDestination) || (state.moveDestination === "ARCHIVE" && isArchive));
                     const isMsgPinGrayedOut = state.selectionMode === "msg_pin" && !(isInbox || isArchive);
                     const isMsgHideGrayedOut = state.selectionMode === "msg_hide" && !(isInbox || isArchive);
-                    const isActionGrayedOut = isMoveGrayedOut || isMsgPinGrayedOut || isMsgHideGrayedOut;
+                    
+                    // ★追加: 移動先が「迷惑メール」または「アーカイブ」の選択モード中、自分が送ったメールは選択不可にする
+                    const isSentMailMoveRestricted = state.selectionMode === "msg_move" && (state.moveDestination === "SPAM" || state.moveDestination === "ARCHIVE") && (email.isMe || email.labelIds?.includes("SENT"));
+                    
+                    const isActionGrayedOut = isMoveGrayedOut || isMsgPinGrayedOut || isMsgHideGrayedOut || isSentMailMoveRestricted;
                     
                     const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isArchive ? state.boxColors.archive : state.boxColors.inbox;
 

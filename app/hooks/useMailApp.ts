@@ -252,12 +252,9 @@ export function useMailApp() {
     try {
       let qParts = []; 
       
-      // ★修正: 「-in:sent」を除外しないように変更（自分が最後に返信してアーカイブした古いチャットを取りこぼさないため）
-      if (flags.archive) {
-        if (!flags.inbox) qParts.push("-in:inbox");
-        if (!flags.spam) qParts.push("-in:spam");
-        if (!flags.trash) qParts.push("-in:trash");
-      } else {
+      // ★修正: アーカイブを含む場合はAPIエラーを避けるため箱フィルターをかけず全件取得（クライアント側で弾く）
+      // アーカイブを含まない場合は、APIを効率化するために明示的にOR検索を行う
+      if (!flags.archive) {
         let orLabels = [];
         if (flags.inbox) orLabels.push("in:inbox", "in:sent");
         if (flags.spam) orLabels.push("in:spam");
@@ -821,7 +818,13 @@ export function useMailApp() {
       }
     } 
     else if (type === "confirm_move") {
-      const emailsToMove = getActionableEmails(targets, targetMode);
+      let emailsToMove = getActionableEmails(targets, targetMode);
+      
+      // ★追加: 移動先が「迷惑メール(SPAM)」または「アーカイブ(ARCHIVE)」の場合、自分が送信したメールを処理対象から除外
+      if (moveDestination === "SPAM" || moveDestination === "ARCHIVE") {
+        emailsToMove = emailsToMove.filter(e => !e.isMe && !e.labelIds?.includes("SENT"));
+      }
+      
       const idsToMove = emailsToMove.filter(e => !e.labelIds?.includes(moveDestination!)).map(e => e.id);
       
       if (idsToMove.length > 0) {
@@ -917,9 +920,17 @@ export function useMailApp() {
     const oneYearAgoMs = new Date().setFullYear(new Date().getFullYear() - 1); 
 
     try {
-      // ★修正: Gmail APIのインデックス走査バグを100%回避するため、ボックスごとのクエリ条件を完全撤廃
-      // includeTrash: "true" と併用し、全ボックスのメールを混じり気のない「純粋な時系列順」で深く掘り進めます。
       let qParts = []; 
+      
+      // ★修正: fetchEmailsと同様、アーカイブが含まれない時だけ高効率な箱指定検索を行う
+      if (!checkArchive) {
+        let orLabels = [];
+        if (checkInbox) orLabels.push("in:inbox", "in:sent");
+        if (checkSpam) orLabels.push("in:spam");
+        if (checkTrash) orLabels.push("in:trash");
+        if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
+      }
+      
       if (searchKeyword) qParts.push(searchKeyword);
       const baseQuery = qParts.join(" ").trim();
 
