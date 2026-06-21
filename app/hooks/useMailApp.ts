@@ -238,6 +238,19 @@ export function useMailApp() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
+  // ★追加: スマホで一覧画面（aside）に戻った際に、保存しておいたスクロール位置を復元する
+  useEffect(() => {
+    if (!selectedSender && isMobile) {
+      setTimeout(() => {
+        const asideScroll = sessionStorage.getItem("remail_scroll_aside");
+        const asideEl = document.querySelector("aside > div.flex-1");
+        if (asideScroll && asideEl) {
+          asideEl.scrollTop = parseInt(asideScroll, 10);
+        }
+      }, 50);
+    }
+  }, [selectedSender, isMobile]);
+
   const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, archive: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emailsRef.current, getIsCancelled = () => false, isInitLoad = false) => {
     if (!flags.inbox && !flags.archive && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return { success: false, emails: [] }; }
     if (!isSilent) setIsLoading(true);
@@ -246,10 +259,10 @@ export function useMailApp() {
     try {
       let qParts = []; 
       
+      // ★修正: マイナス検索によるAPIバグ（トークン消滅）を完全に回避するため、
+      // アーカイブが含まれる場合は "in:anywhere" で全箱を走査し、JS側で純粋にフィルタリングする
       if (flags.archive) {
-        if (!flags.inbox) qParts.push("-in:inbox");
-        if (!flags.spam) qParts.push("-in:spam");
-        if (!flags.trash) qParts.push("-in:trash");
+        qParts.push("in:anywhere");
       } else {
         let orLabels = [];
         if (flags.inbox) orLabels.push("in:inbox", "in:sent");
@@ -285,8 +298,6 @@ export function useMailApp() {
         const topIds = data.topIds || [];
         let updatedEmails;
 
-        // ★修正: ローカルストレージ依存を完全に廃止し、複雑なマージをシンプル化。
-        // リロードやチェック変更時はAPIのデータを100%信用して上書きし、ゴミデータを残さない。
         if (isInitLoad || currentEmailsState.length === 0) {
           const map = new Map(currentEmailsState.map(e => [e.id, e]));
           newMessages.forEach((m: any) => map.set(m.id, m));
@@ -294,7 +305,6 @@ export function useMailApp() {
         } else if (isLoadMore) {
           updatedEmails = [...currentEmailsState, ...newMessages];
         } else {
-          // 定期取得時などの差分マージ
           const emailMap = new Map(currentEmailsState.map(e => [e.id, e]));
           newMessages.forEach((m: any) => emailMap.set(m.id, m));
           if (topIds.length > 0) {
@@ -344,8 +354,6 @@ export function useMailApp() {
           const initTrash = localSettings?.trash ?? false;
           setCheckInbox(initInbox); setCheckArchive(initArchive); setCheckSpam(initSpam); setCheckTrash(initTrash);
           
-          // ★修正: IndexedDBへの依存を完全に絶つため、リロード時は画面を一度空にし、
-          // キャッシュの読み込み処理を全削除。APIに強制上書き要求を出すのみ。
           setEmails([]);
           
           const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash }, null, false, false, [], () => false, true);
@@ -629,6 +637,10 @@ export function useMailApp() {
     if (typeof window !== "undefined") {
       sessionStorage.setItem("remail_selected_sender", sender);
       sessionStorage.removeItem("remail_scroll_main"); 
+      
+      // ★追加: チャットを開く瞬間に、一覧画面（aside）のスクロール位置を確実に記録しておく
+      const asideEl = document.querySelector("aside > div.flex-1");
+      if (asideEl) sessionStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
     }
     setSelectionMode("none");
     setSelectedIds([]);
@@ -889,10 +901,10 @@ export function useMailApp() {
     try {
       let qParts = []; 
       
+      // ★修正: マイナス検索によるAPIバグ（トークン消滅）を完全に回避するため、
+      // アーカイブが含まれる場合は "in:anywhere" で全箱を走査し、JS側で純粋にフィルタリングする
       if (checkArchive) {
-        if (!checkInbox) qParts.push("-in:inbox");
-        if (!checkSpam) qParts.push("-in:spam");
-        if (!checkTrash) qParts.push("-in:trash");
+        qParts.push("in:anywhere");
       } else {
         let orLabels = [];
         if (checkInbox) orLabels.push("in:inbox", "in:sent"); 
