@@ -143,8 +143,11 @@ export function useMailApp() {
     return globalSettings;
   };
 
-  const saveGlobalSettings = async (inbox: boolean, archive: boolean, spam: boolean, trash: boolean) => {
-    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: "__GLOBAL_SETTINGS__", custom_name: JSON.stringify({ inbox, archive, spam, trash }) }) }); } catch (e) { console.error(e); }
+    const saveGlobalSettings = async (inbox: boolean, archive: boolean, spam: boolean, trash: boolean) => {
+    // ★修正: 複数端末での表示状態の動的な同期を廃止するため、localStorageへの保存に切り替え
+    if (typeof window !== "undefined") {
+      localStorage.setItem("remail_box_settings", JSON.stringify({ inbox, archive, spam, trash }));
+    }
   };
 
   const updateChatConfig = async (targetId: string, updates: Partial<ChatConfig>) => {
@@ -326,12 +329,22 @@ export function useMailApp() {
       initLoadDoneRef.current = true;
       const initLoad = async () => {
         try {
-          setIsLoading(true);
-          const settings = await loadD1Configs();
-          const initInbox = settings?.inbox ?? true; 
-          const initArchive = settings?.archive ?? true; 
-          const initSpam = settings?.spam ?? false; 
-          const initTrash = settings?.trash ?? false;
+                    setIsLoading(true);
+          await loadD1Configs(); // ★将来の設定同期や、ピン留め・チャット名の同期のために実行は完全に維持
+          
+          // ★修正: チェックボックスの状態は端末固有にするため localStorage から読み込む
+          let localSettings: any = null;
+          if (typeof window !== "undefined") {
+            const saved = localStorage.getItem("remail_box_settings");
+            if (saved) {
+              try { localSettings = JSON.parse(saved); } catch (e) {}
+            }
+          }
+
+          const initInbox = localSettings?.inbox ?? true; 
+          const initArchive = localSettings?.archive ?? true; 
+          const initSpam = localSettings?.spam ?? false; 
+          const initTrash = localSettings?.trash ?? false;
           setCheckInbox(initInbox); setCheckArchive(initArchive); setCheckSpam(initSpam); setCheckTrash(initTrash);
           
           let snapshot: any = null;
