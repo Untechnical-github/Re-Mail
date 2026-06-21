@@ -277,6 +277,9 @@ export function useMailApp() {
         const knownIds = currentEmailsState.slice(0, targetLimit).map(e => e.id).join(",");
         params.append("knownIds", knownIds);
       }
+      
+      // ★追加: タイムスタンプを付与し、ブラウザのキャッシュ（通信のサボり）を強制的にバイパスして常に最新を取得させる
+      params.append("_t", Date.now().toString());
 
       const res = await fetch(`/api/emails?${params.toString()}`);
             if (res.status === 401 || res.status === 403) {
@@ -359,9 +362,9 @@ export function useMailApp() {
             setEmails(initialEmails);
           }
           
-                    const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash }, null, false, true, initialEmails);
-          
-          // ★修正: ネットワークの一時的なエラーでデータを全消去してしまう自爆処理を完全に削除しました
+          // ★修正: リロード時(起動時)はローカルのねじれを完全に直すため、APIには空配列 [] を渡し、
+          // 差分取得(knownIds)をスキップして、サーバーから純粋な最新状態をフルダウンロード＆強制上書きさせる
+          const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash }, null, false, true, []);
 
           if (selectedSender && res.success) {
             fetchChatCrossbox(selectedSender, false);
@@ -406,6 +409,9 @@ export function useMailApp() {
       const params = new URLSearchParams({ maxResults: "100", q, includeTrash: "true" });
       const tokenToUse = isLoadMore ? (chatNextPageToken === "FIRST_PAGE" ? null : chatNextPageToken) : null;
       if (tokenToUse) params.append("pageToken", tokenToUse);
+      
+      // ★追加: キャッシュバイパス
+      params.append("_t", Date.now().toString());
 
       const res = await fetch(`/api/emails?${params.toString()}`);
       if (res.ok) {
@@ -945,6 +951,10 @@ export function useMailApp() {
         loopCount++;
 
         const params: URLSearchParams = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: "true", pageToken: tempToken });
+        
+        // ★追加: キャッシュバイパス
+        params.append("_t", Date.now().toString());
+        
         const res: Response = await fetch(`/api/emails?${params.toString()}`);
         
         if (!res.ok) { 
