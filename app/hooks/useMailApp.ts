@@ -1,6 +1,6 @@
 import { useSession, signOut } from "next-auth/react";
 import { useState, useEffect, useMemo, useRef } from "react";
-import localforage from "localforage";
+import localforage from "localforage"; // サインアウト時のゴミ掃除や過去のキャッシュ破棄用として残します
 import { ChatConfig, SelectionMode, ContextMenuState, ModalState } from "../types/mail";
 
 export function useMailApp() {
@@ -19,7 +19,7 @@ export function useMailApp() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState("");
   const [checkInbox, setCheckInbox] = useState<boolean>(true);
-  const [checkArchive, setCheckArchive] = useState<boolean>(true); // ★追加: アーカイブ状態
+  const [checkArchive, setCheckArchive] = useState<boolean>(true);
   const [checkSpam, setCheckSpam] = useState<boolean>(false);
   const [checkTrash, setCheckTrash] = useState<boolean>(false);
   const [checkHasSent, setCheckHasSent] = useState<boolean>(false);
@@ -31,7 +31,6 @@ export function useMailApp() {
   const [msgStatusMessage, setMsgStatusMessage] = useState<string | null>(null);
   const [isLoadingMoreChats, setIsLoadingMoreChats] = useState(false);
 
-  // ★追加: スクロール連打（バウンシング）による多重フェッチを完全に防ぐための厳格なロック
   const loadingMoreChatsRef = useRef(false);
   const loadingMoreMsgRef = useRef(false);
 
@@ -55,7 +54,7 @@ export function useMailApp() {
 
   const [boxColors, setBoxColors] = useState({
     inbox: "#5865F2", 
-    archive: "#95A5A6", // ★追加: アーカイブ用のカラー（グレー）
+    archive: "#95A5A6",
     spam: "#FEE75C",  
     trash: "#DA373C"  
   });
@@ -70,11 +69,6 @@ export function useMailApp() {
 
   const emailsRef = useRef(emails);
   useEffect(() => { emailsRef.current = emails; }, [emails]);
-
-    const getCacheKey = (flags: { inbox: boolean; archive: boolean; spam: boolean; trash: boolean }) => {
-    // ★修正: デプロイ時の仕様変更によるエラーを防ぐため v4 へ更新。古いキャッシュは無視されクリーンに再構築されます
-    return `remail_feed_cache_v4_i${flags.inbox?1:0}a${flags.archive?1:0}s${flags.spam?1:0}t${flags.trash?1:0}`;
-  };
 
   useEffect(() => {
     const handleScrollSave = () => {
@@ -91,7 +85,6 @@ export function useMailApp() {
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
     const isDisplayable = (e: any) => {
-      // ピン留めは INBOX と ARCHIVE の両方で有効
       const isForceFetched = (checkInbox || checkArchive) && (chatConfigs[e.id]?.forceFetch || (e.senderRoom && chatConfigs[e.senderRoom]?.forceFetch));
       if (isForceFetched) return true;
 
@@ -143,8 +136,7 @@ export function useMailApp() {
     return globalSettings;
   };
 
-    const saveGlobalSettings = async (inbox: boolean, archive: boolean, spam: boolean, trash: boolean) => {
-    // ★修正: 複数端末での表示状態の動的な同期を廃止するため、localStorageへの保存に切り替え
+  const saveGlobalSettings = async (inbox: boolean, archive: boolean, spam: boolean, trash: boolean) => {
     if (typeof window !== "undefined") {
       localStorage.setItem("remail_box_settings", JSON.stringify({ inbox, archive, spam, trash }));
     }
@@ -171,7 +163,6 @@ export function useMailApp() {
         const isMsgPin = config.roomId !== undefined;
         if (isMsgPin) {
           const msg = latestEmails.find(e => e.id === targetId);
-          // TRASHとSPAMに落ちた場合のみピン留めを解除（INBOXとARCHIVEは維持）
           if (!msg || msg.labelIds?.includes("TRASH") || msg.labelIds?.includes("SPAM")) {
             newConfig.isPinned = false; newConfig.forceFetch = false; newConfig.persistedData = null; hasUpdate = true;
           } else if (config.forceFetch) {
@@ -247,16 +238,14 @@ export function useMailApp() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, archive: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emailsRef.current, getIsCancelled = () => false) => {
+  const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, archive: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emailsRef.current, getIsCancelled = () => false, isInitLoad = false) => {
     if (!flags.inbox && !flags.archive && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return { success: false, emails: [] }; }
     if (!isSilent) setIsLoading(true);
-    const isCacheTarget = !query && !pageToken && !isLoadMore;
-    const targetLimit = isCacheTarget ? 100 : limit;
+    const targetLimit = limit;
 
-   try {
+    try {
       let qParts = []; 
       
-      // ★修正: 全件取得によるデータの希釈（空振り）を完全に防ぐため、引き算クエリを復活
       if (flags.archive) {
         if (!flags.inbox) qParts.push("-in:inbox");
         if (!flags.spam) qParts.push("-in:spam");
@@ -273,19 +262,19 @@ export function useMailApp() {
 
       const params = new URLSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
       if (pageToken) params.append("pageToken", pageToken);
-      if (currentEmailsState.length > 0) {
+      
+      if (currentEmailsState.length > 0 && !isInitLoad) {
         const knownIds = currentEmailsState.slice(0, targetLimit).map(e => e.id).join(",");
         params.append("knownIds", knownIds);
       }
       
-      // ★追加: タイムスタンプを付与し、ブラウザのキャッシュ（通信のサボり）を強制的にバイパスして常に最新を取得させる
       params.append("_t", Date.now().toString());
 
       const res = await fetch(`/api/emails?${params.toString()}`);
-            if (res.status === 401 || res.status === 403) {
+      if (res.status === 401 || res.status === 403) {
         await localforage.clear();
         signOut({ callbackUrl: "/" });
-        window.location.href = "/"; // ★追加: 認証切れのまま真っ白な画面に留まるのを防ぐため強制リダイレクト
+        window.location.href = "/";
         return { success: false, emails: currentEmailsState };
       }
 
@@ -295,17 +284,25 @@ export function useMailApp() {
         const newMessages = data.messages || [];
         const topIds = data.topIds || [];
         let updatedEmails;
-        if (isLoadMore) {
+
+        // ★修正: ローカルストレージ依存を完全に廃止し、複雑なマージをシンプル化。
+        // リロードやチェック変更時はAPIのデータを100%信用して上書きし、ゴミデータを残さない。
+        if (isInitLoad || currentEmailsState.length === 0) {
+          const map = new Map(currentEmailsState.map(e => [e.id, e]));
+          newMessages.forEach((m: any) => map.set(m.id, m));
+          updatedEmails = Array.from(map.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        } else if (isLoadMore) {
           updatedEmails = [...currentEmailsState, ...newMessages];
-        } else if (isCacheTarget && topIds.length > 0) {
-          const emailMap = new Map(currentEmailsState.map(e => [e.id, e]));
-          newMessages.forEach((m: any) => emailMap.set(m.id, m));
-          const existingOldEmails = currentEmailsState.filter(e => !topIds.includes(e.id));
-          updatedEmails = [...topIds.map((id: string) => emailMap.get(id)).filter(Boolean), ...existingOldEmails];
         } else {
+          // 定期取得時などの差分マージ
           const emailMap = new Map(currentEmailsState.map(e => [e.id, e]));
           newMessages.forEach((m: any) => emailMap.set(m.id, m));
-          updatedEmails = Array.from(emailMap.values());
+          if (topIds.length > 0) {
+            const existingOldEmails = currentEmailsState.filter(e => !topIds.includes(e.id));
+            updatedEmails = [...topIds.map((id: string) => emailMap.get(id)).filter(Boolean), ...existingOldEmails];
+          } else {
+            updatedEmails = Array.from(emailMap.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          }
         }
         
         const nextPMsgs = syncConfigs(updatedEmails, chatConfigsRef.current);
@@ -313,7 +310,6 @@ export function useMailApp() {
         setEmails(updatedEmails);
         
         if (!isSilent || updatedEmails.length <= targetLimit) setCurrentNextPageToken(data.nextPageToken || null);
-        if (isCacheTarget) await localforage.setItem(getCacheKey(flags), { emails: updatedEmails.slice(0, 100), flags: flags });
         return { success: true, emails: updatedEmails };
       }
       return { success: false, emails: currentEmailsState };
@@ -327,15 +323,13 @@ export function useMailApp() {
   const initLoadDoneRef = useRef(false);
 
   useEffect(() => {
-    // ★修正: セッションが存在し、かつ「まだ1回もロードしていない時」だけ実行する
     if (session && !initLoadDoneRef.current) {
       initLoadDoneRef.current = true;
       const initLoad = async () => {
         try {
-                    setIsLoading(true);
-          await loadD1Configs(); // ★将来の設定同期や、ピン留め・チャット名の同期のために実行は完全に維持
+          setIsLoading(true);
+          await loadD1Configs();
           
-          // ★修正: チェックボックスの状態は端末固有にするため localStorage から読み込む
           let localSettings: any = null;
           if (typeof window !== "undefined") {
             const saved = localStorage.getItem("remail_box_settings");
@@ -350,21 +344,11 @@ export function useMailApp() {
           const initTrash = localSettings?.trash ?? false;
           setCheckInbox(initInbox); setCheckArchive(initArchive); setCheckSpam(initSpam); setCheckTrash(initTrash);
           
-          let snapshot: any = null;
-          let initialEmails: any[] = [];
-          try { 
-            snapshot = await localforage.getItem(getCacheKey({ inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash })); 
-            if (snapshot && snapshot.emails && snapshot.emails.length > 0 && !snapshot.emails[0].labelIds) { await localforage.clear(); snapshot = null; }
-          } catch (e) {}
+          // ★修正: IndexedDBへの依存を完全に絶つため、リロード時は画面を一度空にし、
+          // キャッシュの読み込み処理を全削除。APIに強制上書き要求を出すのみ。
+          setEmails([]);
           
-          if (snapshot && snapshot.emails && snapshot.emails.length > 0) {
-            initialEmails = snapshot.emails;
-            setEmails(initialEmails);
-          }
-          
-          // ★修正: リロード時(起動時)はローカルのねじれを完全に直すため、APIには空配列 [] を渡し、
-          // 差分取得(knownIds)をスキップして、サーバーから純粋な最新状態をフルダウンロード＆強制上書きさせる
-          const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash }, null, false, true, []);
+          const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash }, null, false, false, [], () => false, true);
 
           if (selectedSender && res.success) {
             fetchChatCrossbox(selectedSender, false);
@@ -409,29 +393,20 @@ export function useMailApp() {
       const params = new URLSearchParams({ maxResults: "100", q, includeTrash: "true" });
       const tokenToUse = isLoadMore ? (chatNextPageToken === "FIRST_PAGE" ? null : chatNextPageToken) : null;
       if (tokenToUse) params.append("pageToken", tokenToUse);
-      
-      // ★追加: キャッシュバイパス
       params.append("_t", Date.now().toString());
 
       const res = await fetch(`/api/emails?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        const validMessages = data.messages || []; // ★修正: 個別チャットは制限せずすべて有効とする
-        
-        // ★修正: 個別チャットの過去ログは1年で打ち切らず、最後まで読み切る仕様に戻す
+        const validMessages = data.messages || [];
         let nextToken = data.nextPageToken || "END_ALL";
-        
         setChatNextPageToken(nextToken); 
         
         if (validMessages.length > 0) {
           setEmails(prev => {
             const map = new Map(prev.map(e => [e.id, e]));
             validMessages.forEach((m: any) => map.set(m.id, m));
-            const updated = Array.from(map.values());
-            localforage.setItem(getCacheKey({ inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }), { 
-              emails: updated.slice(0, 100), flags: { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash } 
-            }).catch(e => console.error(e));
-            return updated;
+            return Array.from(map.values());
           });
         }
         
@@ -452,9 +427,6 @@ export function useMailApp() {
         await saveGlobalSettings(checkInbox, checkArchive, checkSpam, checkTrash);
         let loadedEmails = emailsRef.current;
         if (!searchKeyword) {
-          let snapshot: any = null;
-          try { snapshot = await localforage.getItem(getCacheKey({ inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash })); } catch (e) {}
-          
           const protectedEmails = emailsRef.current.filter(e => {
              if (revealedCrossPrompts.includes(e.id)) return true;
              if (selectedSender) {
@@ -464,20 +436,12 @@ export function useMailApp() {
              }
              return false;
           });
-          
-          if (snapshot && snapshot.emails) { 
-             const map = new Map(protectedEmails.map(e => [e.id, e]));
-             snapshot.emails.forEach((e: any) => { if (!map.has(e.id)) map.set(e.id, e); });
-             loadedEmails = Array.from(map.values());
-             if (!isCancelled) setEmails(loadedEmails); 
-          } else { 
-             loadedEmails = protectedEmails; 
-             if (!isCancelled) setEmails(protectedEmails); 
-          }
+          loadedEmails = protectedEmails; 
+          if (!isCancelled) setEmails(protectedEmails); 
         }
         
         if (!isCancelled) setChatStatusMessage(null);
-        const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled);
+        const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled, true);
         
         if (selectedSender && !isCancelled && res.success) {
            fetchChatCrossbox(selectedSender, false);
@@ -498,17 +462,21 @@ export function useMailApp() {
     if (!session) return;
     const interval = setInterval(() => { 
       if (document.visibilityState === 'visible') { 
-        fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, true); 
+        fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, true, emailsRef.current, () => false, false); 
       }
     }, 60000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, true);
+        if (emailsRef.current.length === 0) {
+          fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, false, [], () => false, true);
+        } else {
+          fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, true, emailsRef.current, () => false, false);
+        }
       }
     };
     const handleOnline = () => {
-      fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, true);
+      fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, true, emailsRef.current, () => false, false);
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -560,7 +528,6 @@ export function useMailApp() {
 
   const prevFiltersRef = useRef({ checkInbox, checkArchive, checkSpam, checkTrash });
 
-  // ★修正: リロード時のフライング誤作動を防ぎつつ、フィルター切り替え時のみ対象外の画面を閉じる安全な監視エンジン
   useEffect(() => {
     const prev = prevFiltersRef.current;
     const changed = prev.checkInbox !== checkInbox || prev.checkArchive !== checkArchive || prev.checkSpam !== checkSpam || prev.checkTrash !== checkTrash;
@@ -568,7 +535,6 @@ export function useMailApp() {
     if (changed) {
       prevFiltersRef.current = { checkInbox, checkArchive, checkSpam, checkTrash };
 
-      // ローディング中（リロード直後など）は判定をスキップし、ユーザーが手動で切り替えた時のみ処理する
       if (selectedSender && !isLoading) {
         const targetEmails = groupedEmails[selectedSender] || [];
         const hasVisible = targetEmails.some((e: any) => {
@@ -579,7 +545,6 @@ export function useMailApp() {
           return (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive) || revealedCrossPrompts.includes(e.id);
         });
 
-        // 現在のフィルター条件に合致するメールが1件もなく、ピン留めもされていなければ閉じる
         if (!hasVisible && !chatConfigs[selectedSender]?.isPinned) {
           setSelectedSender(null);
           if (typeof window !== "undefined") {
@@ -592,7 +557,6 @@ export function useMailApp() {
   }, [checkInbox, checkArchive, checkSpam, checkTrash, selectedSender, groupedEmails, chatConfigs, revealedCrossPrompts, isLoading]);
 
   const senderList = useMemo(() => {
-    // ★追加: 「ボタンを押して許可したメール」または「現在のボックスのメール」の最新日時だけを抽出するヘルパー
     const getLatestValidDate = (sender: string) => {
       const allEmails = groupedEmails[sender] || [];
       const config = chatConfigs[sender];
@@ -606,7 +570,6 @@ export function useMailApp() {
         if ((isInbox || isArchive) && (config?.isHidden || chatConfigs[e.id]?.isHidden)) return false;
 
         const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive);
-        // ボタンを押して明示的に読み込まれた(revealed)メール、または現在のボックスに属するメールのみソート対象にする
         return isCurrentBox || revealedCrossPrompts.includes(e.id);
       });
       
@@ -643,7 +606,6 @@ export function useMailApp() {
       const pinB = (chatConfigs[b]?.isPinned && (checkInbox || checkArchive)) ? 1 : 0; 
       if (pinA !== pinB) return pinB - pinA;
       
-      // ★修正: 自動一本釣りメールを無視し、確定した有効なメール日時(timeA, timeB)のみで比較ソート
       const timeA = getLatestValidDate(a);
       const timeB = getLatestValidDate(b);
       return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
@@ -666,7 +628,7 @@ export function useMailApp() {
     setSelectedSender(sender);
     if (typeof window !== "undefined") {
       sessionStorage.setItem("remail_selected_sender", sender);
-      sessionStorage.removeItem("remail_scroll_main"); // ★追加: 別のチャットを開いた瞬間、メッセージ画面のスクロール記憶を破棄
+      sessionStorage.removeItem("remail_scroll_main"); 
     }
     setSelectionMode("none");
     setSelectedIds([]);
@@ -818,7 +780,6 @@ export function useMailApp() {
           setPersistedEmails(nextPMsgs);
           setRevealedCrossPrompts(prev => prev.filter(id => !permanentIds.includes(id) && !trashIds.includes(id)));
 
-          localforage.setItem(getCacheKey({ inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }), { emails: nextEmails.slice(0, 100), flags: { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash } });
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
           
           fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", permanentIds, trashIds }) }).catch(e => console.error(e));
@@ -828,7 +789,6 @@ export function useMailApp() {
     else if (type === "confirm_move") {
       let emailsToMove = getActionableEmails(targets, targetMode);
       
-      // ★追加: 移動先が「迷惑メール(SPAM)」または「アーカイブ(ARCHIVE)」の場合、自分が送信したメールを処理対象から除外
       if (moveDestination === "SPAM" || moveDestination === "ARCHIVE") {
         emailsToMove = emailsToMove.filter(e => !e.isMe && !e.labelIds?.includes("SENT"));
       }
@@ -840,7 +800,7 @@ export function useMailApp() {
           const applyNewLabels = (e: any) => {
             if (idsToMove.includes(e.id)) { 
               let newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "TRASH" && l !== "SPAM"); 
-              if (moveDestination !== "ARCHIVE") { // アーカイブ移動時はINBOX/TRASH/SPAMを剥がすだけ
+              if (moveDestination !== "ARCHIVE") { 
                 newLabels.push(moveDestination); 
               }
               return { ...e, labelIds: newLabels }; 
@@ -861,7 +821,6 @@ export function useMailApp() {
           setPersistedEmails(nextPMsgs);
           setRevealedCrossPrompts(prev => prev.filter(id => !idsToMove.includes(id)));
 
-          localforage.setItem(getCacheKey({ inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }), { emails: nextEmails.slice(0, 100), flags: { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash } });
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
 
           fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "move", ids: idsToMove, destination: moveDestination === "ARCHIVE" ? undefined : moveDestination }) }).catch(e => console.error(e));
@@ -918,7 +877,7 @@ export function useMailApp() {
 
     let tempToken: string | null = currentNextPageToken;
     let loopCount = 0;
-    const maxLoops = 15; // 100件ずつ、最大1500件の深さまで安全に掘り進める
+    const maxLoops = 15; 
     let hasNewValidSender = false;
     let reachedYearLimit = false; 
     const accumulatedEmails: any[] = [];
@@ -930,7 +889,6 @@ export function useMailApp() {
     try {
       let qParts = []; 
       
-      // ★修正: 希釈化を防ぎ、純度100%で指定ボックスのメールだけを1500件奥深くまで掘り進める
       if (checkArchive) {
         if (!checkInbox) qParts.push("-in:inbox");
         if (!checkSpam) qParts.push("-in:spam");
@@ -951,10 +909,8 @@ export function useMailApp() {
         loopCount++;
 
         const params: URLSearchParams = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: "true", pageToken: tempToken });
-        
-        // ★追加: キャッシュバイパス
         params.append("_t", Date.now().toString());
-        
+
         const res: Response = await fetch(`/api/emails?${params.toString()}`);
         
         if (!res.ok) { 
@@ -1032,7 +988,6 @@ export function useMailApp() {
   };
 
   const handleLoadMoreMessage = async () => {
-    // ★修正: トークンの状態でメッセージを出し分ける
     if (loadingMoreMsgRef.current || chatNextPageToken?.startsWith("END")) {
         if (chatNextPageToken === "END_LIMIT") setMsgStatusMessage("re:mailの読み込み上限に達しました");
         else if (chatNextPageToken === "END_ALL") setMsgStatusMessage("すべてのメールを読み込みました");
@@ -1044,7 +999,6 @@ export function useMailApp() {
     
     const result = await fetchChatCrossbox(selectedSender!, true);
     
-    // ★修正: 取得後の結果メッセージも出し分ける
     if (result.nextToken === "END_LIMIT") {
         setMsgStatusMessage("re:mailの読み込み上限に達しました");
     } else if (result.nextToken === "END_ALL") {
