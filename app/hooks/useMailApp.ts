@@ -71,8 +71,9 @@ export function useMailApp() {
   const emailsRef = useRef(emails);
   useEffect(() => { emailsRef.current = emails; }, [emails]);
 
-  const getCacheKey = (flags: { inbox: boolean; archive: boolean; spam: boolean; trash: boolean }) => {
-    return `remail_feed_cache_v3_i${flags.inbox?1:0}a${flags.archive?1:0}s${flags.spam?1:0}t${flags.trash?1:0}`;
+    const getCacheKey = (flags: { inbox: boolean; archive: boolean; spam: boolean; trash: boolean }) => {
+    // ★修正: デプロイ時の仕様変更によるエラーを防ぐため v4 へ更新。古いキャッシュは無視されクリーンに再構築されます
+    return `remail_feed_cache_v4_i${flags.inbox?1:0}a${flags.archive?1:0}s${flags.spam?1:0}t${flags.trash?1:0}`;
   };
 
   useEffect(() => {
@@ -275,9 +276,10 @@ export function useMailApp() {
       }
 
       const res = await fetch(`/api/emails?${params.toString()}`);
-      if (res.status === 401 || res.status === 403) {
+            if (res.status === 401 || res.status === 403) {
         await localforage.clear();
         signOut({ callbackUrl: "/" });
+        window.location.href = "/"; // ★追加: 認証切れのまま真っ白な画面に留まるのを防ぐため強制リダイレクト
         return { success: false, emails: currentEmailsState };
       }
 
@@ -344,11 +346,9 @@ export function useMailApp() {
             setEmails(initialEmails);
           }
           
-          const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash }, null, false, true, initialEmails);
-          if (!res.success && status === "authenticated") {
-             setEmails([]);
-             await localforage.clear();
-          }
+                    const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash }, null, false, true, initialEmails);
+          
+          // ★修正: ネットワークの一時的なエラーでデータを全消去してしまう自爆処理を完全に削除しました
 
           if (selectedSender && res.success) {
             fetchChatCrossbox(selectedSender, false);
