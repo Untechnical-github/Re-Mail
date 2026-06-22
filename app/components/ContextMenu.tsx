@@ -16,7 +16,12 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
       >
         {contextMenu.type === "chat" && (() => {
           const tId = typeof contextMenu.target === "string" ? contextMenu.target : contextMenu.target.id;
-          const hasTarget = app.computed.groupedEmails[tId]?.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+          
+          // ★修正: 記憶データ(knownBoxes)を合流させて、メールが未取得でも正しくメニューを出せるようにする
+          const kb = app.state.knownBoxes?.[tId] || [];
+          const knownHasTarget = kb.includes("INBOX") || kb.includes("ARCHIVE");
+          const hasTarget = knownHasTarget || app.computed.groupedEmails[tId]?.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+          
           const showAction = (checkInbox || checkArchive) && hasTarget;
           
           return (

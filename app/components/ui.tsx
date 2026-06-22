@@ -16,14 +16,18 @@ export const HighlightText = ({ text, highlight }: { text: string, highlight: st
 
 export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
-  const { selectionMode, selectedIds, checkInbox, checkArchive } = app.state;
+  // ★修正: state から knownBoxes を受け取る
+  const { selectionMode, selectedIds, checkInbox, checkArchive, knownBoxes } = app.state;
   const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode } = app.actions;
 
   const isMode = (action: string) => selectionMode === `${modePrefix}_${action}`;
   
   const hasSelectedTarget = selectedIds.some((id: string) => {
       if (isChat) {
-          return app.computed.groupedEmails[id]?.some((e:any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+          // ★修正: 記憶データ(knownBoxes)を参照して、未取得でもボタンを有効化する
+          const kb = knownBoxes?.[id] || [];
+          const knownHasTarget = kb.includes("INBOX") || kb.includes("ARCHIVE");
+          return knownHasTarget || app.computed.groupedEmails[id]?.some((e:any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
       } else {
           const msg = app.computed.allUniqueEmails.find((e:any) => e.id === id);
           return msg && !msg.labelIds?.includes("TRASH") && !msg.labelIds?.includes("SPAM");

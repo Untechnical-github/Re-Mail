@@ -115,13 +115,31 @@ export default function Home() {
                  }
               }
 
-              const isMoveGrayedOut = state.selectionMode === "chat_move" && state.moveDestination && visibleEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!) || (state.moveDestination === "ARCHIVE" && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("INBOX")));
-              const hasPinTarget = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+              // ★追加: オンデマンド学習した「記憶」を呼び出す
+              const kb = state.knownBoxes?.[sender] || [];
+              const knownHasTrash = kb.includes("TRASH");
+              const knownHasSpam = kb.includes("SPAM");
+              const knownHasInbox = kb.includes("INBOX");
+              const knownHasArchive = kb.includes("ARCHIVE");
+
+              // ★修正: 移動の無効化判定に記憶データを合流させる
+              const isMoveGrayedOut = state.selectionMode === "chat_move" && state.moveDestination && 
+                 (visibleEmails.length > 0 && visibleEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!) || (state.moveDestination === "ARCHIVE" && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("INBOX")))) &&
+                 (kb.length === 0 || kb.every((b: string) => b === state.moveDestination || (state.moveDestination === "ARCHIVE" && b === "ARCHIVE")));
+
+              // ★修正: ピン留め/非表示の対象(INBOXかARCHIVE)がいるか、実データと記憶の両方から判定する
+              const hasPinTarget = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) || knownHasInbox || knownHasArchive;
               const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasPinTarget;
               const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasPinTarget;
               const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut;
 
+              // ★修正: グラデーション色の判定に、記憶データを優先して合流させる
               const colorsSet = new Set<string>();
+              if (knownHasTrash) colorsSet.add(state.boxColors.trash);
+              if (knownHasSpam) colorsSet.add(state.boxColors.spam);
+              if (knownHasArchive) colorsSet.add(state.boxColors.archive);
+              if (knownHasInbox) colorsSet.add(state.boxColors.inbox);
+
               visibleEmails.forEach((e: any) => {
                  const isTrash = e.labelIds?.includes("TRASH");
                  const isSpam = e.labelIds?.includes("SPAM");

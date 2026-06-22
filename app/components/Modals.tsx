@@ -1,7 +1,8 @@
 import { SelectionMode } from "../types/mail";
 
 export function Modals({ app }: { app: any }) {
-  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, pinType, checkTrash, checkSpam, checkInbox, checkArchive, revealedCrossPrompts } = app.state;
+  // ★修正: state から knownBoxes を受け取る
+  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, pinType, checkTrash, checkSpam, checkInbox, checkArchive, revealedCrossPrompts, knownBoxes } = app.state;
   const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack, setPinType } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
 
@@ -310,8 +311,6 @@ export function Modals({ app }: { app: any }) {
 
         {modal.type === "select_move_dest_context" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
-          
-          // ★追加: 対象メールが自分が送った送信済みメールか判定
           const isMySentMail = targetEmails.some(e => e.isMe || e.labelIds?.includes("SENT"));
           
           return (
@@ -319,15 +318,21 @@ export function Modals({ app }: { app: any }) {
               <h2 className="text-lg font-bold text-white mb-4">移動先の選択</h2>
               <div className="flex flex-col gap-2 mb-4">
                 {["INBOX", "ARCHIVE", "SPAM", "TRASH"].map(dest => {
-                  // ★追加: 自分が送信したメールの場合、移動先メニューから「アーカイブ」と「迷惑メール」を完全非表示にする
-                  if (isMySentMail && (dest === "ARCHIVE" || dest === "SPAM")) {
-                    return null;
-                  }
+                  if (isMySentMail && (dest === "ARCHIVE" || dest === "SPAM")) return null;
 
-                  const isAllInDest = targetEmails.length > 0 && targetEmails.every((e: any) => {
-                     if (dest === "ARCHIVE") return !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
-                     return e.labelIds?.includes(dest);
-                  });
+                  // ★修正: 記憶(knownBoxes)と実データの両方から、移動が無効かどうかを判定する
+                  const isAllInDest = modal.targetMode === "chat" 
+                    ? modal.targets.length > 0 && modal.targets.every((tId: string) => {
+                        const kb = app.state.knownBoxes?.[tId] || [];
+                        if (kb.length === 0) return false;
+                        if (dest === "ARCHIVE") return kb.every((b: string) => b === "ARCHIVE");
+                        return kb.every((b: string) => b === dest);
+                      })
+                    : targetEmails.length > 0 && targetEmails.every((e: any) => {
+                        if (dest === "ARCHIVE") return !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
+                        return e.labelIds?.includes(dest);
+                      });
+
                   const labels: Record<string, string> = { "INBOX": "受信箱", "ARCHIVE": "アーカイブ", "SPAM": "迷惑メール", "TRASH": "ゴミ箱" };
                   return (
                     <button 
