@@ -1,6 +1,6 @@
 import { useSession, signOut } from "next-auth/react";
 import { useState, useEffect, useMemo, useRef } from "react";
-import localforage from "localforage"; // サインアウト時のゴミ掃除や過去のキャッシュ破棄用として残します
+import localforage from "localforage";
 import { ChatConfig, SelectionMode, ContextMenuState, ModalState } from "../types/mail";
 
 export function useMailApp() {
@@ -63,6 +63,7 @@ export function useMailApp() {
   const hasPushedSearchRef = useRef(false);
   const hasPushedSelectRef = useRef(false);
   const activeLoadRef = useRef<number>(0);
+  const isInitialFilterRun = useRef(true); // ★追加: リロード時のダブルフェッチ競合を防ぐためのロック
   
   const chatConfigsRef = useRef(chatConfigs);
   useEffect(() => { chatConfigsRef.current = chatConfigs; }, [chatConfigs]);
@@ -238,7 +239,6 @@ export function useMailApp() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // ★追加: スマホで一覧画面（aside）に戻った際に、保存しておいたスクロール位置を復元する
   useEffect(() => {
     if (!selectedSender && isMobile) {
       setTimeout(() => {
@@ -259,10 +259,10 @@ export function useMailApp() {
     try {
       let qParts = []; 
       
-      // ★修正: マイナス検索によるAPIバグ（トークン消滅）を完全に回避するため、
-      // アーカイブが含まれる場合は "in:anywhere" で全箱を走査し、JS側で純粋にフィルタリングする
+      // ★修正: 希釈化（受信箱による枠の食いつぶし）とAPIの諦めバグを両方防ぐ最強のクエリ
+      // アーカイブが含まれる場合、負荷の高い -in:spam や -in:trash は付けず、-in:inbox だけで受信箱を弾く
       if (flags.archive) {
-        qParts.push("in:anywhere");
+        if (!flags.inbox) qParts.push("-in:inbox");
       } else {
         let orLabels = [];
         if (flags.inbox) orLabels.push("in:inbox", "in:sent");
@@ -273,14 +273,10 @@ export function useMailApp() {
       
       if (query) qParts.push(query);
 
-      const params = new URLSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
+      const params = newSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
       if (pageToken) params.append("pageToken", pageToken);
       
-      if (currentEmailsState.length > 0 && !isInitLoad) {
-        const knownIds = currentEmailsState.slice(0, targetLimit).map(e => e.id).join(",");
-        params.append("knownIds", knownIds);
-      }
-      
+      // ★修正: knownIds（差分取得）を完全に廃止し、ねじれやデータの消失を根本から防ぐ
       params.append("_t", Date.now().toString());
 
       const res = await fetch(`/api/emails?${params.toString()}`);
@@ -295,24 +291,19 @@ export function useMailApp() {
         if (getIsCancelled()) return { success: false, emails: currentEmailsState };
         const data = await res.json();
         const newMessages = data.messages || [];
-        const topIds = data.topIds || [];
         let updatedEmails;
 
-        if (isInitLoad || currentEmailsState.length === 0) {
-          const map = new Map(currentEmailsState.map(e => [e.id, e]));
-          newMessages.forEach((m: any) => map.set(m.id, m));
-          updatedEmails = Array.from(map.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        // ★修正: knownIdsに頼らず、常に最新データを確実にマージする堅牢なロジック
+        if (isInitLoad) {
+          updatedEmails = newMessages;
         } else if (isLoadMore) {
           updatedEmails = [...currentEmailsState, ...newMessages];
+          const map = new Map(updatedEmails.map(e => [e.id, e]));
+          updatedEmails = Array.from(map.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
         } else {
           const emailMap = new Map(currentEmailsState.map(e => [e.id, e]));
           newMessages.forEach((m: any) => emailMap.set(m.id, m));
-          if (topIds.length > 0) {
-            const existingOldEmails = currentEmailsState.filter(e => !topIds.includes(e.id));
-            updatedEmails = [...topIds.map((id: string) => emailMap.get(id)).filter(Boolean), ...existingOldEmails];
-          } else {
-            updatedEmails = Array.from(emailMap.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-          }
+          updatedEmails = Array.from(emailMap.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
         }
         
         const nextPMsgs = syncConfigs(updatedEmails, chatConfigsRef.current);
@@ -354,12 +345,11 @@ export function useMailApp() {
           const initTrash = localSettings?.trash ?? false;
           setCheckInbox(initInbox); setCheckArchive(initArchive); setCheckSpam(initSpam); setCheckTrash(initTrash);
           
-          setEmails([]);
-          
           const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash }, null, false, false, [], () => false, true);
 
+          // ★修正: 初期ロードで取得した確実なデータを fetchChatCrossbox に渡してクエリの欠落を防ぐ
           if (selectedSender && res.success) {
-            fetchChatCrossbox(selectedSender, false);
+            fetchChatCrossbox(selectedSender, false, res.emails);
           }
 
           setTimeout(() => {
@@ -377,14 +367,15 @@ export function useMailApp() {
     }
   }, [session]);
 
-  const fetchChatCrossbox = async (sender: string, isLoadMore = false) => {
+  const fetchChatCrossbox = async (sender: string, isLoadMore = false, knownEmails = emailsRef.current) => {
     try {
       if (isLoadMore && chatNextPageToken?.startsWith("END")) {
         return { found: false, nextToken: chatNextPageToken };
       }
 
       const addrSet = new Set<string>();
-      emailsRef.current.forEach(e => {
+      // ★修正: リロード直後でも確実なメールリストを使って正確なクエリを構築する
+      knownEmails.forEach(e => {
         if (e.from.includes(sender) || (e.to && e.to.includes(sender)) || e.senderRoom === sender) {
           if (!e.isMe) {
             const match = e.from.match(/<([^>]+)>/);
@@ -426,6 +417,13 @@ export function useMailApp() {
 
   useEffect(() => {
     if (!session) return;
+    
+    // ★追加: 初回マウント時は initLoad とのダブルフェッチ（競合によるデータ破壊）を防ぐためスキップ
+    if (isInitialFilterRun.current) {
+      isInitialFilterRun.current = false;
+      return;
+    }
+    
     let isCancelled = false; 
     activeLoadRef.current += 1;
 
@@ -434,25 +432,13 @@ export function useMailApp() {
       searchTimeoutRef.current = setTimeout(async () => {
         await saveGlobalSettings(checkInbox, checkArchive, checkSpam, checkTrash);
         let loadedEmails = emailsRef.current;
-        if (!searchKeyword) {
-          const protectedEmails = emailsRef.current.filter(e => {
-             if (revealedCrossPrompts.includes(e.id)) return true;
-             if (selectedSender) {
-                const sLower = selectedSender.toLowerCase();
-                if (e.senderRoom === selectedSender) return true;
-                if (e.from.toLowerCase().includes(sLower) || (e.to && e.to.toLowerCase().includes(sLower))) return true;
-             }
-             return false;
-          });
-          loadedEmails = protectedEmails; 
-          if (!isCancelled) setEmails(protectedEmails); 
-        }
         
         if (!isCancelled) setChatStatusMessage(null);
-        const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled, true);
+        // ★修正: 画面上のデータを破壊的に消去する処理を撤廃し、取得後に安全にマージする
+        const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled, false);
         
         if (selectedSender && !isCancelled && res.success) {
-           fetchChatCrossbox(selectedSender, false);
+           fetchChatCrossbox(selectedSender, false, res.emails);
         }
       }, searchKeyword ? 300 : 0);
     };
@@ -638,7 +624,6 @@ export function useMailApp() {
       sessionStorage.setItem("remail_selected_sender", sender);
       sessionStorage.removeItem("remail_scroll_main"); 
       
-      // ★追加: チャットを開く瞬間に、一覧画面（aside）のスクロール位置を確実に記録しておく
       const asideEl = document.querySelector("aside > div.flex-1");
       if (asideEl) sessionStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
     }
@@ -901,10 +886,9 @@ export function useMailApp() {
     try {
       let qParts = []; 
       
-      // ★修正: マイナス検索によるAPIバグ（トークン消滅）を完全に回避するため、
-      // アーカイブが含まれる場合は "in:anywhere" で全箱を走査し、JS側で純粋にフィルタリングする
+      // ★修正: 希釈化とAPIの諦めを両方防ぐ最適化クエリ
       if (checkArchive) {
-        qParts.push("in:anywhere");
+        if (!checkInbox) qParts.push("-in:inbox");
       } else {
         let orLabels = [];
         if (checkInbox) orLabels.push("in:inbox", "in:sent"); 
@@ -920,7 +904,7 @@ export function useMailApp() {
         if (activeLoadRef.current !== currentLoadId) break;
         loopCount++;
 
-        const params: URLSearchParams = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: "true", pageToken: tempToken });
+        const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: "true", pageToken: tempToken });
         params.append("_t", Date.now().toString());
 
         const res: Response = await fetch(`/api/emails?${params.toString()}`);
