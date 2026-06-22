@@ -135,11 +135,15 @@ export default function Home() {
 
               // ★修正: グラデーション色の判定に、記憶データを優先して合流させる
               const colorsSet = new Set<string>();
-              if (knownHasTrash) colorsSet.add(state.boxColors.trash);
-              if (knownHasSpam) colorsSet.add(state.boxColors.spam);
-              if (knownHasArchive) colorsSet.add(state.boxColors.archive);
-              if (knownHasInbox) colorsSet.add(state.boxColors.inbox);
+              
+              // 記憶データからの色追加は「チェックがONになっているボックス」に限定する
+              if (knownHasTrash && state.checkTrash) colorsSet.add(state.boxColors.trash);
+              if (knownHasSpam && state.checkSpam) colorsSet.add(state.boxColors.spam);
+              if (knownHasArchive && state.checkArchive) colorsSet.add(state.boxColors.archive);
+              if (knownHasInbox && state.checkInbox) colorsSet.add(state.boxColors.inbox);
 
+              // visibleEmailsには「チェックONのメール」と「ボタンを押して展開済みのメール」だけが入るため、
+              // ここで拾われた色はすべて画面上にメッセージとして表示されていることになる
               visibleEmails.forEach((e: any) => {
                  const isTrash = e.labelIds?.includes("TRASH");
                  const isSpam = e.labelIds?.includes("SPAM");
