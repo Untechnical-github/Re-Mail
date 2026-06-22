@@ -273,7 +273,7 @@ export function useMailApp() {
       
       if (query) qParts.push(query);
 
-      const params = newSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
+      const params = new URLSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: "true" });
       if (pageToken) params.append("pageToken", pageToken);
       
       // ★修正: knownIds（差分取得）を完全に廃止し、ねじれやデータの消失を根本から防ぐ
