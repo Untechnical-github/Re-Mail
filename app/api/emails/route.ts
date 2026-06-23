@@ -39,7 +39,7 @@ function decodeMimeHeader(header: string): string {
         }
         return new TextDecoder(charset.toLowerCase() === 'shift_jis' ? 'shift_jis' : 'utf-8').decode(bytes);
       } else if (encoding.toUpperCase() === 'Q') {
-        const qDecoded = text.replace(/_/g, ' ').replace(/=([a-fA-F0-9]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+        const qDecoded = text.replace(/_/g, ' ').replace(/=([a-fA-F0-9]{2})/g, (_: string, hex: string) => String.fromCharCode(parseInt(hex, 16)));
         const bytes = new Uint8Array(qDecoded.length);
         for (let i = 0; i < qDecoded.length; i++) {
           bytes[i] = qDecoded.charCodeAt(i);
