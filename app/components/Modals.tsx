@@ -2,7 +2,7 @@ import { SelectionMode } from "../types/mail";
 
 export function Modals({ app }: { app: any }) {
   // ★修正: state から knownBoxes を受け取る
-  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, pinType, checkTrash, checkSpam, checkInbox, checkArchive, revealedCrossPrompts, knownBoxes } = app.state;
+  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, pinType, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts, knownBoxes } = app.state;
   const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack, setPinType } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
 
@@ -17,8 +17,11 @@ export function Modals({ app }: { app: any }) {
           const isTrash = e.labelIds?.includes("TRASH");
           const isSpam = e.labelIds?.includes("SPAM");
           const isInbox = e.labelIds?.includes("INBOX");
-          const isArchive = !isTrash && !isSpam && !isInbox;
-          const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive);
+          const isSent = e.labelIds?.includes("SENT") || e.isMe; // ★追加
+          const isArchive = !isTrash && !isSpam && !isInbox && !isSent; // ★修正
+          
+          // ★修正: checkSent の判定を追加
+          const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isSent && checkSent) || (isArchive && checkArchive);
           return isCurrentBox || revealedCrossPrompts.includes(e.id);
         }));
       });
@@ -109,7 +112,7 @@ export function Modals({ app }: { app: any }) {
               <h2 className="text-lg font-bold text-white mb-2">ピン留め</h2>
               <p className="text-sm text-gray-300 mb-6 leading-relaxed">
                 読み込み対象外（期間外や件数制限など）になった際も、この{modal.targetMode === "chat" ? "チャット" : "メッセージ"}を表示させますか？<br/>
-                <span className="text-xs text-gray-400">※受信箱またはアーカイブのメールのみが対象となります。</span>
+                <span className="text-xs text-gray-400">※受信箱、アーカイブ、送信済みのメールが対象となります。</span>
               </p>
               <div className="flex flex-col gap-2">
                 <button onClick={() => executePin(true)} disabled={willExceedLimit} className={`w-full py-2.5 rounded text-sm font-bold transition ${willExceedLimit ? 'bg-[#3f4147] text-gray-500 cursor-not-allowed' : 'bg-[#5865F2] text-white hover:bg-[#4752C4] active:scale-95'}`}>
@@ -174,7 +177,7 @@ export function Modals({ app }: { app: any }) {
               <h2 className="text-lg font-bold text-white mb-2">非表示(Re:Mailのみ)</h2>
               <p className="text-sm text-gray-300 mb-6 leading-relaxed">
                 選択した項目をRe:Mailの画面上から隠します。<br/>
-                <span className="text-[#5865F2] font-bold">（対象となる受信箱・アーカイブのメール: {hideableCount}件）</span>
+                <span className="text-[#5865F2] font-bold">（対象となる受信箱・アーカイブ・送信済みのメール: {hideableCount}件）</span>
               </p>
               <div className="flex justify-end gap-3">
                 <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>

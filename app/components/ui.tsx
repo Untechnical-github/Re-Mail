@@ -27,7 +27,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const hasSelectedTarget = selectedIds.some((id: string) => {
       if (isChat) {
           const kb = knownBoxes?.[id] || [];
-          const knownHasTarget = kb.includes("INBOX") || kb.includes("ARCHIVE");
+          const knownHasTarget = kb.includes("INBOX") || kb.includes("ARCHIVE") || kb.includes("SENT");
           return knownHasTarget || app.computed.groupedEmails[id]?.some((e:any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
       } else {
           const msg = app.computed.allUniqueEmails.find((e:any) => e.id === id);
@@ -69,7 +69,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     ? "flex flex-wrap p-2 gap-1 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default"
     : "flex flex-wrap px-4 py-2 gap-2 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default";
 
-  const showAction = checkInbox || checkArchive;
+  const showAction = checkInbox || checkArchive || checkSent;
 
   return (
     <div className={containerClass} onClick={(e) => e.stopPropagation()}>

@@ -73,17 +73,20 @@ export default function Home() {
               const config = state.chatConfigs[sender];
 
               const visibleEmails = allEmails.filter((e: any) => {
-                 const isTrash = e.labelIds?.includes("TRASH");
-                 const isSpam = e.labelIds?.includes("SPAM");
-                 const isInbox = e.labelIds?.includes("INBOX");
-                 const isArchive = !isTrash && !isSpam && !isInbox;
-                 
-                 if ((isInbox || isArchive) && (config?.isHidden || state.chatConfigs[e.id]?.isHidden)) return false;
+                const isTrash = e.labelIds?.includes("TRASH");
+                const isSpam = e.labelIds?.includes("SPAM");
+                const isInbox = e.labelIds?.includes("INBOX");
+                const isSent = e.labelIds?.includes("SENT") || e.isMe; // ★追加
+                const isArchive = !isTrash && !isSpam && !isInbox && !isSent; // ★修正
+                
+                // ★修正: isSentを追加
+                if ((isInbox || isArchive || isSent) && (config?.isHidden || state.chatConfigs[e.id]?.isHidden)) return false;
 
-                 const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox) || (isArchive && state.checkArchive);
-                 if (!isCurrentBox && !state.revealedCrossPrompts.includes(e.id)) return false;
+                // ★修正: isSent と state.checkSent を追加
+                const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox) || (isSent && state.checkSent) || (isArchive && state.checkArchive);
+                if (!isCurrentBox && !state.revealedCrossPrompts.includes(e.id)) return false;
 
-                 return true;
+                return true;
               });
 
               const latestEmail = visibleEmails[0];
@@ -132,7 +135,7 @@ export default function Home() {
               );
 
               // ★修正: ピン留め/非表示の対象(INBOXかARCHIVE)がいるか判定
-              const hasPinTarget = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("SENT") && !e.isMe) || knownHasInbox || knownHasArchive;
+              const hasPinTarget = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) || knownHasInbox || knownHasArchive || knownHasSent;
               const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasPinTarget;
               const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasPinTarget;
               const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut;
@@ -198,7 +201,7 @@ export default function Home() {
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-baseline">
                         <div className="flex items-center gap-1 truncate pr-2">
-                          {config?.isPinned && (state.checkInbox || state.checkArchive) && <span className="text-[#FEE75C] text-[10px]">📌</span>}
+                          {config?.isPinned && (state.checkInbox || state.checkArchive || state.checkSent) && <span className="text-[#FEE75C] text-[10px]">📌</span>}
                           <span className="font-bold text-sm truncate"><HighlightText text={config?.customName || sender} highlight={state.searchKeyword} /></span>
                         </div>
                         <span className="text-[10px] text-gray-500 flex-shrink-0">{latestDate}</span>
@@ -276,7 +279,8 @@ export default function Home() {
                     const isSent = email.labelIds?.includes("SENT") || email.isMe; // ★追加
                     const isArchive = !isTrash && !isSpam && !isInbox && !isSent; // ★修正
 
-                    if ((isInbox || isArchive) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.chatConfigs[email.id]?.isHidden)) return null;
+                    // ★修正: isSent を追加
+                    if ((isInbox || isArchive || isSent) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.chatConfigs[email.id]?.isHidden)) return null;
 
                     const isMe = email.isMe || email.from.includes(auth.session?.user?.email || "");
                     const isSelected = state.selectedIds.includes(email.id);
@@ -318,8 +322,8 @@ export default function Home() {
                     }
 
                     const isMoveGrayedOut = state.selectionMode === "msg_move" && state.moveDestination && (email.labelIds?.includes(state.moveDestination) || (state.moveDestination === "ARCHIVE" && isArchive));
-                    const isMsgPinGrayedOut = state.selectionMode === "msg_pin" && !(isInbox || isArchive);
-                    const isMsgHideGrayedOut = state.selectionMode === "msg_hide" && !(isInbox || isArchive);
+                    const isMsgPinGrayedOut = state.selectionMode === "msg_pin" && !(isInbox || isArchive || isSent);
+                    const isMsgHideGrayedOut = state.selectionMode === "msg_hide" && !(isInbox || isArchive || isSent);
                     
                     // ★修正: 移動先に関わらず、送信メールはすべて移動不可(グレーアウト)にする
                     const isSentMailMoveRestricted = state.selectionMode === "msg_move" && isSent;
@@ -365,7 +369,7 @@ export default function Home() {
                               onTouchEnd={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
                               onTouchMove={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
                            >
-                              {state.chatConfigs[email.id]?.isPinned && (state.checkInbox || state.checkArchive) && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
+                              {state.chatConfigs[email.id]?.isPinned && (state.checkInbox || state.checkArchive || state.checkSent) && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
                               {email.subject && !email.subject.startsWith("Re:") && (
                                 <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={email.subject} highlight={state.searchKeyword} /></div>
                               )}

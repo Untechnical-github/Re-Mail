@@ -1,7 +1,8 @@
 import { MailAppHook } from "../hooks/useMailApp";
 
 export function ContextMenu({ app }: { app: MailAppHook }) {
-  const { contextMenu, isMobile, chatConfigs, checkInbox, checkArchive } = app.state;
+  // ★修正: checkSent を追加して、下流のコードで使えるようにする
+  const { contextMenu, isMobile, chatConfigs, checkInbox, checkArchive, checkSent } = app.state;
   const { setContextMenu, handleContextMenuAction } = app.actions;
 
   if (!contextMenu) return null;
@@ -18,10 +19,10 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
           const tId = typeof contextMenu.target === "string" ? contextMenu.target : contextMenu.target.id;
           
           const kb = app.state.knownBoxes?.[tId] || [];
-          const knownHasTarget = kb.includes("INBOX") || kb.includes("ARCHIVE");
+          const knownHasTarget = kb.includes("INBOX") || kb.includes("ARCHIVE") || kb.includes("SENT");
           const hasTarget = knownHasTarget || app.computed.groupedEmails[tId]?.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
           
-          const showAction = (checkInbox || checkArchive) && hasTarget;
+          const showAction = (checkInbox || checkArchive || checkSent) && hasTarget;
 
           // ★追加: 送信済み「のみ」のチャットか判定
           const isOnlySentChat = kb.includes("SENT") && kb.length === 1;
@@ -49,7 +50,7 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
         {contextMenu.type === "msg" && (() => {
           const mId = contextMenu.target.id;
           const isTarget = !contextMenu.target.labelIds?.includes("TRASH") && !contextMenu.target.labelIds?.includes("SPAM");
-          const showAction = (checkInbox || checkArchive) && isTarget;
+          const showAction = (checkInbox || checkArchive || checkSent) && isTarget;
 
           // ★追加: 送信済みメッセージか判定
           const isSentMsg = contextMenu.target.labelIds?.includes("SENT") || contextMenu.target.isMe;

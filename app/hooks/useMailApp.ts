@@ -91,7 +91,8 @@ export function useMailApp() {
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
     const isDisplayable = (e: any) => {
-      const isForceFetched = (checkInbox || checkArchive) && (chatConfigs[e.id]?.forceFetch || (e.senderRoom && chatConfigs[e.senderRoom]?.forceFetch));
+      // ★修正: checkSent を追加
+      const isForceFetched = (checkInbox || checkArchive || checkSent) && (chatConfigs[e.id]?.forceFetch || (e.senderRoom && chatConfigs[e.senderRoom]?.forceFetch));
       if (isForceFetched) return true;
 
       if (searchKeyword) {
@@ -629,11 +630,13 @@ export function useMailApp() {
         const isTrash = e.labelIds?.includes("TRASH");
         const isSpam = e.labelIds?.includes("SPAM");
         const isInbox = e.labelIds?.includes("INBOX");
-        const isArchive = !isTrash && !isSpam && !isInbox;
+        const isSent = e.labelIds?.includes("SENT") || e.isMe; // ★追加
+        const isArchive = !isTrash && !isSpam && !isInbox && !isSent; // ★修正
 
-        if ((isInbox || isArchive) && (config?.isHidden || chatConfigs[e.id]?.isHidden)) return false;
+        // ★修正: isSent も非表示の対象にする
+        if ((isInbox || isArchive || isSent) && (config?.isHidden || chatConfigs[e.id]?.isHidden)) return false;
 
-        const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive);
+        const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isSent && checkSent) || (isArchive && checkArchive); // ★修正
         return isCurrentBox || revealedCrossPrompts.includes(e.id);
       });
       
@@ -678,11 +681,11 @@ export function useMailApp() {
         }
       }
 
-      if (!hasDisplayableEmail && !isKnownToDisplay && (!config?.isPinned || (!checkInbox && !checkArchive))) return false;
+      if (!hasDisplayableEmail && !isKnownToDisplay && (!config?.isPinned || (!checkInbox && !checkArchive && !checkSent))) return false;
       return true;
     }).sort((a, b) => {
-      const pinA = (chatConfigs[a]?.isPinned && (checkInbox || checkArchive)) ? 1 : 0; 
-      const pinB = (chatConfigs[b]?.isPinned && (checkInbox || checkArchive)) ? 1 : 0; 
+      const pinA = (chatConfigs[a]?.isPinned && (checkInbox || checkArchive || checkSent)) ? 1 : 0; 
+      const pinB = (chatConfigs[b]?.isPinned && (checkInbox || checkArchive || checkSent)) ? 1 : 0; 
       if (pinA !== pinB) return pinB - pinA;
       
       const timeA = getLatestValidDate(a);
@@ -1135,7 +1138,7 @@ export function useMailApp() {
     loadingMoreMsgRef.current = false;
   };
 
-  const pinnedMsgsInChat = (checkInbox || checkArchive) ? (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) : [];
+  const pinnedMsgsInChat = (checkInbox || checkArchive || checkSent) ? (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) : [];
 
   return {
     auth: { session, status },
