@@ -763,10 +763,11 @@ export function useMailApp() {
     if (!selectedSender || !replyBody.trim()) return;
     setIsSending(true);
     try {
-      // ★修正1: 自分が送ったメールを宛先にしてしまうバグを防ぎ、確実に「相手」のアドレスを抽出する
       const targetEmails = groupedEmails[selectedSender] || []; 
       const partnerEmail = targetEmails.find((e: any) => !e.isMe && !e.from.includes(session?.user?.email || ""));
-      const actualTo = partnerEmail ? partnerEmail.from : selectedSender;
+      
+      // ★修正: 相手からのメールがない場合は、自分が送信したメールの宛先(to)からアドレスを拾い上げる
+      const actualTo = partnerEmail ? partnerEmail.from : (targetEmails[0]?.to || selectedSender);
       
       let finalBody = replyBody; let threadId = undefined; let finalSubject = replySubject;
       if (replyToMessage) { finalBody = `${replyBody}\n\n> ${replyToMessage.body.replace(/\n/g, "\n> ")}`; threadId = replyToMessage.threadId; if (!finalSubject) finalSubject = replyToMessage.subject.startsWith("Re:") ? replyToMessage.subject : `Re: ${replyToMessage.subject}`; }
@@ -777,7 +778,6 @@ export function useMailApp() {
       });
       
       if (res.ok) {
-        // ★修正2: labelIdsに "INBOX" を追加して最初は受信箱扱いとし、to(宛先)のプロパティも持たせる
         const sentFake = { 
           id: `fake-${Date.now()}`, 
           threadId: threadId || "", 
@@ -792,6 +792,11 @@ export function useMailApp() {
           labelIds: ["SENT", "INBOX"] 
         };
         setEmails([sentFake, ...emails]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null);
+      } else {
+        // ★追加: 失敗した場合はコンソールにエラーを出してユーザー体験を損なわせない
+        const errData = await res.json().catch(() => ({}));
+        console.error("Failed to send:", errData);
+        alert("メールの送信に失敗しました。宛先が正しいか確認してください。");
       }
     } catch (error) { console.error(error); } finally { setIsSending(false); }
   };
