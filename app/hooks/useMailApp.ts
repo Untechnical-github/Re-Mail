@@ -763,15 +763,34 @@ export function useMailApp() {
     if (!selectedSender || !replyBody.trim()) return;
     setIsSending(true);
     try {
-      const targetEmails = groupedEmails[selectedSender]; const actualTo = targetEmails ? targetEmails[0]?.from : selectedSender;
+      // ★修正1: 自分が送ったメールを宛先にしてしまうバグを防ぎ、確実に「相手」のアドレスを抽出する
+      const targetEmails = groupedEmails[selectedSender] || []; 
+      const partnerEmail = targetEmails.find((e: any) => !e.isMe && !e.from.includes(session?.user?.email || ""));
+      const actualTo = partnerEmail ? partnerEmail.from : selectedSender;
+      
       let finalBody = replyBody; let threadId = undefined; let finalSubject = replySubject;
       if (replyToMessage) { finalBody = `${replyBody}\n\n> ${replyToMessage.body.replace(/\n/g, "\n> ")}`; threadId = replyToMessage.threadId; if (!finalSubject) finalSubject = replyToMessage.subject.startsWith("Re:") ? replyToMessage.subject : `Re: ${replyToMessage.subject}`; }
+      
       const res = await fetch("/api/emails", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "send", to: actualTo, subject: finalSubject, body: finalBody, threadId })
       });
+      
       if (res.ok) {
-        const sentFake = { id: `fake-${Date.now()}`, threadId: threadId || "", subject: finalSubject || "(件名なし)", from: session?.user?.email || "自分", date: new Date().toUTCString(), body: finalBody, snippet: finalBody.slice(0, 60), senderRoom: selectedSender, isMe: true, labelIds: ["SENT"] };
+        // ★修正2: labelIdsに "INBOX" を追加して最初は受信箱扱いとし、to(宛先)のプロパティも持たせる
+        const sentFake = { 
+          id: `fake-${Date.now()}`, 
+          threadId: threadId || "", 
+          subject: finalSubject || "(件名なし)", 
+          from: session?.user?.email || "自分", 
+          to: actualTo, 
+          date: new Date().toUTCString(), 
+          body: finalBody, 
+          snippet: finalBody.slice(0, 60), 
+          senderRoom: selectedSender, 
+          isMe: true, 
+          labelIds: ["SENT", "INBOX"] 
+        };
         setEmails([sentFake, ...emails]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null);
       }
     } catch (error) { console.error(error); } finally { setIsSending(false); }
