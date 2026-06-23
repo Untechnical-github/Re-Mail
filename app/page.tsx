@@ -46,17 +46,13 @@ export default function Home() {
                {state.searchKeyword && <button onClick={(e) => { e.stopPropagation(); actions.safeBack(); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs font-bold px-1 transition">✕</button>}
              </div>
              
-             {/* ★追加: アーカイブのチェックボックス */}
              <div className="flex flex-wrap gap-1 text-[11px] mt-2 font-bold">
                 <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkInbox} onChange={(e) => actions.setCheckInbox(e.target.checked)} className="accent-[#5865F2]" /> 受信箱</label>
                 <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkArchive} onChange={(e) => actions.setCheckArchive(e.target.checked)} className="accent-[#95A5A6]" /> アーカイブ</label>
+                {/* ★修正: 送信済みチェックボックスを並列で追加 */}
+                <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkSent} onChange={(e) => actions.setCheckSent(e.target.checked)} className="accent-[#1ABC9C]" /> 送信済</label>
                 <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkSpam} onChange={(e) => actions.setCheckSpam(e.target.checked)} className="accent-[#FEE75C]" /> 迷惑</label>
                 <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkTrash} onChange={(e) => actions.setCheckTrash(e.target.checked)} className="accent-[#DA373C]" /> ゴミ箱</label>
-             </div>
-             <div className="mt-2">
-                <button onClick={(e) => { e.stopPropagation(); actions.setCheckHasSent(!state.checkHasSent); }} className={`w-full py-1.5 text-xs font-bold rounded border transition shadow-sm ${state.checkHasSent ? 'bg-[#5865F2] text-white border-[#5865F2]' : 'bg-[#1E1F22] text-gray-400 border-[#35373C] hover:bg-[#3f4147] hover:text-white'}`}>
-                  {state.checkHasSent ? "✓ 送信・返信履歴のあるチャットのみ表示中" : "送信・返信履歴のあるチャットのみ絞り込む"}
-                </button>
              </div>
           </div>
 
@@ -121,39 +117,46 @@ export default function Home() {
               const knownHasSpam = kb.includes("SPAM");
               const knownHasInbox = kb.includes("INBOX");
               const knownHasArchive = kb.includes("ARCHIVE");
+              const knownHasSent = kb.includes("SENT"); // ★追加
 
-              // ★修正: 移動の無効化判定に記憶データを合流させる
-              const isMoveGrayedOut = state.selectionMode === "chat_move" && state.moveDestination && 
-                 (visibleEmails.length > 0 && visibleEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!) || (state.moveDestination === "ARCHIVE" && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("INBOX")))) &&
-                 (kb.length === 0 || kb.every((b: string) => b === state.moveDestination || (state.moveDestination === "ARCHIVE" && b === "ARCHIVE")));
+              // ★修正: 送信済み「のみ」のチャットは移動モード時に強制グレーアウト
+              const isChatOnlySent = knownHasSent && kb.length === 1;
 
-              // ★修正: ピン留め/非表示の対象(INBOXかARCHIVE)がいるか、実データと記憶の両方から判定する
-              const hasPinTarget = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) || knownHasInbox || knownHasArchive;
+              // ★修正: 移動の無効化判定に記憶データを合流させる（SENTも考慮）
+              const isMoveGrayedOut = state.selectionMode === "chat_move" && (
+                 isChatOnlySent || 
+                 (state.moveDestination && 
+                   (visibleEmails.length > 0 && visibleEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!) || (state.moveDestination === "ARCHIVE" && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("SENT") && !e.isMe))) &&
+                   (kb.length === 0 || kb.every((b: string) => b === state.moveDestination || (state.moveDestination === "ARCHIVE" && b === "ARCHIVE")))
+                 )
+              );
+
+              // ★修正: ピン留め/非表示の対象(INBOXかARCHIVE)がいるか判定
+              const hasPinTarget = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("SENT") && !e.isMe) || knownHasInbox || knownHasArchive;
               const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasPinTarget;
               const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasPinTarget;
               const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut;
 
-              // ★修正: グラデーション色の判定に、記憶データを優先して合流させる
+              // ★修正: グラデーション色の判定に送信済みカラー(sent)を追加
               const colorsSet = new Set<string>();
-              
-              // 記憶データからの色追加は「チェックがONになっているボックス」に限定する
               if (knownHasTrash && state.checkTrash) colorsSet.add(state.boxColors.trash);
               if (knownHasSpam && state.checkSpam) colorsSet.add(state.boxColors.spam);
               if (knownHasArchive && state.checkArchive) colorsSet.add(state.boxColors.archive);
               if (knownHasInbox && state.checkInbox) colorsSet.add(state.boxColors.inbox);
+              if (knownHasSent && state.checkSent) colorsSet.add(state.boxColors.sent); // ★追加
 
-              // visibleEmailsには「チェックONのメール」と「ボタンを押して展開済みのメール」だけが入るため、
-              // ここで拾われた色はすべて画面上にメッセージとして表示されていることになる
               visibleEmails.forEach((e: any) => {
                  const isTrash = e.labelIds?.includes("TRASH");
                  const isSpam = e.labelIds?.includes("SPAM");
                  const isInbox = e.labelIds?.includes("INBOX");
-                 const isArchive = !isTrash && !isSpam && !isInbox;
+                 const isSent = e.labelIds?.includes("SENT") || e.isMe; // ★追加
+                 const isArchive = !isTrash && !isSpam && !isInbox && !isSent; // ★修正
 
                  if (isTrash) colorsSet.add(state.boxColors.trash);
                  else if (isSpam) colorsSet.add(state.boxColors.spam);
-                 else if (isArchive) colorsSet.add(state.boxColors.archive);
-                 else colorsSet.add(state.boxColors.inbox);
+                 else if (isInbox) colorsSet.add(state.boxColors.inbox);
+                 else if (isSent) colorsSet.add(state.boxColors.sent); // ★追加
+                 else colorsSet.add(state.boxColors.archive);
               });
               const colors = Array.from(colorsSet);
               
@@ -270,16 +273,19 @@ export default function Home() {
                     const isTrash = email.labelIds?.includes("TRASH");
                     const isSpam = email.labelIds?.includes("SPAM");
                     const isInbox = email.labelIds?.includes("INBOX");
-                    const isArchive = !isTrash && !isSpam && !isInbox;
+                    const isSent = email.labelIds?.includes("SENT") || email.isMe; // ★追加
+                    const isArchive = !isTrash && !isSpam && !isInbox && !isSent; // ★修正
 
                     if ((isInbox || isArchive) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.chatConfigs[email.id]?.isHidden)) return null;
 
                     const isMe = email.isMe || email.from.includes(auth.session?.user?.email || "");
                     const isSelected = state.selectedIds.includes(email.id);
-                    const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox) || (isArchive && state.checkArchive);
+                    // ★修正: checkSent と連動させる
+                    const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox) || (isSent && state.checkSent) || (isArchive && state.checkArchive);
 
-                    const boxName = isTrash ? "ゴミ箱" : isSpam ? "迷惑メール" : isArchive ? "アーカイブ" : "受信箱";
-                    const boxColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isArchive ? state.boxColors.archive : state.boxColors.inbox;
+                    // ★修正: ボックス名と色に送信済みを追加
+                    const boxName = isTrash ? "ゴミ箱" : isSpam ? "迷惑メール" : isSent ? "送信済み" : isArchive ? "アーカイブ" : "受信箱";
+                    const boxColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isSent ? state.boxColors.sent : isArchive ? state.boxColors.archive : state.boxColors.inbox;
 
                     if (!isCurrentBox && !state.revealedCrossPrompts.includes(email.id)) {
                         const roundedClass = isMe ? 'rounded-2xl rounded-tr-sm' : 'rounded-2xl rounded-tl-sm';
@@ -315,12 +321,13 @@ export default function Home() {
                     const isMsgPinGrayedOut = state.selectionMode === "msg_pin" && !(isInbox || isArchive);
                     const isMsgHideGrayedOut = state.selectionMode === "msg_hide" && !(isInbox || isArchive);
                     
-                    // ★追加: 移動先が「迷惑メール」または「アーカイブ」の選択モード中、自分が送ったメールは選択不可にする
-                    const isSentMailMoveRestricted = state.selectionMode === "msg_move" && (state.moveDestination === "SPAM" || state.moveDestination === "ARCHIVE") && (email.isMe || email.labelIds?.includes("SENT"));
+                    // ★修正: 移動先に関わらず、送信メールはすべて移動不可(グレーアウト)にする
+                    const isSentMailMoveRestricted = state.selectionMode === "msg_move" && isSent;
                     
                     const isActionGrayedOut = isMoveGrayedOut || isMsgPinGrayedOut || isMsgHideGrayedOut || isSentMailMoveRestricted;
                     
-                    const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isArchive ? state.boxColors.archive : state.boxColors.inbox;
+                    // ★修正: メッセージの枠色にも送信済みを反映
+                    const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isSent ? state.boxColors.sent : isArchive ? state.boxColors.archive : state.boxColors.inbox;
 
                     return (
                       <div 

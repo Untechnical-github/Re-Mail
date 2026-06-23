@@ -17,12 +17,14 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
         {contextMenu.type === "chat" && (() => {
           const tId = typeof contextMenu.target === "string" ? contextMenu.target : contextMenu.target.id;
           
-          // ★修正: 記憶データ(knownBoxes)を合流させて、メールが未取得でも正しくメニューを出せるようにする
           const kb = app.state.knownBoxes?.[tId] || [];
           const knownHasTarget = kb.includes("INBOX") || kb.includes("ARCHIVE");
           const hasTarget = knownHasTarget || app.computed.groupedEmails[tId]?.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
           
           const showAction = (checkInbox || checkArchive) && hasTarget;
+
+          // ★追加: 送信済み「のみ」のチャットか判定
+          const isOnlySentChat = kb.includes("SENT") && kb.length === 1;
           
           return (
             <div className="flex flex-col p-1">
@@ -30,7 +32,12 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
               <button onClick={() => handleContextMenuAction("rename", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">名前の変更</button>
               {showAction && <button onClick={() => handleContextMenuAction(chatConfigs[tId]?.isPinned ? "unpin" : "pin", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">{chatConfigs[tId]?.isPinned ? "ピン留め解除" : "ピン留めする"}</button>}
               <div className="h-px bg-[#1E1F22] my-1"></div>
-              <button onClick={() => handleContextMenuAction("move", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">移動</button>
+              
+              {/* ★修正: 送信済みのみのチャットでなければ「移動」を表示 */}
+              {!isOnlySentChat && (
+                <button onClick={() => handleContextMenuAction("move", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">移動</button>
+              )}
+              
               {showAction && <button onClick={() => handleContextMenuAction("hide", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition">非表示(Re:Mailのみ)</button>}
               <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
               <div className="h-px bg-[#1E1F22] my-1"></div>
@@ -43,6 +50,9 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
           const mId = contextMenu.target.id;
           const isTarget = !contextMenu.target.labelIds?.includes("TRASH") && !contextMenu.target.labelIds?.includes("SPAM");
           const showAction = (checkInbox || checkArchive) && isTarget;
+
+          // ★追加: 送信済みメッセージか判定
+          const isSentMsg = contextMenu.target.labelIds?.includes("SENT") || contextMenu.target.isMe;
           
           return (
             <div className="flex flex-col p-1">
@@ -51,7 +61,12 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
               <button onClick={() => handleContextMenuAction("copy", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">テキストをコピー</button>
               {showAction && <button onClick={() => handleContextMenuAction(chatConfigs[mId]?.isPinned ? "unpin" : "pin", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">{chatConfigs[mId]?.isPinned ? "ピン留め解除" : "ピン留めする"}</button>}
               <div className="h-px bg-[#1E1F22] my-1"></div>
-              <button onClick={() => handleContextMenuAction("move", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">移動</button>
+              
+              {/* ★修正: 送信済みメッセージでなければ「移動」を表示 */}
+              {!isSentMsg && (
+                <button onClick={() => handleContextMenuAction("move", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">移動</button>
+              )}
+              
               {showAction && <button onClick={() => handleContextMenuAction("hide", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition">非表示(Re:Mailのみ)</button>}
               <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
             </div>

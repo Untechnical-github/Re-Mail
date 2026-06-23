@@ -25,7 +25,7 @@ export function useMailApp() {
   const [checkArchive, setCheckArchive] = useState<boolean>(true);
   const [checkSpam, setCheckSpam] = useState<boolean>(false);
   const [checkTrash, setCheckTrash] = useState<boolean>(false);
-  const [checkHasSent, setCheckHasSent] = useState<boolean>(false);
+  const [checkSent, setCheckSent] = useState<boolean>(false);
   const [currentNextPageToken, setCurrentNextPageToken] = useState<string | null>(null);
   
   const [chatNextPageToken, setChatNextPageToken] = useState<string | null>("FIRST_PAGE");
@@ -59,7 +59,8 @@ export function useMailApp() {
     inbox: "#5865F2", 
     archive: "#95A5A6",
     spam: "#FEE75C",  
-    trash: "#DA373C"  
+    trash: "#DA373C",
+    sent: "#1ABC9C" // ★追加: 送信済みのカラー
   });
 
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -145,9 +146,9 @@ export function useMailApp() {
     return globalSettings;
   };
 
-  const saveGlobalSettings = async (inbox: boolean, archive: boolean, spam: boolean, trash: boolean) => {
+  const saveGlobalSettings = async (inbox: boolean, archive: boolean, spam: boolean, trash: boolean, sent: boolean) => {
     if (typeof window !== "undefined") {
-      localStorage.setItem("remail_box_settings", JSON.stringify({ inbox, archive, spam, trash }));
+      localStorage.setItem("remail_box_settings", JSON.stringify({ inbox, archive, spam, trash, sent }));
     }
   };
 
@@ -264,7 +265,7 @@ export function useMailApp() {
     }
   }, [selectedSender, isMobile]);
 
-  const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, archive: true, spam: false, trash: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emailsRef.current, getIsCancelled = () => false, isInitLoad = false) => {
+  const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, archive: true, spam: false, trash: false, sent: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emailsRef.current, getIsCancelled = () => false, isInitLoad = false) => {
     if (!flags.inbox && !flags.archive && !flags.spam && !flags.trash) { setEmails([]); if (!isSilent) setIsLoading(false); return { success: false, emails: [] }; }
     if (!isSilent) setIsLoading(true);
     const targetLimit = limit;
@@ -281,7 +282,8 @@ export function useMailApp() {
         if (!flags.inbox) qParts.push("-in:inbox");
       } else {
         let orLabels = [];
-        if (flags.inbox) orLabels.push("in:inbox", "in:sent");
+        if (flags.inbox) orLabels.push("in:inbox");
+        if (flags.sent) orLabels.push("in:sent"); // ★追加
         if (flags.spam) orLabels.push("in:spam");
         if (flags.trash) orLabels.push("in:trash");
         if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
@@ -359,11 +361,12 @@ export function useMailApp() {
           const initArchive = localSettings?.archive ?? true; 
           const initSpam = localSettings?.spam ?? false; 
           const initTrash = localSettings?.trash ?? false;
-          setCheckInbox(initInbox); setCheckArchive(initArchive); setCheckSpam(initSpam); setCheckTrash(initTrash);
+          const initSent = localSettings?.sent ?? false; // ★追加
+          setCheckInbox(initInbox); setCheckArchive(initArchive); setCheckSpam(initSpam); setCheckTrash(initTrash); setCheckSent(initSent); // ★追加
           
           setEmails([]);
           
-          const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash }, null, false, false, [], () => false, true);
+          const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash, sent: initSent }, null, false, false, [], () => false, true); // ★修正
 
           if (selectedSender && res.success) {
             fetchChatCrossbox(selectedSender, false, res.emails);
@@ -445,11 +448,11 @@ export function useMailApp() {
     const handleFilterChange = async () => {
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
       searchTimeoutRef.current = setTimeout(async () => {
-        await saveGlobalSettings(checkInbox, checkArchive, checkSpam, checkTrash);
+        await saveGlobalSettings(checkInbox, checkArchive, checkSpam, checkTrash, checkSent); // ★ checkSent を追加
         let loadedEmails = emailsRef.current;
         
         if (!isCancelled) setChatStatusMessage(null);
-        const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, false, loadedEmails, () => isCancelled, false);
+        const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, false, loadedEmails, () => isCancelled, false);
         
         if (selectedSender && !isCancelled && res.success) {
            fetchChatCrossbox(selectedSender, false, res.emails);
@@ -470,21 +473,25 @@ export function useMailApp() {
     if (!session) return;
     const interval = setInterval(() => { 
       if (document.visibilityState === 'visible') { 
-        fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, true, emailsRef.current, () => false, false); 
+        // ★修正: sent: checkSent を追加
+        fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, true, emailsRef.current, () => false, false); 
       }
     }, 60000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         if (emailsRef.current.length === 0) {
-          fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, false, [], () => false, true);
+          // ★修正: sent: checkSent を追加
+          fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, false, [], () => false, true);
         } else {
-          fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, true, emailsRef.current, () => false, false);
+          // ★修正: sent: checkSent を追加
+          fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, true, emailsRef.current, () => false, false);
         }
       }
     };
     const handleOnline = () => {
-      fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash }, null, false, true, emailsRef.current, () => false, false);
+      // ★修正: sent: checkSent を追加
+      fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, true, emailsRef.current, () => false, false);
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -495,7 +502,7 @@ export function useMailApp() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("online", handleOnline);
     };
-  }, [session, searchKeyword, checkInbox, checkArchive, checkSpam, checkTrash]);
+  }, [session, searchKeyword, checkInbox, checkArchive, checkSpam, checkTrash, checkSent]); // ★修正: 最後に checkSent を追加
 
   const groupedEmails = useMemo(() => {
     const groups: Record<string, any[]> = {};
@@ -551,6 +558,7 @@ export function useMailApp() {
           if (e.labelIds?.includes("TRASH")) currentBoxes.add("TRASH");
           else if (e.labelIds?.includes("SPAM")) currentBoxes.add("SPAM");
           else if (e.labelIds?.includes("INBOX")) currentBoxes.add("INBOX");
+          else if (e.labelIds?.includes("SENT") || e.isMe) currentBoxes.add("SENT"); // ★追加
           else currentBoxes.add("ARCHIVE"); 
         });
         
@@ -582,14 +590,14 @@ export function useMailApp() {
     });
   }, [groupedEmails, selectedSender]);
 
-  const prevFiltersRef = useRef({ checkInbox, checkArchive, checkSpam, checkTrash });
+  const prevFiltersRef = useRef({ checkInbox, checkArchive, checkSpam, checkTrash, checkSent }); // ★ checkSent を追加
 
   useEffect(() => {
     const prev = prevFiltersRef.current;
-    const changed = prev.checkInbox !== checkInbox || prev.checkArchive !== checkArchive || prev.checkSpam !== checkSpam || prev.checkTrash !== checkTrash;
+    const changed = prev.checkInbox !== checkInbox || prev.checkArchive !== checkArchive || prev.checkSpam !== checkSpam || prev.checkTrash !== checkTrash || prev.checkSent !== checkSent; // ★ checkSent を追加
 
     if (changed) {
-      prevFiltersRef.current = { checkInbox, checkArchive, checkSpam, checkTrash };
+      prevFiltersRef.current = { checkInbox, checkArchive, checkSpam, checkTrash, checkSent }; // ★ checkSent を追加
 
       if (selectedSender && !isLoading) {
         const targetEmails = groupedEmails[selectedSender] || [];
@@ -639,13 +647,15 @@ export function useMailApp() {
         const isTrash = e.labelIds?.includes("TRASH");
         const isSpam = e.labelIds?.includes("SPAM");
         const isInbox = e.labelIds?.includes("INBOX");
-        const isArchive = !isTrash && !isSpam && !isInbox;
+        const isSent = e.labelIds?.includes("SENT") || e.isMe; // ★追加: 送信済み判定
+        const isArchive = !isTrash && !isSpam && !isInbox && !isSent; // ★修正: SENTもアーカイブ判定から除外
 
         if ((isInbox || isArchive) && (config?.isHidden || chatConfigs[e.id]?.isHidden)) return false;
 
         if (revealedCrossPrompts.includes(e.id)) return true;
         if (isTrash) return checkTrash;
         if (isSpam) return checkSpam;
+        if (isSent) return checkSent; // ★追加: 送信済みチェックと連動
         if (isArchive) return checkArchive;
         return checkInbox;
       });
@@ -657,21 +667,18 @@ export function useMailApp() {
         const knownHasSpam = kb.includes("SPAM");
         const knownHasInbox = kb.includes("INBOX");
         const knownHasArchive = kb.includes("ARCHIVE");
+        const knownHasSent = kb.includes("SENT");
         
         if (!config?.isHidden || (!knownHasInbox && !knownHasArchive)) {
-           if (knownHasTrash && checkTrash) isKnownToDisplay = true;
-           if (knownHasSpam && checkSpam) isKnownToDisplay = true;
-           if (knownHasArchive && checkArchive) isKnownToDisplay = true;
-           if (knownHasInbox && checkInbox) isKnownToDisplay = true;
+          if (knownHasTrash && checkTrash) isKnownToDisplay = true;
+          if (knownHasSpam && checkSpam) isKnownToDisplay = true;
+          if (knownHasArchive && checkArchive) isKnownToDisplay = true;
+          if (knownHasInbox && checkInbox) isKnownToDisplay = true;
+          if (knownHasSent && checkSent) isKnownToDisplay = true; // ★追加
         }
       }
 
       if (!hasDisplayableEmail && !isKnownToDisplay && (!config?.isPinned || (!checkInbox && !checkArchive))) return false;
-
-      if (checkHasSent) {
-        const hasSent = groupedEmails[sender].some((e: any) => e.isMe || e.labelIds?.includes("SENT"));
-        if (!hasSent) return false;
-      }
       return true;
     }).sort((a, b) => {
       const pinA = (chatConfigs[a]?.isPinned && (checkInbox || checkArchive)) ? 1 : 0; 
@@ -682,7 +689,7 @@ export function useMailApp() {
       const timeB = getLatestValidDate(b);
       return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
-  }, [groupedEmails, chatConfigs, checkHasSent, checkInbox, checkArchive, checkSpam, checkTrash, revealedCrossPrompts, knownBoxes]);
+  }, [groupedEmails, chatConfigs, checkSent, checkInbox, checkArchive, checkSpam, checkTrash, revealedCrossPrompts, knownBoxes]);
 
   const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined); 
   const hiddenMsgs = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId !== undefined).map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ", date: new Date().toISOString() });
@@ -852,8 +859,8 @@ export function useMailApp() {
     
     if (type === "confirm_delete") {
       const deleteEmails = getActionableEmails(targets, targetMode);
-      const permanentIds = deleteEmails.filter(e => e.labelIds?.includes("TRASH")).map(e => e.id);
-      const trashIds = deleteEmails.filter(e => !e.labelIds?.includes("TRASH")).map(e => e.id);
+      const permanentIds = deleteEmails.filter(e => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe).map(e => e.id);
+      const trashIds = deleteEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SENT") && !e.isMe).map(e => e.id);
 
       if (permanentIds.length > 0 || trashIds.length > 0) {
         try {
@@ -1013,7 +1020,8 @@ export function useMailApp() {
         if (!checkInbox) qParts.push("-in:inbox");
       } else {
         let orLabels = [];
-        if (checkInbox) orLabels.push("in:inbox", "in:sent"); 
+        if (checkInbox) orLabels.push("in:inbox");
+        if (checkSent) orLabels.push("in:sent");
         if (checkSpam) orLabels.push("in:spam"); 
         if (checkTrash) orLabels.push("in:trash");
         if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
@@ -1133,14 +1141,14 @@ export function useMailApp() {
     auth: { session, status },
     state: {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs,
-      isLoadingMore, searchKeyword, checkInbox, checkArchive, checkSpam, checkTrash, checkHasSent,
+      isLoadingMore, searchKeyword, checkInbox, checkArchive, checkSpam, checkTrash, checkSent,
       knownBoxes, currentNextPageToken, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, // ★UIで使うためknownBoxesを含める
       replySubject, replyBody, isSending, replyToMessage,
       hasMouse, isMobile, selectionMode, selectedIds, contextMenu, modal, renameInput,
       resetOptions, moveDestination, revealedCrossPrompts, boxColors, pinType
     },
     actions: {
-      setSearchKeyword, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckHasSent,
+      setSearchKeyword, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent,
       setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setContextMenu, setModal, setRenameInput,
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,

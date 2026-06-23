@@ -16,15 +16,16 @@ export const HighlightText = ({ text, highlight }: { text: string, highlight: st
 
 export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
-  // ★修正: state から knownBoxes を受け取る
-  const { selectionMode, selectedIds, checkInbox, checkArchive, knownBoxes } = app.state;
+  const { selectionMode, selectedIds, checkInbox, checkArchive, checkSent, checkSpam, checkTrash, knownBoxes } = app.state;
+
+  // 現在「場所」のチェックがすべて外れていて、「送信済み」だけにチェックが入っているか判定
+  const isOnlySentFilterActive = checkSent && !checkInbox && !checkArchive && !checkSpam && !checkTrash;
   const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode } = app.actions;
 
   const isMode = (action: string) => selectionMode === `${modePrefix}_${action}`;
   
   const hasSelectedTarget = selectedIds.some((id: string) => {
       if (isChat) {
-          // ★修正: 記憶データ(knownBoxes)を参照して、未取得でもボタンを有効化する
           const kb = knownBoxes?.[id] || [];
           const knownHasTarget = kb.includes("INBOX") || kb.includes("ARCHIVE");
           return knownHasTarget || app.computed.groupedEmails[id]?.some((e:any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
@@ -32,6 +33,17 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
           const msg = app.computed.allUniqueEmails.find((e:any) => e.id === id);
           return msg && !msg.labelIds?.includes("TRASH") && !msg.labelIds?.includes("SPAM");
       }
+  });
+
+  // ★追加: 選択されたチャットやメッセージが「送信済みメールのみ」で構成されているか判定
+  const isSelectedOnlySent = selectedIds.length > 0 && selectedIds.every((id: string) => {
+    if (isChat) {
+      const kb = knownBoxes?.[id] || [];
+      return kb.includes("SENT") && kb.length === 1;
+    } else {
+      const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
+      return msg && (msg.labelIds?.includes("SENT") || msg.isMe);
+    }
   });
 
   const isDisabled = (action: string) => {
@@ -62,7 +74,12 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   return (
     <div className={containerClass} onClick={(e) => e.stopPropagation()}>
       {showAction && <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin", "bg-[#5865F2]")}>{renderText("pin", "ピン留め")}</button>}
-      <button onClick={() => handleMenuBarClick(`${modePrefix}_move`)} className={getBtnClass("move", "bg-[#5865F2]")}>{renderText("move", "移動")}</button>
+      
+      {/* ★修正: 「送信済みのみのフィルタ」または「選択したものが送信済みのみ」の場合、移動ボタンを隠す */}
+      {(!isOnlySentFilterActive && !isSelectedOnlySent) && (
+        <button onClick={() => handleMenuBarClick(`${modePrefix}_move`)} className={getBtnClass("move", "bg-[#5865F2]")}>{renderText("move", "移動")}</button>
+      )}
+
       {showAction && <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>{renderText("hide", "非表示(Re:Mail)")}</button>}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", "bg-[#DA373C]")}>{renderText("delete", "削除(Gmail)")}</button>
       <button onClick={() => handleMenuBarClick(`${modePrefix}_reset`)} className={getBtnClass("reset", "bg-[#DA373C]")}>リセット</button>

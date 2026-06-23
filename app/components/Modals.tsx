@@ -125,10 +125,15 @@ export function Modals({ app }: { app: any }) {
         {modal.type === "confirm_delete" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
           const inboxCount = targetEmails.filter(e => e.labelIds?.includes("INBOX")).length;
-          const archiveCount = targetEmails.filter(e => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
           const spamCount = targetEmails.filter(e => e.labelIds?.includes("SPAM")).length;
           const trashCount = targetEmails.filter(e => e.labelIds?.includes("TRASH")).length;
+          // ★追加: 送信済みメールのカウント
+          const sentCount = targetEmails.filter(e => e.labelIds?.includes("SENT") || e.isMe).length;
+          // ★修正: アーカイブの計算から送信済み(SENT)を明確に除外
+          const archiveCount = targetEmails.filter(e => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("SENT") && !e.isMe).length;
+          
           const toTrashCount = inboxCount + archiveCount + spamCount;
+          const toPermanentCount = trashCount + sentCount; // ★追加: 完全削除される数の合計
           
           return (
             <div className="p-5">
@@ -144,9 +149,10 @@ export function Modals({ app }: { app: any }) {
                     <span className="text-[#FEE75C] ml-3">→ ゴミ箱へ移動します。</span>
                   </div>
                 )}
-                {trashCount > 0 && (
+                {toPermanentCount > 0 && (
                   <div>
-                    ・ゴミ箱: {trashCount}件 <br/>
+                    {/* ★修正: 送信済みメールが一発で完全削除されることをユーザーに警告する */}
+                    ・ゴミ箱: {trashCount}件 / <span className="text-white font-bold">送信済み: {sentCount}件</span> <br/>
                     <span className="text-[#DA373C] font-bold ml-3">→ 完全に削除します（復元不可）。</span>
                   </div>
                 )}
@@ -311,24 +317,26 @@ export function Modals({ app }: { app: any }) {
 
         {modal.type === "select_move_dest_context" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
-          const isMySentMail = targetEmails.some(e => e.isMe || e.labelIds?.includes("SENT"));
           
           return (
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-4">移動先の選択</h2>
               <div className="flex flex-col gap-2 mb-4">
                 {["INBOX", "ARCHIVE", "SPAM", "TRASH"].map(dest => {
-                  if (isMySentMail && (dest === "ARCHIVE" || dest === "SPAM")) return null;
+                  // ★修正: 以前の if (isMySentMail && ...) のブロックを削除。
+                  // 送信済みメールが含まれていても、他の受信メールを移動できるようにするため。
 
-                  // ★修正: 記憶(knownBoxes)と実データの両方から、移動が無効かどうかを判定する
+                  // ★修正: 「すべてが移動先に存在するか」の判定から送信済み(SENT)を除外して計算する
                   const isAllInDest = modal.targetMode === "chat" 
                     ? modal.targets.length > 0 && modal.targets.every((tId: string) => {
                         const kb = app.state.knownBoxes?.[tId] || [];
-                        if (kb.length === 0) return false;
-                        if (dest === "ARCHIVE") return kb.every((b: string) => b === "ARCHIVE");
-                        return kb.every((b: string) => b === dest);
+                        const validKb = kb.filter((b: string) => b !== "SENT"); // 送信済みを無視
+                        if (validKb.length === 0) return false;
+                        if (dest === "ARCHIVE") return validKb.every((b: string) => b === "ARCHIVE");
+                        return validKb.every((b: string) => b === dest);
                       })
                     : targetEmails.length > 0 && targetEmails.every((e: any) => {
+                        if (e.labelIds?.includes("SENT") || e.isMe) return true; // 送信済みは「すでに移動済み」扱いで無視させる
                         if (dest === "ARCHIVE") return !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
                         return e.labelIds?.includes(dest);
                       });
@@ -342,7 +350,7 @@ export function Modals({ app }: { app: any }) {
                       className={`w-full py-2.5 border rounded font-bold transition flex justify-between px-4 ${isAllInDest ? 'bg-[#1E1F22] text-gray-600 border-[#1E1F22] cursor-not-allowed' : 'bg-[#2B2D31] hover:bg-[#3f4147] border-[#1E1F22] text-white'}`}
                     >
                       <span>{labels[dest]}</span>
-                      <span className="text-xs font-normal opacity-70 mt-0.5">{isAllInDest ? "(既に存在します)" : `${targetEmails.length}件`}</span>
+                      <span className="text-xs font-normal opacity-70 mt-0.5">{isAllInDest ? "(既に存在します)" : `選択`}</span>
                     </button>
                   );
                 })}
@@ -355,14 +363,13 @@ export function Modals({ app }: { app: any }) {
         {modal.type === "confirm_move" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
           const inboxCount = targetEmails.filter(e => e.labelIds?.includes("INBOX")).length;
-          const archiveCount = targetEmails.filter(e => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
           const spamCount = targetEmails.filter(e => e.labelIds?.includes("SPAM")).length;
           const trashCount = targetEmails.filter(e => e.labelIds?.includes("TRASH")).length;
+          // ★追加・修正: 送信済みのカウントと、アーカイブからの除外
+          const mySentCount = targetEmails.filter(e => e.labelIds?.includes("SENT") || e.isMe).length;
+          const archiveCount = targetEmails.filter(e => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("SENT") && !e.isMe).length;
+          
           const destName = moveDestination === "INBOX" ? "受信箱" : moveDestination === "ARCHIVE" ? "アーカイブ" : moveDestination === "SPAM" ? "迷惑メール" : "ゴミ箱";
-
-          // ★追加: 選択されたメール群の中に自分が送信したメールが何件あるか計算
-          const mySentCount = targetEmails.filter(e => e.isMe || e.labelIds?.includes("SENT")).length;
-          const isRestrictedDest = moveDestination === "SPAM" || moveDestination === "ARCHIVE";
 
           return (
             <div className="p-5">
@@ -371,14 +378,15 @@ export function Modals({ app }: { app: any }) {
                 選択したアイテムを「{destName}」へ移動します。(対象: 合計 {targetEmails.length} 件)
               </p>
               
-              {/* ★追加: 制限対象の箱への一括移動時、自分の送信メールが含まれる場合のみ警告枠を差し込む */}
-              {isRestrictedDest && mySentCount > 0 && (
-                <div className="bg-[#DA373C]/20 border border-[#DA373C] p-3 rounded text-xs text-gray-200 mb-4 leading-relaxed font-bold">
-                  ⚠️ 選択されたチャット内に、自分が送信・返信したメールが {mySentCount} 件含まれています。Gmailの仕様上、送信メールは迷惑メールやアーカイブへ移動できないため、これらのメールを除外して移動を実行します。
+              {/* ★修正: どの箱への移動であっても、送信済みメールが含まれていれば除外の案内文を出す */}
+              {mySentCount > 0 && (
+                <div className="bg-[#5865F2]/20 border border-[#5865F2] p-3 rounded text-xs text-gray-200 mb-4 leading-relaxed font-bold">
+                  ℹ️ 選択されたアイテムに送信済みメールが {mySentCount} 件含まれています。送信済みメールは移動の対象外となるため、これらを除外して移動を実行します。
                 </div>
               )}
+              
               <div className="bg-[#2B2D31] p-3 rounded border border-[#1E1F22] mb-5 space-y-2 text-[13px] text-gray-300">
-                <div className="font-bold text-gray-400 border-b border-[#1E1F22] pb-1 mb-1 text-xs">【移動元の内訳】</div>
+                <div className="font-bold text-gray-400 border-b border-[#1E1F22] pb-1 mb-1 text-xs">【移動元の内訳 (送信済みを除く)】</div>
                 <div className="flex justify-between items-center px-1"><span>受信箱:</span> <span>{inboxCount} 件</span></div>
                 <div className="flex justify-between items-center px-1"><span>アーカイブ:</span> <span>{archiveCount} 件</span></div>
                 <div className="flex justify-between items-center px-1"><span>迷惑メール:</span> <span>{spamCount} 件</span></div>
