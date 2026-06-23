@@ -137,7 +137,17 @@ export async function POST(request: Request) {
 
     if (action === "send" || !action) {
       const { to, subject, body, threadId } = bodyData;
-      const rawMessage = [`To: ${to}`, `Subject: =?utf-8?B?${encodeBase64(subject || "")}?=`, "Content-Type: text/plain; charset=utf-8", "", body].join("\r\n");
+      
+      // ★修正: 文字化けの元凶だった手動のMIMEエンコードを完全撤廃。
+      // 綺麗なUTF-8文字列のまま組み立ててBase64化するだけでGmailは完璧に解釈します。
+      const rawMessage = [
+        `To: ${to || ""}`, 
+        `Subject: ${subject || ""}`, 
+        "Content-Type: text/plain; charset=utf-8", 
+        "", 
+        body || ""
+      ].join("\r\n");
+      
       const encodedMessage = encodeBase64(rawMessage).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
       const requestBody: any = { raw: encodedMessage };
       if (threadId) requestBody.threadId = threadId;
@@ -146,8 +156,25 @@ export async function POST(request: Request) {
         method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
       });
+      
       if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      if (!res.ok) throw new Error("Failed to send email");
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        return NextResponse.json({ error: "Failed to send email", details: errorData }, { status: res.status });
+      }
+
+      // ★追加: 送信成功の直後、そのメールに「INBOX（受信箱）」ラベルを付与する。
+      // これによりリロード後もアーカイブ扱いにならず、正しく受信箱のチャットとして留まります。
+      const sentData = await res.json();
+      if (sentData && sentData.id) {
+         await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${sentData.id}/modify`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ addLabelIds: ["INBOX"] })
+         });
+      }
+      
       return NextResponse.json({ success: true });
     }
 
