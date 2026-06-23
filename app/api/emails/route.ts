@@ -25,6 +25,34 @@ function encodeBase64(text: string) {
   return btoa(binString);
 }
 
+// ★追加: Gmail特有の暗号(MIMEエンコード)を綺麗な日本語に解読するデコーダー
+function decodeMimeHeader(header: string): string {
+  if (!header) return "";
+  const regex = /=\?([^?]+)\?([BQbq])\?([^?]+)\?=/g;
+  return header.replace(regex, (match, charset, encoding, text) => {
+    try {
+      if (encoding.toUpperCase() === 'B') {
+        const binaryString = atob(text);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return new TextDecoder(charset.toLowerCase() === 'shift_jis' ? 'shift_jis' : 'utf-8').decode(bytes);
+      } else if (encoding.toUpperCase() === 'Q') {
+        const qDecoded = text.replace(/_/g, ' ').replace(/=([a-fA-F0-9]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+        const bytes = new Uint8Array(qDecoded.length);
+        for (let i = 0; i < qDecoded.length; i++) {
+          bytes[i] = qDecoded.charCodeAt(i);
+        }
+        return new TextDecoder(charset.toLowerCase() === 'shift_jis' ? 'shift_jis' : 'utf-8').decode(bytes);
+      }
+    } catch (e) {
+      return match;
+    }
+    return match;
+  });
+}
+
 function getBody(payload: any): string {
   if (payload.body && payload.body.data) return decodeBase64Url(payload.body.data);
   if (payload.parts) {
@@ -56,7 +84,6 @@ function cleanseBody(text: string): string {
 
 export async function GET(request: Request) {
   const session = await auth() as any; 
-  // ★修正: リフレッシュトークンの更新に失敗していた場合、500エラーを出さずに「401」を返す
   if (!session || !session.accessToken || session.error === "RefreshAccessTokenError") {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -76,8 +103,6 @@ export async function GET(request: Request) {
     if (pageToken) apiUrl += `&pageToken=${pageToken}`;
 
     const listRes = await fetch(apiUrl, { headers: { Authorization: `Bearer ${session.accessToken}` } });
-    
-    // ★修正: 鍵が古い・無効などの理由でGoogleから弾かれた場合も、500ではなく「401」を画面に返す
     if (listRes.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (!listRes.ok) throw new Error("Failed to fetch messages list");
     
@@ -108,13 +133,16 @@ export async function GET(request: Request) {
     const parsedMessages = detailedMessages.map((message) => {
       const payload = message.payload;
       const headers = payload?.headers || [];
-      const subject = getHeader(headers, "Subject") || "(件名なし)";
-      const from = getHeader(headers, "From");
-      const to = getHeader(headers, "To");
+      
+      // ★修正: 取得した生データを、フロントエンドに渡す前にすべて綺麗な日本語に解読する
+      const subject = decodeMimeHeader(getHeader(headers, "Subject")) || "(件名なし)";
+      const from = decodeMimeHeader(getHeader(headers, "From"));
+      const to = decodeMimeHeader(getHeader(headers, "To"));
       const date = getHeader(headers, "Date");
       const labelIds = message.labelIds || []; 
       const rawBody = getBody(payload) || message.snippet || "";
       const cleansedBody = cleanseBody(rawBody);
+      
       return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds };
     });
 
@@ -126,7 +154,6 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   const session = await auth() as any;
-  // ★修正: GETと同様、POST時も認証エラーを弾く
   if (!session || !session.accessToken || session.error === "RefreshAccessTokenError") {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -138,11 +165,25 @@ export async function POST(request: Request) {
     if (action === "send" || !action) {
       const { to, subject, body, threadId } = bodyData;
       
-      // ★修正: 文字化けの元凶だった手動のMIMEエンコードを完全撤廃。
-      // 綺麗なUTF-8文字列のまま組み立ててBase64化するだけでGmailは完璧に解釈します。
+      // ★修正: 宛先に日本語が含まれている場合、文字化けや配信エラーを防ぐために正しくエンコードする
+      const formattedTo = (to || "").split(',').map((addr: string) => {
+        const match = addr.match(/^(.*?)(<[^>]+>)$/);
+        if (match) {
+          const namePart = match[1].trim().replace(/^"|"$/g, '').trim();
+          const emailPart = match[2].trim();
+          if (namePart) {
+            return `=?utf-8?B?${encodeBase64(namePart)}?= ${emailPart}`;
+          }
+          return emailPart;
+        }
+        return addr.trim();
+      }).join(', ');
+
+      const encodedSubject = subject ? `=?utf-8?B?${encodeBase64(subject)}?=` : "";
+      
       const rawMessage = [
-        `To: ${to || ""}`, 
-        `Subject: ${subject || ""}`, 
+        `To: ${formattedTo || to || ""}`, 
+        `Subject: ${encodedSubject}`, 
         "Content-Type: text/plain; charset=utf-8", 
         "", 
         body || ""
@@ -164,8 +205,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Failed to send email", details: errorData }, { status: res.status });
       }
 
-      // ★追加: 送信成功の直後、そのメールに「INBOX（受信箱）」ラベルを付与する。
-      // これによりリロード後もアーカイブ扱いにならず、正しく受信箱のチャットとして留まります。
+      // ★修正: 送信成功直後に「INBOX(受信箱)」ラベルを付与し、リロード後もアーカイブに落ちないようにする
       const sentData = await res.json();
       if (sentData && sentData.id) {
          await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${sentData.id}/modify`, {
