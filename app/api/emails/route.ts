@@ -56,7 +56,10 @@ function cleanseBody(text: string): string {
 
 export async function GET(request: Request) {
   const session = await auth() as any; 
-  if (!session || !session.accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // ★修正: リフレッシュトークンの更新に失敗していた場合、500エラーを出さずに「401」を返す
+  if (!session || !session.accessToken || session.error === "RefreshAccessTokenError") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   const { searchParams } = new URL(request.url);
   const maxResults = searchParams.get("maxResults") || "10";
@@ -73,6 +76,9 @@ export async function GET(request: Request) {
     if (pageToken) apiUrl += `&pageToken=${pageToken}`;
 
     const listRes = await fetch(apiUrl, { headers: { Authorization: `Bearer ${session.accessToken}` } });
+    
+    // ★修正: 鍵が古い・無効などの理由でGoogleから弾かれた場合も、500ではなく「401」を画面に返す
+    if (listRes.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (!listRes.ok) throw new Error("Failed to fetch messages list");
     
     const listData = await listRes.json();
@@ -120,13 +126,15 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   const session = await auth() as any;
-  if (!session || !session.accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // ★修正: GETと同様、POST時も認証エラーを弾く
+  if (!session || !session.accessToken || session.error === "RefreshAccessTokenError") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   
   try {
     const bodyData = await request.json();
     const { action } = bodyData;
 
-    // ① メールの送信 (actionがない、またはsendの場合)
     if (action === "send" || !action) {
       const { to, subject, body, threadId } = bodyData;
       const rawMessage = [`To: ${to}`, `Subject: =?utf-8?B?${encodeBase64(subject || "")}?=`, "Content-Type: text/plain; charset=utf-8", "", body].join("\r\n");
@@ -138,11 +146,11 @@ export async function POST(request: Request) {
         method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
       });
+      if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       if (!res.ok) throw new Error("Failed to send email");
       return NextResponse.json({ success: true });
     }
 
-    // ② メールの移動 (旧PUTのロジックを集約)
     if (action === "move") {
       const { ids, destination } = bodyData;
       let addLabelIds: string[] = [];
@@ -157,24 +165,26 @@ export async function POST(request: Request) {
         body: JSON.stringify({ ids, addLabelIds, removeLabelIds }),
       });
 
+      if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       if (!res.ok) throw new Error("Failed to move emails");
       return NextResponse.json({ success: true });
     }
 
-    // ③ メールの削除 (旧DELETEのロジックを集約)
     if (action === "delete") {
       const { permanentIds, trashIds } = bodyData;
       if (permanentIds && permanentIds.length > 0) {
-        await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
+        const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
           method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
           body: JSON.stringify({ ids: permanentIds }),
         });
+        if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       }
       if (trashIds && trashIds.length > 0) {
-        await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
+        const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
           method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
           body: JSON.stringify({ ids: trashIds, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX", "SPAM"] }),
         });
+        if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       }
       return NextResponse.json({ success: true });
     }
