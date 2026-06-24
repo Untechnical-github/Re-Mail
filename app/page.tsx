@@ -139,8 +139,17 @@ export default function Home() {
               );
 
               // ★修正: ピン留め/非表示の対象(INBOXかARCHIVE)がいるか判定
-              const hasLiveTarget = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) ||
-                                    knownHasInbox || knownHasArchive || (knownHasSent && !knownHasTrash && !knownHasSpam);
+              const hasValidFetchedMail = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+              
+              // ★修正: 記憶データを「現在のチェックボックスの状態」と照らし合わせて厳格に判定
+              const hasValidKnownMail = (!hasValidFetchedMail && kb.length > 0) ? (
+                  (knownHasInbox && state.checkInbox) ||
+                  (knownHasArchive && state.checkArchive) ||
+                  (knownHasSent && state.checkSent && !knownHasTrash && !knownHasSpam)
+              ) : false;
+
+              const hasLiveTarget = hasValidFetchedMail || hasValidKnownMail;
+              
               const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasLiveTarget;
               const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasLiveTarget;
               const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut;

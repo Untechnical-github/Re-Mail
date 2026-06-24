@@ -133,7 +133,16 @@ export function useMailApp() {
             try {
               const parsed = JSON.parse(customNameVal);
               customNameVal = parsed.name; forceFetchVal = parsed.forceFetch; pData = parsed.data; roomIdVal = parsed.roomId;
-              if (pData) { if (Array.isArray(pData)) pMsgs.push(...pData); else pMsgs.push(pData); }
+              if (pData) { 
+                // ★修正: 過去のバグで保存された「送信済みメールのINBOXラベル」をロード時に強制消去する
+                const cleanData = (Array.isArray(pData) ? pData : [pData]).map(e => {
+                  if ((e.isMe || e.from?.includes(session?.user?.email || "")) && e.labelIds?.includes("INBOX")) {
+                     return { ...e, labelIds: e.labelIds.filter((l: string) => l !== "INBOX") };
+                  }
+                  return e;
+                });
+                pMsgs.push(...cleanData); 
+              }
             } catch (e) {}
           }
           formatted[c.chat_id] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, roomId: roomIdVal };
@@ -513,6 +522,10 @@ export function useMailApp() {
     });
 
     tempSentEmails.forEach((email) => {
+      // ★修正: 実行中メモリ上でも送信済みメールからINBOXを強制剥奪する
+      if (email.labelIds?.includes("INBOX")) {
+         email.labelIds = email.labelIds.filter((l: string) => l !== "INBOX");
+      }
       const toClean = email.to ? email.to.toLowerCase() : "";
       let matchedRoom: string | null = null;
       for (const roomName of Object.keys(groups)) {
@@ -1169,6 +1182,15 @@ export function useMailApp() {
     setIsLoadingMore(false);
     loadingMoreMsgRef.current = false;
   };
+
+  useEffect(() => {
+    if (senderList.length > 0 && senderList.length < 15 && currentNextPageToken && !isLoadingMoreChats && !chatStatusMessage) {
+      const timer = setTimeout(() => {
+        handleLoadMoreChats();
+      }, 400);
+      return () => clearTimeout(timer);
+    }
+  }, [senderList.length, currentNextPageToken, isLoadingMoreChats, chatStatusMessage]);
 
   const pinnedMsgsInChat = (checkInbox || checkArchive || checkSent) ? (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) : [];
 

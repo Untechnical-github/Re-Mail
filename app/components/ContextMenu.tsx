@@ -28,12 +28,19 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
           // ★復活: 前回のコード提示で私が削ってしまっていた1行です
           const isOnlySentChat = kb.includes("SENT") && kb.length === 1;
 
-          // 実データまたは記憶データから、ゴミ箱・迷惑メールではない生存メールが存在するか厳格に判定
-          const hasLiveTarget = app.computed.groupedEmails[tId]?.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) ||
-                                knownHasInbox || knownHasArchive || (knownHasSent && !knownHasTrash && !knownHasSpam);
+          const hasValidFetchedMail = app.computed.groupedEmails[tId]?.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+          
+          // ★修正: 取得できていない場合、D1の記憶を参考にするが、「現在のチェックボックス」と一致するものだけを有効とする絶対ルール
+          const hasValidKnownMail = (!hasValidFetchedMail && kb.length > 0) ? (
+              (kb.includes("INBOX") && checkInbox) ||
+              (kb.includes("ARCHIVE") && checkArchive) ||
+              (kb.includes("SENT") && checkSent && !kb.includes("TRASH") && !kb.includes("SPAM"))
+          ) : false;
+
+          const hasLiveTarget = hasValidFetchedMail || hasValidKnownMail;
           
           // 生存ターゲットがある場合のみアクションボタン（ピン留め・非表示）の表示を許可
-          const showAction = (checkInbox || checkArchive || checkSent) && hasLiveTarget;
+          const showAction = hasLiveTarget;
           
           return (
             <div className="flex flex-col p-1">
