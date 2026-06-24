@@ -621,8 +621,10 @@ export function useMailApp() {
     }
   }, [checkInbox, checkArchive, checkSpam, checkTrash, selectedSender, groupedEmails, chatConfigs, revealedCrossPrompts, isLoading]);
 
-  const senderList = useMemo(() => {
-    const getLatestValidDate = (sender: string) => {
+  const senderList = useMemo<string[]>(() => {
+    
+    // ★修正: 戻り値が「数値(number)」であることを明示
+    const getLatestValidDate = (sender: string): number => {
       const allEmails = groupedEmails[sender] || [];
       const config = chatConfigs[sender];
       
@@ -630,35 +632,35 @@ export function useMailApp() {
         const isTrash = e.labelIds?.includes("TRASH");
         const isSpam = e.labelIds?.includes("SPAM");
         const isInbox = e.labelIds?.includes("INBOX");
-        const isSent = e.labelIds?.includes("SENT") || e.isMe; // ★追加
-        const isArchive = !isTrash && !isSpam && !isInbox && !isSent; // ★修正
+        const isSent = e.labelIds?.includes("SENT") || e.isMe; 
+        const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
 
-        // ★修正: isSent も非表示の対象にする
         if ((isInbox || isArchive || isSent) && (config?.isHidden || chatConfigs[e.id]?.isHidden)) return false;
 
-        const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isSent && checkSent) || (isArchive && checkArchive); // ★修正
+        const isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isSent && checkSent) || (isArchive && checkArchive);
         return isCurrentBox || revealedCrossPrompts.includes(e.id);
       });
       
       return validEmails[0] ? new Date(validEmails[0].date).getTime() : 0;
     };
 
-    return Object.keys(groupedEmails).filter((sender) => {
+    // ★注意: ここの return は絶対に消さないでください
+    return Object.keys(groupedEmails).filter((sender: string) => {
       const config = chatConfigs[sender];
 
       const hasDisplayableEmail = groupedEmails[sender].some((e: any) => {
         const isTrash = e.labelIds?.includes("TRASH");
         const isSpam = e.labelIds?.includes("SPAM");
         const isInbox = e.labelIds?.includes("INBOX");
-        const isSent = e.labelIds?.includes("SENT") || e.isMe; // ★追加: 送信済み判定
-        const isArchive = !isTrash && !isSpam && !isInbox && !isSent; // ★修正: SENTもアーカイブ判定から除外
+        const isSent = e.labelIds?.includes("SENT") || e.isMe; 
+        const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
 
-        if ((isInbox || isArchive) && (config?.isHidden || chatConfigs[e.id]?.isHidden)) return false;
+        if ((isInbox || isArchive || isSent) && (config?.isHidden || chatConfigs[e.id]?.isHidden)) return false;
 
         if (revealedCrossPrompts.includes(e.id)) return true;
         if (isTrash) return checkTrash;
         if (isSpam) return checkSpam;
-        if (isSent) return checkSent; // ★追加: 送信済みチェックと連動
+        if (isSent) return checkSent;
         if (isArchive) return checkArchive;
         return checkInbox;
       });
@@ -672,18 +674,20 @@ export function useMailApp() {
         const knownHasArchive = kb.includes("ARCHIVE");
         const knownHasSent = kb.includes("SENT");
         
-        if (!config?.isHidden || (!knownHasInbox && !knownHasArchive)) {
+        if (!config?.isHidden || (!knownHasInbox && !knownHasArchive && !knownHasSent)) {
           if (knownHasTrash && checkTrash) isKnownToDisplay = true;
           if (knownHasSpam && checkSpam) isKnownToDisplay = true;
           if (knownHasArchive && checkArchive) isKnownToDisplay = true;
           if (knownHasInbox && checkInbox) isKnownToDisplay = true;
-          if (knownHasSent && checkSent) isKnownToDisplay = true; // ★追加
+          if (knownHasSent && checkSent) isKnownToDisplay = true; 
         }
       }
 
       if (!hasDisplayableEmail && !isKnownToDisplay && (!config?.isPinned || (!checkInbox && !checkArchive && !checkSent))) return false;
       return true;
-    }).sort((a, b) => {
+      
+    // ★修正: sortの引数(a, b)と戻り値が数値(number)であることを明示
+    }).sort((a: string, b: string): number => {
       const pinA = (chatConfigs[a]?.isPinned && (checkInbox || checkArchive || checkSent)) ? 1 : 0; 
       const pinB = (chatConfigs[b]?.isPinned && (checkInbox || checkArchive || checkSent)) ? 1 : 0; 
       if (pinA !== pinB) return pinB - pinA;
