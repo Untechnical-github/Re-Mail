@@ -905,10 +905,11 @@ export function useMailApp() {
     
     if (type === "confirm_delete") {
       const deleteEmails = getActionableEmails(targets, targetMode);
-      const permanentIds = deleteEmails.filter(e => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe).map(e => e.id);
+      
+      // ★修正: 完全削除(permanentIds)は廃止し、TRASH・SENT以外の「移動可能なメール」のみをゴミ箱へ移動させる
       const trashIds = deleteEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SENT") && !e.isMe).map(e => e.id);
 
-      if (permanentIds.length > 0 || trashIds.length > 0) {
+      if (trashIds.length > 0) {
         try {
           const applyTrashLabels = (e: any) => {
             if (trashIds.includes(e.id)) {
@@ -919,8 +920,8 @@ export function useMailApp() {
             return e;
           };
           
-          const nextEmails = emails.map(applyTrashLabels).filter(e => !permanentIds.includes(e.id));
-          const nextPersisted = persistedEmails.map(applyTrashLabels).filter(e => !permanentIds.includes(e.id));
+          const nextEmails = emails.map(applyTrashLabels);
+          const nextPersisted = persistedEmails.map(applyTrashLabels);
           
           const combined = new Map();
           nextPersisted.forEach(e => combined.set(e.id, e));
@@ -930,7 +931,7 @@ export function useMailApp() {
           
           setEmails(nextEmails); 
           setPersistedEmails(nextPMsgs);
-          setRevealedCrossPrompts(prev => prev.filter(id => !permanentIds.includes(id) && !trashIds.includes(id)));
+          setRevealedCrossPrompts(prev => prev.filter(id => !trashIds.includes(id)));
 
           setKnownBoxes(prev => {
             const next = { ...prev };
@@ -941,7 +942,7 @@ export function useMailApp() {
 
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
           
-          fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", permanentIds, trashIds }) }).catch(e => console.error(e));
+          fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", trashIds }) }).catch(e => console.error(e));
         } catch (e) { console.error(e); }
       }
     } 
@@ -1044,10 +1045,10 @@ export function useMailApp() {
     let tempToken: string | null = currentNextPageToken;
     let loopCount = 0;
     const maxLoops = 15; 
-    let reachedYearLimit = false; 
     const accumulatedEmails: any[] = [];
     const currentLoadId = activeLoadRef.current;
-    const oneYearAgoMs = new Date().setFullYear(new Date().getFullYear() - 1); 
+    
+    const currentDisplayCount = new Set(senderList).size;
 
     try {
       let qParts = []; 
@@ -1067,7 +1068,6 @@ export function useMailApp() {
       if (searchKeyword) qParts.push(searchKeyword);
       const baseQuery = qParts.join(" ").trim();
 
-      // 表示される「有効なチャットの総数」が画面を埋める（15件以上）か、データが尽きるまでループ
       while (tempToken && loopCount < maxLoops) {
         if (activeLoadRef.current !== currentLoadId) break;
         loopCount++;
@@ -1084,30 +1084,21 @@ export function useMailApp() {
         const data: any = await res.json(); 
         const rawMessages = data.messages || []; 
         tempToken = data.nextPageToken || null;
-        const validMessages: any[] = [];
 
-        for (const email of rawMessages) {
-          if (new Date(email.date).getTime() < oneYearAgoMs) { reachedYearLimit = true; } 
-          else { validMessages.push(email); }
+        if (rawMessages.length > 0) {
+          accumulatedEmails.push(...rawMessages);
         }
 
-        if (validMessages.length > 0) {
-          accumulatedEmails.push(...validMessages);
-        }
-
-        // ★修正: 今回取得したメールを含めて、実際に「画面に描画されるチャット」が何件あるかを厳密にシミュレーション検証する
         const virtualEmails = [...emailsRef.current, ...accumulatedEmails];
         const virtualSenders = new Set<string>();
         const tempGroups: Record<string, any[]> = {};
 
-        // 仮想グループ化
         virtualEmails.forEach(e => {
           const room = e.senderRoom || ((e.isMe || e.from.includes(session?.user?.email || "")) ? (e.to ? e.to.split(",")[0].split("<")[0].replace(/"/g, "").trim() : "Unknown") : (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"));
           if (!tempGroups[room]) tempGroups[room] = [];
           tempGroups[room].push(e);
         });
 
-        // 各グループが画面上の表示条件を満たしているか精査
         Object.keys(tempGroups).forEach(sender => {
           const config = chatConfigsRef.current[sender];
           const hasDisplayable = tempGroups[sender].some((e: any) => {
@@ -1132,12 +1123,9 @@ export function useMailApp() {
           }
         });
 
-        // ★修正: 画面上の有効な総チャット数が15件以上に達したら、十分に画面が埋まったと判断して安全にループ終了
-        if (virtualSenders.size >= 15) {
-          break;
-        }
-
-        if (reachedYearLimit || !tempToken) break;
+        // 画面を埋める件数（15件）に達したらループ終了
+        if (virtualSenders.size >= 15 + currentDisplayCount) break;
+        if (!tempToken) break;
       }
 
       if (accumulatedEmails.length > 0) {
@@ -1149,9 +1137,7 @@ export function useMailApp() {
       }
 
       setCurrentNextPageToken(tempToken);
-
-      if (reachedYearLimit) { setChatStatusMessage("Re:Mailの読み込み上限に達しました"); } 
-      else if (!tempToken) { setChatStatusMessage("すべてのメールを読み込みました"); }
+      if (!tempToken) setChatStatusMessage("すべてのメールを読み込みました");
 
     } catch (error) { 
       setChatStatusMessage("エラーが発生しました。"); 
@@ -1184,7 +1170,7 @@ export function useMailApp() {
   };
 
   useEffect(() => {
-    if (senderList.length > 0 && senderList.length < 15 && currentNextPageToken && !isLoadingMoreChats && !chatStatusMessage) {
+    if (senderList.length < 20 && currentNextPageToken && !isLoadingMoreChats && !chatStatusMessage) {
       const timer = setTimeout(() => {
         handleLoadMoreChats();
       }, 400);

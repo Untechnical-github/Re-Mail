@@ -128,44 +128,35 @@ export function Modals({ app }: { app: any }) {
         {modal.type === "confirm_delete" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
           
-          // ★大修正: 送信済みメール（SENTまたはisMe）を最優先で隔離し、他のフォルダの計算から完全に除外して重複を防ぐ
-          const sentEmails = targetEmails.filter(e => e.labelIds?.includes("SENT") || e.isMe);
-          const liveEmails = targetEmails.filter(e => !e.labelIds?.includes("SENT") && !e.isMe);
+          // ★修正: 対象となるのは「送信済みでもゴミ箱でもない」メールのみ
+          const liveEmails = targetEmails.filter(e => !e.labelIds?.includes("SENT") && !e.isMe && !e.labelIds?.includes("TRASH"));
           
           const inboxCount = liveEmails.filter(e => e.labelIds?.includes("INBOX")).length;
           const spamCount = liveEmails.filter(e => e.labelIds?.includes("SPAM")).length;
-          const trashCount = liveEmails.filter(e => e.labelIds?.includes("TRASH")).length;
-          const archiveCount = liveEmails.filter(e => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
+          const archiveCount = liveEmails.filter(e => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("SPAM")).length;
           
-          const sentCount = sentEmails.length;
           const toTrashCount = inboxCount + archiveCount + spamCount;
-          const toPermanentCount = trashCount + sentCount; // ゴミ箱の中身と、送信済みメールが完全削除の対象になる
           
           return (
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-2">削除の確認</h2>
               <p className="text-sm text-gray-300 mb-4 leading-relaxed">
-                選択したアイテムを削除します。(対象: 合計 {targetEmails.length} 件)
+                選択したアイテムを削除します。(対象: 合計 {liveEmails.length} 件)
               </p>
               <div className="bg-[#2B2D31] p-3 rounded border border-[#1E1F22] mb-5 space-y-2 text-[13px] text-gray-300">
                 <div className="font-bold text-gray-400 border-b border-[#1E1F22] pb-1 mb-2 text-xs">【処理の内訳】</div>
-                {toTrashCount > 0 && (
+                {toTrashCount > 0 ? (
                   <div>
-                    ・受信箱: {inboxCount}件 / アーカイブ: {archiveCount}件 / 迷惑メール: {spamCount}件 <br/>
+                    ・受信箱: {inboxCount}件 / アーカイブ: {archiveCount}件 / 迷惑: {spamCount}件 <br/>
                     <span className="text-[#FEE75C] ml-3">→ ゴミ箱へ移動します。</span>
                   </div>
-                )}
-                {toPermanentCount > 0 && (
-                  <div>
-                    {/* ★修正: 送信済みメールが一発で完全削除されることをユーザーに警告する */}
-                    ・ゴミ箱: {trashCount}件 / <span className="text-white font-bold">送信済み: {sentCount}件</span> <br/>
-                    <span className="text-[#DA373C] font-bold ml-3">→ 完全に削除します（復元不可）。</span>
-                  </div>
+                ) : (
+                  <div className="text-gray-500">削除可能なアイテムがありません。</div>
                 )}
               </div>
               <div className="flex justify-end gap-3">
                 <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-                <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c]">削除する</button>
+                <button onClick={executeConfirmedAction} disabled={toTrashCount === 0} className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c] disabled:bg-[#3f4147] disabled:text-gray-500">削除する</button>
               </div>
             </div>
           );

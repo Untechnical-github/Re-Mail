@@ -27,6 +27,9 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
           
           // ★復活: 前回のコード提示で私が削ってしまっていた1行です
           const isOnlySentChat = kb.includes("SENT") && kb.length === 1;
+          
+          // ★追加: ゴミ箱のみ、またはゴミ箱と送信済みだけで構成されるチャットは削除メニューを出さない
+          const isDeleteRestrictedChat = isOnlySentChat || (app.computed.groupedEmails[tId] && app.computed.groupedEmails[tId].every((e:any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe));
 
           const hasValidFetchedMail = app.computed.groupedEmails[tId]?.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
           
@@ -54,7 +57,9 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
               )}
               
               {showAction && <button onClick={() => handleContextMenuAction("hide", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition">非表示(Re:Mailのみ)</button>}
-              <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
+              {!isDeleteRestrictedChat && (
+                <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
+              )}
               <div className="h-px bg-[#1E1F22] my-1"></div>
               <button onClick={() => handleContextMenuAction("reset", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition text-xs">リセット</button>
             </div>
@@ -68,6 +73,8 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
 
           // ★追加: 送信済みメッセージか判定
           const isSentMsg = contextMenu.target.labelIds?.includes("SENT") || contextMenu.target.isMe;
+          // ★追加: メッセージがゴミ箱にあるか判定
+          const isTrashMsg = contextMenu.target.labelIds?.includes("TRASH");
           
           return (
             <div className="flex flex-col p-1">
@@ -83,7 +90,9 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
               )}
               
               {showAction && <button onClick={() => handleContextMenuAction("hide", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition">非表示(Re:Mailのみ)</button>}
-              <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
+              {(!isSentMsg && !isTrashMsg) && (
+                <button onClick={() => handleContextMenuAction("delete", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#DA373C] hover:text-white transition font-bold">削除(Gmailを含む)</button>
+              )}
             </div>
           );
         })()}

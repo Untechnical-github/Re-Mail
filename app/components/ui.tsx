@@ -55,6 +55,17 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     }
   });
 
+  // ★追加: 選択されたものが「ゴミ箱」または「送信済み」のみで構成されており、削除(ゴミ箱への移動)が不可能な状態か判定
+  const isSelectedDeleteRestricted = selectedIds.length > 0 && selectedIds.every((id: string) => {
+    if (isChat) {
+      const emails = app.computed.groupedEmails[id] || [];
+      return emails.length > 0 && emails.every((e:any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
+    } else {
+      const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
+      return msg && (msg.labelIds?.includes("TRASH") || msg.labelIds?.includes("SENT") || msg.isMe);
+    }
+  });
+
   const isDisabled = (action: string) => {
       if (selectionMode !== "none" && selectionMode !== `${modePrefix}_${action}`) return true;
       if (action === "pin" && selectionMode === `${modePrefix}_pin` && !hasSelectedTarget) return true;
@@ -90,7 +101,10 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
       )}
 
       {showAction && <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>{renderText("hide", "非表示(Re:Mail)")}</button>}
-      <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", "bg-[#DA373C]")}>{renderText("delete", "削除(Gmail)")}</button>
+      {!isSelectedDeleteRestricted && (
+        <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", "bg-[#DA373C]")}>{renderText("delete", "削除(Gmail)")}</button>
+      )}
+      
       <button onClick={() => handleMenuBarClick(`${modePrefix}_reset`)} className={getBtnClass("reset", "bg-[#DA373C]")}>リセット</button>
       {showAction && (
         <button
