@@ -127,16 +127,19 @@ export function Modals({ app }: { app: any }) {
 
         {modal.type === "confirm_delete" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
-          const inboxCount = targetEmails.filter(e => e.labelIds?.includes("INBOX")).length;
-          const spamCount = targetEmails.filter(e => e.labelIds?.includes("SPAM")).length;
-          const trashCount = targetEmails.filter(e => e.labelIds?.includes("TRASH")).length;
-          // ★追加: 送信済みメールのカウント
-          const sentCount = targetEmails.filter(e => e.labelIds?.includes("SENT") || e.isMe).length;
-          // ★修正: アーカイブの計算から送信済み(SENT)を明確に除外
-          const archiveCount = targetEmails.filter(e => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("SENT") && !e.isMe).length;
           
+          // ★大修正: 送信済みメール（SENTまたはisMe）を最優先で隔離し、他のフォルダの計算から完全に除外して重複を防ぐ
+          const sentEmails = targetEmails.filter(e => e.labelIds?.includes("SENT") || e.isMe);
+          const liveEmails = targetEmails.filter(e => !e.labelIds?.includes("SENT") && !e.isMe);
+          
+          const inboxCount = liveEmails.filter(e => e.labelIds?.includes("INBOX")).length;
+          const spamCount = liveEmails.filter(e => e.labelIds?.includes("SPAM")).length;
+          const trashCount = liveEmails.filter(e => e.labelIds?.includes("TRASH")).length;
+          const archiveCount = liveEmails.filter(e => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
+          
+          const sentCount = sentEmails.length;
           const toTrashCount = inboxCount + archiveCount + spamCount;
-          const toPermanentCount = trashCount + sentCount; // ★追加: 完全削除される数の合計
+          const toPermanentCount = trashCount + sentCount; // ゴミ箱の中身と、送信済みメールが完全削除の対象になる
           
           return (
             <div className="p-5">

@@ -162,18 +162,16 @@ export async function POST(request: Request) {
     const bodyData = await request.json();
     const { action } = bodyData;
 
+    // ① メールの送信
     if (action === "send" || !action) {
       const { to, subject, body, threadId } = bodyData;
       
-      // ★修正: 宛先に日本語が含まれている場合、文字化けや配信エラーを防ぐために正しくエンコードする
       const formattedTo = (to || "").split(',').map((addr: string) => {
         const match = addr.match(/^(.*?)(<[^>]+>)$/);
         if (match) {
           const namePart = match[1].trim().replace(/^"|"$/g, '').trim();
           const emailPart = match[2].trim();
-          if (namePart) {
-            return `=?utf-8?B?${encodeBase64(namePart)}?= ${emailPart}`;
-          }
+          if (namePart) { return `=?utf-8?B?${encodeBase64(namePart)}?= ${emailPart}`; }
           return emailPart;
         }
         return addr.trim();
@@ -199,22 +197,44 @@ export async function POST(request: Request) {
       });
       
       if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         return NextResponse.json({ error: "Failed to send email", details: errorData }, { status: res.status });
       }
 
-      // ★修正: 送信成功直後に「INBOX(受信箱)」ラベルを付与し、リロード後もアーカイブに落ちないようにする
-      const sentData = await res.json();
-      if (sentData && sentData.id) {
-         await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${sentData.id}/modify`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ addLabelIds: ["INBOX"] })
-         });
-      }
+      // ★修正: 送信したメールを受信箱(INBOX)に強制移動させていた余計な modify 処理を完全撤廃。
+      // これにより、送信したメールは本家Gmailと同じく、無条件で綺麗な「送信済み（アーカイブ状態）」として統合されます。
       
+      return NextResponse.json({ success: true });
+    }
+
+    // ③ メールの削除（完全削除含む）
+    if (action === "delete") {
+      const { permanentIds, trashIds } = bodyData;
+      
+      if (permanentIds && permanentIds.length > 0) {
+        // ★修正: 送信直後のフェイクID (fake-...) はGmailサーバーに存在しないため、確実に除外してエラーを防ぐ
+        const realPermanentIds = permanentIds.filter((id: string) => !id.startsWith("fake-"));
+        
+        if (realPermanentIds.length > 0) {
+          const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
+            method: "POST", 
+            headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: realPermanentIds }),
+          });
+          if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+      }
+      if (trashIds && trashIds.length > 0) {
+        const realTrashIds = trashIds.filter((id: string) => !id.startsWith("fake-"));
+        if (realTrashIds.length > 0) {
+          const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
+            method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: realTrashIds, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX", "SPAM"] }),
+          });
+          if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+      }
       return NextResponse.json({ success: true });
     }
 

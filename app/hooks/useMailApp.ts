@@ -727,7 +727,6 @@ export function useMailApp() {
     if (typeof window !== "undefined") {
       sessionStorage.setItem("remail_selected_sender", sender);
       sessionStorage.removeItem("remail_scroll_main"); 
-      
       const asideEl = document.querySelector("aside > div.flex-1");
       if (asideEl) sessionStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
     }
@@ -737,7 +736,16 @@ export function useMailApp() {
     setMsgStatusMessage(null); 
     setChatNextPageToken("FIRST_PAGE");
     if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`);
-    fetchChatCrossbox(sender, false); 
+    
+    // 初回読み込み
+    const result = await fetchChatCrossbox(sender, false); 
+    
+    // ★追加: メッセージ画面を開いた際、メッセージが少なすぎて画面が埋まらない場合、自動で過去ログをもう1ページ分引っ張ってくる
+    if (result && result.found && result.nextToken && !result.nextToken.startsWith("END")) {
+      setTimeout(() => {
+        handleLoadMoreMessage();
+      }, 300);
+    }
   };
 
   const handleMenuBarClick = (mode: SelectionMode) => {
@@ -814,7 +822,7 @@ export function useMailApp() {
           snippet: finalBody.slice(0, 60), 
           senderRoom: selectedSender, 
           isMe: true, 
-          labelIds: ["SENT", "INBOX"] 
+          labelIds: ["SENT"]
         };
         setEmails([sentFake, ...emails]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null);
       } else {
@@ -1023,22 +1031,16 @@ export function useMailApp() {
     let tempToken: string | null = currentNextPageToken;
     let loopCount = 0;
     const maxLoops = 15; 
-    let hasNewValidSender = false;
     let reachedYearLimit = false; 
     const accumulatedEmails: any[] = [];
     const currentLoadId = activeLoadRef.current;
-    
-    const existingSenders = new Set(senderList);
     const oneYearAgoMs = new Date().setFullYear(new Date().getFullYear() - 1); 
 
     try {
       let qParts = []; 
       let useIncludeTrash = "false";
       
-      if (checkTrash || checkSpam) {
-        useIncludeTrash = "true";
-      }
-      
+      if (checkTrash || checkSpam) { useIncludeTrash = "true"; }
       if (checkArchive) {
         if (!checkInbox) qParts.push("-in:inbox");
       } else {
@@ -1049,11 +1051,11 @@ export function useMailApp() {
         if (checkTrash) orLabels.push("in:trash");
         if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
       }
-      
       if (searchKeyword) qParts.push(searchKeyword);
       const baseQuery = qParts.join(" ").trim();
 
-      while (!hasNewValidSender && tempToken && loopCount < maxLoops) {
+      // 表示される「有効なチャットの総数」が画面を埋める（15件以上）か、データが尽きるまでループ
+      while (tempToken && loopCount < maxLoops) {
         if (activeLoadRef.current !== currentLoadId) break;
         loopCount++;
 
@@ -1061,9 +1063,8 @@ export function useMailApp() {
         params.append("_t", Date.now().toString());
 
         const res: Response = await fetch(`/api/emails?${params.toString()}`);
-        
         if (!res.ok) { 
-          setChatStatusMessage("メールが読み込めませんでした。しばらくしてからもう一度お試しください。"); 
+          setChatStatusMessage("メールが読み込めませんでした。"); 
           break; 
         }
 
@@ -1073,51 +1074,57 @@ export function useMailApp() {
         const validMessages: any[] = [];
 
         for (const email of rawMessages) {
-          if (new Date(email.date).getTime() < oneYearAgoMs) {
-            reachedYearLimit = true;
-          } else {
-            validMessages.push(email);
-          }
+          if (new Date(email.date).getTime() < oneYearAgoMs) { reachedYearLimit = true; } 
+          else { validMessages.push(email); }
         }
 
         if (validMessages.length > 0) {
           accumulatedEmails.push(...validMessages);
-
-          for (const email of validMessages) {
-            const senderRoom = email.senderRoom || (
-              (email.isMe || email.from.includes(session?.user?.email || ""))
-              ? (email.to ? email.to.split(",")[0].split("<")[0].replace(/"/g, "").trim() : "Unknown")
-              : (email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown")
-            );
-
-            if (!existingSenders.has(senderRoom)) {
-              const isTrash = email.labelIds?.includes("TRASH");
-              const isSpam = email.labelIds?.includes("SPAM");
-              const isInbox = email.labelIds?.includes("INBOX");
-              const isSent = email.labelIds?.includes("SENT") || email.isMe; 
-              const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
-
-              // ★修正: 無限スクロール側にも送信済みの絶対権限を適用
-              let isCurrentBox = false;
-              if (isSent) {
-                  isCurrentBox = checkSent;
-              } else {
-                  isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive);
-              }
-
-              if (isCurrentBox && !chatConfigs[email.id]?.isHidden) {
-                hasNewValidSender = true;
-                break;
-              }
-            }
-          }
         }
 
-        if (reachedYearLimit) {
-          tempToken = null;
+        // ★修正: 今回取得したメールを含めて、実際に「画面に描画されるチャット」が何件あるかを厳密にシミュレーション検証する
+        const virtualEmails = [...emailsRef.current, ...accumulatedEmails];
+        const virtualSenders = new Set<string>();
+        const tempGroups: Record<string, any[]> = {};
+
+        // 仮想グループ化
+        virtualEmails.forEach(e => {
+          const room = e.senderRoom || ((e.isMe || e.from.includes(session?.user?.email || "")) ? (e.to ? e.to.split(",")[0].split("<")[0].replace(/"/g, "").trim() : "Unknown") : (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"));
+          if (!tempGroups[room]) tempGroups[room] = [];
+          tempGroups[room].push(e);
+        });
+
+        // 各グループが画面上の表示条件を満たしているか精査
+        Object.keys(tempGroups).forEach(sender => {
+          const config = chatConfigsRef.current[sender];
+          const hasDisplayable = tempGroups[sender].some((e: any) => {
+            const isTrash = e.labelIds?.includes("TRASH");
+            const isSpam = e.labelIds?.includes("SPAM");
+            const isInbox = e.labelIds?.includes("INBOX");
+            const isSent = e.labelIds?.includes("SENT") || e.isMe;
+            const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
+
+            if ((isInbox || isArchive || isSent) && (config?.isHidden || chatConfigsRef.current[e.id]?.isHidden)) return false;
+            if (revealedCrossPrompts.includes(e.id)) return true;
+
+            if (isSent) return checkSent;
+            if (isTrash) return checkTrash;
+            if (isSpam) return checkSpam;
+            if (isArchive) return checkArchive;
+            return checkInbox;
+          });
+
+          if (hasDisplayable || (config?.isPinned && (checkInbox || checkArchive || checkSent))) {
+            virtualSenders.add(sender);
+          }
+        });
+
+        // ★修正: 画面上の有効な総チャット数が15件以上に達したら、十分に画面が埋まったと判断して安全にループ終了
+        if (virtualSenders.size >= 15) {
           break;
         }
-        if (!tempToken) break;
+
+        if (reachedYearLimit || !tempToken) break;
       }
 
       if (accumulatedEmails.length > 0) {
@@ -1130,11 +1137,8 @@ export function useMailApp() {
 
       setCurrentNextPageToken(tempToken);
 
-      if (reachedYearLimit) {
-        setChatStatusMessage("Re:Mailの読み込み上限に達しました");
-      } else if (!tempToken) {
-        setChatStatusMessage("すべてのメールを読み込みました");
-      }
+      if (reachedYearLimit) { setChatStatusMessage("Re:Mailの読み込み上限に達しました"); } 
+      else if (!tempToken) { setChatStatusMessage("すべてのメールを読み込みました"); }
 
     } catch (error) { 
       setChatStatusMessage("エラーが発生しました。"); 
