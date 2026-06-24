@@ -56,8 +56,21 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   });
 
   // ★追加: 選択されたものが「ゴミ箱」または「送信済み」のみで構成されており、削除(ゴミ箱への移動)が不可能な状態か判定
+  const isOnlySentOrTrashFilterActive = (!checkInbox && !checkArchive && !checkSpam) && (checkSent || checkTrash);
+
+  // ★追加: 現在開いているメッセージ画面のチャットが、ゴミ箱と送信済みのメールしか持っていないか
+  let isCurrentChatDeleteRestricted = false;
+  if (!isChat && app.state.selectedSender) {
+    const emails = app.computed.groupedEmails[app.state.selectedSender] || [];
+    isCurrentChatDeleteRestricted = emails.length > 0 && emails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
+  }
+
+  // ★修正: 選択されたものが「ゴミ箱」または「送信済み」のみで構成されているか判定
   const isSelectedDeleteRestricted = selectedIds.length > 0 && selectedIds.every((id: string) => {
     if (isChat) {
+      const kb = knownBoxes?.[id] || [];
+      const hasLive = kb.some((b:string) => b !== "TRASH" && b !== "SENT");
+      if(kb.length > 0 && !hasLive) return true;
       const emails = app.computed.groupedEmails[id] || [];
       return emails.length > 0 && emails.every((e:any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
     } else {
@@ -65,6 +78,9 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
       return msg && (msg.labelIds?.includes("TRASH") || msg.labelIds?.includes("SENT") || msg.isMe);
     }
   });
+
+  // ★追加: これらのいずれかに該当する場合は、削除ボタン自体を画面から隠す
+  const hideDeleteButton = isOnlySentOrTrashFilterActive || isCurrentChatDeleteRestricted || isSelectedDeleteRestricted;
 
   const isDisabled = (action: string) => {
       if (selectionMode !== "none" && selectionMode !== `${modePrefix}_${action}`) return true;
@@ -89,19 +105,20 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     ? "flex flex-wrap p-2 gap-1 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default"
     : "flex flex-wrap px-4 py-2 gap-2 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default";
 
-  const showAction = checkInbox || checkArchive || checkSent;
+  const showAction = checkInbox || checkArchive;
 
   return (
     <div className={containerClass} onClick={(e) => e.stopPropagation()}>
       {showAction && <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin", "bg-[#5865F2]")}>{renderText("pin", "ピン留め")}</button>}
       
-      {/* ★修正: 「送信済みのみのフィルタ」または「選択したものが送信済みのみ」の場合、移動ボタンを隠す */}
       {(!isOnlySentFilterActive && !isSelectedOnlySent) && (
         <button onClick={() => handleMenuBarClick(`${modePrefix}_move`)} className={getBtnClass("move", "bg-[#5865F2]")}>{renderText("move", "移動")}</button>
       )}
 
       {showAction && <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>{renderText("hide", "非表示(Re:Mail)")}</button>}
-      {!isSelectedDeleteRestricted && (
+      
+      {/* ★修正: ゴミ箱や送信済みだけの時は、削除ボタンを非表示にする */}
+      {!hideDeleteButton && (
         <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", "bg-[#DA373C]")}>{renderText("delete", "削除(Gmail)")}</button>
       )}
       

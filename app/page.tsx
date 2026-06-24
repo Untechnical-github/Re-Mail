@@ -152,7 +152,13 @@ export default function Home() {
               
               const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasLiveTarget;
               const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasLiveTarget;
-              const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut;
+
+              // ★追加: 削除モード時、ゴミ箱と送信済みだけのチャットはグレーアウトして選択不能にする
+              const isDeleteGrayedOut = state.selectionMode === "chat_delete" && 
+                (kb.length > 0 ? kb.every((b: string) => b === "TRASH" || b === "SENT") : 
+                 (visibleEmails.length > 0 && visibleEmails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe)));
+
+              const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut || isDeleteGrayedOut;
 
               // ★修正: グラデーション色の判定に送信済みカラー(sent)を追加
               const colorsSet = new Set<string>();
@@ -349,7 +355,10 @@ export default function Home() {
                     const isMsgPinGrayedOut = state.selectionMode === "msg_pin" && (isTrashOrSpamMsg || !(isInbox || isArchive || isSent));
                     const isMsgHideGrayedOut = state.selectionMode === "msg_hide" && (isTrashOrSpamMsg || !(isInbox || isArchive || isSent));
                     
-                    const isActionGrayedOut = isMoveGrayedOut || isMsgPinGrayedOut || isMsgHideGrayedOut || isSentMailMoveRestricted;
+                    // ★追加: 削除モード時、ゴミ箱にあるメールと送信済みメールはグレーアウトして選択不能にする
+                    const isDeleteGrayedOut = state.selectionMode === "msg_delete" && (isTrash || isSent);
+                    
+                    const isActionGrayedOut = isMoveGrayedOut || isMsgPinGrayedOut || isMsgHideGrayedOut || isSentMailMoveRestricted || isDeleteGrayedOut;
                     
                     // ★修正: メッセージの枠色にも送信済みを反映
                     const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isSent ? state.boxColors.sent : isArchive ? state.boxColors.archive : state.boxColors.inbox;

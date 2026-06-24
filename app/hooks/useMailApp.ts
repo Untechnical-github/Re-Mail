@@ -1042,14 +1042,6 @@ export function useMailApp() {
     setIsLoadingMoreChats(true); 
     setChatStatusMessage(null);
 
-    let tempToken: string | null = currentNextPageToken;
-    let loopCount = 0;
-    const maxLoops = 15; 
-    const accumulatedEmails: any[] = [];
-    const currentLoadId = activeLoadRef.current;
-    
-    const currentDisplayCount = new Set(senderList).size;
-
     try {
       let qParts = []; 
       let useIncludeTrash = "false";
@@ -1068,70 +1060,23 @@ export function useMailApp() {
       if (searchKeyword) qParts.push(searchKeyword);
       const baseQuery = qParts.join(" ").trim();
 
-      while (tempToken && loopCount < maxLoops) {
-        if (activeLoadRef.current !== currentLoadId) break;
-        loopCount++;
+      const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: useIncludeTrash, pageToken: currentNextPageToken });
+      params.append("_t", Date.now().toString());
 
-        const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: useIncludeTrash, pageToken: tempToken });
-        params.append("_t", Date.now().toString());
-
-        const res: Response = await fetch(`/api/emails?${params.toString()}`);
-        if (!res.ok) { 
-          setChatStatusMessage("メールが読み込めませんでした。"); 
-          break; 
-        }
-
-        const data: any = await res.json(); 
-        const rawMessages = data.messages || []; 
-        tempToken = data.nextPageToken || null;
-
-        if (rawMessages.length > 0) {
-          accumulatedEmails.push(...rawMessages);
-        }
-
-        const virtualEmails = [...emailsRef.current, ...accumulatedEmails];
-        const virtualSenders = new Set<string>();
-        const tempGroups: Record<string, any[]> = {};
-
-        virtualEmails.forEach(e => {
-          const room = e.senderRoom || ((e.isMe || e.from.includes(session?.user?.email || "")) ? (e.to ? e.to.split(",")[0].split("<")[0].replace(/"/g, "").trim() : "Unknown") : (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"));
-          if (!tempGroups[room]) tempGroups[room] = [];
-          tempGroups[room].push(e);
-        });
-
-        Object.keys(tempGroups).forEach(sender => {
-          const config = chatConfigsRef.current[sender];
-          const hasDisplayable = tempGroups[sender].some((e: any) => {
-            const isTrash = e.labelIds?.includes("TRASH");
-            const isSpam = e.labelIds?.includes("SPAM");
-            const isInbox = e.labelIds?.includes("INBOX");
-            const isSent = e.labelIds?.includes("SENT") || e.isMe;
-            const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
-
-            if ((isInbox || isArchive || isSent) && (config?.isHidden || chatConfigsRef.current[e.id]?.isHidden)) return false;
-            if (revealedCrossPrompts.includes(e.id)) return true;
-
-            if (isSent) return checkSent;
-            if (isTrash) return checkTrash;
-            if (isSpam) return checkSpam;
-            if (isArchive) return checkArchive;
-            return checkInbox;
-          });
-
-          if (hasDisplayable || (config?.isPinned && (checkInbox || checkArchive || checkSent))) {
-            virtualSenders.add(sender);
-          }
-        });
-
-        // 画面を埋める件数（15件）に達したらループ終了
-        if (virtualSenders.size >= 15 + currentDisplayCount) break;
-        if (!tempToken) break;
+      const res: Response = await fetch(`/api/emails?${params.toString()}`);
+      if (!res.ok) { 
+        setChatStatusMessage("メールが読み込めませんでした。"); 
+        return;
       }
 
-      if (accumulatedEmails.length > 0) {
+      const data: any = await res.json(); 
+      const rawMessages = data.messages || []; 
+      const tempToken = data.nextPageToken || null;
+
+      if (rawMessages.length > 0) {
         setEmails(prev => {
           const map = new Map(prev.map(e => [e.id, e]));
-          accumulatedEmails.forEach((m: any) => map.set(m.id, m));
+          rawMessages.forEach((m: any) => map.set(m.id, m));
           return Array.from(map.values());
         });
       }
@@ -1169,14 +1114,35 @@ export function useMailApp() {
     loadingMoreMsgRef.current = false;
   };
 
+  // ★追加: DOM(画面の高さ)を監視し、スクロールバーが出る(画面が埋まる)まで自動で追加取得をトリガーし続ける
   useEffect(() => {
-    if (senderList.length < 20 && currentNextPageToken && !isLoadingMoreChats && !chatStatusMessage) {
-      const timer = setTimeout(() => {
-        handleLoadMoreChats();
-      }, 400);
-      return () => clearTimeout(timer);
-    }
-  }, [senderList.length, currentNextPageToken, isLoadingMoreChats, chatStatusMessage]);
+    const checkAndLoad = () => {
+      if (isLoadingMoreChats || chatStatusMessage || !currentNextPageToken) return;
+      const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
+      if (asideEl) {
+        if (asideEl.scrollHeight <= asideEl.clientHeight + 50) {
+          handleLoadMoreChats();
+        }
+      }
+    };
+    const timer = setTimeout(checkAndLoad, 500);
+    return () => clearTimeout(timer);
+  }, [emails, currentNextPageToken, isLoadingMoreChats, chatStatusMessage, checkInbox, checkArchive, checkSpam, checkTrash, checkSent]);
+
+  // ★追加: メッセージ画面（右側）も同様に、画面が埋まるまで自動で追加取得をトリガーする
+  useEffect(() => {
+    const checkAndLoadMsg = () => {
+      if (isLoadingMore || msgStatusMessage || !chatNextPageToken || chatNextPageToken === "FIRST_PAGE" || chatNextPageToken.startsWith("END")) return;
+      const mainEl = document.querySelector("main > div.flex-1.overflow-y-auto");
+      if (mainEl) {
+        if (mainEl.scrollHeight <= mainEl.clientHeight + 50) {
+          handleLoadMoreMessage();
+        }
+      }
+    };
+    const timer = setTimeout(checkAndLoadMsg, 500);
+    return () => clearTimeout(timer);
+  }, [groupedEmails, selectedSender, chatNextPageToken, isLoadingMore, msgStatusMessage]);
 
   const pinnedMsgsInChat = (checkInbox || checkArchive || checkSent) ? (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) : [];
 
