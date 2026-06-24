@@ -237,13 +237,15 @@ export default function Home() {
               );
             })}
              {computed.senderList.length > 0 && (
-               <div className="flex flex-col items-center p-3 mt-2 border-t border-[#1E1F22]/50">
-                 {state.chatStatusMessage ? (
-                   <span className="text-xs text-gray-500 font-medium px-2 py-1 bg-[#232428] rounded text-center">{state.chatStatusMessage}</span>
-                 ) : state.isLoadingMoreChats ? (
-                   <span className="text-xs text-[#5865F2] font-medium animate-pulse">チャットを読み込み中...</span>
-                 ) : null}
-               </div>
+              <div className="flex flex-col items-center p-3 mt-2 border-t border-[#1E1F22]/50">
+                {state.chatStatusMessage ? (
+                  <span className="text-xs text-gray-500 font-medium px-2 py-1 bg-[#232428] rounded text-center">{state.chatStatusMessage}</span>
+                ) : state.isLoadingMoreChats ? (
+                  <span className="text-xs text-[#5865F2] font-medium animate-pulse">チャットを追加読み込み中...</span>
+                ) : state.isLoading ? (
+                  <span className="text-xs text-[#5865F2] font-medium animate-pulse">初期データ読み込み中...</span>
+                ) : null}
+              </div>
              )}
           </div>
         </aside>

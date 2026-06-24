@@ -1116,33 +1116,35 @@ export function useMailApp() {
 
   // ★追加: DOM(画面の高さ)を監視し、スクロールバーが出る(画面が埋まる)まで自動で追加取得をトリガーし続ける
   useEffect(() => {
-    const checkAndLoad = () => {
-      if (isLoadingMoreChats || chatStatusMessage || !currentNextPageToken) return;
+    const interval = setInterval(() => {
+      // 読み込み中、または「すべて読み込みました」のメッセージがある、またはトークンがない場合はスキップ
+      if (loadingMoreChatsRef.current || chatStatusMessage || !currentNextPageToken) return;
+      
       const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
       if (asideEl) {
+        // スクロールバーが出ていない（画面が埋まっていない）場合、読み込みを発動
         if (asideEl.scrollHeight <= asideEl.clientHeight + 50) {
           handleLoadMoreChats();
         }
       }
-    };
-    const timer = setTimeout(checkAndLoad, 500);
-    return () => clearTimeout(timer);
-  }, [emails, currentNextPageToken, isLoadingMoreChats, chatStatusMessage, checkInbox, checkArchive, checkSpam, checkTrash, checkSent]);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [currentNextPageToken, chatStatusMessage]); // 依存配列を最小限にし、関係ない再レンダリングでタイマーが死ぬのを防ぐ
 
-  // ★追加: メッセージ画面（右側）も同様に、画面が埋まるまで自動で追加取得をトリガーする
+  // ★修正: メッセージ画面（右側）も同様に1秒おきの強制監視タイマーにする
   useEffect(() => {
-    const checkAndLoadMsg = () => {
-      if (isLoadingMore || msgStatusMessage || !chatNextPageToken || chatNextPageToken === "FIRST_PAGE" || chatNextPageToken.startsWith("END")) return;
+    const interval = setInterval(() => {
+      if (loadingMoreMsgRef.current || msgStatusMessage || !chatNextPageToken || chatNextPageToken === "FIRST_PAGE" || chatNextPageToken.startsWith("END")) return;
+      
       const mainEl = document.querySelector("main > div.flex-1.overflow-y-auto");
       if (mainEl) {
         if (mainEl.scrollHeight <= mainEl.clientHeight + 50) {
           handleLoadMoreMessage();
         }
       }
-    };
-    const timer = setTimeout(checkAndLoadMsg, 500);
-    return () => clearTimeout(timer);
-  }, [groupedEmails, selectedSender, chatNextPageToken, isLoadingMore, msgStatusMessage]);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [chatNextPageToken, msgStatusMessage]);
 
   const pinnedMsgsInChat = (checkInbox || checkArchive || checkSent) ? (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) : [];
 
