@@ -73,20 +73,24 @@ export default function Home() {
               const config = state.chatConfigs[sender];
 
               const visibleEmails = allEmails.filter((e: any) => {
-                const isTrash = e.labelIds?.includes("TRASH");
-                const isSpam = e.labelIds?.includes("SPAM");
-                const isInbox = e.labelIds?.includes("INBOX");
-                const isSent = e.labelIds?.includes("SENT") || e.isMe; // ★追加
-                const isArchive = !isTrash && !isSpam && !isInbox && !isSent; // ★修正
-                
-                // ★修正: isSentを追加
-                if ((isInbox || isArchive || isSent) && (config?.isHidden || state.chatConfigs[e.id]?.isHidden)) return false;
+                 const isTrash = e.labelIds?.includes("TRASH");
+                 const isSpam = e.labelIds?.includes("SPAM");
+                 const isInbox = e.labelIds?.includes("INBOX");
+                 const isSent = e.labelIds?.includes("SENT") || e.isMe; 
+                 const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
+                 
+                 if ((isInbox || isArchive || isSent) && (config?.isHidden || state.chatConfigs[e.id]?.isHidden)) return false;
 
-                // ★修正: isSent と state.checkSent を追加
-                const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox) || (isSent && state.checkSent) || (isArchive && state.checkArchive);
-                if (!isCurrentBox && !state.revealedCrossPrompts.includes(e.id)) return false;
+                 // ★修正: 送信済みチェックを「絶対優先」に書き換え
+                 let isCurrentBox = false;
+                 if (isSent) {
+                     isCurrentBox = state.checkSent;
+                 } else {
+                     isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox) || (isArchive && state.checkArchive);
+                 }
 
-                return true;
+                 if (!isCurrentBox && !state.revealedCrossPrompts.includes(e.id)) return false;
+                 return true;
               });
 
               const latestEmail = visibleEmails[0];
@@ -276,16 +280,21 @@ export default function Home() {
                     const isTrash = email.labelIds?.includes("TRASH");
                     const isSpam = email.labelIds?.includes("SPAM");
                     const isInbox = email.labelIds?.includes("INBOX");
-                    const isSent = email.labelIds?.includes("SENT") || email.isMe; // ★追加
-                    const isArchive = !isTrash && !isSpam && !isInbox && !isSent; // ★修正
+                    const isSent = email.labelIds?.includes("SENT") || email.isMe; 
+                    const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
 
-                    // ★修正: isSent を追加
                     if ((isInbox || isArchive || isSent) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.chatConfigs[email.id]?.isHidden)) return null;
 
                     const isMe = email.isMe || email.from.includes(auth.session?.user?.email || "");
                     const isSelected = state.selectedIds.includes(email.id);
-                    // ★修正: checkSent と連動させる
-                    const isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox) || (isSent && state.checkSent) || (isArchive && state.checkArchive);
+                    
+                    // ★修正: 送信済みチェックを「絶対優先」に書き換え
+                    let isCurrentBox = false;
+                    if (isSent) {
+                        isCurrentBox = state.checkSent;
+                    } else {
+                        isCurrentBox = (isTrash && state.checkTrash) || (isSpam && state.checkSpam) || (isInbox && state.checkInbox) || (isArchive && state.checkArchive);
+                    }
 
                     // ★修正: ボックス名と色に送信済みを追加
                     const boxName = isTrash ? "ゴミ箱" : isSpam ? "迷惑メール" : isSent ? "送信済み" : isArchive ? "アーカイブ" : "受信箱";
