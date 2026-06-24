@@ -27,8 +27,9 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const hasSelectedTarget = selectedIds.some((id: string) => {
       if (isChat) {
           const kb = knownBoxes?.[id] || [];
-          const knownHasTarget = kb.includes("INBOX") || kb.includes("ARCHIVE") || kb.includes("SENT");
-          return knownHasTarget || app.computed.groupedEmails[id]?.some((e:any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+          // ★修正: 記憶データ(knownBoxes)からゴミ箱・迷惑メールを徹底して除外した生存ターゲットのみを検出
+          const knownHasLive = kb.includes("INBOX") || kb.includes("ARCHIVE") || (kb.includes("SENT") && !kb.includes("TRASH") && !kb.includes("SPAM"));
+          return knownHasLive || app.computed.groupedEmails[id]?.some((e:any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
       } else {
           const msg = app.computed.allUniqueEmails.find((e:any) => e.id === id);
           return msg && !msg.labelIds?.includes("TRASH") && !msg.labelIds?.includes("SPAM");

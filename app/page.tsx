@@ -139,9 +139,10 @@ export default function Home() {
               );
 
               // ★修正: ピン留め/非表示の対象(INBOXかARCHIVE)がいるか判定
-              const hasPinTarget = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) || knownHasInbox || knownHasArchive || knownHasSent;
-              const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasPinTarget;
-              const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasPinTarget;
+              const hasLiveTarget = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) ||
+                                    knownHasInbox || knownHasArchive || (knownHasSent && !knownHasTrash && !knownHasSpam);
+              const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasLiveTarget;
+              const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasLiveTarget;
               const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut;
 
               // ★修正: グラデーション色の判定に送信済みカラー(sent)を追加
@@ -331,11 +332,13 @@ export default function Home() {
                     }
 
                     const isMoveGrayedOut = state.selectionMode === "msg_move" && state.moveDestination && (email.labelIds?.includes(state.moveDestination) || (state.moveDestination === "ARCHIVE" && isArchive));
-                    const isMsgPinGrayedOut = state.selectionMode === "msg_pin" && !(isInbox || isArchive || isSent);
-                    const isMsgHideGrayedOut = state.selectionMode === "msg_hide" && !(isInbox || isArchive || isSent);
-                    
-                    // ★修正: 移動先に関わらず、送信メールはすべて移動不可(グレーアウト)にする
                     const isSentMailMoveRestricted = state.selectionMode === "msg_move" && isSent;
+
+                    // ★追加: 個別メッセージがゴミ箱または迷惑メールにあるか判定
+                    const isTrashOrSpamMsg = isTrash || isSpam;
+                    // ★修正: ゴミ箱や迷惑メールにあるメッセージ（送信済み含む）はピン留め・非表示の選択モード時に強制グレーアウト
+                    const isMsgPinGrayedOut = state.selectionMode === "msg_pin" && (isTrashOrSpamMsg || !(isInbox || isArchive || isSent));
+                    const isMsgHideGrayedOut = state.selectionMode === "msg_hide" && (isTrashOrSpamMsg || !(isInbox || isArchive || isSent));
                     
                     const isActionGrayedOut = isMoveGrayedOut || isMsgPinGrayedOut || isMsgHideGrayedOut || isSentMailMoveRestricted;
                     

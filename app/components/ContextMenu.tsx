@@ -19,13 +19,21 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
           const tId = typeof contextMenu.target === "string" ? contextMenu.target : contextMenu.target.id;
           
           const kb = app.state.knownBoxes?.[tId] || [];
-          const knownHasTarget = kb.includes("INBOX") || kb.includes("ARCHIVE") || kb.includes("SENT");
-          const hasTarget = knownHasTarget || app.computed.groupedEmails[tId]?.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+          const knownHasTrash = kb.includes("TRASH");
+          const knownHasSpam = kb.includes("SPAM");
+          const knownHasInbox = kb.includes("INBOX");
+          const knownHasArchive = kb.includes("ARCHIVE");
+          const knownHasSent = kb.includes("SENT");
           
-          const showAction = (checkInbox || checkArchive || checkSent) && hasTarget;
-
-          // ★追加: 送信済み「のみ」のチャットか判定
+          // ★復活: 前回のコード提示で私が削ってしまっていた1行です
           const isOnlySentChat = kb.includes("SENT") && kb.length === 1;
+
+          // 実データまたは記憶データから、ゴミ箱・迷惑メールではない生存メールが存在するか厳格に判定
+          const hasLiveTarget = app.computed.groupedEmails[tId]?.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) ||
+                                knownHasInbox || knownHasArchive || (knownHasSent && !knownHasTrash && !knownHasSpam);
+          
+          // 生存ターゲットがある場合のみアクションボタン（ピン留め・非表示）の表示を許可
+          const showAction = (checkInbox || checkArchive || checkSent) && hasLiveTarget;
           
           return (
             <div className="flex flex-col p-1">
@@ -34,7 +42,6 @@ export function ContextMenu({ app }: { app: MailAppHook }) {
               {showAction && <button onClick={() => handleContextMenuAction(chatConfigs[tId]?.isPinned ? "unpin" : "pin", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">{chatConfigs[tId]?.isPinned ? "ピン留め解除" : "ピン留めする"}</button>}
               <div className="h-px bg-[#1E1F22] my-1"></div>
               
-              {/* ★修正: 送信済みのみのチャットでなければ「移動」を表示 */}
               {!isOnlySentChat && (
                 <button onClick={() => handleContextMenuAction("move", contextMenu.target)} className="w-full text-left px-2 py-2 rounded hover:bg-[#4752C4] hover:text-white transition">移動</button>
               )}
