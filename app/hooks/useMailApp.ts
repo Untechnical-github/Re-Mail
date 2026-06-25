@@ -1042,6 +1042,16 @@ export function useMailApp() {
     setIsLoadingMoreChats(true); 
     setChatStatusMessage(null);
 
+    let tempToken: string | null = currentNextPageToken;
+    let loopCount = 0;
+    const maxLoops = 10; // 1回の呼び出しで最大10ページ(1000件)まで深く掘る
+    const accumulatedEmails: any[] = [];
+    const currentLoadId = activeLoadRef.current;
+    
+    // ★修正: 現在表示されているチャットのリストを取得し、「新しいチャット」が見つかるまでループする
+    const existingSenders = new Set(senderList);
+    let foundNewChat = false;
+
     try {
       let qParts = []; 
       let useIncludeTrash = "false";
@@ -1060,23 +1070,63 @@ export function useMailApp() {
       if (searchKeyword) qParts.push(searchKeyword);
       const baseQuery = qParts.join(" ").trim();
 
-      const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: useIncludeTrash, pageToken: currentNextPageToken });
-      params.append("_t", Date.now().toString());
+      // ★大修正: 「新しい有効なチャットが1件でも見つかる」か「最大ループ到達」か「データが尽きる」まで回す
+      while (tempToken && loopCount < maxLoops && !foundNewChat) {
+        if (activeLoadRef.current !== currentLoadId) break;
+        loopCount++;
 
-      const res: Response = await fetch(`/api/emails?${params.toString()}`);
-      if (!res.ok) { 
-        setChatStatusMessage("メールが読み込めませんでした。"); 
-        return;
+        const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: useIncludeTrash, pageToken: tempToken });
+        params.append("_t", Date.now().toString());
+
+        const res: Response = await fetch(`/api/emails?${params.toString()}`);
+        if (!res.ok) { 
+          setChatStatusMessage("メールが読み込めませんでした。"); 
+          break; 
+        }
+
+        const data: any = await res.json(); 
+        const rawMessages = data.messages || []; 
+        tempToken = data.nextPageToken || null;
+
+        if (rawMessages.length > 0) {
+          accumulatedEmails.push(...rawMessages);
+
+          // 取得した100件の中に、現在チェックされている条件に合致する「新しいチャット」があるか精査
+          for (const email of rawMessages) {
+            const senderRoom = email.senderRoom || (
+              (email.isMe || email.from.includes(session?.user?.email || ""))
+              ? (email.to ? email.to.split(",")[0].split("<")[0].replace(/"/g, "").trim() : "Unknown")
+              : (email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown")
+            );
+
+            if (!existingSenders.has(senderRoom)) {
+              const isTrash = email.labelIds?.includes("TRASH");
+              const isSpam = email.labelIds?.includes("SPAM");
+              const isInbox = email.labelIds?.includes("INBOX");
+              const isSent = email.labelIds?.includes("SENT") || email.isMe; 
+              const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
+
+              let isCurrentBox = false;
+              if (isSent) {
+                  isCurrentBox = checkSent;
+              } else {
+                  isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive);
+              }
+
+              if (isCurrentBox && !chatConfigsRef.current[email.id]?.isHidden) {
+                foundNewChat = true; // 新しいチャットを発見！これ以上ループを回さずReactに描画させる
+                break;
+              }
+            }
+          }
+        }
       }
 
-      const data: any = await res.json(); 
-      const rawMessages = data.messages || []; 
-      const tempToken = data.nextPageToken || null;
-
-      if (rawMessages.length > 0) {
+      // 見つかったメールをすべてステートに保存
+      if (accumulatedEmails.length > 0) {
         setEmails(prev => {
           const map = new Map(prev.map(e => [e.id, e]));
-          rawMessages.forEach((m: any) => map.set(m.id, m));
+          accumulatedEmails.forEach((m: any) => map.set(m.id, m));
           return Array.from(map.values());
         });
       }
@@ -1114,35 +1164,36 @@ export function useMailApp() {
     loadingMoreMsgRef.current = false;
   };
 
-  // ★追加: DOM(画面の高さ)を監視し、スクロールバーが出る(画面が埋まる)まで自動で追加取得をトリガーし続ける
+  // ★大修正: スクロール位置（scrollTop）を正確に計算し、「画面が埋まっていない」または「一番下までスクロールした」場合に自動発動させる
   useEffect(() => {
     const interval = setInterval(() => {
-      // 読み込み中、または「すべて読み込みました」のメッセージがある、またはトークンがない場合はスキップ
       if (loadingMoreChatsRef.current || chatStatusMessage || !currentNextPageToken) return;
       
       const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
       if (asideEl) {
-        // スクロールバーが出ていない（画面が埋まっていない）場合、読み込みを発動
-        if (asideEl.scrollHeight <= asideEl.clientHeight + 50) {
+        const { scrollHeight, clientHeight, scrollTop } = asideEl;
+        // scrollHeight(全体) - scrollTop(スクロール量) - clientHeight(見えてる幅) < 100px なら底に到達していると判定
+        if (scrollHeight - Math.abs(scrollTop) - clientHeight < 100) {
           handleLoadMoreChats();
         }
       }
-    }, 1000);
+    }, 500); // 0.5秒おきにDOMを監視
     return () => clearInterval(interval);
-  }, [currentNextPageToken, chatStatusMessage]); // 依存配列を最小限にし、関係ない再レンダリングでタイマーが死ぬのを防ぐ
+  }, [currentNextPageToken, chatStatusMessage, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, searchKeyword]);
 
-  // ★修正: メッセージ画面（右側）も同様に1秒おきの強制監視タイマーにする
+  // ★大修正: メッセージ画面（右側）も同様にスクロール底を監視
   useEffect(() => {
     const interval = setInterval(() => {
       if (loadingMoreMsgRef.current || msgStatusMessage || !chatNextPageToken || chatNextPageToken === "FIRST_PAGE" || chatNextPageToken.startsWith("END")) return;
       
       const mainEl = document.querySelector("main > div.flex-1.overflow-y-auto");
       if (mainEl) {
-        if (mainEl.scrollHeight <= mainEl.clientHeight + 50) {
+        const { scrollHeight, clientHeight, scrollTop } = mainEl;
+        if (scrollHeight - Math.abs(scrollTop) - clientHeight < 100) {
           handleLoadMoreMessage();
         }
       }
-    }, 1000);
+    }, 500);
     return () => clearInterval(interval);
   }, [chatNextPageToken, msgStatusMessage]);
 
