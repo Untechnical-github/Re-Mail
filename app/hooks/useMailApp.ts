@@ -751,14 +751,8 @@ export function useMailApp() {
     if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`);
     
     // 初回読み込み
-    const result = await fetchChatCrossbox(sender, false); 
-    
-    // ★追加: メッセージ画面を開いた際、メッセージが少なすぎて画面が埋まらない場合、自動で過去ログをもう1ページ分引っ張ってくる
-    if (result && result.found && result.nextToken && !result.nextToken.startsWith("END")) {
-      setTimeout(() => {
-        handleLoadMoreMessage();
-      }, 300);
-    }
+    await fetchChatCrossbox(sender, false);
+    // 追加読み込みはuseEffectベースの自動トリガー（chatNextPageToken変化で発火）に委ねる
   };
 
   const handleMenuBarClick = (mode: SelectionMode) => {
@@ -1164,38 +1158,30 @@ export function useMailApp() {
     loadingMoreMsgRef.current = false;
   };
 
-  // ★大修正: スクロール位置（scrollTop）を正確に計算し、「画面が埋まっていない」または「一番下までスクロールした」場合に自動発動させる
+  // サイドバー: senderList や currentNextPageToken が変化するたびに即座にチェック
+  // → スクロールバーが出るまで（または全件読み込みまで）自動でチャットを追加読み込みする
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (loadingMoreChatsRef.current || chatStatusMessage || !currentNextPageToken) return;
-      
-      const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
-      if (asideEl) {
-        const { scrollHeight, clientHeight, scrollTop } = asideEl;
-        // scrollHeight(全体) - scrollTop(スクロール量) - clientHeight(見えてる幅) < 100px なら底に到達していると判定
-        if (scrollHeight - Math.abs(scrollTop) - clientHeight < 100) {
-          handleLoadMoreChats();
-        }
-      }
-    }, 500); // 0.5秒おきにDOMを監視
-    return () => clearInterval(interval);
-  }, [currentNextPageToken, chatStatusMessage, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, searchKeyword]);
+    if (isLoading || loadingMoreChatsRef.current || chatStatusMessage || !currentNextPageToken) return;
+    const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
+    if (!asideEl) return;
+    const { scrollHeight, clientHeight, scrollTop } = asideEl as HTMLElement;
+    if (scrollHeight - Math.abs(scrollTop) - clientHeight < 100) {
+      handleLoadMoreChats();
+    }
+  }, [isLoading, senderList, chatStatusMessage, currentNextPageToken, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, searchKeyword]);
 
-  // ★大修正: メッセージ画面（右側）も同様にスクロール底を監視
+  // メッセージスレッド: chatNextPageToken やメッセージ件数が変化するたびに即座にチェック
+  // → スクロールバーが出るまで（または全件読み込みまで）自動でメッセージを追加読み込みする
+  const currentChatLength = selectedSender ? (groupedEmails[selectedSender] || []).length : 0;
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (loadingMoreMsgRef.current || msgStatusMessage || !chatNextPageToken || chatNextPageToken === "FIRST_PAGE" || chatNextPageToken.startsWith("END")) return;
-      
-      const mainEl = document.querySelector("main > div.flex-1.overflow-y-auto");
-      if (mainEl) {
-        const { scrollHeight, clientHeight, scrollTop } = mainEl;
-        if (scrollHeight - Math.abs(scrollTop) - clientHeight < 100) {
-          handleLoadMoreMessage();
-        }
-      }
-    }, 500);
-    return () => clearInterval(interval);
-  }, [chatNextPageToken, msgStatusMessage]);
+    if (loadingMoreMsgRef.current || msgStatusMessage || !chatNextPageToken || chatNextPageToken === "FIRST_PAGE" || chatNextPageToken.startsWith("END")) return;
+    const mainEl = document.querySelector("main > div.flex-1.overflow-y-auto");
+    if (!mainEl) return;
+    const { scrollHeight, clientHeight, scrollTop } = mainEl as HTMLElement;
+    if (scrollHeight - Math.abs(scrollTop) - clientHeight < 100) {
+      handleLoadMoreMessage();
+    }
+  }, [chatNextPageToken, msgStatusMessage, currentChatLength, selectedSender]);
 
   const pinnedMsgsInChat = (checkInbox || checkArchive || checkSent) ? (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) : [];
 
