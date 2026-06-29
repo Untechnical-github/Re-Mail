@@ -4,7 +4,6 @@ import { useRef } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar } from "./components/ui";
-import { ContextMenu } from "./components/ContextMenu";
 import { Modals } from "./components/Modals";
 
 export default function Home() {
@@ -31,8 +30,7 @@ export default function Home() {
 
   return (
     <div className="flex h-[100dvh] w-full bg-[#313338] overflow-hidden text-gray-200 relative select-none" onClick={actions.handleBackgroundClick}>
-      <ContextMenu app={app} />
-      <Modals app={app} />
+<Modals app={app} />
 
       {showChatList && (
         <aside className={`${state.isMobile ? 'w-full' : 'w-[320px] border-r'} border-[#1E1F22] bg-[#2B2D31] flex flex-col h-full min-h-0 cursor-pointer`}>
@@ -221,12 +219,14 @@ export default function Home() {
                       // 選択中でもクリックでチャットを開く（選択はチェックボックスのみ）
                       actions.openChat(sender);
                     }}
-                    onContextMenu={(e) => { e.preventDefault(); actions.setContextMenu({ type: "chat", target: sender, x: e.clientX, y: e.clientY }); }}
+                    onContextMenu={(e) => { e.preventDefault(); }}
                     onTouchStart={(e) => {
                       if (!state.hasMouse) {
                         refs.touchTimer.current = setTimeout(() => {
                           isDragChatRef.current = true;
-                          actions.enterSelectionMode("chat", sender);
+                          if (!state.selectionMode.startsWith("chat_")) {
+                            actions.enterSelectionMode("chat", sender);
+                          }
                         }, 500);
                       }
                     }}

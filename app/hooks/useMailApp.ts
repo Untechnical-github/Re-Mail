@@ -1,7 +1,7 @@
 import { useSession, signOut } from "next-auth/react";
 import { useState, useEffect, useMemo, useRef } from "react";
 import localforage from "localforage";
-import { ChatConfig, SelectionMode, ContextMenuState, ModalState } from "../types/mail";
+import { ChatConfig, SelectionMode, ModalState } from "../types/mail";
 
 export function useMailApp() {
   const { data: session, status } = useSession();
@@ -46,7 +46,6 @@ export function useMailApp() {
   const [isMobile, setIsMobile] = useState(false);
   const [selectionMode, setSelectionMode] = useState<SelectionMode>("none");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [modal, setModal] = useState<ModalState>(null);
   const [renameInput, setRenameInput] = useState("");
   const touchTimer = useRef<NodeJS.Timeout | null>(null);
@@ -241,15 +240,13 @@ export function useMailApp() {
     const resizeHandler = () => setIsMobile(window.innerWidth < 768);
     resizeHandler();
     window.addEventListener('resize', resizeHandler);
-    const closeContextMenu = () => setContextMenu(null);
-    window.addEventListener('click', closeContextMenu);
-    return () => { mediaQuery.removeEventListener('change', handler); window.removeEventListener('resize', resizeHandler); window.removeEventListener('click', closeContextMenu); };
+    return () => { mediaQuery.removeEventListener('change', handler); window.removeEventListener('resize', resizeHandler); };
   }, []);
 
   useEffect(() => {
     const handlePopState = (e: PopStateEvent) => {
       const state = e.state;
-      setModal(null); setContextMenu(null);
+      setModal(null);
       if (!state || state.action !== "select") { setSelectionMode("none"); setSelectedIds([]); hasPushedSelectRef.current = false; } else { hasPushedSelectRef.current = true; }
       if (!state || state.action !== "search") { setSearchKeyword(""); hasPushedSearchRef.current = false; } else { hasPushedSearchRef.current = true; }
       if (window.innerWidth < 768 && window.location.hash !== '#chat') {
@@ -739,7 +736,7 @@ export function useMailApp() {
     if (state && (state.action || state.chat)) {
       window.history.back();
     } else {
-      setModal(null); setContextMenu(null); setSelectionMode("none"); setSelectedIds([]);
+      setModal(null); setSelectionMode("none"); setSelectedIds([]);
     }
   };
 
@@ -1096,23 +1093,6 @@ export function useMailApp() {
     setModal(null);
   };
 
-  const handleContextMenuAction = (action: string, target: any) => {
-    setContextMenu(null);
-    const mode = contextMenu?.type || "chat"; const targetId = typeof target === "string" ? target : target.id;
-    let newModal = null;
-    if (action === "hide") newModal = { type: "confirm_hide", targetMode: mode, targets: [targetId] };
-    if (action === "delete") newModal = { type: "confirm_delete", targetMode: mode, targets: [targetId] };
-    if (action === "pin") newModal = { type: "confirm_pin", targetMode: mode, targets: [targetId] };
-    if (action === "move") newModal = { type: "select_move_dest_context", targetMode: mode, targets: [targetId] };
-    if (action === "reset") { setResetOptions({ pin: true, hide: true, name: true }); newModal = { type: "confirm_reset", targetMode: "specific_chat", targets: [targetId] }; }
-    if (action === "rename") { setRenameInput(chatConfigs[targetId]?.customName || targetId); newModal = { type: "rename", targetMode: mode, targets: [targetId] }; }
-    
-    if (newModal) { setModal(newModal as ModalState); window.history.pushState({ action: "modal" }, "", window.location.href); }
-    if (action === "unpin") { updateChatConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null }); setPersistedEmails(prev => prev.filter(e => e.id !== targetId && e.senderRoom !== targetId)); }
-    if (action === "reply") setReplyToMessage(target);
-    if (action === "copy") navigator.clipboard.writeText(target.body);
-    if (action === "forward") { setReplyBody(`【転送メッセージ】\n${target.body}`); setReplySubject("Fwd:"); }
-  };
 
   const handleLoadMoreChats = async () => {
     const liveToken = currentNextPageTokenRef.current;
@@ -1234,15 +1214,15 @@ export function useMailApp() {
       isLoadingMore, searchKeyword, checkInbox, checkArchive, checkSpam, checkTrash, checkSent,
       knownBoxes, currentNextPageToken, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, 
       replySubject, replyBody, isSending, replyToMessage,
-      hasMouse, isMobile, selectionMode, selectedIds, contextMenu, modal, renameInput,
+      hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
       resetOptions, moveDestination, revealedCrossPrompts, boxColors, pinType
     },
     actions: {
       setSearchKeyword, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent,
-      setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setContextMenu, setModal, setRenameInput,
+      setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,
-      handleSend, executePin, executeConfirmedAction, handleContextMenuAction,
+      handleSend, executePin, executeConfirmedAction,
       openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, setPinType, enterSelectionMode, executeBatchMove
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
