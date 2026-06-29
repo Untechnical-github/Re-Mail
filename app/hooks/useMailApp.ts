@@ -1033,7 +1033,9 @@ export function useMailApp() {
   const handleLoadMoreChats = async () => {
     // refで常に最新のトークンを読む（右パネルと同じパターン：1コール=1ページ→token変更→useEffect再起動）
     const liveToken = currentNextPageTokenRef.current;
+    console.log("[handleLoadMoreChats] called, liveToken:", liveToken, "loadingMoreChatsRef:", loadingMoreChatsRef.current, "chatStatusMessage:", chatStatusMessage);
     if (loadingMoreChatsRef.current || !liveToken) {
+        console.log("[handleLoadMoreChats] early return: loadingMoreChatsRef=", loadingMoreChatsRef.current, "liveToken=", liveToken);
         if (!liveToken && !chatStatusMessage) setChatStatusMessage("すべてのメールを読み込みました");
         return;
     }
@@ -1118,13 +1120,29 @@ export function useMailApp() {
   // サイドバー: senderList や currentNextPageToken が変化するたびに即座にチェック
   // → スクロールバーが出るまで（または全件読み込みまで）自動でチャットを追加読み込みする
   useEffect(() => {
-    if (isLoading || loadingMoreChatsRef.current || chatStatusMessage) return;
+    console.log("[sidebar-autoload] effect fired", {
+      isLoading, loadingMoreChats: loadingMoreChatsRef.current, chatStatusMessage,
+      currentNextPageToken, senderListLen: senderList.length,
+      refToken: currentNextPageTokenRef.current
+    });
+    if (isLoading || loadingMoreChatsRef.current || chatStatusMessage) {
+      console.log("[sidebar-autoload] blocked by guard:", { isLoading, loadingMoreChatsRef: loadingMoreChatsRef.current, chatStatusMessage });
+      return;
+    }
     // メール未読み込み時（初期状態）は何もしない
-    if (!currentNextPageToken && senderList.length === 0) return;
+    if (!currentNextPageToken && senderList.length === 0) {
+      console.log("[sidebar-autoload] blocked: no token and no senders");
+      return;
+    }
     const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
-    if (!asideEl) return;
+    if (!asideEl) {
+      console.log("[sidebar-autoload] blocked: asideEl not found");
+      return;
+    }
     const { scrollHeight, clientHeight, scrollTop } = asideEl as HTMLElement;
+    console.log("[sidebar-autoload] DOM:", { scrollHeight, clientHeight, scrollTop, diff: scrollHeight - Math.abs(scrollTop) - clientHeight });
     if (scrollHeight - Math.abs(scrollTop) - clientHeight < 100) {
+      console.log("[sidebar-autoload] calling handleLoadMoreChats, liveToken will be:", currentNextPageTokenRef.current);
       handleLoadMoreChats();
     }
   }, [isLoading, senderList, chatStatusMessage, currentNextPageToken, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, searchKeyword]);
