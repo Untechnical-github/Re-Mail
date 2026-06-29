@@ -832,7 +832,16 @@ export function useMailApp() {
     // 背景クリックによる選択モードのキャンセルは廃止
   };
 
-  const toggleSelection = (id: string) => setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+  const toggleSelection = (id: string) => {
+    setSelectedIds(prev => {
+      const next = prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id];
+      if (next.length === 0) {
+        setSelectionMode("none");
+        hasPushedSelectRef.current = false;
+      }
+      return next;
+    });
+  };
 
   const handleSend = async () => {
     if (!selectedSender || !replyBody.trim()) return;

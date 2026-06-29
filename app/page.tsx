@@ -172,28 +172,29 @@ export default function Home() {
 
               const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut || isDeleteGrayedOut;
 
-              // ★修正: グラデーション色の判定に送信済みカラー(sent)を追加
-              // ★修正: 送信済みのみのチャットは常に緑で表示
+              // グラデーション色を計算（SENTを最優先：ゴミ箱内の送信済みも緑扱い）
               const colorsSet = new Set<string>();
-              if (knownHasTrash && state.checkTrash) colorsSet.add(state.boxColors.trash);
-              if (knownHasSpam && state.checkSpam) colorsSet.add(state.boxColors.spam);
-              if (knownHasArchive && state.checkArchive) colorsSet.add(state.boxColors.archive);
-              if (knownHasInbox && state.checkInbox) colorsSet.add(state.boxColors.inbox);
-              if (knownHasSent && (state.checkSent || isChatOnlySent)) colorsSet.add(state.boxColors.sent);
-
-              visibleEmails.forEach((e: any) => {
-                 const isTrash = e.labelIds?.includes("TRASH");
-                 const isSpam = e.labelIds?.includes("SPAM");
-                 const isInbox = e.labelIds?.includes("INBOX");
-                 const isSent = e.labelIds?.includes("SENT") || e.isMe; // ★追加
-                 const isArchive = !isTrash && !isSpam && !isInbox && !isSent; // ★修正
-
-                 if (isTrash) colorsSet.add(state.boxColors.trash);
-                 else if (isSpam) colorsSet.add(state.boxColors.spam);
-                 else if (isInbox) colorsSet.add(state.boxColors.inbox);
-                 else if (isSent) colorsSet.add(state.boxColors.sent); // ★追加
-                 else colorsSet.add(state.boxColors.archive);
-              });
+              if (allEmails.length > 0) {
+                // ロード済みメールがある場合: 各メールをSENT優先で色分け
+                allEmails.forEach((e: any) => {
+                  const isSentE = e.labelIds?.includes("SENT") || e.isMe;
+                  const isTrashE = !isSentE && e.labelIds?.includes("TRASH");
+                  const isSpamE  = !isSentE && e.labelIds?.includes("SPAM");
+                  const isInboxE = !isSentE && !isTrashE && !isSpamE && e.labelIds?.includes("INBOX");
+                  if (isSentE && (state.checkSent || isChatOnlySent)) colorsSet.add(state.boxColors.sent);
+                  else if (isTrashE && state.checkTrash) colorsSet.add(state.boxColors.trash);
+                  else if (isSpamE  && state.checkSpam)  colorsSet.add(state.boxColors.spam);
+                  else if (isInboxE && state.checkInbox) colorsSet.add(state.boxColors.inbox);
+                  else if (!isSentE && !isTrashE && !isSpamE && !isInboxE && state.checkArchive) colorsSet.add(state.boxColors.archive);
+                });
+              } else {
+                // フォールバック: knownBoxes（ロード前のプレースホルダー）
+                if (knownHasSent && (state.checkSent || isChatOnlySent)) colorsSet.add(state.boxColors.sent);
+                if (knownHasTrash && state.checkTrash) colorsSet.add(state.boxColors.trash);
+                if (knownHasSpam && state.checkSpam)  colorsSet.add(state.boxColors.spam);
+                if (knownHasArchive && state.checkArchive) colorsSet.add(state.boxColors.archive);
+                if (knownHasInbox && state.checkInbox) colorsSet.add(state.boxColors.inbox);
+              }
               const colors = Array.from(colorsSet);
               
               let wrapperStyle: React.CSSProperties = { borderRadius: '0.5rem' };
@@ -217,8 +218,8 @@ export default function Home() {
                     onClick={(e) => {
                       e.stopPropagation();
                       if (isActionGrayedOut) return;
-                      // チェックボックス以外の本体クリックはチャットを開くのみ（選択は行わない）
-                      if (!state.selectionMode.startsWith("chat_")) actions.openChat(sender);
+                      // 選択中でもクリックでチャットを開く（選択はチェックボックスのみ）
+                      actions.openChat(sender);
                     }}
                     onContextMenu={(e) => { e.preventDefault(); actions.setContextMenu({ type: "chat", target: sender, x: e.clientX, y: e.clientY }); }}
                     onTouchStart={(e) => {
@@ -426,8 +427,8 @@ export default function Home() {
                     
                     const isActionGrayedOut = isMoveGrayedOut || isMsgPinGrayedOut || isMsgHideGrayedOut || isSentMailMoveRestricted || isDeleteGrayedOut;
                     
-                    // ★修正: メッセージの枠色にも送信済みを反映
-                    const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isSent ? state.boxColors.sent : isArchive ? state.boxColors.archive : state.boxColors.inbox;
+                    // 送信済みを最優先（ゴミ箱内の送信済みも緑で表示）
+                    const msgColor = isSent ? state.boxColors.sent : isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isArchive ? state.boxColors.archive : state.boxColors.inbox;
 
                     const msgIdx = computed.groupedEmails[state.selectedSender!].indexOf(email);
                     return (
@@ -485,7 +486,6 @@ export default function Home() {
                            <div 
                               className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
                               style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', border: `2px solid ${msgColor}` }}
-                              onContextMenu={(e) => { e.preventDefault(); actions.setContextMenu({ type: "msg", target: email, x: e.clientX, y: e.clientY }); }}
                               onTouchStart={(e) => {
                                 if (!state.hasMouse) {
                                   refs.touchTimer.current = setTimeout(() => {

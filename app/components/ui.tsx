@@ -14,68 +14,16 @@ export const HighlightText = ({ text, highlight }: { text: string, highlight: st
 
 export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
-  const { selectionMode, selectedIds, checkInbox, checkArchive, checkSent, checkSpam, checkTrash, knownBoxes } = app.state;
-  const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode, setRenameInput } = app.actions;
+  const { selectionMode, selectedIds, knownBoxes } = app.state;
+  const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode, setRenameInput,
+          setReplySubject, setReplyBody, setReplyToMessage } = app.actions;
 
   const isGenericSelect = selectionMode === `${modePrefix}_select`;
   const isAnySelection = selectionMode.startsWith(`${modePrefix}_`);
   const hasItems = selectedIds.length > 0;
-
-  const isOnlySentFilterActive = checkSent && !checkInbox && !checkArchive && !checkSpam && !checkTrash;
-
   const isMode = (action: string) => selectionMode === `${modePrefix}_${action}`;
 
-  const hasSelectedTarget = selectedIds.some((id: string) => {
-    if (isChat) {
-      const hasValidFetchedMail = app.computed.groupedEmails[id]?.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
-      const kb = knownBoxes?.[id] || [];
-      const hasValidKnownMail = (!hasValidFetchedMail && kb.length > 0) ? (
-        (kb.includes("INBOX") && checkInbox) ||
-        (kb.includes("ARCHIVE") && checkArchive) ||
-        (kb.includes("SENT") && checkSent && !kb.includes("TRASH") && !kb.includes("SPAM"))
-      ) : false;
-      return hasValidFetchedMail || hasValidKnownMail;
-    } else {
-      const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
-      return msg && !msg.labelIds?.includes("TRASH") && !msg.labelIds?.includes("SPAM");
-    }
-  });
-
-  // 選択アイテムが送信済みのみか判定
-  const isSelectedOnlySent = selectedIds.length > 0 && selectedIds.every((id: string) => {
-    if (isChat) {
-      const kb = knownBoxes?.[id] || [];
-      return kb.includes("SENT") && kb.length === 1;
-    } else {
-      const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
-      return msg && (msg.labelIds?.includes("SENT") || msg.isMe);
-    }
-  });
-
-  const isOnlySentOrTrashFilterActive = (!checkInbox && !checkArchive && !checkSpam) && (checkSent || checkTrash);
-
-  let isCurrentChatDeleteRestricted = false;
-  if (!isChat && app.state.selectedSender) {
-    const emails = app.computed.groupedEmails[app.state.selectedSender] || [];
-    isCurrentChatDeleteRestricted = emails.length > 0 && emails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
-  }
-
-  const isSelectedDeleteRestricted = selectedIds.length > 0 && selectedIds.every((id: string) => {
-    if (isChat) {
-      const kb = knownBoxes?.[id] || [];
-      const hasLive = kb.some((b: string) => b !== "TRASH" && b !== "SENT");
-      if (kb.length > 0 && !hasLive) return true;
-      const emails = app.computed.groupedEmails[id] || [];
-      return emails.length > 0 && emails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
-    } else {
-      const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
-      return msg && (msg.labelIds?.includes("TRASH") || msg.labelIds?.includes("SENT") || msg.isMe);
-    }
-  });
-
-  const hideDeleteButton = isOnlySentOrTrashFilterActive || isCurrentChatDeleteRestricted || isSelectedDeleteRestricted;
-
-  // アクション別の制限判定: すべての選択アイテムが対象外かどうか
+  // 全ての選択アイテムが action の制限対象かどうか
   const isActionRestrictedForAll = (action: string): boolean => {
     if (!hasItems) return false;
     return selectedIds.every((id: string) => {
@@ -101,35 +49,44 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     });
   };
 
-  const isDisabled = (action: string) => {
+  const hasSelectedTarget = selectedIds.some((id: string) => {
+    if (isChat) {
+      return app.computed.groupedEmails[id]?.some((e: any) =>
+        !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")
+      ) || (knownBoxes?.[id] || []).some((b: string) => b === "INBOX" || b === "ARCHIVE");
+    } else {
+      const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
+      return msg && !msg.labelIds?.includes("TRASH") && !msg.labelIds?.includes("SPAM");
+    }
+  });
+
+  const isDisabled = (action: string): boolean => {
     if (action === "reset") return false;
-    if (selectionMode === "none") return true;
+    if (!isAnySelection) return true;
     if (isGenericSelect) {
       if (!hasItems) return true;
-      if (isActionRestrictedForAll(action)) return true;
-      return false;
+      return isActionRestrictedForAll(action);
     }
     if (selectionMode !== `${modePrefix}_${action}`) return true;
-    if (action === "pin" && !hasSelectedTarget) return true;
-    if (action === "hide" && !hasSelectedTarget) return true;
+    if ((action === "pin" || action === "hide") && !hasSelectedTarget) return true;
     return false;
   };
 
   const btnBase = isChat
-    ? "flex-1 min-w-[60px] py-1.5 text-[11px] font-bold rounded transition"
-    : "px-3 py-1 text-xs font-bold rounded transition";
+    ? "flex-1 min-w-[54px] py-1.5 text-[10px] font-bold rounded transition"
+    : "px-2.5 py-1 text-xs font-bold rounded transition";
 
   const getBtnClass = (action: string, activeBg: string) => {
-    let active: string;
-    if (isGenericSelect && hasItems && !isActionRestrictedForAll(action)) {
-      active = `bg-[#2B2D31] text-gray-200 border border-[#4752C4] hover:${activeBg} hover:text-white`;
-    } else if (isMode(action)) {
-      active = `${activeBg} text-white`;
+    const disabled = isDisabled(action);
+    let colorClass: string;
+    if (isMode(action)) {
+      colorClass = `${activeBg} text-white`;
+    } else if (isGenericSelect && hasItems && !isActionRestrictedForAll(action)) {
+      colorClass = `bg-[#2B2D31] text-gray-200 border border-[#4752C4] hover:${activeBg} hover:text-white`;
     } else {
-      active = "bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200";
+      colorClass = "bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200";
     }
-    const disabled = isDisabled(action) ? "opacity-30 pointer-events-none grayscale" : "";
-    return `${btnBase} ${active} ${disabled}`;
+    return `${btnBase} ${colorClass} ${disabled ? "opacity-30 pointer-events-none grayscale" : ""}`;
   };
 
   const renderText = (action: string, text: string) => {
@@ -140,39 +97,39 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const containerClass = isChat
     ? "flex flex-wrap p-2 gap-1 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default"
-    : "flex flex-wrap px-4 py-2 gap-2 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default";
+    : "flex flex-wrap px-3 py-2 gap-1.5 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default";
 
-  const showAction = checkInbox || checkArchive;
-
-  // 全選択ハンドラ
+  // 全選択
   const handleSelectAll = () => {
     if (isChat) {
       const allIds = app.computed.senderList as string[];
       setSelectedIds(allIds);
-      if (selectionMode === "none") app.actions.setSelectionMode("chat_select");
+      if (!isAnySelection) setSelectionMode("chat_select");
     } else {
       const allIds = ((app.computed.groupedEmails[app.state.selectedSender] || []) as any[]).map((e: any) => e.id);
       setSelectedIds(allIds);
-      if (selectionMode === "none") app.actions.setSelectionMode("msg_select");
+      if (!isAnySelection) setSelectionMode("msg_select");
     }
   };
+
+  // 選択中のメッセージ取得（msg モード用）
+  const selectedMsg = !isChat && selectedIds.length === 1
+    ? app.computed.allUniqueEmails.find((e: any) => e.id === selectedIds[0])
+    : null;
 
   const showBanner = isAnySelection && hasItems;
 
   return (
     <div className={containerClass} onClick={(e) => e.stopPropagation()}>
       {showBanner && (
-        <div className="w-full text-center text-[11px] text-[#5865F2] font-bold py-0.5">
+        <div className="w-full text-center text-[10px] text-[#5865F2] font-bold py-0.5">
           {selectedIds.length}件選択中
         </div>
       )}
 
-      {/* 全選択ボタン */}
+      {/* 全選択ボタン: 選択モード中のみ */}
       {isAnySelection && (
-        <button
-          onClick={handleSelectAll}
-          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}
-        >
+        <button onClick={handleSelectAll} className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}>
           全選択
         </button>
       )}
@@ -192,48 +149,82 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         </button>
       )}
 
-      {showAction && (
-        <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin", "bg-[#5865F2]")}>
-          {renderText("pin", "ピン留め")}
-        </button>
+      {/* メッセージ画面: 転送・リプライ・コピー */}
+      {!isChat && (
+        <>
+          <button
+            onClick={() => {
+              if (!selectedMsg) return;
+              setReplyToMessage(null);
+              setReplySubject(`Fwd: ${selectedMsg.subject || ""}`);
+              setReplyBody(`\n\n--- 転送メッセージ ---\n差出人: ${selectedMsg.from}\n件名: ${selectedMsg.subject || ""}\n日時: ${new Date(selectedMsg.date).toLocaleString("ja-JP")}\n\n${selectedMsg.body || ""}`);
+            }}
+            disabled={!selectedMsg}
+            className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
+          >
+            転送
+          </button>
+          <button
+            onClick={() => {
+              if (!selectedMsg) return;
+              setReplyToMessage(selectedMsg);
+              setReplySubject(`Re: ${selectedMsg.subject || ""}`);
+            }}
+            disabled={!selectedMsg}
+            className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
+          >
+            リプライ
+          </button>
+          <button
+            onClick={() => {
+              if (!selectedMsg) return;
+              navigator.clipboard.writeText(selectedMsg.body || "").catch(() => {});
+            }}
+            disabled={!selectedMsg}
+            className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
+          >
+            コピー
+          </button>
+        </>
       )}
 
-      {(!isOnlySentFilterActive && !(isGenericSelect && isSelectedOnlySent)) && (
-        <button onClick={() => handleMenuBarClick(`${modePrefix}_move`)} className={getBtnClass("move", "bg-[#5865F2]")}>
-          {renderText("move", "移動")}
-        </button>
-      )}
+      {/* ピン留め */}
+      <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin", "bg-[#5865F2]")}>
+        {renderText("pin", "ピン留め")}
+      </button>
 
-      {showAction && (
-        <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>
-          {renderText("hide", "非表示")}
-        </button>
-      )}
+      {/* 移動 */}
+      <button onClick={() => handleMenuBarClick(`${modePrefix}_move`)} className={getBtnClass("move", "bg-[#5865F2]")}>
+        {renderText("move", "移動")}
+      </button>
 
-      {!hideDeleteButton && (
-        <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", "bg-[#DA373C]")}>
-          {renderText("delete", "削除")}
-        </button>
-      )}
+      {/* 非表示 */}
+      <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>
+        {renderText("hide", "非表示")}
+      </button>
 
-      {/* メッセージ画面では選択中にリセットを非表示 */}
-      {(isChat || !isAnySelection) && (
-        <button onClick={() => handleMenuBarClick(`${modePrefix}_reset`)} className={getBtnClass("reset", "bg-[#DA373C]")}>
-          リセット
-        </button>
-      )}
+      {/* 削除 */}
+      <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", "bg-[#DA373C]")}>
+        {renderText("delete", "削除")}
+      </button>
 
-      {showAction && (
-        <button
-          onClick={() => {
-            setModal({ type: "unhide_select", targetMode: modePrefix, targets: [] });
-            setSelectedIds([]); setSelectionMode("none"); window.history.pushState({ action: "modal" }, "", window.location.href);
-          }}
-          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${isAnySelection && !isGenericSelect ? 'opacity-30 pointer-events-none' : ''}`}
-        >
-          非表示解除
-        </button>
-      )}
+      {/* リセット */}
+      <button onClick={() => handleMenuBarClick(`${modePrefix}_reset`)} className={getBtnClass("reset", "bg-[#DA373C]")}>
+        リセット
+      </button>
+
+      {/* 非表示解除 */}
+      <button
+        onClick={() => {
+          setModal({ type: "unhide_select", targetMode: modePrefix as any, targets: [] });
+          setSelectedIds([]);
+          setSelectionMode("none");
+          window.history.pushState({ action: "modal" }, "", window.location.href);
+        }}
+        className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${isAnySelection && !isGenericSelect ? "opacity-30 pointer-events-none" : ""}`}
+      >
+        非表示解除
+      </button>
     </div>
   );
 }
