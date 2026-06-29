@@ -1031,7 +1031,7 @@ export function useMailApp() {
   };
 
   const handleLoadMoreChats = async () => {
-    // refで常に最新のトークンを読む（クロージャの古い値を避けるため）
+    // refで常に最新のトークンを読む（右パネルと同じパターン：1コール=1ページ→token変更→useEffect再起動）
     const liveToken = currentNextPageTokenRef.current;
     if (loadingMoreChatsRef.current || !liveToken) {
         if (!liveToken && !chatStatusMessage) setChatStatusMessage("すべてのメールを読み込みました");
@@ -1041,20 +1041,10 @@ export function useMailApp() {
     setIsLoadingMoreChats(true);
     setChatStatusMessage(null);
 
-    let tempToken: string | null = liveToken;
-    let loopCount = 0;
-    const maxLoops = 10; // 1回の呼び出しで最大10ページ(1000件)まで深く掘る
-    const accumulatedEmails: any[] = [];
-    const currentLoadId = activeLoadRef.current;
-    
-    // ★修正: 現在表示されているチャットのリストを取得し、「新しいチャット」が見つかるまでループする
-    const existingSenders = new Set(senderList);
-    let foundNewChat = false;
-
     try {
-      let qParts = []; 
+      let qParts = [];
       let useIncludeTrash = "false";
-      
+
       if (checkTrash || checkSpam) { useIncludeTrash = "true"; }
       if (checkArchive) {
         if (!checkInbox) qParts.push("-in:inbox");
@@ -1062,81 +1052,43 @@ export function useMailApp() {
         let orLabels = [];
         if (checkInbox) orLabels.push("in:inbox");
         if (checkSent) orLabels.push("in:sent");
-        if (checkSpam) orLabels.push("in:spam"); 
+        if (checkSpam) orLabels.push("in:spam");
         if (checkTrash) orLabels.push("in:trash");
         if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
       }
       if (searchKeyword) qParts.push(searchKeyword);
       const baseQuery = qParts.join(" ").trim();
 
-      // ★大修正: 「新しい有効なチャットが1件でも見つかる」か「最大ループ到達」か「データが尽きる」まで回す
-      while (tempToken && loopCount < maxLoops && !foundNewChat) {
-        if (activeLoadRef.current !== currentLoadId) break;
-        loopCount++;
+      // 右パネルと同じ: 1回のAPIコールで1ページ取得し、tokenを更新してuseEffectに次を委ねる
+      const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: useIncludeTrash, pageToken: liveToken });
+      params.append("_t", Date.now().toString());
 
-        const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: useIncludeTrash, pageToken: tempToken });
-        params.append("_t", Date.now().toString());
-
-        const res: Response = await fetch(`/api/emails?${params.toString()}`);
-        if (!res.ok) { 
-          setChatStatusMessage("メールが読み込めませんでした。"); 
-          break; 
-        }
-
-        const data: any = await res.json(); 
-        const rawMessages = data.messages || []; 
-        tempToken = data.nextPageToken || null;
-
-        if (rawMessages.length > 0) {
-          accumulatedEmails.push(...rawMessages);
-
-          // 取得した100件の中に、現在チェックされている条件に合致する「新しいチャット」があるか精査
-          for (const email of rawMessages) {
-            const senderRoom = email.senderRoom || (
-              (email.isMe || email.from.includes(session?.user?.email || ""))
-              ? (email.to ? email.to.split(",")[0].split("<")[0].replace(/"/g, "").trim() : "Unknown")
-              : (email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown")
-            );
-
-            if (!existingSenders.has(senderRoom)) {
-              const isTrash = email.labelIds?.includes("TRASH");
-              const isSpam = email.labelIds?.includes("SPAM");
-              const isInbox = email.labelIds?.includes("INBOX");
-              const isSent = email.labelIds?.includes("SENT") || email.isMe; 
-              const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
-
-              let isCurrentBox = false;
-              if (isSent) {
-                  isCurrentBox = checkSent;
-              } else {
-                  isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive);
-              }
-
-              if (isCurrentBox && !chatConfigsRef.current[email.id]?.isHidden) {
-                foundNewChat = true; // 新しいチャットを発見！これ以上ループを回さずReactに描画させる
-                break;
-              }
-            }
-          }
-        }
+      const res: Response = await fetch(`/api/emails?${params.toString()}`);
+      if (!res.ok) {
+        setChatStatusMessage("メールが読み込めませんでした。");
+        return;
       }
 
-      // 見つかったメールをすべてステートに保存
-      if (accumulatedEmails.length > 0) {
+      const data: any = await res.json();
+      const rawMessages = data.messages || [];
+      const nextToken: string | null = data.nextPageToken || null;
+
+      if (rawMessages.length > 0) {
         setEmails(prev => {
-          const map = new Map(prev.map(e => [e.id, e]));
-          accumulatedEmails.forEach((m: any) => map.set(m.id, m));
+          const map = new Map(prev.map((e: any) => [e.id, e]));
+          rawMessages.forEach((m: any) => map.set(m.id, m));
           return Array.from(map.values());
         });
       }
 
-      setCurrentNextPageToken(tempToken);
-      if (!tempToken) setChatStatusMessage("すべてのメールを読み込みました");
+      // tokenを更新→currentNextPageToken変化→useEffectが次ページを判断
+      setCurrentNextPageToken(nextToken);
+      if (!nextToken) setChatStatusMessage("すべてのメールを読み込みました");
 
-    } catch (error) { 
-      setChatStatusMessage("エラーが発生しました。"); 
-    } finally { 
-      setIsLoadingMoreChats(false); 
+    } catch (error) {
+      setChatStatusMessage("エラーが発生しました。");
+    } finally {
+      setIsLoadingMoreChats(false);
       loadingMoreChatsRef.current = false;
     }
   };
