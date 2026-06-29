@@ -570,11 +570,12 @@ export function useMailApp() {
         const currentBoxes = new Set<string>();
         
         emails.forEach(e => {
-          if (e.labelIds?.includes("TRASH")) currentBoxes.add("TRASH");
+          // 送信済みメールは場所に関係なく常にSENTとして分類（TRASH内の送信済みもSENT扱い）
+          if (e.labelIds?.includes("SENT") || e.isMe) currentBoxes.add("SENT");
+          else if (e.labelIds?.includes("TRASH")) currentBoxes.add("TRASH");
           else if (e.labelIds?.includes("SPAM")) currentBoxes.add("SPAM");
           else if (e.labelIds?.includes("INBOX")) currentBoxes.add("INBOX");
-          else if (e.labelIds?.includes("SENT") || e.isMe) currentBoxes.add("SENT"); 
-          else currentBoxes.add("ARCHIVE"); 
+          else currentBoxes.add("ARCHIVE");
         });
         
         const prevBoxes = prev[sender] || [];
@@ -1039,7 +1040,46 @@ export function useMailApp() {
     }
     else if (type === "confirm_unhide") { targets.forEach(target => updateChatConfig(target, { isHidden: false })); }
     
-    safeBack(); 
+    safeBack();
+  };
+
+  // 場所ごとに異なる移動先へバッチ移動
+  const executeBatchMove = async (groups: { ids: string[], destination: string }[]) => {
+    const allIds = groups.flatMap(g => g.ids);
+    if (allIds.length === 0) { safeBack(); return; }
+
+    const getDestForId = (id: string) => groups.find(g => g.ids.includes(id))?.destination;
+
+    const applyNewLabels = (e: any) => {
+      const dest = getDestForId(e.id);
+      if (!dest) return e;
+      const newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "TRASH" && l !== "SPAM");
+      if (dest !== "ARCHIVE") newLabels.push(dest);
+      return { ...e, labelIds: newLabels };
+    };
+
+    const nextEmails = emails.map(applyNewLabels);
+    const nextPersisted = persistedEmails.map(applyNewLabels);
+    const combined = new Map();
+    nextPersisted.forEach((e: any) => combined.set(e.id, e));
+    nextEmails.forEach((e: any) => combined.set(e.id, e));
+    const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current);
+
+    setEmails(nextEmails);
+    setPersistedEmails(nextPMsgs);
+    setRevealedCrossPrompts((prev: string[]) => prev.filter(id => !allIds.includes(id)));
+
+    groups.forEach(({ ids, destination }) => {
+      if (ids.length === 0) return;
+      fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "move", ids, destination: destination === "ARCHIVE" ? undefined : destination })
+      }).catch((e: any) => console.error(e));
+    });
+
+    safeBack();
+    setSelectionMode("none");
+    setSelectedIds([]);
+    setModal(null);
   };
 
   const handleContextMenuAction = (action: string, target: any) => {
@@ -1189,7 +1229,7 @@ export function useMailApp() {
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,
       handleSend, executePin, executeConfirmedAction, handleContextMenuAction,
-      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, setPinType, enterSelectionMode
+      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, setPinType, enterSelectionMode, executeBatchMove
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
     refs: { touchTimer, hasPushedSelectRef, hasPushedSearchRef, activeLoadRef, searchTimeoutRef }

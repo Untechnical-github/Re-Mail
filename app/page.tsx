@@ -134,8 +134,12 @@ export default function Home() {
               const knownHasArchive = kb.includes("ARCHIVE");
               const knownHasSent = kb.includes("SENT"); // ★追加
 
-              // ★修正: 送信済み「のみ」のチャットは移動モード時に強制グレーアウト
-              const isChatOnlySent = knownHasSent && kb.length === 1;
+              // 送信済みのみ判定: ロード済みメールがあればそれを使い、なければknownBoxesで判断
+              // ロード済みメールがある場合: 全て送信済み(SENT/isMe)かつゴミ箱を含まない場合のみ緑
+              const loadedChatEmails: any[] = computed.groupedEmails?.[sender] || [];
+              const isChatOnlySent = loadedChatEmails.length > 0
+                ? loadedChatEmails.every((e: any) => (e.labelIds?.includes("SENT") || e.isMe) && !e.labelIds?.includes("TRASH"))
+                : (knownHasSent && kb.length === 1);
 
               // ★修正: 移動の無効化判定に記憶データを合流させる（SENTも考慮）
               const isMoveGrayedOut = state.selectionMode === "chat_move" && (

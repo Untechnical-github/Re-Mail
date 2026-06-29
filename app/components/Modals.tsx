@@ -8,11 +8,12 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
   const targets = modal.targets as string[];
 
   const { groupedEmails, allUniqueEmails } = app.computed;
-  const { setModal, setMoveDestination, setSelectedIds, safeBack } = app.actions;
+  const { setModal, setSelectedIds, safeBack, executeBatchMove } = app.actions;
 
   const BOX_LABELS: Record<string, string> = {
     INBOX: "受信箱", ARCHIVE: "アーカイブ", SENT: "送信済み", SPAM: "迷惑メール", TRASH: "ゴミ箱"
   };
+  const MOVE_DEST_BOXES = ["INBOX", "ARCHIVE", "SPAM", "TRASH"];
   const BOX_ORDER = ["INBOX", "ARCHIVE", "SENT", "SPAM", "TRASH"];
 
   const isBoxRestricted = (box: string): boolean => {
@@ -22,20 +23,19 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
     return false;
   };
 
+  // 送信済みメールは場所に関係なくSENTとして分類（D1と同じ優先度）
   const getEmailBox = (email: any): string => {
+    if (email.labelIds?.includes("SENT") || email.isMe) return "SENT";
     if (email.labelIds?.includes("TRASH")) return "TRASH";
     if (email.labelIds?.includes("SPAM")) return "SPAM";
-    if (email.labelIds?.includes("SENT") || email.isMe) return "SENT";
     if (email.labelIds?.includes("INBOX")) return "INBOX";
     return "ARCHIVE";
   };
 
   // 場所ごとの件数と対象IDを計算
   const boxCounts: Record<string, number> = {};
-  // チャットモード: 選択チャット内の読み込み済みメールをカウント（knownBoxesではなくgroupedEmailsを使用）
-  // メッセージモード: 選択メッセージを直接カウント
-  const boxChatIds: Record<string, string[]> = {};  // チャットモード用: どのチャットにその場所のメールがあるか
-  const boxMsgIds: Record<string, string[]> = {};   // メッセージモード用: 対象メッセージID
+  const boxChatIds: Record<string, string[]> = {};
+  const boxMsgIds: Record<string, string[]> = {};
 
   if (targetMode === "chat") {
     targets.forEach(chatId => {
@@ -61,18 +61,21 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
 
   const availableBoxes = BOX_ORDER.filter(b => (boxCounts[b] || 0) > 0);
 
-  // 制限のない場所を初期チェック
   const [checkedBoxes, setCheckedBoxes] = useState<string[]>(() =>
     availableBoxes.filter(b => !isBoxRestricted(b))
   );
-  const [localDest, setLocalDest] = useState<string | null>(null);
+  // 移動アクション用: 場所ごとの移動先（key=source box, value=destination box）
+  const [boxDestinations, setBoxDestinations] = useState<Record<string, string>>({});
 
   const toggleBox = (box: string) => {
     if (isBoxRestricted(box)) return;
     setCheckedBoxes(prev => prev.includes(box) ? prev.filter(b => b !== box) : [...prev, box]);
   };
 
-  // チェックされた場所から対象ID群を導出
+  const setBoxDest = (box: string, dest: string) => {
+    setBoxDestinations(prev => ({ ...prev, [box]: dest }));
+  };
+
   const getFilteredTargets = (): string[] => {
     if (targetMode === "chat") {
       const chatSet = new Set<string>();
@@ -86,16 +89,38 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
   };
 
   const totalCheckedCount = checkedBoxes.reduce((sum, b) => sum + (boxCounts[b] || 0), 0);
-  const canProceed = totalCheckedCount > 0 && (action !== "move" || !!localDest);
+  const moveReady = action !== "move" || checkedBoxes.filter(b => !isBoxRestricted(b)).every(b => !!boxDestinations[b]);
+  const canProceed = totalCheckedCount > 0 && moveReady;
 
   const handleNext = () => {
     if (!canProceed) return;
     const filteredTargets = getFilteredTargets();
     setSelectedIds(filteredTargets);
+
     if (action === "move") {
-      setMoveDestination(localDest as any);
-      setModal({ type: "confirm_move", targetMode, targets: filteredTargets });
-    } else if (action === "pin") {
+      // 場所別移動先でグループ化し、直接実行
+      const destGroups: Record<string, string[]> = {};
+      checkedBoxes.forEach(box => {
+        const dest = boxDestinations[box];
+        if (!dest) return;
+        if (!destGroups[dest]) destGroups[dest] = [];
+        if (targetMode === "msg") {
+          destGroups[dest].push(...(boxMsgIds[box] || []));
+        } else {
+          (boxChatIds[box] || []).forEach((chatId: string) => {
+            const emails = groupedEmails[chatId] || [];
+            emails.filter((e: any) => getEmailBox(e) === box).forEach((e: any) => {
+              destGroups[dest].push(e.id);
+            });
+          });
+        }
+      });
+      const groups = Object.entries(destGroups).map(([destination, ids]) => ({ ids, destination }));
+      executeBatchMove(groups);
+      return;
+    }
+
+    if (action === "pin") {
       setModal({ type: "select_pin_type", targetMode, targets: filteredTargets } as any);
     } else if (action === "hide") {
       setModal({ type: "confirm_hide", targetMode, targets: filteredTargets });
@@ -120,62 +145,74 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
         </p>
       </div>
 
-      {action === "move" && (
-        <div className="p-3 border-b border-[#1E1F22]">
-          <div className="text-xs font-bold text-gray-400 mb-2">移動先を選択</div>
-          <div className="flex flex-wrap gap-2">
-            {["INBOX", "ARCHIVE", "SPAM", "TRASH"].map(dest => (
-              <button
-                key={dest}
-                onClick={() => setLocalDest(dest)}
-                className={`px-3 py-1.5 rounded text-xs font-bold border transition
-                  ${localDest === dest
-                    ? "bg-[#5865F2] border-[#5865F2] text-white"
-                    : "bg-[#1E1F22] border-[#35373C] text-gray-400 hover:border-[#5865F2] hover:text-white"
-                  }`}
-              >
-                {BOX_LABELS[dest]}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       <div className="overflow-y-auto flex-1 p-3 space-y-2">
         {availableBoxes.map(box => {
           const restricted = isBoxRestricted(box);
           const checked = checkedBoxes.includes(box);
           const count = boxCounts[box] || 0;
+          const selectedDest = boxDestinations[box];
           return (
-            <label
+            <div
               key={box}
-              className={`flex items-center justify-between gap-3 p-3 rounded transition border
+              className={`rounded transition border
                 ${restricted
-                  ? "opacity-40 cursor-not-allowed border-transparent bg-[#1E1F22]"
+                  ? "opacity-40 border-transparent bg-[#1E1F22]"
                   : checked
-                    ? "cursor-pointer border-[#5865F2] bg-[#5865F2]/10"
-                    : "cursor-pointer border-[#35373C] bg-[#1E1F22] hover:border-[#5865F2]/50"
+                    ? "border-[#5865F2] bg-[#5865F2]/10"
+                    : "border-[#35373C] bg-[#1E1F22]"
                 }`}
             >
-              <div className="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  disabled={restricted}
-                  onChange={() => toggleBox(box)}
-                  className="accent-[#5865F2] w-4 h-4 flex-shrink-0"
-                />
-                <span className={`text-sm font-bold ${restricted ? "text-gray-600" : "text-gray-200"}`}>
-                  {BOX_LABELS[box]}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className={`text-sm font-bold ${restricted ? "text-gray-600" : "text-[#5865F2]"}`}>
-                  {count}件
-                </span>
-                {restricted && <span className="text-xs text-gray-600">対象外</span>}
-              </div>
-            </label>
+              <label className={`flex items-center justify-between gap-3 p-3 ${restricted ? "cursor-not-allowed" : "cursor-pointer"}`}>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={restricted}
+                    onChange={() => toggleBox(box)}
+                    className="accent-[#5865F2] w-4 h-4 flex-shrink-0"
+                  />
+                  <span className={`text-sm font-bold ${restricted ? "text-gray-600" : "text-gray-200"}`}>
+                    {BOX_LABELS[box]}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`text-sm font-bold ${restricted ? "text-gray-600" : "text-[#5865F2]"}`}>
+                    {count}件
+                  </span>
+                  {restricted && <span className="text-xs text-gray-600">対象外</span>}
+                </div>
+              </label>
+
+              {/* 移動アクションでチェック済みの場合: 移動先ボタンを表示 */}
+              {action === "move" && checked && !restricted && (
+                <div className="px-3 pb-3 flex flex-wrap gap-1.5">
+                  <span className="text-xs text-gray-500 w-full mb-0.5">移動先:</span>
+                  {MOVE_DEST_BOXES.map(dest => {
+                    const isSame = dest === box;
+                    const isSelected = selectedDest === dest;
+                    return (
+                      <button
+                        key={dest}
+                        disabled={isSame}
+                        onClick={() => setBoxDest(box, dest)}
+                        className={`px-2.5 py-1 rounded text-xs font-bold border transition
+                          ${isSame
+                            ? "bg-[#1E1F22] border-[#1E1F22] text-gray-600 cursor-not-allowed"
+                            : isSelected
+                              ? "bg-[#5865F2] border-[#5865F2] text-white"
+                              : "bg-[#2B2D31] border-[#35373C] text-gray-400 hover:border-[#5865F2] hover:text-white"
+                          }`}
+                      >
+                        {BOX_LABELS[dest]}
+                      </button>
+                    );
+                  })}
+                  {!selectedDest && (
+                    <span className="text-xs text-yellow-500/80 w-full mt-0.5">移動先を選んでください</span>
+                  )}
+                </div>
+              )}
+            </div>
           );
         })}
 
@@ -191,7 +228,7 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
           disabled={!canProceed}
           className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-[#3f4147] disabled:text-gray-500 transition"
         >
-          次へ ({totalCheckedCount}件)
+          {action === "move" ? `実行 (${totalCheckedCount}件)` : `次へ (${totalCheckedCount}件)`}
         </button>
       </div>
     </div>
@@ -593,36 +630,13 @@ export function Modals({ app }: { app: any }) {
 
         {modal.type === "confirm_move" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
-          const inboxCount = targetEmails.filter(e => e.labelIds?.includes("INBOX")).length;
-          const spamCount = targetEmails.filter(e => e.labelIds?.includes("SPAM")).length;
-          const trashCount = targetEmails.filter(e => e.labelIds?.includes("TRASH")).length;
-          // ★追加・修正: 送信済みのカウントと、アーカイブからの除外
-          const mySentCount = targetEmails.filter(e => e.labelIds?.includes("SENT") || e.isMe).length;
-          const archiveCount = targetEmails.filter(e => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("SENT") && !e.isMe).length;
-          
           const destName = moveDestination === "INBOX" ? "受信箱" : moveDestination === "ARCHIVE" ? "アーカイブ" : moveDestination === "SPAM" ? "迷惑メール" : "ゴミ箱";
-
           return (
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-2">移動の確認</h2>
-              <p className="text-sm text-gray-300 mb-4 leading-relaxed">
-                選択したアイテムを「{destName}」へ移動します。(対象: 合計 {targetEmails.length} 件)
+              <p className="text-sm text-gray-300 mb-6 leading-relaxed">
+                選択したアイテム ({targetEmails.length}件) を「{destName}」へ移動します。
               </p>
-              
-              {/* ★修正: どの箱への移動であっても、送信済みメールが含まれていれば除外の案内文を出す */}
-              {mySentCount > 0 && (
-                <div className="bg-[#5865F2]/20 border border-[#5865F2] p-3 rounded text-xs text-gray-200 mb-4 leading-relaxed font-bold">
-                  ℹ️ 選択されたアイテムに送信済みメールが {mySentCount} 件含まれています。送信済みメールは移動の対象外となるため、これらを除外して移動を実行します。
-                </div>
-              )}
-              
-              <div className="bg-[#2B2D31] p-3 rounded border border-[#1E1F22] mb-5 space-y-2 text-[13px] text-gray-300">
-                <div className="font-bold text-gray-400 border-b border-[#1E1F22] pb-1 mb-1 text-xs">【移動元の内訳 (送信済みを除く)】</div>
-                <div className="flex justify-between items-center px-1"><span>受信箱:</span> <span>{inboxCount} 件</span></div>
-                <div className="flex justify-between items-center px-1"><span>アーカイブ:</span> <span>{archiveCount} 件</span></div>
-                <div className="flex justify-between items-center px-1"><span>迷惑メール:</span> <span>{spamCount} 件</span></div>
-                <div className="flex justify-between items-center px-1"><span>ゴミ箱:</span> <span>{trashCount} 件</span></div>
-              </div>
               <div className="flex justify-end gap-3">
                 <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
                 <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">移動する</button>
