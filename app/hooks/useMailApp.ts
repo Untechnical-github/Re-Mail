@@ -751,8 +751,6 @@ export function useMailApp() {
       const asideEl = document.querySelector("aside > div.flex-1");
       if (asideEl) sessionStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
     }
-    setSelectionMode("none");
-    setSelectedIds([]);
     setReplyToMessage(null);
     setMsgStatusMessage(null); 
     setChatNextPageToken("FIRST_PAGE");
@@ -767,8 +765,11 @@ export function useMailApp() {
     const mode: SelectionMode = type === "chat" ? "chat_select" : "msg_select";
     setSelectionMode(mode);
     setSelectedIds([id]);
-    if (!hasPushedSelectRef.current) {
+    // 重複して積まない（既にselect履歴エントリがある場合はスキップ）
+    if (!hasPushedSelectRef.current && window.history.state?.action !== "select") {
       window.history.pushState({ action: "select" }, "", window.location.href);
+      hasPushedSelectRef.current = true;
+    } else if (window.history.state?.action === "select") {
       hasPushedSelectRef.current = true;
     }
   };
@@ -833,14 +834,18 @@ export function useMailApp() {
   };
 
   const toggleSelection = (id: string) => {
-    setSelectedIds(prev => {
-      const next = prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id];
-      if (next.length === 0) {
-        setSelectionMode("none");
+    const next = selectedIds.includes(id) ? selectedIds.filter(i => i !== id) : [...selectedIds, id];
+    setSelectedIds(next);
+    if (next.length === 0) {
+      setSelectionMode("none");
+      if (hasPushedSelectRef.current) {
         hasPushedSelectRef.current = false;
+        // 選択用の履歴エントリを取り除く
+        if (window.history.state?.action === "select") {
+          window.history.back();
+        }
       }
-      return next;
-    });
+    }
   };
 
   const handleSend = async () => {

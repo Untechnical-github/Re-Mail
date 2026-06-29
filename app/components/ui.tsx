@@ -16,7 +16,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
   const { selectionMode, selectedIds, knownBoxes } = app.state;
   const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode, setRenameInput,
-          setReplySubject, setReplyBody, setReplyToMessage } = app.actions;
+          setReplySubject, setReplyBody, setReplyToMessage, safeBack } = app.actions;
 
   const isGenericSelect = selectionMode === `${modePrefix}_select`;
   const isAnySelection = selectionMode.startsWith(`${modePrefix}_`);
@@ -127,29 +127,36 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         </div>
       )}
 
-      {/* 全選択ボタン: 選択モード中のみ */}
-      {isAnySelection && (
-        <button onClick={handleSelectAll} className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}>
-          全選択
-        </button>
-      )}
+      {/* 全選択 */}
+      <button onClick={handleSelectAll} className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}>
+        全選択
+      </button>
 
-      {/* チャット画面: 1件選択時の名前変更ボタン */}
-      {isChat && isGenericSelect && selectedIds.length === 1 && (
+      {/* キャンセル: 選択中のみ有効 */}
+      <button
+        onClick={() => { if (isAnySelection) safeBack(); }}
+        className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!isAnySelection ? "opacity-30 pointer-events-none grayscale" : ""}`}
+      >
+        キャンセル
+      </button>
+
+      {/* チャット画面: 名前変更（1件選択時のみ有効） */}
+      {isChat && (
         <button
           onClick={() => {
+            if (selectedIds.length !== 1) return;
             const id = selectedIds[0];
             setRenameInput(app.state.chatConfigs[id]?.customName || id);
             setModal({ type: "rename", targetMode: "chat", targets: [id] });
             window.history.pushState({ action: "modal" }, "", window.location.href);
           }}
-          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}
+          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectedIds.length !== 1 ? "opacity-30 pointer-events-none grayscale" : ""}`}
         >
           名前変更
         </button>
       )}
 
-      {/* メッセージ画面: 転送・リプライ・コピー */}
+      {/* メッセージ画面: 転送・リプライ・コピー（1件選択時のみ有効） */}
       {!isChat && (
         <>
           <button
@@ -159,7 +166,6 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
               setReplySubject(`Fwd: ${selectedMsg.subject || ""}`);
               setReplyBody(`\n\n--- 転送メッセージ ---\n差出人: ${selectedMsg.from}\n件名: ${selectedMsg.subject || ""}\n日時: ${new Date(selectedMsg.date).toLocaleString("ja-JP")}\n\n${selectedMsg.body || ""}`);
             }}
-            disabled={!selectedMsg}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
           >
             転送
@@ -170,7 +176,6 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
               setReplyToMessage(selectedMsg);
               setReplySubject(`Re: ${selectedMsg.subject || ""}`);
             }}
-            disabled={!selectedMsg}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
           >
             リプライ
@@ -180,7 +185,6 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
               if (!selectedMsg) return;
               navigator.clipboard.writeText(selectedMsg.body || "").catch(() => {});
             }}
-            disabled={!selectedMsg}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
           >
             コピー
