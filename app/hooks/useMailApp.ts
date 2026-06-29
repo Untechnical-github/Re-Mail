@@ -462,6 +462,7 @@ export function useMailApp() {
         
         if (!isCancelled) setChatStatusMessage(null);
         const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, false, loadedEmails, () => isCancelled, false);
+        if (!isCancelled) setChatStatusMessage(null);
         
         if (selectedSender && !isCancelled && res.success) {
            fetchChatCrossbox(selectedSender, false, res.emails);
@@ -1161,7 +1162,9 @@ export function useMailApp() {
   // サイドバー: senderList や currentNextPageToken が変化するたびに即座にチェック
   // → スクロールバーが出るまで（または全件読み込みまで）自動でチャットを追加読み込みする
   useEffect(() => {
-    if (isLoading || loadingMoreChatsRef.current || chatStatusMessage || !currentNextPageToken) return;
+    if (isLoading || loadingMoreChatsRef.current || chatStatusMessage) return;
+    // メール未読み込み時（初期状態）は何もしない
+    if (!currentNextPageToken && senderList.length === 0) return;
     const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
     if (!asideEl) return;
     const { scrollHeight, clientHeight, scrollTop } = asideEl as HTMLElement;
