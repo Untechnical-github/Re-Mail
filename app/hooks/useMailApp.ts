@@ -338,8 +338,10 @@ export function useMailApp() {
         const nextPMsgs = syncConfigs(updatedEmails, chatConfigsRef.current);
         setPersistedEmails(nextPMsgs);
         setEmails(updatedEmails);
-        
-        if (!isSilent || updatedEmails.length <= targetLimit) setCurrentNextPageToken(data.nextPageToken || null);
+
+        const willSetToken = !isSilent || updatedEmails.length <= targetLimit;
+        console.log("[fetchEmails] q=", qParts.join(" "), "| newMessages:", newMessages.length, "| updatedEmails:", updatedEmails.length, "| targetLimit:", targetLimit, "| isSilent:", isSilent, "| willSetToken:", willSetToken, "| data.nextPageToken:", data.nextPageToken || null);
+        if (willSetToken) setCurrentNextPageToken(data.nextPageToken || null);
         return { success: true, emails: updatedEmails };
       }
       return { success: false, emails: currentEmailsState };
