@@ -35,6 +35,7 @@ export function useMailApp() {
 
   const loadingMoreChatsRef = useRef(false);
   const loadingMoreMsgRef = useRef(false);
+  const currentNextPageTokenRef = useRef<string | null>(null);
 
   const [replySubject, setReplySubject] = useState("");
   const [replyBody, setReplyBody] = useState("");
@@ -74,6 +75,7 @@ export function useMailApp() {
 
   const emailsRef = useRef(emails);
   useEffect(() => { emailsRef.current = emails; }, [emails]);
+  useEffect(() => { currentNextPageTokenRef.current = currentNextPageToken; }, [currentNextPageToken]);
 
   useEffect(() => {
     const handleScrollSave = () => {
@@ -1029,15 +1031,17 @@ export function useMailApp() {
   };
 
   const handleLoadMoreChats = async () => {
-    if (loadingMoreChatsRef.current || !currentNextPageToken) { 
-        if (!currentNextPageToken && !chatStatusMessage) setChatStatusMessage("すべてのメールを読み込みました"); 
-        return; 
+    // refで常に最新のトークンを読む（クロージャの古い値を避けるため）
+    const liveToken = currentNextPageTokenRef.current;
+    if (loadingMoreChatsRef.current || !liveToken) {
+        if (!liveToken && !chatStatusMessage) setChatStatusMessage("すべてのメールを読み込みました");
+        return;
     }
     loadingMoreChatsRef.current = true;
-    setIsLoadingMoreChats(true); 
+    setIsLoadingMoreChats(true);
     setChatStatusMessage(null);
 
-    let tempToken: string | null = currentNextPageToken;
+    let tempToken: string | null = liveToken;
     let loopCount = 0;
     const maxLoops = 10; // 1回の呼び出しで最大10ページ(1000件)まで深く掘る
     const accumulatedEmails: any[] = [];
