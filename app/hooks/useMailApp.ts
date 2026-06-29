@@ -288,13 +288,17 @@ export function useMailApp() {
       if (flags.trash || flags.spam) {
         useIncludeTrash = "true";
       }
-      
+      // 送信済みはGmailの「送信済みフォルダ」だけでなく全場所の送信メールを対象とする
+      if (flags.sent) {
+        useIncludeTrash = "true";
+      }
+
       if (flags.archive) {
         if (!flags.inbox) qParts.push("-in:inbox");
       } else {
         let orLabels = [];
         if (flags.inbox) orLabels.push("in:inbox");
-        if (flags.sent) orLabels.push("in:sent");
+        if (flags.sent) orLabels.push("from:me"); // in:sent → from:me (全場所の送信メール)
         if (flags.spam) orLabels.push("in:spam");
         if (flags.trash) orLabels.push("in:trash");
         if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
@@ -339,9 +343,7 @@ export function useMailApp() {
         setPersistedEmails(nextPMsgs);
         setEmails(updatedEmails);
 
-        const willSetToken = !isSilent || updatedEmails.length <= targetLimit;
-        console.log("[fetchEmails] q=", qParts.join(" "), "| newMessages:", newMessages.length, "| updatedEmails:", updatedEmails.length, "| targetLimit:", targetLimit, "| isSilent:", isSilent, "| willSetToken:", willSetToken, "| data.nextPageToken:", data.nextPageToken || null);
-        if (willSetToken) setCurrentNextPageToken(data.nextPageToken || null);
+        if (!isSilent || updatedEmails.length <= targetLimit) setCurrentNextPageToken(data.nextPageToken || null);
         return { success: true, emails: updatedEmails };
       }
       return { success: false, emails: currentEmailsState };
@@ -1033,11 +1035,8 @@ export function useMailApp() {
   };
 
   const handleLoadMoreChats = async () => {
-    // refで常に最新のトークンを読む（右パネルと同じパターン：1コール=1ページ→token変更→useEffect再起動）
     const liveToken = currentNextPageTokenRef.current;
-    console.log("[handleLoadMoreChats] called, liveToken:", liveToken, "loadingMoreChatsRef:", loadingMoreChatsRef.current, "chatStatusMessage:", chatStatusMessage);
     if (loadingMoreChatsRef.current || !liveToken) {
-        console.log("[handleLoadMoreChats] early return: loadingMoreChatsRef=", loadingMoreChatsRef.current, "liveToken=", liveToken);
         if (!liveToken && !chatStatusMessage) setChatStatusMessage("すべてのメールを読み込みました");
         return;
     }
@@ -1050,12 +1049,13 @@ export function useMailApp() {
       let useIncludeTrash = "false";
 
       if (checkTrash || checkSpam) { useIncludeTrash = "true"; }
+      if (checkSent) { useIncludeTrash = "true"; }
       if (checkArchive) {
         if (!checkInbox) qParts.push("-in:inbox");
       } else {
         let orLabels = [];
         if (checkInbox) orLabels.push("in:inbox");
-        if (checkSent) orLabels.push("in:sent");
+        if (checkSent) orLabels.push("from:me");
         if (checkSpam) orLabels.push("in:spam");
         if (checkTrash) orLabels.push("in:trash");
         if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
@@ -1122,29 +1122,12 @@ export function useMailApp() {
   // サイドバー: senderList や currentNextPageToken が変化するたびに即座にチェック
   // → スクロールバーが出るまで（または全件読み込みまで）自動でチャットを追加読み込みする
   useEffect(() => {
-    console.log("[sidebar-autoload] effect fired", {
-      isLoading, loadingMoreChats: loadingMoreChatsRef.current, chatStatusMessage,
-      currentNextPageToken, senderListLen: senderList.length,
-      refToken: currentNextPageTokenRef.current
-    });
-    if (isLoading || loadingMoreChatsRef.current || chatStatusMessage) {
-      console.log("[sidebar-autoload] blocked by guard:", { isLoading, loadingMoreChatsRef: loadingMoreChatsRef.current, chatStatusMessage });
-      return;
-    }
-    // メール未読み込み時（初期状態）は何もしない
-    if (!currentNextPageToken && senderList.length === 0) {
-      console.log("[sidebar-autoload] blocked: no token and no senders");
-      return;
-    }
+    if (isLoading || loadingMoreChatsRef.current || chatStatusMessage) return;
+    if (!currentNextPageToken && senderList.length === 0) return;
     const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
-    if (!asideEl) {
-      console.log("[sidebar-autoload] blocked: asideEl not found");
-      return;
-    }
+    if (!asideEl) return;
     const { scrollHeight, clientHeight, scrollTop } = asideEl as HTMLElement;
-    console.log("[sidebar-autoload] DOM:", { scrollHeight, clientHeight, scrollTop, diff: scrollHeight - Math.abs(scrollTop) - clientHeight });
     if (scrollHeight - Math.abs(scrollTop) - clientHeight < 100) {
-      console.log("[sidebar-autoload] calling handleLoadMoreChats, liveToken will be:", currentNextPageTokenRef.current);
       handleLoadMoreChats();
     }
   }, [isLoading, senderList, chatStatusMessage, currentNextPageToken, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, searchKeyword]);
