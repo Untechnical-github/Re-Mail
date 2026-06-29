@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar } from "./components/ui";
@@ -9,6 +10,13 @@ import { Modals } from "./components/Modals";
 export default function Home() {
   const app = useMailApp();
   const { auth, state, actions, computed, refs } = app;
+
+  // Shift+クリック範囲選択用の最終クリックインデックス
+  const lastChatIdxRef = useRef<number>(-1);
+  const lastMsgIdxRef = useRef<number>(-1);
+  // モバイルドラッグ選択フラグ
+  const isDragChatRef = useRef(false);
+  const isDragMsgRef = useRef(false);
 
   if (auth.status === "loading") return <div className="flex h-screen items-center justify-center bg-[#313338] text-gray-400 font-bold">読み込み中...</div>;
   if (!auth.session) return (
@@ -161,12 +169,13 @@ export default function Home() {
               const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut || isDeleteGrayedOut;
 
               // ★修正: グラデーション色の判定に送信済みカラー(sent)を追加
+              // ★修正: 送信済みのみのチャットは常に緑で表示
               const colorsSet = new Set<string>();
               if (knownHasTrash && state.checkTrash) colorsSet.add(state.boxColors.trash);
               if (knownHasSpam && state.checkSpam) colorsSet.add(state.boxColors.spam);
               if (knownHasArchive && state.checkArchive) colorsSet.add(state.boxColors.archive);
               if (knownHasInbox && state.checkInbox) colorsSet.add(state.boxColors.inbox);
-              if (knownHasSent && state.checkSent) colorsSet.add(state.boxColors.sent); // ★追加
+              if (knownHasSent && (state.checkSent || isChatOnlySent)) colorsSet.add(state.boxColors.sent);
 
               visibleEmails.forEach((e: any) => {
                  const isTrash = e.labelIds?.includes("TRASH");
@@ -197,39 +206,73 @@ export default function Home() {
                   wrapperStyle = { ...wrapperStyle, border: `2px solid transparent` };
               }
 
+              const senderIdx = computed.senderList.indexOf(sender);
               return (
-                <div key={sender} style={wrapperStyle} className="mb-1 group">
+                <div key={sender} style={wrapperStyle} className="mb-1" data-chat-id={sender}>
                   <div
                     onClick={(e) => {
                       e.stopPropagation();
                       if (isActionGrayedOut) return;
-                      if (state.selectionMode.startsWith("chat_")) actions.toggleSelection(sender);
-                      else actions.openChat(sender);
+                      // チェックボックス以外の本体クリックはチャットを開くのみ（選択は行わない）
+                      if (!state.selectionMode.startsWith("chat_")) actions.openChat(sender);
                     }}
                     onContextMenu={(e) => { e.preventDefault(); actions.setContextMenu({ type: "chat", target: sender, x: e.clientX, y: e.clientY }); }}
-                    onTouchStart={(e) => { if (!state.hasMouse) refs.touchTimer.current = setTimeout(() => { actions.enterSelectionMode("chat", sender); }, 500); }}
-                    onTouchEnd={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
-                    onTouchMove={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
+                    onTouchStart={(e) => {
+                      if (!state.hasMouse) {
+                        refs.touchTimer.current = setTimeout(() => {
+                          isDragChatRef.current = true;
+                          actions.enterSelectionMode("chat", sender);
+                        }, 500);
+                      }
+                    }}
+                    onTouchMove={(e) => {
+                      if (!state.hasMouse) {
+                        if (isDragChatRef.current) {
+                          const touch = e.touches[0];
+                          const el = document.elementFromPoint(touch.clientX, touch.clientY);
+                          const chatEl = el?.closest('[data-chat-id]');
+                          if (chatEl) {
+                            const id = chatEl.getAttribute('data-chat-id');
+                            if (id && !state.selectedIds.includes(id)) {
+                              actions.setSelectedIds((prev: string[]) => [...prev, id]);
+                            }
+                          }
+                        } else {
+                          if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
+                        }
+                      }
+                    }}
+                    onTouchEnd={() => {
+                      isDragChatRef.current = false;
+                      if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
+                    }}
                     className={innerClass}
                     style={innerStyle}
                   >
-                    {/* チェックボックス: PC=ホバーで表示 / 選択モード中=常時表示 / モバイル=選択モード中のみ表示 */}
+                    {/* チェックボックス: PC=常時表示 / モバイル=選択モード中のみ表示 */}
                     <div
-                      className={`flex-shrink-0 w-4 h-4 mr-3 rounded-sm flex items-center justify-center border transition-opacity cursor-pointer
-                        ${isSelected ? 'bg-[#5865F2] border-[#5865F2] opacity-100'
-                          : state.selectionMode.startsWith("chat_")
-                            ? 'border-gray-500 opacity-100'
-                            : state.hasMouse
-                              ? 'border-gray-500 opacity-0 group-hover:opacity-100'
-                              : 'hidden'
-                        }`}
+                      className={`flex-shrink-0 w-4 h-4 mr-3 rounded-sm flex items-center justify-center border cursor-pointer flex-shrink-0
+                        ${isSelected ? 'bg-[#5865F2] border-[#5865F2]'
+                          : 'border-gray-500'
+                        }
+                        ${!state.hasMouse && !state.selectionMode.startsWith("chat_") ? 'hidden' : ''}
+                      `}
                       onClick={(e) => {
                         e.stopPropagation();
                         if (isActionGrayedOut) return;
-                        if (state.selectionMode.startsWith("chat_")) {
-                          actions.toggleSelection(sender);
+                        if (e.shiftKey && lastChatIdxRef.current >= 0 && state.selectionMode.startsWith("chat_")) {
+                          // Shift+クリックで範囲選択
+                          const min = Math.min(senderIdx, lastChatIdxRef.current);
+                          const max = Math.max(senderIdx, lastChatIdxRef.current);
+                          const rangeIds = computed.senderList.slice(min, max + 1);
+                          actions.setSelectedIds((prev: string[]) => [...new Set([...prev, ...rangeIds])]);
                         } else {
-                          actions.enterSelectionMode("chat", sender);
+                          if (!state.selectionMode.startsWith("chat_")) {
+                            actions.enterSelectionMode("chat", sender);
+                          } else {
+                            actions.toggleSelection(sender);
+                          }
+                          lastChatIdxRef.current = senderIdx;
                         }
                       }}
                     >
@@ -382,32 +425,41 @@ export default function Home() {
                     // ★修正: メッセージの枠色にも送信済みを反映
                     const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isSent ? state.boxColors.sent : isArchive ? state.boxColors.archive : state.boxColors.inbox;
 
+                    const msgIdx = computed.groupedEmails[state.selectedSender!].indexOf(email);
                     return (
                       <div
                         id={`msg-${email.id}`}
                         key={email.id}
+                        data-msg-id={email.id}
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (isActionGrayedOut) return;
-                          if (state.selectionMode.startsWith("msg_")) actions.toggleSelection(email.id);
+                          // チェックボックス以外の本体クリックは選択しない
                         }}
-                        className={`flex w-full mb-6 cursor-default transition group ${isActionGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${isMe ? 'justify-end' : 'justify-start'}`}
+                        className={`flex w-full mb-6 cursor-default transition ${isActionGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${isMe ? 'justify-end' : 'justify-start'}`}
                       >
-                        {/* チェックボックス列: 選択モード=常時 / PC非選択=ホバーで表示 / モバイル非選択=非表示 */}
+                        {/* チェックボックス列: PC=常時表示 / モバイル=選択モード中のみ表示 */}
                         {(state.selectionMode.startsWith("msg_") || state.hasMouse) && (
                           <div
                             className={`flex-shrink-0 w-8 flex justify-center pt-3 mr-2 cursor-pointer
-                              ${state.selectionMode.startsWith("msg_")
-                                ? 'opacity-100'
-                                : 'opacity-0 group-hover:opacity-100 transition-opacity'
-                              }`}
+                              ${!state.hasMouse && !state.selectionMode.startsWith("msg_") ? 'hidden' : ''}
+                            `}
                             onClick={(e) => {
                               e.stopPropagation();
                               if (isActionGrayedOut) return;
-                              if (state.selectionMode.startsWith("msg_")) {
-                                actions.toggleSelection(email.id);
+                              if (e.shiftKey && lastMsgIdxRef.current >= 0 && state.selectionMode.startsWith("msg_")) {
+                                // Shift+クリックで範囲選択
+                                const allMsgs = computed.groupedEmails[state.selectedSender!] || [];
+                                const min = Math.min(msgIdx, lastMsgIdxRef.current);
+                                const max = Math.max(msgIdx, lastMsgIdxRef.current);
+                                const rangeIds = allMsgs.slice(min, max + 1).map((m: any) => m.id);
+                                actions.setSelectedIds((prev: string[]) => [...new Set([...prev, ...rangeIds])]);
                               } else {
-                                actions.enterSelectionMode("msg", email.id);
+                                if (!state.selectionMode.startsWith("msg_")) {
+                                  actions.enterSelectionMode("msg", email.id);
+                                } else {
+                                  actions.toggleSelection(email.id);
+                                }
+                                lastMsgIdxRef.current = msgIdx;
                               }
                             }}
                           >
@@ -430,9 +482,35 @@ export default function Home() {
                               className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
                               style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', border: `2px solid ${msgColor}` }}
                               onContextMenu={(e) => { e.preventDefault(); actions.setContextMenu({ type: "msg", target: email, x: e.clientX, y: e.clientY }); }}
-                              onTouchStart={(e) => { if (!state.hasMouse) refs.touchTimer.current = setTimeout(() => { actions.enterSelectionMode("msg", email.id); }, 500); }}
-                              onTouchEnd={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
-                              onTouchMove={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
+                              onTouchStart={(e) => {
+                                if (!state.hasMouse) {
+                                  refs.touchTimer.current = setTimeout(() => {
+                                    isDragMsgRef.current = true;
+                                    actions.enterSelectionMode("msg", email.id);
+                                  }, 500);
+                                }
+                              }}
+                              onTouchMove={(e) => {
+                                if (!state.hasMouse) {
+                                  if (isDragMsgRef.current) {
+                                    const touch = e.touches[0];
+                                    const el = document.elementFromPoint(touch.clientX, touch.clientY);
+                                    const msgEl = el?.closest('[data-msg-id]');
+                                    if (msgEl) {
+                                      const id = msgEl.getAttribute('data-msg-id');
+                                      if (id && !state.selectedIds.includes(id)) {
+                                        actions.setSelectedIds((prev: string[]) => [...prev, id]);
+                                      }
+                                    }
+                                  } else {
+                                    if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
+                                  }
+                                }
+                              }}
+                              onTouchEnd={() => {
+                                isDragMsgRef.current = false;
+                                if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
+                              }}
                            >
                               {state.chatConfigs[email.id]?.isPinned && (state.checkInbox || state.checkArchive || state.checkSent) && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
                               {email.subject && !email.subject.startsWith("Re:") && (

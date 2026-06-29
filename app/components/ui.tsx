@@ -15,7 +15,7 @@ export const HighlightText = ({ text, highlight }: { text: string, highlight: st
 export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
   const { selectionMode, selectedIds, checkInbox, checkArchive, checkSent, checkSpam, checkTrash, knownBoxes } = app.state;
-  const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode } = app.actions;
+  const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode, setRenameInput } = app.actions;
 
   const isGenericSelect = selectionMode === `${modePrefix}_select`;
   const isAnySelection = selectionMode.startsWith(`${modePrefix}_`);
@@ -27,7 +27,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const hasSelectedTarget = selectedIds.some((id: string) => {
     if (isChat) {
-      const hasValidFetchedMail = app.computed.groupedEmails[id]?.some((e:any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+      const hasValidFetchedMail = app.computed.groupedEmails[id]?.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
       const kb = knownBoxes?.[id] || [];
       const hasValidKnownMail = (!hasValidFetchedMail && kb.length > 0) ? (
         (kb.includes("INBOX") && checkInbox) ||
@@ -36,11 +36,12 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
       ) : false;
       return hasValidFetchedMail || hasValidKnownMail;
     } else {
-      const msg = app.computed.allUniqueEmails.find((e:any) => e.id === id);
+      const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
       return msg && !msg.labelIds?.includes("TRASH") && !msg.labelIds?.includes("SPAM");
     }
   });
 
+  // 選択アイテムが送信済みのみか判定
   const isSelectedOnlySent = selectedIds.length > 0 && selectedIds.every((id: string) => {
     if (isChat) {
       const kb = knownBoxes?.[id] || [];
@@ -62,10 +63,10 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const isSelectedDeleteRestricted = selectedIds.length > 0 && selectedIds.every((id: string) => {
     if (isChat) {
       const kb = knownBoxes?.[id] || [];
-      const hasLive = kb.some((b:string) => b !== "TRASH" && b !== "SENT");
-      if(kb.length > 0 && !hasLive) return true;
+      const hasLive = kb.some((b: string) => b !== "TRASH" && b !== "SENT");
+      if (kb.length > 0 && !hasLive) return true;
       const emails = app.computed.groupedEmails[id] || [];
-      return emails.length > 0 && emails.every((e:any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
+      return emails.length > 0 && emails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
     } else {
       const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
       return msg && (msg.labelIds?.includes("TRASH") || msg.labelIds?.includes("SENT") || msg.isMe);
@@ -74,10 +75,40 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const hideDeleteButton = isOnlySentOrTrashFilterActive || isCurrentChatDeleteRestricted || isSelectedDeleteRestricted;
 
+  // アクション別の制限判定: すべての選択アイテムが対象外かどうか
+  const isActionRestrictedForAll = (action: string): boolean => {
+    if (!hasItems) return false;
+    return selectedIds.every((id: string) => {
+      if (isChat) {
+        const kb: string[] = knownBoxes?.[id] || [];
+        if (action === "pin" || action === "hide")
+          return kb.length > 0 && kb.every((b: string) => b === "TRASH" || b === "SPAM" || b === "SENT");
+        if (action === "delete")
+          return kb.length > 0 && kb.every((b: string) => b === "TRASH" || b === "SENT");
+        if (action === "move")
+          return kb.includes("SENT") && kb.length === 1;
+      } else {
+        const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
+        if (!msg) return true;
+        const isTrash = msg.labelIds?.includes("TRASH");
+        const isSpam = msg.labelIds?.includes("SPAM");
+        const isSent = msg.labelIds?.includes("SENT") || msg.isMe;
+        if (action === "pin" || action === "hide") return isTrash || isSpam || isSent;
+        if (action === "delete") return isTrash || isSent;
+        if (action === "move") return isSent;
+      }
+      return false;
+    });
+  };
+
   const isDisabled = (action: string) => {
     if (action === "reset") return false;
     if (selectionMode === "none") return true;
-    if (isGenericSelect) return !hasItems;
+    if (isGenericSelect) {
+      if (!hasItems) return true;
+      if (isActionRestrictedForAll(action)) return true;
+      return false;
+    }
     if (selectionMode !== `${modePrefix}_${action}`) return true;
     if (action === "pin" && !hasSelectedTarget) return true;
     if (action === "hide" && !hasSelectedTarget) return true;
@@ -85,12 +116,12 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   };
 
   const btnBase = isChat
-    ? "flex-1 min-w-[70px] py-1.5 text-[11px] font-bold rounded transition"
+    ? "flex-1 min-w-[60px] py-1.5 text-[11px] font-bold rounded transition"
     : "px-3 py-1 text-xs font-bold rounded transition";
 
   const getBtnClass = (action: string, activeBg: string) => {
     let active: string;
-    if (isGenericSelect && hasItems) {
+    if (isGenericSelect && hasItems && !isActionRestrictedForAll(action)) {
       active = `bg-[#2B2D31] text-gray-200 border border-[#4752C4] hover:${activeBg} hover:text-white`;
     } else if (isMode(action)) {
       active = `${activeBg} text-white`;
@@ -113,7 +144,19 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const showAction = checkInbox || checkArchive;
 
-  // 選択モード中の件数バナー
+  // 全選択ハンドラ
+  const handleSelectAll = () => {
+    if (isChat) {
+      const allIds = app.computed.senderList as string[];
+      setSelectedIds(allIds);
+      if (selectionMode === "none") app.actions.setSelectionMode("chat_select");
+    } else {
+      const allIds = ((app.computed.groupedEmails[app.state.selectedSender] || []) as any[]).map((e: any) => e.id);
+      setSelectedIds(allIds);
+      if (selectionMode === "none") app.actions.setSelectionMode("msg_select");
+    }
+  };
+
   const showBanner = isAnySelection && hasItems;
 
   return (
@@ -122,6 +165,31 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         <div className="w-full text-center text-[11px] text-[#5865F2] font-bold py-0.5">
           {selectedIds.length}件選択中
         </div>
+      )}
+
+      {/* 全選択ボタン */}
+      {isAnySelection && (
+        <button
+          onClick={handleSelectAll}
+          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}
+        >
+          全選択
+        </button>
+      )}
+
+      {/* チャット画面: 1件選択時の名前変更ボタン */}
+      {isChat && isGenericSelect && selectedIds.length === 1 && (
+        <button
+          onClick={() => {
+            const id = selectedIds[0];
+            setRenameInput(app.state.chatConfigs[id]?.customName || id);
+            setModal({ type: "rename", targetMode: "chat", targets: [id] });
+            window.history.pushState({ action: "modal" }, "", window.location.href);
+          }}
+          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}
+        >
+          名前変更
+        </button>
       )}
 
       {showAction && (
@@ -138,19 +206,22 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
       {showAction && (
         <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>
-          {renderText("hide", "非表示(Re:Mail)")}
+          {renderText("hide", "非表示")}
         </button>
       )}
 
       {!hideDeleteButton && (
         <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", "bg-[#DA373C]")}>
-          {renderText("delete", "削除(Gmail)")}
+          {renderText("delete", "削除")}
         </button>
       )}
 
-      <button onClick={() => handleMenuBarClick(`${modePrefix}_reset`)} className={getBtnClass("reset", "bg-[#DA373C]")}>
-        リセット
-      </button>
+      {/* メッセージ画面では選択中にリセットを非表示 */}
+      {(isChat || !isAnySelection) && (
+        <button onClick={() => handleMenuBarClick(`${modePrefix}_reset`)} className={getBtnClass("reset", "bg-[#DA373C]")}>
+          リセット
+        </button>
+      )}
 
       {showAction && (
         <button

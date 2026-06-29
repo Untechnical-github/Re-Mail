@@ -827,9 +827,8 @@ export function useMailApp() {
     }
   };
 
-  const handleBackgroundClick = () => { 
-    if (modal || contextMenu) return; 
-    if (selectionMode !== "none") safeBack(); 
+  const handleBackgroundClick = () => {
+    // 背景クリックによる選択モードのキャンセルは廃止
   };
 
   const toggleSelection = (id: string) => setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
