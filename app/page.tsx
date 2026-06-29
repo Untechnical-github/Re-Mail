@@ -198,8 +198,8 @@ export default function Home() {
               }
 
               return (
-                <div key={sender} style={wrapperStyle} className="mb-1">
-                  <div 
+                <div key={sender} style={wrapperStyle} className="mb-1 group">
+                  <div
                     onClick={(e) => {
                       e.stopPropagation();
                       if (isActionGrayedOut) return;
@@ -207,17 +207,34 @@ export default function Home() {
                       else actions.openChat(sender);
                     }}
                     onContextMenu={(e) => { e.preventDefault(); actions.setContextMenu({ type: "chat", target: sender, x: e.clientX, y: e.clientY }); }}
-                    onTouchStart={(e) => { if (!state.hasMouse) refs.touchTimer.current = setTimeout(() => { actions.setContextMenu({ type: "chat", target: sender, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
+                    onTouchStart={(e) => { if (!state.hasMouse) refs.touchTimer.current = setTimeout(() => { actions.enterSelectionMode("chat", sender); }, 500); }}
                     onTouchEnd={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
                     onTouchMove={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
                     className={innerClass}
                     style={innerStyle}
                   >
-                    {state.selectionMode.startsWith("chat_") && (
-                      <div className={`w-4 h-4 mr-3 rounded-sm flex items-center justify-center border ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500'}`}>
-                        {isSelected && <div className="w-2 h-2 bg-white rounded-sm"></div>}
-                      </div>
-                    )}
+                    {/* チェックボックス: PC=ホバーで表示 / 選択モード中=常時表示 / モバイル=選択モード中のみ表示 */}
+                    <div
+                      className={`flex-shrink-0 w-4 h-4 mr-3 rounded-sm flex items-center justify-center border transition-opacity cursor-pointer
+                        ${isSelected ? 'bg-[#5865F2] border-[#5865F2] opacity-100'
+                          : state.selectionMode.startsWith("chat_")
+                            ? 'border-gray-500 opacity-100'
+                            : state.hasMouse
+                              ? 'border-gray-500 opacity-0 group-hover:opacity-100'
+                              : 'hidden'
+                        }`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (isActionGrayedOut) return;
+                        if (state.selectionMode.startsWith("chat_")) {
+                          actions.toggleSelection(sender);
+                        } else {
+                          actions.enterSelectionMode("chat", sender);
+                        }
+                      }}
+                    >
+                      {isSelected && <div className="w-2 h-2 bg-white rounded-sm"></div>}
+                    </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-baseline">
                         <div className="flex items-center gap-1 truncate pr-2">
@@ -366,24 +383,40 @@ export default function Home() {
                     const msgColor = isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isSent ? state.boxColors.sent : isArchive ? state.boxColors.archive : state.boxColors.inbox;
 
                     return (
-                      <div 
+                      <div
                         id={`msg-${email.id}`}
-                        key={email.id} 
+                        key={email.id}
                         onClick={(e) => {
-                          e.stopPropagation(); 
+                          e.stopPropagation();
                           if (isActionGrayedOut) return;
                           if (state.selectionMode.startsWith("msg_")) actions.toggleSelection(email.id);
                         }}
-                        className={`flex w-full mb-6 cursor-default transition ${isActionGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${isMe ? 'justify-end' : 'justify-start'}`}
+                        className={`flex w-full mb-6 cursor-default transition group ${isActionGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${isMe ? 'justify-end' : 'justify-start'}`}
                       >
-                        {state.selectionMode.startsWith("msg_") && (
-                          <div className="flex-shrink-0 w-8 flex justify-center pt-3 mr-2">
-                            <div className={`w-5 h-5 rounded-sm flex items-center justify-center border cursor-pointer ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500'}`}>
+                        {/* チェックボックス列: 選択モード=常時 / PC非選択=ホバーで表示 / モバイル非選択=非表示 */}
+                        {(state.selectionMode.startsWith("msg_") || state.hasMouse) && (
+                          <div
+                            className={`flex-shrink-0 w-8 flex justify-center pt-3 mr-2 cursor-pointer
+                              ${state.selectionMode.startsWith("msg_")
+                                ? 'opacity-100'
+                                : 'opacity-0 group-hover:opacity-100 transition-opacity'
+                              }`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (isActionGrayedOut) return;
+                              if (state.selectionMode.startsWith("msg_")) {
+                                actions.toggleSelection(email.id);
+                              } else {
+                                actions.enterSelectionMode("msg", email.id);
+                              }
+                            }}
+                          >
+                            <div className={`w-5 h-5 rounded-sm flex items-center justify-center border ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500 bg-[#2B2D31]'}`}>
                               {isSelected && <div className="w-2.5 h-2.5 bg-white rounded-sm"></div>}
                             </div>
                           </div>
                         )}
-                        
+
                         {!isMe && !state.selectionMode.startsWith("msg_") && (
                            <img src={`/api/avatar?name=${encodeURIComponent(email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown")}`} alt="" className="w-9 h-9 rounded-full mr-3 flex-shrink-0 mt-1 shadow-sm select-none pointer-events-none" />
                         )}
@@ -397,7 +430,7 @@ export default function Home() {
                               className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
                               style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', border: `2px solid ${msgColor}` }}
                               onContextMenu={(e) => { e.preventDefault(); actions.setContextMenu({ type: "msg", target: email, x: e.clientX, y: e.clientY }); }}
-                              onTouchStart={(e) => { if (!state.hasMouse) refs.touchTimer.current = setTimeout(() => { actions.setContextMenu({ type: "msg", target: email, x: window.innerWidth/2, y: window.innerHeight/2 }); }, 500); }}
+                              onTouchStart={(e) => { if (!state.hasMouse) refs.touchTimer.current = setTimeout(() => { actions.enterSelectionMode("msg", email.id); }, 500); }}
                               onTouchEnd={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
                               onTouchMove={() => refs.touchTimer.current && clearTimeout(refs.touchTimer.current)}
                            >

@@ -762,40 +762,67 @@ export function useMailApp() {
     // 追加読み込みはuseEffectベースの自動トリガー（chatNextPageToken変化で発火）に委ねる
   };
 
+  const enterSelectionMode = (type: "chat" | "msg", id: string) => {
+    const mode: SelectionMode = type === "chat" ? "chat_select" : "msg_select";
+    setSelectionMode(mode);
+    setSelectedIds([id]);
+    if (!hasPushedSelectRef.current) {
+      window.history.pushState({ action: "select" }, "", window.location.href);
+      hasPushedSelectRef.current = true;
+    }
+  };
+
   const handleMenuBarClick = (mode: SelectionMode) => {
+    const isGenericSelect = selectionMode === "chat_select" || selectionMode === "msg_select";
+    const targetMode = mode.startsWith("chat") ? "chat" : "msg";
+
     if (mode === "chat_reset" || mode === "msg_reset") {
       setResetOptions({ pin: true, hide: true, name: true });
       setModal({ type: "confirm_reset", targetMode: mode.startsWith("chat") ? "all_chats" : "current_chat", targets: mode === "msg_reset" ? [selectedSender!] : [] });
-      setSelectionMode("none"); 
-      window.history.pushState({ action: "modal" }, "", window.location.href); 
+      if (!isGenericSelect) setSelectionMode("none");
+      window.history.pushState({ action: "modal" }, "", window.location.href);
+      return;
+    }
+
+    if (isGenericSelect) {
+      if (selectedIds.length === 0) return;
+      let actionType: "pin" | "hide" | "delete" | "move" | null = null;
+      if (mode.includes("pin")) actionType = "pin";
+      else if (mode.includes("hide")) actionType = "hide";
+      else if (mode.includes("delete")) actionType = "delete";
+      else if (mode.includes("move")) actionType = "move";
+
+      if (actionType) {
+        setModal({ type: "categorized_action_select", targetMode, targets: selectedIds, action: actionType } as any);
+        window.history.pushState({ action: "modal" }, "", window.location.href);
+      }
       return;
     }
 
     if (selectionMode === mode) {
-      if (selectedIds.length === 0) { safeBack(); return; } 
-      const targetMode = mode.startsWith("chat") ? "chat" : "msg";
+      if (selectedIds.length === 0) { safeBack(); return; }
       let actionType: any = "confirm_hide";
-      if (mode.includes("delete")) actionType = "confirm_delete"; 
-      if (mode.includes("pin")) actionType = "confirm_pin_execute"; 
+      if (mode.includes("delete")) actionType = "confirm_delete";
+      if (mode.includes("pin")) actionType = "confirm_pin_execute";
       if (mode.includes("move")) actionType = "confirm_move";
-      
+
       setModal({ type: actionType, targetMode, targets: selectedIds });
-      window.history.replaceState({ action: "modal" }, "", window.location.href); 
+      window.history.replaceState({ action: "modal" }, "", window.location.href);
     } else {
-      if (mode.includes("move")) { 
-        setModal({ type: "select_move_dest", targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] }); 
-        window.history.pushState({ action: "modal" }, "", window.location.href); 
-        return; 
+      if (mode.includes("move")) {
+        setModal({ type: "select_move_dest", targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] });
+        window.history.pushState({ action: "modal" }, "", window.location.href);
+        return;
       }
-      if (mode.includes("pin")) { 
-        setModal({ type: "select_pin_type" as any, targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] }); 
-        window.history.pushState({ action: "modal" }, "", window.location.href); 
-        return; 
+      if (mode.includes("pin")) {
+        setModal({ type: "select_pin_type" as any, targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] });
+        window.history.pushState({ action: "modal" }, "", window.location.href);
+        return;
       }
       setSelectionMode(mode); setSelectedIds([]);
-      if (!hasPushedSelectRef.current) { 
-        window.history.pushState({ action: "select" }, "", window.location.href); 
-        hasPushedSelectRef.current = true; 
+      if (!hasPushedSelectRef.current) {
+        window.history.pushState({ action: "select" }, "", window.location.href);
+        hasPushedSelectRef.current = true;
       }
     }
   };
@@ -1163,7 +1190,7 @@ export function useMailApp() {
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,
       handleSend, executePin, executeConfirmedAction, handleContextMenuAction,
-      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, setPinType
+      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, setPinType, enterSelectionMode
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
     refs: { touchTimer, hasPushedSelectRef, hasPushedSearchRef, activeLoadRef, searchTimeoutRef }

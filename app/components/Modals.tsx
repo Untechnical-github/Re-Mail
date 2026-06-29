@@ -1,4 +1,321 @@
+import { useState } from "react";
 import { SelectionMode } from "../types/mail";
+
+// 選択アイテムを場所ごとに振り分けて確認させる中間モーダル
+function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
+  const action = modal.action as "pin" | "hide" | "delete" | "move";
+  const targetMode = modal.targetMode as "chat" | "msg";
+  const targets = modal.targets as string[];
+
+  const { knownBoxes, chatConfigs } = app.state;
+  const { groupedEmails, allUniqueEmails } = app.computed;
+  const { setModal, setMoveDestination, setSelectedIds, safeBack } = app.actions;
+
+  const BOX_LABELS: Record<string, string> = {
+    INBOX: "受信箱", ARCHIVE: "アーカイブ", SENT: "送信済み", SPAM: "迷惑メール", TRASH: "ゴミ箱"
+  };
+  const BOX_ORDER = ["INBOX", "ARCHIVE", "SENT", "SPAM", "TRASH"];
+
+  // アクションごとの制限判定（ゴミ箱/迷惑メール=ピン留め・非表示不可、送信済み=移動不可、ゴミ箱/送信済み=削除不可）
+  const isItemRestricted = (id: string): boolean => {
+    if (targetMode === "chat") {
+      const kb: string[] = knownBoxes?.[id] || [];
+      if (action === "pin" || action === "hide")
+        return kb.length > 0 && kb.every((b: string) => b === "TRASH" || b === "SPAM");
+      if (action === "delete")
+        return kb.length > 0 && kb.every((b: string) => b === "TRASH" || b === "SENT");
+      if (action === "move")
+        return kb.includes("SENT") && kb.length === 1;
+    } else {
+      const msg = allUniqueEmails.find((e: any) => e.id === id);
+      if (!msg) return true;
+      const isTrash = msg.labelIds?.includes("TRASH");
+      const isSpam = msg.labelIds?.includes("SPAM");
+      const isSent = msg.labelIds?.includes("SENT") || msg.isMe;
+      if (action === "pin" || action === "hide") return isTrash || isSpam;
+      if (action === "delete") return isTrash || isSent;
+      if (action === "move") return isSent;
+    }
+    return false;
+  };
+
+  // チェック状態: 制限のないアイテムのみ初期チェック
+  const [checkedIds, setCheckedIds] = useState<string[]>(() =>
+    targets.filter(id => !isItemRestricted(id))
+  );
+  const [localDest, setLocalDest] = useState<string | null>(null);
+
+  const toggleCheck = (id: string) => {
+    if (isItemRestricted(id)) return;
+    setCheckedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const canProceed = checkedIds.length > 0 && (action !== "move" || !!localDest);
+
+  const handleNext = () => {
+    if (!canProceed) return;
+    setSelectedIds(checkedIds);
+    if (action === "move") {
+      setMoveDestination(localDest as any);
+      setModal({ type: "confirm_move", targetMode, targets: checkedIds });
+    } else if (action === "pin") {
+      setModal({ type: "select_pin_type", targetMode, targets: checkedIds } as any);
+    } else if (action === "hide") {
+      setModal({ type: "confirm_hide", targetMode, targets: checkedIds });
+    } else if (action === "delete") {
+      setModal({ type: "confirm_delete", targetMode, targets: checkedIds });
+    }
+  };
+
+  const actionTitle: Record<string, string> = {
+    pin: "ピン留めするアイテムを選択",
+    hide: "非表示にするアイテムを選択",
+    delete: "削除するアイテムを選択",
+    move: "移動するアイテムを選択",
+  };
+  const restrictionNote: Record<string, string> = {
+    pin: "迷惑メール・ゴミ箱のアイテムは対象外（自動的に外れます）",
+    hide: "迷惑メール・ゴミ箱のアイテムは対象外（自動的に外れます）",
+    delete: "送信済み・ゴミ箱のアイテムは対象外（自動的に外れます）",
+    move: "送信済みメールは移動の対象外（自動的に外れます）",
+  };
+
+  // ---- チャットモード: チャット単位で一覧表示 ----
+  if (targetMode === "chat") {
+    return (
+      <div className="flex flex-col max-h-[80vh]">
+        <div className="p-4 border-b border-[#1E1F22]">
+          <h2 className="text-lg font-bold text-white">{actionTitle[action]}</h2>
+          <p className="text-xs text-gray-400 mt-1">{restrictionNote[action]}</p>
+        </div>
+
+        {action === "move" && (
+          <div className="p-3 border-b border-[#1E1F22]">
+            <div className="text-xs font-bold text-gray-400 mb-2">移動先を選択</div>
+            <div className="flex flex-wrap gap-2">
+              {["INBOX", "ARCHIVE", "SPAM", "TRASH"].map(dest => (
+                <button
+                  key={dest}
+                  onClick={() => setLocalDest(dest)}
+                  className={`px-3 py-1.5 rounded text-xs font-bold border transition
+                    ${localDest === dest
+                      ? "bg-[#5865F2] border-[#5865F2] text-white"
+                      : "bg-[#1E1F22] border-[#35373C] text-gray-400 hover:border-[#5865F2] hover:text-white"
+                    }`}
+                >
+                  {BOX_LABELS[dest]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="overflow-y-auto flex-1 p-2 space-y-1">
+          {/* 場所ごとにグループ表示 */}
+          {BOX_ORDER.filter(box => targets.some(id => {
+            const kb: string[] = knownBoxes?.[id] || [];
+            return box === "SENT" ? kb.includes("SENT") :
+              box === "INBOX" ? kb.includes("INBOX") :
+              box === "ARCHIVE" ? kb.includes("ARCHIVE") :
+              box === "SPAM" ? kb.includes("SPAM") :
+              box === "TRASH" ? kb.includes("TRASH") : false;
+          })).map(box => {
+            const boxTargets = targets.filter(id => {
+              const kb: string[] = knownBoxes?.[id] || [];
+              return kb.includes(box);
+            });
+            if (boxTargets.length === 0) return null;
+
+            const isBoxRestricted = (() => {
+              if (action === "pin" || action === "hide") return box === "TRASH" || box === "SPAM";
+              if (action === "delete") return box === "TRASH" || box === "SENT";
+              if (action === "move") return box === "SENT";
+              return false;
+            })();
+
+            return (
+              <div key={box} className="mb-2">
+                <div className={`flex items-center gap-2 px-2 py-1 text-xs font-bold ${isBoxRestricted ? "text-gray-600" : "text-gray-400"}`}>
+                  {BOX_LABELS[box]} ({boxTargets.length}件){isBoxRestricted && <span className="text-gray-700">— 対象外</span>}
+                </div>
+                {boxTargets.map(id => {
+                  const restricted = isItemRestricted(id);
+                  const checked = checkedIds.includes(id);
+                  const kb: string[] = knownBoxes?.[id] || [];
+                  const allBoxes = kb.map((b: string) => BOX_LABELS[b] || b).join("・");
+                  return (
+                    <label
+                      key={id}
+                      className={`flex items-center gap-3 px-3 py-2 rounded transition
+                        ${restricted ? "opacity-40 cursor-not-allowed" : "hover:bg-[#2B2D31] cursor-pointer"}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={restricted}
+                        onChange={() => toggleCheck(id)}
+                        className="accent-[#5865F2] flex-shrink-0"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm truncate text-gray-200">{chatConfigs[id]?.customName || id}</div>
+                        {allBoxes && <div className="text-xs text-gray-500">{allBoxes}</div>}
+                      </div>
+                      {restricted && <span className="text-xs text-gray-600 flex-shrink-0">対象外</span>}
+                    </label>
+                  );
+                })}
+              </div>
+            );
+          })}
+
+          {/* knownBoxes に情報がないチャットのフォールバック */}
+          {targets.filter(id => {
+            const kb: string[] = knownBoxes?.[id] || [];
+            return kb.length === 0;
+          }).length > 0 && (
+            <div className="mb-2">
+              <div className="px-2 py-1 text-xs font-bold text-gray-400">その他</div>
+              {targets.filter(id => (knownBoxes?.[id] || []).length === 0).map(id => {
+                const restricted = isItemRestricted(id);
+                const checked = checkedIds.includes(id);
+                return (
+                  <label
+                    key={id}
+                    className={`flex items-center gap-3 px-3 py-2 rounded transition
+                      ${restricted ? "opacity-40 cursor-not-allowed" : "hover:bg-[#2B2D31] cursor-pointer"}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={restricted}
+                      onChange={() => toggleCheck(id)}
+                      className="accent-[#5865F2] flex-shrink-0"
+                    />
+                    <span className="text-sm truncate text-gray-200 flex-1">{chatConfigs[id]?.customName || id}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 border-t border-[#1E1F22] flex justify-end gap-3">
+          <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+          <button
+            onClick={handleNext}
+            disabled={!canProceed}
+            className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-[#3f4147] disabled:text-gray-500 transition"
+          >
+            次へ ({checkedIds.length})
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- メッセージモード: メールを場所ごとにグループ化 ----
+  const getBox = (msg: any): string => {
+    if (msg.labelIds?.includes("TRASH")) return "TRASH";
+    if (msg.labelIds?.includes("SPAM")) return "SPAM";
+    if (msg.labelIds?.includes("SENT") || msg.isMe) return "SENT";
+    if (msg.labelIds?.includes("INBOX")) return "INBOX";
+    return "ARCHIVE";
+  };
+
+  const grouped: Record<string, any[]> = {};
+  targets.forEach(id => {
+    const msg = allUniqueEmails.find((e: any) => e.id === id);
+    if (!msg) return;
+    const box = getBox(msg);
+    if (!grouped[box]) grouped[box] = [];
+    grouped[box].push(msg);
+  });
+
+  return (
+    <div className="flex flex-col max-h-[80vh]">
+      <div className="p-4 border-b border-[#1E1F22]">
+        <h2 className="text-lg font-bold text-white">{actionTitle[action]}</h2>
+        <p className="text-xs text-gray-400 mt-1">{restrictionNote[action]}</p>
+      </div>
+
+      {action === "move" && (
+        <div className="p-3 border-b border-[#1E1F22]">
+          <div className="text-xs font-bold text-gray-400 mb-2">移動先を選択</div>
+          <div className="flex flex-wrap gap-2">
+            {["INBOX", "ARCHIVE", "SPAM", "TRASH"].map(dest => (
+              <button
+                key={dest}
+                onClick={() => setLocalDest(dest)}
+                className={`px-3 py-1.5 rounded text-xs font-bold border transition
+                  ${localDest === dest
+                    ? "bg-[#5865F2] border-[#5865F2] text-white"
+                    : "bg-[#1E1F22] border-[#35373C] text-gray-400 hover:border-[#5865F2] hover:text-white"
+                  }`}
+              >
+                {BOX_LABELS[dest]}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="overflow-y-auto flex-1 p-2">
+        {BOX_ORDER.filter(box => grouped[box]?.length > 0).map(box => {
+          const msgs = grouped[box];
+          const isBoxRestricted = (() => {
+            if (action === "pin" || action === "hide") return box === "TRASH" || box === "SPAM";
+            if (action === "delete") return box === "TRASH" || box === "SENT";
+            if (action === "move") return box === "SENT";
+            return false;
+          })();
+
+          return (
+            <div key={box} className="mb-3">
+              <div className={`flex items-center gap-2 px-2 py-1 text-xs font-bold ${isBoxRestricted ? "text-gray-600" : "text-gray-400"}`}>
+                {BOX_LABELS[box]} ({msgs.length}件){isBoxRestricted && <span className="text-gray-700">— 対象外</span>}
+              </div>
+              {msgs.map((msg: any) => {
+                const restricted = isBoxRestricted;
+                const checked = checkedIds.includes(msg.id);
+                return (
+                  <label
+                    key={msg.id}
+                    className={`flex items-center gap-3 px-3 py-2 rounded transition
+                      ${restricted ? "opacity-40 cursor-not-allowed" : "hover:bg-[#2B2D31] cursor-pointer"}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={restricted}
+                      onChange={() => toggleCheck(msg.id)}
+                      className="accent-[#5865F2] flex-shrink-0"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm truncate text-gray-200">{msg.subject || "(件名なし)"}</div>
+                      <div className="text-xs text-gray-500">{new Date(msg.date).toLocaleDateString("ja-JP")}</div>
+                    </div>
+                    {restricted && <span className="text-xs text-gray-600 flex-shrink-0">対象外</span>}
+                  </label>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="p-4 border-t border-[#1E1F22] flex justify-end gap-3">
+        <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+        <button
+          onClick={handleNext}
+          disabled={!canProceed}
+          className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-[#3f4147] disabled:text-gray-500 transition"
+        >
+          次へ ({checkedIds.length})
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function Modals({ app }: { app: any }) {
   // ★修正: state から knownBoxes を受け取る
@@ -34,7 +351,11 @@ export function Modals({ app }: { app: any }) {
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
       <div className="bg-[#313338] rounded-md shadow-2xl w-full max-w-sm border border-[#1E1F22]">
-        
+
+        {modal.type === "categorized_action_select" && (
+          <CategorizedActionSelect app={app} modal={modal} />
+        )}
+
         {modal.type === "select_pin_type" && (() => {
           const isChatMode = modal.targetMode === "chat";
           const existingForcePinnedChats = Object.keys(chatConfigs).filter(k => !k.includes("-") && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch);
