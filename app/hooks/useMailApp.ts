@@ -451,10 +451,8 @@ export function useMailApp() {
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
       searchTimeoutRef.current = setTimeout(async () => {
         await saveGlobalSettings(checkInbox, checkArchive, checkSpam, checkTrash, checkSent);
-        let loadedEmails = emailsRef.current;
-        
-        if (!isCancelled) setChatStatusMessage(null);
-        const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, false, loadedEmails, () => isCancelled, false);
+        if (!isCancelled) { setEmails([]); setChatStatusMessage(null); }
+        const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, false, [], () => isCancelled, true);
         if (!isCancelled) setChatStatusMessage(null);
         
         if (selectedSender && !isCancelled && res.success) {
