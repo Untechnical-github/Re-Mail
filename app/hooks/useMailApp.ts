@@ -1130,7 +1130,7 @@ export function useMailApp() {
     actions: {
       setSearchKeyword, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent,
       setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
-      setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig,
+      setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,
       handleSend, executePin, executeConfirmedAction,
       openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, enterSelectionMode, executeBatchMove

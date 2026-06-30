@@ -16,7 +16,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
   const { selectionMode, selectedIds } = app.state;
   const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode, setRenameInput,
-          setReplySubject, setReplyBody, setReplyToMessage, safeBack } = app.actions;
+          setReplySubject, setReplyBody, setReplyToMessage, safeBack, enterSelectionMode } = app.actions;
 
   const isAnySelection = selectionMode === `${modePrefix}_select`;
   const hasItems = selectedIds.length > 0;
@@ -64,10 +64,11 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     ? "flex-1 min-w-[54px] py-1.5 text-[10px] font-bold rounded transition"
     : "px-2.5 py-1 text-xs font-bold rounded transition";
 
-  const getBtnClass = (action: string, activeBg: string) => {
+  const getBtnClass = (action: string, danger = false) => {
     const disabled = isDisabled(action);
+    const hoverClass = danger ? "hover:bg-[#DA373C]" : "hover:bg-[#5865F2]";
     const colorClass = !disabled
-      ? `bg-[#2B2D31] text-gray-200 border border-[#4752C4] hover:${activeBg} hover:text-white`
+      ? `bg-[#2B2D31] text-gray-200 border border-[#4752C4] ${hoverClass} hover:text-white`
       : "bg-[#1E1F22] text-gray-400";
     return `${btnBase} ${colorClass} ${disabled ? "opacity-30 pointer-events-none grayscale" : ""}`;
   };
@@ -84,12 +85,12 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const handleSelectAll = () => {
     if (isChat) {
       const allIds = app.computed.senderList as string[];
+      if (!isAnySelection) enterSelectionMode("chat", allIds[0]);
       setSelectedIds(allIds);
-      if (!isAnySelection) setSelectionMode("chat_select");
     } else {
       const allIds = ((app.computed.groupedEmails[app.state.selectedSender] || []) as any[]).map((e: any) => e.id);
+      if (!isAnySelection) enterSelectionMode("msg", allIds[0]);
       setSelectedIds(allIds);
-      if (!isAnySelection) setSelectionMode("msg_select");
     }
   };
 
@@ -173,28 +174,28 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
       )}
 
       {/* ピン留め */}
-      <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin", "bg-[#5865F2]")}>
+      <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin")}>
         {renderText("ピン留め")}
       </button>
 
       {/* 移動 */}
-      <button onClick={() => handleMenuBarClick(`${modePrefix}_move`)} className={getBtnClass("move", "bg-[#5865F2]")}>
+      <button onClick={() => handleMenuBarClick(`${modePrefix}_move`)} className={getBtnClass("move")}>
         {renderText("移動")}
       </button>
 
       {/* 非表示 */}
-      <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>
+      <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide")}>
         {renderText("非表示")}
       </button>
 
       {/* 削除 */}
-      <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", "bg-[#DA373C]")}>
+      <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", true)}>
         {renderText("削除")}
       </button>
 
       {/* リセット: チャット画面のみ、選択時のみ有効 */}
       {isChat && (
-        <button onClick={() => handleMenuBarClick("chat_reset")} className={getBtnClass("reset", "bg-[#DA373C]")}>
+        <button onClick={() => handleMenuBarClick("chat_reset")} className={getBtnClass("reset", true)}>
           {renderText("リセット")}
         </button>
       )}

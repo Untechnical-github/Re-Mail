@@ -236,12 +236,14 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
 
 function ChatHideConfirm({ app, modal }: { app: any; modal: NonNullable<any> }) {
   const [unhideOnNew, setUnhideOnNew] = useState(false);
-  const { safeBack, updateChatConfig } = app.actions;
+  const { safeBack, updateChatConfig, setSelectedSender } = app.actions;
+  const { selectedSender } = app.state;
 
   const handleExecute = () => {
     modal.targets.forEach((target: string) => {
       updateChatConfig(target, { isHidden: true, hiddenAtDate: new Date().toISOString(), unhideOnNew });
     });
+    if (modal.targets.includes(selectedSender)) setSelectedSender(null);
     safeBack();
   };
 
