@@ -396,13 +396,13 @@ export default function Home() {
                         className={`flex w-full mb-6 cursor-default transition ${isActionGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${isMe ? 'justify-end' : 'justify-start'}`}
                       >
                         {/* チェックボックス列: 常時表示 */}
-                        <div
-                          className="flex-shrink-0 w-8 flex justify-center pt-3 mr-2 cursor-pointer"
+                        <div className="flex-shrink-0 w-8 flex justify-center pt-3 mr-2">
+                          <div
+                            className={`w-5 h-5 rounded-sm flex items-center justify-center border cursor-pointer ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500 bg-[#2B2D31]'}`}
                             onClick={(e) => {
                               e.stopPropagation();
                               if (isActionGrayedOut) return;
                               if (e.shiftKey && lastMsgIdxRef.current >= 0 && state.selectionMode.startsWith("msg_")) {
-                                // Shift+クリックで範囲選択
                                 const allMsgs = computed.groupedEmails[state.selectedSender!] || [];
                                 const min = Math.min(msgIdx, lastMsgIdxRef.current);
                                 const max = Math.max(msgIdx, lastMsgIdxRef.current);
@@ -418,10 +418,9 @@ export default function Home() {
                               }
                             }}
                           >
-                            <div className={`w-5 h-5 rounded-sm flex items-center justify-center border ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500 bg-[#2B2D31]'}`}>
-                              {isSelected && <div className="w-2.5 h-2.5 bg-white rounded-sm"></div>}
-                            </div>
+                            {isSelected && <div className="w-2.5 h-2.5 bg-white rounded-sm"></div>}
                           </div>
+                        </div>
 
                         {!isMe && !state.selectionMode.startsWith("msg_") && (
                            <img src={`/api/avatar?name=${encodeURIComponent(email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown")}`} alt="" className="w-9 h-9 rounded-full mr-3 flex-shrink-0 mt-1 shadow-sm select-none pointer-events-none" />
