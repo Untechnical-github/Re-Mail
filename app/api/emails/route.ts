@@ -53,18 +53,32 @@ function decodeMimeHeader(header: string): string {
   });
 }
 
-function getBody(payload: any): string {
+function getTextBody(payload: any): string {
   if (payload.body && payload.body.data) return decodeBase64Url(payload.body.data);
   if (payload.parts) {
     for (const part of payload.parts) {
       if (part.mimeType === "text/plain" && part.body && part.body.data) return decodeBase64Url(part.body.data);
       if (part.parts) {
-        const nestedBody = getBody(part);
+        const nestedBody = getTextBody(part);
         if (nestedBody) return nestedBody;
       }
     }
     for (const part of payload.parts) {
       if (part.mimeType === "text/html" && part.body && part.body.data) return decodeBase64Url(part.body.data);
+    }
+  }
+  return "";
+}
+
+function getHtmlBody(payload: any): string {
+  if (payload.mimeType === "text/html" && payload.body?.data) return decodeBase64Url(payload.body.data);
+  if (payload.parts) {
+    for (const part of payload.parts) {
+      if (part.mimeType === "text/html" && part.body?.data) return decodeBase64Url(part.body.data);
+      if (part.parts) {
+        const nested = getHtmlBody(part);
+        if (nested) return nested;
+      }
     }
   }
   return "";
@@ -77,18 +91,38 @@ function cleanseBody(text: string): string {
   cleaned = cleaned.replace(/<br\s*\/?>/gi, "\n");
   cleaned = cleaned.replace(/<\/p>|<\/div>|<\/tr>|<\/li>/gi, "\n");
   cleaned = cleaned.replace(/<[^>]+>/g, "");
-  cleaned = cleaned.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&zwnj;/g, ""); 
-  cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
+  cleaned = cleaned.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&zwnj;/g, "");
+  // 各行をトリム → 空白行のみの行を空行に統一 → 連続する空行を1行に圧縮
+  cleaned = cleaned.split("\n").map(l => l.trim()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
   return cleaned;
 }
 
 export async function GET(request: Request) {
-  const session = await auth() as any; 
+  const session = await auth() as any;
   if (!session || !session.accessToken || session.error === "RefreshAccessTokenError") {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const { searchParams } = new URL(request.url);
+
+  // 単一メッセージのHTML本文取得（モーダル表示用）
+  const messageId = searchParams.get("messageId");
+  if (messageId && searchParams.get("html") === "true") {
+    if (messageId.startsWith("fake-")) return NextResponse.json({ htmlBody: null, hasHtml: false });
+    try {
+      const detailRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?fields=payload`,
+        { headers: { Authorization: `Bearer ${session.accessToken}` } }
+      );
+      if (!detailRes.ok) return NextResponse.json({ htmlBody: null, hasHtml: false });
+      const message = await detailRes.json();
+      const htmlBody = getHtmlBody(message.payload);
+      return NextResponse.json({ htmlBody: htmlBody || null, hasHtml: !!htmlBody });
+    } catch {
+      return NextResponse.json({ htmlBody: null, hasHtml: false });
+    }
+  }
+
   const maxResults = searchParams.get("maxResults") || "10";
   const q = searchParams.get("q") || "";
   const includeTrash = searchParams.get("includeTrash") === "true";
@@ -140,7 +174,7 @@ export async function GET(request: Request) {
       const to = decodeMimeHeader(getHeader(headers, "To"));
       const date = getHeader(headers, "Date");
       const labelIds = message.labelIds || []; 
-      const rawBody = getBody(payload) || message.snippet || "";
+      const rawBody = getTextBody(payload) || message.snippet || "";
       const cleansedBody = cleanseBody(rawBody);
       
       return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds };

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
@@ -265,6 +265,99 @@ function ChatHideConfirm({ app, modal }: { app: any; modal: NonNullable<any> }) 
       <div className="flex justify-end gap-3">
         <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
         <button onClick={handleExecute} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">非表示にする</button>
+      </div>
+    </div>
+  );
+}
+
+function prepareHtml(raw: string): string {
+  const inject =
+    '<base target="_blank">' +
+    '<style>*{box-sizing:border-box;max-width:100%;}img{height:auto;}body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}</style>';
+  if (/<head[\s>]/i.test(raw)) {
+    return raw.replace(/(<head[^>]*>)/i, `$1${inject}`);
+  }
+  return `<!DOCTYPE html><html><head>${inject}</head><body>${raw}</body></html>`;
+}
+
+export function EmailModal({ app }: { app: any }) {
+  const { emailModal } = app.state;
+  const { closeEmailModal } = app.actions;
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  useEffect(() => {
+    if (!emailModal || emailModal.isLoading || !emailModal.htmlBody) return;
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (doc) {
+      doc.open();
+      doc.write(prepareHtml(emailModal.htmlBody));
+      doc.close();
+    }
+  }, [emailModal?.htmlBody, emailModal?.isLoading]);
+
+  if (!emailModal) return null;
+
+  const { email, htmlBody, isLoading } = emailModal;
+  const showHtml = !isLoading && htmlBody;
+  const showText = !isLoading && !htmlBody;
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-2 sm:p-4"
+      onClick={closeEmailModal}
+    >
+      <div
+        className="bg-[#2B2D31] rounded-lg shadow-2xl w-full max-w-3xl flex flex-col border border-[#1E1F22]"
+        style={{ maxHeight: "92dvh" }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* ヘッダー */}
+        <div className="flex items-start gap-3 p-4 border-b border-[#1E1F22] flex-shrink-0">
+          <div className="flex-1 min-w-0">
+            <div className="font-bold text-white text-sm leading-snug break-words">
+              {email.subject || "(件名なし)"}
+            </div>
+            <div className="text-[11px] text-gray-400 mt-1 truncate">
+              {email.from}
+            </div>
+            <div className="text-[11px] text-gray-500">
+              {new Date(email.date).toLocaleString("ja-JP")}
+            </div>
+          </div>
+          <button
+            onClick={closeEmailModal}
+            className="text-gray-400 hover:text-white text-xl font-bold flex-shrink-0 leading-none"
+          >
+            ×
+          </button>
+        </div>
+
+        {/* コンテンツ */}
+        <div className="flex-1 min-h-0 relative">
+          {isLoading && (
+            <div className="flex items-center justify-center h-full min-h-[200px] text-gray-400 text-sm">
+              読み込み中...
+            </div>
+          )}
+          {showHtml && (
+            <iframe
+              ref={iframeRef}
+              sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
+              className="w-full border-none block bg-white"
+              style={{ minHeight: "60dvh", maxHeight: "calc(92dvh - 100px)" }}
+              title="メール本文"
+            />
+          )}
+          {showText && (
+            <div className="overflow-y-auto p-4" style={{ maxHeight: "calc(92dvh - 100px)" }}>
+              <pre className="text-gray-200 text-sm whitespace-pre-wrap break-words font-sans leading-relaxed select-text">
+                {email.body}
+              </pre>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

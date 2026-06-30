@@ -4,7 +4,7 @@ import { useRef } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar } from "./components/ui";
-import { Modals } from "./components/Modals";
+import { Modals, EmailModal } from "./components/Modals";
 
 export default function Home() {
   const app = useMailApp();
@@ -28,6 +28,7 @@ export default function Home() {
   return (
     <div className="flex h-[100dvh] w-full bg-[#313338] overflow-hidden text-gray-200 relative select-none" onClick={actions.handleBackgroundClick}>
 <Modals app={app} />
+<EmailModal app={app} />
 
       {showChatList && (
         <aside className={`${state.isMobile ? 'w-full' : 'w-[320px] border-r'} border-[#1E1F22] bg-[#2B2D31] flex flex-col h-full min-h-0 cursor-pointer`}>
@@ -388,6 +389,7 @@ export default function Home() {
                     const msgColor = isSent ? state.boxColors.sent : isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isArchive ? state.boxColors.archive : state.boxColors.inbox;
 
                     const msgIdx = computed.groupedEmails[state.selectedSender!].indexOf(email);
+                    const isCollapsed = state.collapseLinesCount !== null && !state.expandedMsgIds.includes(email.id);
                     return (
                       <div
                         id={`msg-${email.id}`}
@@ -448,6 +450,13 @@ export default function Home() {
                                     actions.toggleSelection(email.id);
                                     lastMsgIdxRef.current = msgIdx;
                                   }
+                                } else {
+                                  // 折りたたみ時はまず展開、展開済みならモーダルを開く
+                                  if (isCollapsed) {
+                                    actions.toggleMsgExpand(email.id);
+                                  } else {
+                                    actions.openEmailModal(email);
+                                  }
                                 }
                               }}
                               onTouchStart={() => {
@@ -472,7 +481,19 @@ export default function Home() {
                               {email.subject && !email.subject.startsWith("Re:") && (
                                 <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={email.subject} highlight={state.searchKeyword} /></div>
                               )}
-                              <HighlightText text={email.body} highlight={state.searchKeyword} />
+                              <div
+                                style={isCollapsed && state.collapseLinesCount ? {
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: state.collapseLinesCount,
+                                  WebkitBoxOrient: 'vertical',
+                                  overflow: 'hidden',
+                                } : undefined}
+                              >
+                                <HighlightText text={email.body} highlight={state.searchKeyword} />
+                              </div>
+                              {isCollapsed && (
+                                <div className="text-xs mt-1.5 opacity-60">もっと見る...</div>
+                              )}
                            </div>
                         </div>
 

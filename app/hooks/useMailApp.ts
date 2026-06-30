@@ -51,6 +51,16 @@ export function useMailApp() {
   const [moveDestination, setMoveDestination] = useState<"INBOX" | "ARCHIVE" | "SPAM" | "TRASH" | null>(null);
   const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
 
+  // メッセージ折りたたみ・モーダル関連
+  // collapseLinesCount: null = 折りたたまない（設定画面から変更予定）
+  const [collapseLinesCount] = useState<number | null>(null);
+  const [expandedMsgIds, setExpandedMsgIds] = useState<string[]>([]);
+  const [emailModal, setEmailModal] = useState<{
+    email: any;
+    htmlBody: string | null;
+    isLoading: boolean;
+  } | null>(null);
+
   const [boxColors, setBoxColors] = useState({
     inbox: "#5865F2", 
     archive: "#95A5A6",
@@ -69,6 +79,9 @@ export function useMailApp() {
 
   const emailsRef = useRef(emails);
   useEffect(() => { emailsRef.current = emails; }, [emails]);
+
+  // チャットを閉じたら展開状態をリセット
+  useEffect(() => { setExpandedMsgIds([]); }, [selectedSender]);
   useEffect(() => { currentNextPageTokenRef.current = currentNextPageToken; }, [currentNextPageToken]);
 
   // チャット単位の LRU キャッシュ（チャット切り替え時に復元）
@@ -260,6 +273,7 @@ export function useMailApp() {
     const handlePopState = (e: PopStateEvent) => {
       const state = e.state;
       setModal(null);
+      setEmailModal(null);
       if (!state || state.action !== "select") { setSelectionMode("none"); setSelectedIds([]); hasPushedSelectRef.current = false; } else { hasPushedSelectRef.current = true; }
       if (!state || state.action !== "search") { setSearchKeyword(""); hasPushedSearchRef.current = false; } else { hasPushedSearchRef.current = true; }
       if (window.innerWidth < 768 && window.location.hash !== '#chat') {
@@ -840,6 +854,34 @@ export function useMailApp() {
     }
   };
 
+  const openEmailModal = async (email: any) => {
+    setEmailModal({ email, htmlBody: null, isLoading: true });
+    window.history.pushState({ action: "modal" }, "", window.location.href);
+    if (email.id.startsWith("fake-")) {
+      setEmailModal({ email, htmlBody: null, isLoading: false });
+      return;
+    }
+    try {
+      const res = await fetch(`/api/emails?messageId=${email.id}&html=true`);
+      if (res.ok) {
+        const data = await res.json();
+        setEmailModal(prev => prev ? { ...prev, htmlBody: data.htmlBody || null, isLoading: false } : null);
+      } else {
+        setEmailModal(prev => prev ? { ...prev, isLoading: false } : null);
+      }
+    } catch {
+      setEmailModal(prev => prev ? { ...prev, isLoading: false } : null);
+    }
+  };
+
+  const closeEmailModal = () => {
+    setEmailModal(null);
+  };
+
+  const toggleMsgExpand = (id: string) => {
+    setExpandedMsgIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
   const handleSend = async () => {
     if (!selectedSender || !replyBody.trim()) return;
     setIsSending(true);
@@ -1244,6 +1286,7 @@ export function useMailApp() {
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
       resetOptions, moveDestination, revealedCrossPrompts, boxColors,
       chatCacheLimit,
+      collapseLinesCount, expandedMsgIds, emailModal,
     },
     actions: {
       setSearchKeyword, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent,
@@ -1253,6 +1296,7 @@ export function useMailApp() {
       handleSend, executePin, executeConfirmedAction,
       openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, enterSelectionMode, executeBatchMove,
       setChatCacheLimit,
+      openEmailModal, closeEmailModal, toggleMsgExpand,
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
     refs: { touchTimer, hasPushedSelectRef, hasPushedSearchRef, activeLoadRef, searchTimeoutRef }
