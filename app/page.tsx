@@ -17,12 +17,14 @@ export default function Home() {
   const isDragChatRef = useRef(false);
   const isDragMsgRef = useRef(false);
 
-  // 選択解除時に pull-to-refresh を復元
+  // 選択中は pull-to-refresh を無効化、解除で復元
   useEffect(() => {
     if (state.selectionMode === "none") {
       document.body.style.overscrollBehavior = "";
       isDragChatRef.current = false;
       isDragMsgRef.current = false;
+    } else {
+      document.body.style.overscrollBehavior = "none";
     }
   }, [state.selectionMode]);
 
@@ -204,7 +206,6 @@ export default function Home() {
                           } else {
                             actions.setSelectedIds((prev: string[]) => prev.includes(sender) ? prev : [...prev, sender]);
                           }
-                          document.body.style.overscrollBehavior = 'none';
                         }, 500);
                       }
                     }}
@@ -227,7 +228,6 @@ export default function Home() {
                     }}
                     onTouchEnd={() => {
                       isDragChatRef.current = false;
-                      document.body.style.overscrollBehavior = '';
                       if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                     }}
                     className={innerClass}
@@ -467,7 +467,6 @@ export default function Home() {
                                     } else {
                                       actions.setSelectedIds((prev: string[]) => prev.includes(email.id) ? prev : [...prev, email.id]);
                                     }
-                                    document.body.style.overscrollBehavior = 'none';
                                   }, 500);
                                 }
                               }}
@@ -490,7 +489,6 @@ export default function Home() {
                               }}
                               onTouchEnd={() => {
                                 isDragMsgRef.current = false;
-                                document.body.style.overscrollBehavior = '';
                                 if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                               }}
                            >
