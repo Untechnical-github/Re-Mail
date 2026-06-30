@@ -47,7 +47,7 @@ export function useMailApp() {
   const [modal, setModal] = useState<ModalState>(null);
   const [renameInput, setRenameInput] = useState("");
   const touchTimer = useRef<NodeJS.Timeout | null>(null);
-  const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true });
+  const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true, crossBox: false, oldEmails: false });
   const [moveDestination, setMoveDestination] = useState<"INBOX" | "ARCHIVE" | "SPAM" | "TRASH" | null>(null);
   const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
 
@@ -70,6 +70,30 @@ export function useMailApp() {
   const emailsRef = useRef(emails);
   useEffect(() => { emailsRef.current = emails; }, [emails]);
   useEffect(() => { currentNextPageTokenRef.current = currentNextPageToken; }, [currentNextPageToken]);
+
+  // チャット単位の LRU キャッシュ（チャット切り替え時に復元）
+  const [chatCacheLimit, _setChatCacheLimit] = useState<number>(() => {
+    if (typeof window === "undefined") return 10;
+    const s = localStorage.getItem("remail_chat_cache_limit");
+    return s ? Math.max(0, parseInt(s, 10)) : 10;
+  });
+  const chatCacheLimitRef = useRef<number>(chatCacheLimit);
+  const setChatCacheLimit = (n: number) => {
+    const v = Math.max(0, n);
+    chatCacheLimitRef.current = v;
+    _setChatCacheLimit(v);
+    if (typeof window !== "undefined") localStorage.setItem("remail_chat_cache_limit", String(v));
+    const cache = chatCacheRef.current;
+    const sorted = [...cache.entries()].sort(([, a], [, b]) => a.lruTime - b.lruTime);
+    while (cache.size > v) cache.delete(sorted.shift()![0]);
+  };
+  const chatCacheRef = useRef<Map<string, { emails: any[]; chatNextPageToken: string | null; lruTime: number }>>(new Map());
+  const chatNextPageTokenRef = useRef<string | null>("FIRST_PAGE");
+  useEffect(() => { chatNextPageTokenRef.current = chatNextPageToken; }, [chatNextPageToken]);
+
+  // フィルター単位のキャッシュ（フィルター切り替え時に復元）
+  const filterCacheRef = useRef<Map<string, { emails: any[]; currentNextPageToken: string | null }>>(new Map());
+  const filterKeyRef = useRef<string>("true-true-false-false-false");
 
   useEffect(() => {
     const handleScrollSave = () => {
@@ -364,7 +388,8 @@ export function useMailApp() {
           const initTrash = localSettings?.trash ?? false;
           const initSent = localSettings?.sent ?? false;
           setCheckInbox(initInbox); setCheckArchive(initArchive); setCheckSpam(initSpam); setCheckTrash(initTrash); setCheckSent(initSent);
-          
+          filterKeyRef.current = `${initInbox}-${initArchive}-${initSpam}-${initTrash}-${initSent}`;
+
           setEmails([]);
           
           const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash, sent: initSent }, null, false, false, [], () => false, true);
@@ -437,25 +462,55 @@ export function useMailApp() {
 
   useEffect(() => {
     if (!session) return;
-    
+
     if (isInitialFilterRun.current) {
       isInitialFilterRun.current = false;
       return;
     }
-    
-    let isCancelled = false; 
+
+    const newFilterKey = `${checkInbox}-${checkArchive}-${checkSpam}-${checkTrash}-${checkSent}`;
+    const isFilterChange = filterKeyRef.current !== newFilterKey;
+
+    if (isFilterChange) {
+      // 旧フィルターの状態をキャッシュに保存（検索中でなければ）
+      if (!searchKeyword) {
+        filterCacheRef.current.set(filterKeyRef.current, {
+          emails: emailsRef.current,
+          currentNextPageToken: currentNextPageTokenRef.current,
+        });
+      }
+      filterKeyRef.current = newFilterKey;
+      // 他場所の表示リセット
+      setRevealedCrossPrompts([]);
+    }
+
+    let isCancelled = false;
     activeLoadRef.current += 1;
 
     const handleFilterChange = async () => {
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
       searchTimeoutRef.current = setTimeout(async () => {
         await saveGlobalSettings(checkInbox, checkArchive, checkSpam, checkTrash, checkSent);
-        if (!isCancelled) { setEmails([]); setChatStatusMessage(null); }
-        const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, false, [], () => isCancelled, true);
-        if (!isCancelled) setChatStatusMessage(null);
-        
-        if (selectedSender && !isCancelled && res.success) {
-           fetchChatCrossbox(selectedSender, false, res.emails);
+
+        // フィルター切り替え（検索なし）かつキャッシュあり → 即復元
+        const cached = !searchKeyword && isFilterChange ? filterCacheRef.current.get(newFilterKey) : null;
+        if (cached) {
+          if (!isCancelled) {
+            setEmails(cached.emails);
+            setCurrentNextPageToken(cached.currentNextPageToken);
+            currentNextPageTokenRef.current = cached.currentNextPageToken;
+            setChatStatusMessage(null);
+          }
+          if (selectedSender && !isCancelled) {
+            fetchChatCrossbox(selectedSender, false, cached.emails);
+          }
+        } else {
+          if (!isCancelled) { setEmails([]); setChatStatusMessage(null); }
+          const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, false, [], () => isCancelled, true);
+          if (!isCancelled) setChatStatusMessage(null);
+          if (selectedSender && !isCancelled && res.success) {
+            fetchChatCrossbox(selectedSender, false, res.emails);
+          }
         }
       }, searchKeyword ? 300 : 0);
     };
@@ -671,20 +726,51 @@ export function useMailApp() {
   };
 
   const openChat = async (sender: string) => {
+    // 現在のチャットを LRU キャッシュに保存
+    const prevSender = selectedSender;
+    if (prevSender && prevSender !== sender && chatCacheLimitRef.current > 0) {
+      const senderEmails = emailsRef.current.filter((e: any) => {
+        if (e.senderRoom === prevSender) return true;
+        const room = e.from?.split("<")[0].replace(/"/g, "").trim() || "Unknown";
+        return room === prevSender || e.from?.includes(prevSender) || e.to?.includes(prevSender);
+      });
+      chatCacheRef.current.set(prevSender, {
+        emails: senderEmails,
+        chatNextPageToken: chatNextPageTokenRef.current,
+        lruTime: Date.now(),
+      });
+      // LRU 上限を超えた古いエントリを削除
+      if (chatCacheRef.current.size > chatCacheLimitRef.current) {
+        const sorted = [...chatCacheRef.current.entries()].sort(([, a], [, b]) => a.lruTime - b.lruTime);
+        chatCacheRef.current.delete(sorted[0][0]);
+      }
+    }
+
     setSelectedSender(sender);
     if (typeof window !== "undefined") {
       sessionStorage.setItem("remail_selected_sender", sender);
-      sessionStorage.removeItem("remail_scroll_main"); 
+      sessionStorage.removeItem("remail_scroll_main");
       const asideEl = document.querySelector("aside > div.flex-1");
       if (asideEl) sessionStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
     }
     setReplyToMessage(null);
-    setMsgStatusMessage(null); 
-    setChatNextPageToken("FIRST_PAGE");
+    setMsgStatusMessage(null);
     if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`);
-    
-    // 初回読み込み
-    await fetchChatCrossbox(sender, false);
+
+    // キャッシュがあれば復元、なければ通常フェッチ
+    const cached = chatCacheRef.current.get(sender);
+    if (cached) {
+      cached.lruTime = Date.now();
+      setEmails(prev => {
+        const map = new Map(prev.map((e: any) => [e.id, e]));
+        cached.emails.forEach((e: any) => map.set(e.id, e));
+        return Array.from(map.values());
+      });
+      setChatNextPageToken(cached.chatNextPageToken || "FIRST_PAGE");
+    } else {
+      setChatNextPageToken("FIRST_PAGE");
+      await fetchChatCrossbox(sender, false);
+    }
     // 追加読み込みはuseEffectベースの自動トリガー（chatNextPageToken変化で発火）に委ねる
   };
 
@@ -709,7 +795,7 @@ export function useMailApp() {
 
     if (act === "reset") {
       if (!inSelection || selectedIds.length === 0) return;
-      setResetOptions({ pin: true, hide: true, name: true });
+      setResetOptions({ pin: true, hide: true, name: true, crossBox: false, oldEmails: false });
       setModal({ type: "confirm_reset", targetMode: "specific_chat", targets: [...selectedIds] });
       window.history.pushState({ action: "modal" }, "", window.location.href);
       return;
@@ -947,7 +1033,7 @@ export function useMailApp() {
       if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
     }
     else if (type === "confirm_reset") {
-      const { pin, hide, name } = resetOptions; let keysToProcess = Object.keys(chatConfigs);
+      const { pin, hide, name, crossBox, oldEmails } = resetOptions; let keysToProcess = Object.keys(chatConfigs);
       if (targetMode === "current_chat") keysToProcess = keysToProcess.filter(k => k === targets[0] || chatConfigs[k]?.roomId === targets[0]);
       else if (targetMode === "specific_chat") keysToProcess = keysToProcess.filter(k => targets.includes(k) || targets.some((t: string) => chatConfigs[k]?.roomId === t));
       keysToProcess.forEach(target => {
@@ -958,6 +1044,37 @@ export function useMailApp() {
         if (Object.keys(updates).length > 0) updateChatConfig(target, updates);
       });
       if (pin) setPersistedEmails(prev => prev.filter(e => !keysToProcess.includes(e.id) && !keysToProcess.includes(e.senderRoom)));
+
+      // 他の場所・過去メールの読み込み状態リセット（チャットレベルのキーのみ対象）
+      if (crossBox || oldEmails) {
+        const affectedSenders = new Set(keysToProcess.filter(k => !chatConfigs[k]?.roomId));
+        const removedIds = new Set<string>();
+
+        setEmails(prev => prev.filter((e: any) => {
+          const room = e.senderRoom || (e.from?.split("<")[0].replace(/"/g, "").trim() || "Unknown");
+          if (!affectedSenders.has(room)) return true;
+          if (oldEmails) { removedIds.add(e.id); return false; }
+          // crossBox のみ: フィルター対象外の場所のメールだけ削除
+          const isTrash = e.labelIds?.includes("TRASH");
+          const isSpam  = e.labelIds?.includes("SPAM");
+          const isInbox = e.labelIds?.includes("INBOX");
+          const isSent  = e.labelIds?.includes("SENT") || e.isMe;
+          const inFilter = isSent ? checkSent : (isTrash ? checkTrash : (isSpam ? checkSpam : (isInbox ? checkInbox : checkArchive)));
+          if (!inFilter) { removedIds.add(e.id); return false; }
+          return true;
+        }));
+
+        setRevealedCrossPrompts((prev: string[]) => prev.filter(id => !removedIds.has(id)));
+        affectedSenders.forEach(s => chatCacheRef.current.delete(s));
+
+        // 現在開いているチャットが対象なら再フェッチ
+        if (oldEmails && selectedSender && affectedSenders.has(selectedSender)) {
+          setChatNextPageToken("FIRST_PAGE");
+          safeBack();
+          fetchChatCrossbox(selectedSender, false);
+          return;
+        }
+      }
     }
     else if (type === "confirm_unhide") { targets.forEach(target => updateChatConfig(target, { isHidden: false })); }
     
@@ -1125,7 +1242,8 @@ export function useMailApp() {
       currentNextPageToken, chatStatusMessage, msgStatusMessage, isLoadingMoreChats,
       replySubject, replyBody, isSending, replyToMessage,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
-      resetOptions, moveDestination, revealedCrossPrompts, boxColors
+      resetOptions, moveDestination, revealedCrossPrompts, boxColors,
+      chatCacheLimit,
     },
     actions: {
       setSearchKeyword, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent,
@@ -1133,7 +1251,8 @@ export function useMailApp() {
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,
       handleSend, executePin, executeConfirmedAction,
-      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, enterSelectionMode, executeBatchMove
+      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, enterSelectionMode, executeBatchMove,
+      setChatCacheLimit,
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
     refs: { touchTimer, hasPushedSelectRef, hasPushedSearchRef, activeLoadRef, searchTimeoutRef }
