@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar } from "./components/ui";
@@ -13,20 +13,6 @@ export default function Home() {
   // Shift+クリック範囲選択用の最終クリックインデックス
   const lastChatIdxRef = useRef<number>(-1);
   const lastMsgIdxRef = useRef<number>(-1);
-  // モバイルドラッグ選択フラグ
-  const isDragChatRef = useRef(false);
-  const isDragMsgRef = useRef(false);
-
-  // 選択中は pull-to-refresh を無効化、解除で復元
-  useEffect(() => {
-    if (state.selectionMode === "none") {
-      document.body.style.overscrollBehavior = "";
-      isDragChatRef.current = false;
-      isDragMsgRef.current = false;
-    } else {
-      document.body.style.overscrollBehavior = "none";
-    }
-  }, [state.selectionMode]);
 
   if (auth.status === "loading") return <div className="flex h-screen items-center justify-center bg-[#313338] text-gray-400 font-bold">読み込み中...</div>;
   if (!auth.session) return (
@@ -197,10 +183,9 @@ export default function Home() {
                       actions.openChat(sender);
                     }}
                     onContextMenu={(e) => { e.preventDefault(); }}
-                    onTouchStart={(e) => {
+                    onTouchStart={() => {
                       if (!state.hasMouse) {
                         refs.touchTimer.current = setTimeout(() => {
-                          isDragChatRef.current = true;
                           if (!state.selectionMode.startsWith("chat_")) {
                             actions.enterSelectionMode("chat", sender);
                           } else {
@@ -209,25 +194,10 @@ export default function Home() {
                         }, 500);
                       }
                     }}
-                    onTouchMove={(e) => {
-                      if (!state.hasMouse) {
-                        if (isDragChatRef.current) {
-                          const touch = e.touches[0];
-                          const el = document.elementFromPoint(touch.clientX, touch.clientY);
-                          const chatEl = el?.closest('[data-chat-id]');
-                          if (chatEl) {
-                            const id = chatEl.getAttribute('data-chat-id');
-                            if (id && !state.selectedIds.includes(id)) {
-                              actions.setSelectedIds((prev: string[]) => [...prev, id]);
-                            }
-                          }
-                        } else {
-                          if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
-                        }
-                      }
+                    onTouchMove={() => {
+                      if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                     }}
                     onTouchEnd={() => {
-                      isDragChatRef.current = false;
                       if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                     }}
                     className={innerClass}
@@ -458,10 +428,9 @@ export default function Home() {
                            <div 
                               className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
                               style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', border: `2px solid ${msgColor}` }}
-                              onTouchStart={(e) => {
+                              onTouchStart={() => {
                                 if (!state.hasMouse) {
                                   refs.touchTimer.current = setTimeout(() => {
-                                    isDragMsgRef.current = true;
                                     if (!state.selectionMode.startsWith("msg_")) {
                                       actions.enterSelectionMode("msg", email.id);
                                     } else {
@@ -470,25 +439,10 @@ export default function Home() {
                                   }, 500);
                                 }
                               }}
-                              onTouchMove={(e) => {
-                                if (!state.hasMouse) {
-                                  if (isDragMsgRef.current) {
-                                    const touch = e.touches[0];
-                                    const el = document.elementFromPoint(touch.clientX, touch.clientY);
-                                    const msgEl = el?.closest('[data-msg-id]');
-                                    if (msgEl) {
-                                      const id = msgEl.getAttribute('data-msg-id');
-                                      if (id && !state.selectedIds.includes(id)) {
-                                        actions.setSelectedIds((prev: string[]) => [...prev, id]);
-                                      }
-                                    }
-                                  } else {
-                                    if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
-                                  }
-                                }
+                              onTouchMove={() => {
+                                if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                               }}
                               onTouchEnd={() => {
-                                isDragMsgRef.current = false;
                                 if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                               }}
                            >
