@@ -179,8 +179,12 @@ export default function Home() {
                     onClick={(e) => {
                       e.stopPropagation();
                       if (isActionGrayedOut) return;
-                      // 選択中でもクリックでチャットを開く（選択はチェックボックスのみ）
-                      actions.openChat(sender);
+                      if (state.selectionMode.startsWith("chat_")) {
+                        actions.toggleSelection(sender);
+                        lastChatIdxRef.current = senderIdx;
+                      } else {
+                        actions.openChat(sender);
+                      }
                     }}
                     onContextMenu={(e) => { e.preventDefault(); }}
                     onTouchStart={() => {
@@ -189,7 +193,7 @@ export default function Home() {
                           if (!state.selectionMode.startsWith("chat_")) {
                             actions.enterSelectionMode("chat", sender);
                           } else {
-                            actions.setSelectedIds((prev: string[]) => prev.includes(sender) ? prev : [...prev, sender]);
+                            actions.toggleSelection(sender);
                           }
                         }, 500);
                       }
@@ -382,10 +386,6 @@ export default function Home() {
                         id={`msg-${email.id}`}
                         key={email.id}
                         data-msg-id={email.id}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          // チェックボックス以外の本体クリックは選択しない
-                        }}
                         className={`flex w-full mb-6 cursor-default transition ${isActionGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${isMe ? 'justify-end' : 'justify-start'}`}
                       >
                         {/* チェックボックス列: 常時表示 */}
@@ -425,16 +425,24 @@ export default function Home() {
                               {!isMe && <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>}
                               <span>{new Date(email.date).toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                            </div>
-                           <div 
+                           <div
                               className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
                               style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', border: `2px solid ${msgColor}` }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (isActionGrayedOut) return;
+                                if (state.selectionMode.startsWith("msg_")) {
+                                  actions.toggleSelection(email.id);
+                                  lastMsgIdxRef.current = msgIdx;
+                                }
+                              }}
                               onTouchStart={() => {
                                 if (!state.hasMouse) {
                                   refs.touchTimer.current = setTimeout(() => {
                                     if (!state.selectionMode.startsWith("msg_")) {
                                       actions.enterSelectionMode("msg", email.id);
                                     } else {
-                                      actions.setSelectedIds((prev: string[]) => prev.includes(email.id) ? prev : [...prev, email.id]);
+                                      actions.toggleSelection(email.id);
                                     }
                                   }, 500);
                                 }

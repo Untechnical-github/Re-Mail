@@ -759,7 +759,7 @@ export function useMailApp() {
   };
 
   const handleBackgroundClick = () => {
-    // 背景クリックによる選択モードのキャンセルは廃止
+    if (selectionMode !== "none") safeBack();
   };
 
   const toggleSelection = (id: string) => {
