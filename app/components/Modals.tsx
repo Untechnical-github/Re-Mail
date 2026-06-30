@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { SelectionMode } from "../types/mail";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
@@ -235,9 +234,43 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
   );
 }
 
+function ChatHideConfirm({ app, modal }: { app: any; modal: NonNullable<any> }) {
+  const [unhideOnNew, setUnhideOnNew] = useState(false);
+  const { safeBack, updateChatConfig } = app.actions;
+
+  const handleExecute = () => {
+    modal.targets.forEach((target: string) => {
+      updateChatConfig(target, { isHidden: true, hiddenAtDate: new Date().toISOString(), unhideOnNew });
+    });
+    safeBack();
+  };
+
+  return (
+    <div className="p-5">
+      <h2 className="text-lg font-bold text-white mb-2">非表示(Re:Mailのみ)</h2>
+      <p className="text-sm text-gray-300 mb-4 leading-relaxed">
+        選択した{modal.targets.length}件のチャットをRe:Mailの画面上から隠します。
+      </p>
+      <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition mb-6 text-sm text-gray-200">
+        <input
+          type="checkbox"
+          checked={unhideOnNew}
+          onChange={(e) => setUnhideOnNew(e.target.checked)}
+          className="accent-[#5865F2] w-4 h-4"
+        />
+        新着メッセージがあった際に自動で非表示を解除する
+      </label>
+      <div className="flex justify-end gap-3">
+        <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+        <button onClick={handleExecute} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">非表示にする</button>
+      </div>
+    </div>
+  );
+}
+
 export function Modals({ app }: { app: any }) {
-  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, pinType, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
-  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack, setPinType } = app.actions;
+  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
+  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
 
   if (!modal) return null;
@@ -273,91 +306,45 @@ export function Modals({ app }: { app: any }) {
           <CategorizedActionSelect app={app} modal={modal} />
         )}
 
-        {modal.type === "select_pin_type" && (() => {
+        {modal.type === "confirm_pin" && (() => {
           const isChatMode = modal.targetMode === "chat";
-          const existingForcePinnedChats = Object.keys(chatConfigs).filter(k => !k.includes("-") && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch);
-          const willExceedLimit = isChatMode && (existingForcePinnedChats.length >= 10);
-          
-          return (
-            <div className="p-5">
-              <h2 className="text-lg font-bold text-white mb-4">ピン留めの種類を選択</h2>
-              <div className="flex flex-col gap-2 mb-4">
-                <button 
-                  disabled={willExceedLimit}
-                  onClick={() => { 
-                    setPinType(true); 
-                    setSelectionMode((modal.targetMode + "_pin") as SelectionMode); 
-                    setModal(null); 
-                    window.history.replaceState({ action: "select" }, "", window.location.href);
-                    app.refs.hasPushedSelectRef.current = true;
-                  }} 
-                  className={`w-full py-2.5 border rounded text-sm font-bold transition ${willExceedLimit ? 'bg-[#1E1F22] text-gray-500 border-[#1E1F22] cursor-not-allowed' : 'bg-[#2B2D31] hover:bg-[#3f4147] border-[#1E1F22] text-white'}`}
-                >
-                  {willExceedLimit ? "永続読み込み (上限10件到達)" : "永続読み込み (対象外でも常に表示)"}
-                </button>
-                <button 
-                  onClick={() => { 
-                    setPinType(false); 
-                    setSelectionMode((modal.targetMode + "_pin") as SelectionMode); 
-                    setModal(null); 
-                    window.history.replaceState({ action: "select" }, "", window.location.href);
-                    app.refs.hasPushedSelectRef.current = true;
-                  }} 
-                  className="w-full py-2.5 bg-[#2B2D31] hover:bg-[#3f4147] border border-[#1E1F22] rounded text-white text-sm font-bold transition"
-                >
-                  通常のピン留め (対象外になったら隠す)
-                </button>
-              </div>
-              <button onClick={() => safeBack()} className="w-full py-2 hover:underline text-gray-400 text-sm">キャンセル</button>
-            </div>
+          const existingForcePinnedChats = Object.keys(chatConfigs).filter(k =>
+            !chatConfigs[k]?.roomId && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch
           );
-        })()}
+          const existingPinnedMsgCount = Object.keys(chatConfigs).filter(k =>
+            chatConfigs[k]?.roomId && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch
+          ).length;
+          const newToPin = isChatMode
+            ? modal.targets.filter((t: string) => !existingForcePinnedChats.includes(t))
+            : modal.targets;
+          const willExceedLimit = isChatMode
+            ? existingForcePinnedChats.length + newToPin.length > 10
+            : existingPinnedMsgCount + newToPin.length > 100;
+          const limitText = isChatMode
+            ? `現在 ${existingForcePinnedChats.length} 件 / 上限 10 件`
+            : `現在 ${existingPinnedMsgCount} 件 / 上限 100 件`;
 
-        {modal.type === "confirm_pin_execute" && (() => {
-          const isChatMode = modal.targetMode === "chat";
-          const existingForcePinnedChats = Object.keys(chatConfigs).filter(k => !k.includes("-") && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch);
-          const newChatsToPin = isChatMode ? modal.targets.filter((t: string) => !existingForcePinnedChats.includes(t)) : [];
-          const willExceedLimit = isChatMode && pinType && (existingForcePinnedChats.length + newChatsToPin.length > 10);
-          
           return (
             <div className="p-5">
-              <h2 className="text-lg font-bold text-white mb-2">ピン留めの確認</h2>
-              <p className="text-sm text-gray-300 mb-6 leading-relaxed">
-                選択したアイテムを<span className="font-bold text-white">{pinType ? "永続読み込み" : "通常の設定"}</span>でピン留めします。よろしいですか？<br/>
-                <span className="text-xs text-gray-400">※受信箱またはアーカイブに存在するメールのみが対象となります。</span>
+              <h2 className="text-lg font-bold text-white mb-2">ピン留め（永続読み込み）</h2>
+              <p className="text-sm text-gray-300 mb-2 leading-relaxed">
+                選択した {modal.targets.length} 件の{isChatMode ? "チャット" : "メッセージ"}を永続読み込みでピン留めします。
               </p>
+              <p className="text-xs text-gray-400 mb-6">{limitText}</p>
+              {willExceedLimit && (
+                <p className="text-xs text-[#DA373C] mb-4">
+                  上限を超えるため実行できません。既存のピン留めを解除してください。
+                </p>
+              )}
               <div className="flex justify-end gap-3">
                 <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-                <button 
-                  onClick={() => executePin(pinType!)} 
+                <button
+                  onClick={() => executePin()}
                   disabled={willExceedLimit}
                   className={`px-4 py-2 rounded text-sm font-bold text-white transition ${willExceedLimit ? 'bg-[#3f4147] text-gray-500 cursor-not-allowed' : 'bg-[#5865F2] hover:bg-[#4752C4]'}`}
                 >
-                  {willExceedLimit ? "永続読み込みは10件までです" : "ピン留めする"}
+                  ピン留めする
                 </button>
-              </div>
-            </div>
-          );
-        })()}
-
-        {modal.type === "confirm_pin" && (() => {
-          const isChatMode = modal.targetMode === "chat";
-          const existingForcePinnedChats = Object.keys(chatConfigs).filter(k => !k.includes("-") && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch);
-          const newChatsToPin = isChatMode ? modal.targets.filter((t: string) => !existingForcePinnedChats.includes(t)) : [];
-          const willExceedLimit = isChatMode && (existingForcePinnedChats.length + newChatsToPin.length > 10);
-          return (
-            <div className="p-5">
-              <h2 className="text-lg font-bold text-white mb-2">ピン留め</h2>
-              <p className="text-sm text-gray-300 mb-6 leading-relaxed">
-                読み込み対象外（期間外や件数制限など）になった際も、この{modal.targetMode === "chat" ? "チャット" : "メッセージ"}を表示させますか？<br/>
-                <span className="text-xs text-gray-400">※受信箱、アーカイブ、送信済みのメールが対象となります。</span>
-              </p>
-              <div className="flex flex-col gap-2">
-                <button onClick={() => executePin(true)} disabled={willExceedLimit} className={`w-full py-2.5 rounded text-sm font-bold transition ${willExceedLimit ? 'bg-[#3f4147] text-gray-500 cursor-not-allowed' : 'bg-[#5865F2] text-white hover:bg-[#4752C4] active:scale-95'}`}>
-                  {willExceedLimit ? "永続読み込みは10件までです" : "対象外になっても常に表示する"}
-                </button>
-                <button onClick={() => executePin(false)} className="w-full py-2.5 bg-[#404249] text-white rounded text-sm font-bold hover:bg-[#4f545c] active:scale-95">対象外になった場合は隠す</button>
-                <button onClick={() => safeBack()} className="w-full py-2 mt-2 hover:underline text-gray-400 text-sm">キャンセル</button>
               </div>
             </div>
           );
@@ -401,6 +388,9 @@ export function Modals({ app }: { app: any }) {
         })()}
 
         {modal.type === "confirm_hide" && (() => {
+          if (modal.targetMode === "chat") {
+            return <ChatHideConfirm app={app} modal={modal} />;
+          }
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
           const hideableCount = targetEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")).length;
 

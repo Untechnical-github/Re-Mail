@@ -18,20 +18,17 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode, setRenameInput,
           setReplySubject, setReplyBody, setReplyToMessage, safeBack } = app.actions;
 
-  const isGenericSelect = selectionMode === `${modePrefix}_select`;
-  const isAnySelection = selectionMode.startsWith(`${modePrefix}_`);
+  const isAnySelection = selectionMode === `${modePrefix}_select`;
   const hasItems = selectedIds.length > 0;
-  const isMode = (action: string) => selectionMode === `${modePrefix}_${action}`;
 
-  // 全ての選択アイテムが action の制限対象かどうか
+  // チャットのピン留め・非表示は制限なし。メッセージは従来通り
   const isActionRestrictedForAll = (action: string): boolean => {
     if (!hasItems) return false;
     return selectedIds.every((id: string) => {
       if (isChat) {
+        if (action === "pin" || action === "hide") return false;
         const chatEmails: any[] = app.computed.groupedEmails[id] || [];
         if (chatEmails.length === 0) return false;
-        if (action === "pin" || action === "hide")
-          return chatEmails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SPAM") || e.labelIds?.includes("SENT") || e.isMe);
         if (action === "delete")
           return chatEmails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
         if (action === "move")
@@ -51,26 +48,16 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   };
 
   const hasSelectedTarget = selectedIds.some((id: string) => {
-    if (isChat) {
-      return app.computed.groupedEmails[id]?.some((e: any) =>
-        !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")
-      );
-    } else {
-      const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
-      return msg && !msg.labelIds?.includes("TRASH") && !msg.labelIds?.includes("SPAM");
-    }
+    if (isChat) return true; // チャットは常に対象
+    const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
+    return msg && !msg.labelIds?.includes("TRASH") && !msg.labelIds?.includes("SPAM");
   });
 
   const isDisabled = (action: string): boolean => {
-    if (action === "reset") return false;
-    if (!isAnySelection) return true;
-    if (isGenericSelect) {
-      if (!hasItems) return true;
-      return isActionRestrictedForAll(action);
-    }
-    if (selectionMode !== `${modePrefix}_${action}`) return true;
-    if ((action === "pin" || action === "hide") && !hasSelectedTarget) return true;
-    return false;
+    if (action === "reset") return !isAnySelection || !hasItems;
+    if (!isAnySelection || !hasItems) return true;
+    if ((action === "pin" || action === "hide") && !isChat && !hasSelectedTarget) return true;
+    return isActionRestrictedForAll(action);
   };
 
   const btnBase = isChat
@@ -79,20 +66,14 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const getBtnClass = (action: string, activeBg: string) => {
     const disabled = isDisabled(action);
-    let colorClass: string;
-    if (isMode(action)) {
-      colorClass = `${activeBg} text-white`;
-    } else if (isGenericSelect && hasItems && !isActionRestrictedForAll(action)) {
-      colorClass = `bg-[#2B2D31] text-gray-200 border border-[#4752C4] hover:${activeBg} hover:text-white`;
-    } else {
-      colorClass = "bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200";
-    }
+    const colorClass = !disabled
+      ? `bg-[#2B2D31] text-gray-200 border border-[#4752C4] hover:${activeBg} hover:text-white`
+      : "bg-[#1E1F22] text-gray-400";
     return `${btnBase} ${colorClass} ${disabled ? "opacity-30 pointer-events-none grayscale" : ""}`;
   };
 
-  const renderText = (action: string, text: string) => {
-    if (isMode(action)) return `実行(${selectedIds.length})`;
-    if (isGenericSelect && hasItems) return `${text}(${selectedIds.length})`;
+  const renderText = (text: string) => {
+    if (isAnySelection && hasItems) return `${text}(${selectedIds.length})`;
     return text;
   };
 
@@ -100,7 +81,6 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     ? "flex flex-wrap p-2 gap-1 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default"
     : "flex flex-wrap px-3 py-2 gap-1.5 border-b border-[#1E1F22] bg-[#2B2D31] cursor-default";
 
-  // 全選択
   const handleSelectAll = () => {
     if (isChat) {
       const allIds = app.computed.senderList as string[];
@@ -113,7 +93,6 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     }
   };
 
-  // 選択中のメッセージ取得（msg モード用）
   const selectedMsg = !isChat && selectedIds.length === 1
     ? app.computed.allUniqueEmails.find((e: any) => e.id === selectedIds[0])
     : null;
@@ -133,7 +112,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         全選択
       </button>
 
-      {/* キャンセル: 選択中のみ有効 */}
+      {/* キャンセル */}
       <button
         onClick={() => { if (isAnySelection) safeBack(); }}
         className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!isAnySelection ? "opacity-30 pointer-events-none grayscale" : ""}`}
@@ -141,7 +120,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         キャンセル
       </button>
 
-      {/* チャット画面: 名前変更（1件選択時のみ有効） */}
+      {/* チャット: 名前変更（1件選択時のみ有効） */}
       {isChat && (
         <button
           onClick={() => {
@@ -157,7 +136,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         </button>
       )}
 
-      {/* メッセージ画面: 転送・リプライ・コピー（1件選択時のみ有効） */}
+      {/* メッセージ: 転送・リプライ・コピー（1件選択時のみ有効） */}
       {!isChat && (
         <>
           <button
@@ -195,28 +174,30 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
       {/* ピン留め */}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin", "bg-[#5865F2]")}>
-        {renderText("pin", "ピン留め")}
+        {renderText("ピン留め")}
       </button>
 
       {/* 移動 */}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_move`)} className={getBtnClass("move", "bg-[#5865F2]")}>
-        {renderText("move", "移動")}
+        {renderText("移動")}
       </button>
 
       {/* 非表示 */}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide", "bg-[#5865F2]")}>
-        {renderText("hide", "非表示")}
+        {renderText("非表示")}
       </button>
 
       {/* 削除 */}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", "bg-[#DA373C]")}>
-        {renderText("delete", "削除")}
+        {renderText("削除")}
       </button>
 
-      {/* リセット */}
-      <button onClick={() => handleMenuBarClick(`${modePrefix}_reset`)} className={getBtnClass("reset", "bg-[#DA373C]")}>
-        リセット
-      </button>
+      {/* リセット: チャット画面のみ、選択時のみ有効 */}
+      {isChat && (
+        <button onClick={() => handleMenuBarClick("chat_reset")} className={getBtnClass("reset", "bg-[#DA373C]")}>
+          {renderText("リセット")}
+        </button>
+      )}
 
       {/* 非表示解除 */}
       <button
@@ -226,7 +207,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
           setSelectionMode("none");
           window.history.pushState({ action: "modal" }, "", window.location.href);
         }}
-        className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${isAnySelection && !isGenericSelect ? "opacity-30 pointer-events-none" : ""}`}
+        className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}
       >
         非表示解除
       </button>

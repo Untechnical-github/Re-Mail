@@ -50,7 +50,6 @@ export function useMailApp() {
   const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true });
   const [moveDestination, setMoveDestination] = useState<"INBOX" | "ARCHIVE" | "SPAM" | "TRASH" | null>(null);
   const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
-  const [pinType, setPinType] = useState<boolean | null>(null);
 
   const [boxColors, setBoxColors] = useState({
     inbox: "#5865F2", 
@@ -703,59 +702,35 @@ export function useMailApp() {
     }
   };
 
-  const handleMenuBarClick = (mode: SelectionMode) => {
-    const isGenericSelect = selectionMode === "chat_select" || selectionMode === "msg_select";
+  const handleMenuBarClick = (mode: string) => {
     const targetMode = mode.startsWith("chat") ? "chat" : "msg";
+    const act = mode.replace("chat_", "").replace("msg_", "");
+    const inSelection = selectionMode === `${targetMode}_select`;
 
-    if (mode === "chat_reset" || mode === "msg_reset") {
+    if (act === "reset") {
+      if (!inSelection || selectedIds.length === 0) return;
       setResetOptions({ pin: true, hide: true, name: true });
-      setModal({ type: "confirm_reset", targetMode: mode.startsWith("chat") ? "all_chats" : "current_chat", targets: mode === "msg_reset" ? [selectedSender!] : [] });
-      if (!isGenericSelect) setSelectionMode("none");
+      setModal({ type: "confirm_reset", targetMode: "specific_chat", targets: [...selectedIds] });
       window.history.pushState({ action: "modal" }, "", window.location.href);
       return;
     }
 
-    if (isGenericSelect) {
-      if (selectedIds.length === 0) return;
-      let actionType: "pin" | "hide" | "delete" | "move" | null = null;
-      if (mode.includes("pin")) actionType = "pin";
-      else if (mode.includes("hide")) actionType = "hide";
-      else if (mode.includes("delete")) actionType = "delete";
-      else if (mode.includes("move")) actionType = "move";
+    if (!inSelection || selectedIds.length === 0) return;
 
-      if (actionType) {
-        setModal({ type: "categorized_action_select", targetMode, targets: selectedIds, action: actionType } as any);
-        window.history.pushState({ action: "modal" }, "", window.location.href);
+    if (act === "pin") {
+      setModal({ type: "confirm_pin", targetMode: targetMode as any, targets: [...selectedIds] });
+    } else if (act === "hide") {
+      if (targetMode === "chat") {
+        setModal({ type: "confirm_hide", targetMode: "chat", targets: [...selectedIds] });
+      } else {
+        setModal({ type: "categorized_action_select", targetMode: "msg", targets: [...selectedIds], action: "hide" } as any);
       }
-      return;
+    } else if (act === "delete") {
+      setModal({ type: "categorized_action_select", targetMode: targetMode as any, targets: [...selectedIds], action: "delete" } as any);
+    } else if (act === "move") {
+      setModal({ type: "categorized_action_select", targetMode: targetMode as any, targets: [...selectedIds], action: "move" } as any);
     }
-
-    if (selectionMode === mode) {
-      if (selectedIds.length === 0) { safeBack(); return; }
-      let actionType: any = "confirm_hide";
-      if (mode.includes("delete")) actionType = "confirm_delete";
-      if (mode.includes("pin")) actionType = "confirm_pin_execute";
-      if (mode.includes("move")) actionType = "confirm_move";
-
-      setModal({ type: actionType, targetMode, targets: selectedIds });
-      window.history.replaceState({ action: "modal" }, "", window.location.href);
-    } else {
-      if (mode.includes("move")) {
-        setModal({ type: "select_move_dest", targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] });
-        window.history.pushState({ action: "modal" }, "", window.location.href);
-        return;
-      }
-      if (mode.includes("pin")) {
-        setModal({ type: "select_pin_type" as any, targetMode: mode.startsWith("chat") ? "chat" : "msg", targets: [] });
-        window.history.pushState({ action: "modal" }, "", window.location.href);
-        return;
-      }
-      setSelectionMode(mode); setSelectedIds([]);
-      if (!hasPushedSelectRef.current) {
-        window.history.pushState({ action: "select" }, "", window.location.href);
-        hasPushedSelectRef.current = true;
-      }
-    }
+    window.history.pushState({ action: "modal" }, "", window.location.href);
   };
 
   const handleBackgroundClick = () => {
@@ -819,29 +794,43 @@ export function useMailApp() {
     } catch (error) { console.error(error); } finally { setIsSending(false); }
   };
 
-  const executePin = (forceFetch: boolean) => {
+  const executePin = () => {
     if (!modal) return;
+    const isChatMode = modal.targetMode === "chat";
     const pMsgs = [...persistedEmails];
-    modal.targets.forEach(targetId => {
-        let pData = null;
-        if (forceFetch) {
-            if (modal.targetMode === "chat") { 
-                pData = (groupedEmails[targetId] || [])
-                           .filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"))
-                           .map(e => ({ ...e, senderRoom: targetId })); 
-                pMsgs.push(...pData); 
-            } 
-            else { 
-                const found = allUniqueEmails.find(e => e.id === targetId); 
-                if (found && !found.labelIds?.includes("TRASH") && !found.labelIds?.includes("SPAM")) { 
-                    pData = { ...found, senderRoom: selectedSender }; 
-                    pMsgs.push(pData); 
-                } 
-            }
+
+    if (isChatMode) {
+      // チャットピン留め: 常に永続読み込み、上限10件
+      const existingForcePinned = Object.keys(chatConfigs).filter(k =>
+        !chatConfigs[k]?.roomId && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch
+      );
+      const newToPin = modal.targets.filter((t: string) => !existingForcePinned.includes(t));
+      if (existingForcePinned.length + newToPin.length > 10) return;
+
+      modal.targets.forEach((targetId: string) => {
+        const pData = (groupedEmails[targetId] || []).map((e: any) => ({ ...e, senderRoom: targetId }));
+        pMsgs.push(...pData);
+        updateChatConfig(targetId, { isPinned: true, forceFetch: true, persistedData: pData });
+      });
+    } else {
+      // メッセージピン留め: 常に永続読み込み、合計上限100件
+      const existingPinnedMsgCount = Object.keys(chatConfigs).filter(k =>
+        chatConfigs[k]?.roomId && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch
+      ).length;
+      if (existingPinnedMsgCount + modal.targets.length > 100) return;
+
+      modal.targets.forEach((targetId: string) => {
+        const found = allUniqueEmails.find((e: any) => e.id === targetId);
+        if (found && !found.labelIds?.includes("TRASH") && !found.labelIds?.includes("SPAM") && !found.isMe) {
+          const pData = { ...found, senderRoom: selectedSender };
+          pMsgs.push(pData);
+          updateChatConfig(targetId, { isPinned: true, forceFetch: true, persistedData: pData });
         }
-        updateChatConfig(targetId, { isPinned: true, forceFetch, persistedData: pData });
-    });
-    setPersistedEmails(pMsgs); safeBack(); 
+      });
+    }
+
+    setPersistedEmails(pMsgs);
+    safeBack();
   };
 
   const getActionableEmails = (targets: string[], targetMode: string) => {
@@ -958,8 +947,9 @@ export function useMailApp() {
       if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
     }
     else if (type === "confirm_reset") {
-      const { pin, hide, name } = resetOptions; const specificTarget = targets[0]; let keysToProcess = Object.keys(chatConfigs);
-      if (targetMode === "current_chat" || targetMode === "specific_chat") keysToProcess = keysToProcess.filter(k => k === specificTarget || chatConfigs[k]?.roomId === specificTarget);
+      const { pin, hide, name } = resetOptions; let keysToProcess = Object.keys(chatConfigs);
+      if (targetMode === "current_chat") keysToProcess = keysToProcess.filter(k => k === targets[0] || chatConfigs[k]?.roomId === targets[0]);
+      else if (targetMode === "specific_chat") keysToProcess = keysToProcess.filter(k => targets.includes(k) || targets.some((t: string) => chatConfigs[k]?.roomId === t));
       keysToProcess.forEach(target => {
         const currentConfig = chatConfigs[target]; const updates: Partial<ChatConfig> = {};
         if (pin) { updates.isPinned = false; updates.forceFetch = false; updates.persistedData = null; }
@@ -1135,7 +1125,7 @@ export function useMailApp() {
       currentNextPageToken, chatStatusMessage, msgStatusMessage, isLoadingMoreChats,
       replySubject, replyBody, isSending, replyToMessage,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
-      resetOptions, moveDestination, revealedCrossPrompts, boxColors, pinType
+      resetOptions, moveDestination, revealedCrossPrompts, boxColors
     },
     actions: {
       setSearchKeyword, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent,
@@ -1143,7 +1133,7 @@ export function useMailApp() {
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,
       handleSend, executePin, executeConfirmedAction,
-      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, setPinType, enterSelectionMode, executeBatchMove
+      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, enterSelectionMode, executeBatchMove
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
     refs: { touchTimer, hasPushedSelectRef, hasPushedSearchRef, activeLoadRef, searchTimeoutRef }
