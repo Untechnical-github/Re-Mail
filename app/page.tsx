@@ -180,8 +180,15 @@ export default function Home() {
                       e.stopPropagation();
                       if (isActionGrayedOut) return;
                       if (state.selectionMode.startsWith("chat_")) {
-                        actions.toggleSelection(sender);
-                        lastChatIdxRef.current = senderIdx;
+                        if (e.shiftKey && lastChatIdxRef.current >= 0) {
+                          const min = Math.min(senderIdx, lastChatIdxRef.current);
+                          const max = Math.max(senderIdx, lastChatIdxRef.current);
+                          const rangeIds = computed.senderList.slice(min, max + 1);
+                          actions.setSelectedIds((prev: string[]) => [...new Set([...prev, ...rangeIds])]);
+                        } else {
+                          actions.toggleSelection(sender);
+                          lastChatIdxRef.current = senderIdx;
+                        }
                       } else {
                         actions.openChat(sender);
                       }
@@ -432,8 +439,16 @@ export default function Home() {
                                 e.stopPropagation();
                                 if (isActionGrayedOut) return;
                                 if (state.selectionMode.startsWith("msg_")) {
-                                  actions.toggleSelection(email.id);
-                                  lastMsgIdxRef.current = msgIdx;
+                                  if (e.shiftKey && lastMsgIdxRef.current >= 0) {
+                                    const allMsgs = computed.groupedEmails[state.selectedSender!] || [];
+                                    const min = Math.min(msgIdx, lastMsgIdxRef.current);
+                                    const max = Math.max(msgIdx, lastMsgIdxRef.current);
+                                    const rangeIds = allMsgs.slice(min, max + 1).map((m: any) => m.id);
+                                    actions.setSelectedIds((prev: string[]) => [...new Set([...prev, ...rangeIds])]);
+                                  } else {
+                                    actions.toggleSelection(email.id);
+                                    lastMsgIdxRef.current = msgIdx;
+                                  }
                                 }
                               }}
                               onTouchStart={() => {
