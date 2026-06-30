@@ -389,7 +389,7 @@ export function useMailApp() {
     }
   }, [session]);
 
-  const fetchChatCrossbox = async (sender: string, isLoadMore = false, knownEmails = emailsRef.current) => {
+  const fetchChatCrossbox = async (sender: string, isLoadMore = false, knownEmails = emailsRef.current, skipToken = false) => {
     try {
       if (isLoadMore && chatNextPageToken?.startsWith("END")) {
         return { found: false, nextToken: chatNextPageToken };
@@ -409,7 +409,7 @@ export function useMailApp() {
          const addrs = Array.from(addrSet).map(a => `from:${a} OR to:${a}`).join(" OR ");
          q = `(${q} OR ${addrs})`;
       }
-      
+
       const params = new URLSearchParams({ maxResults: "100", q, includeTrash: "true" });
       const tokenToUse = isLoadMore ? (chatNextPageToken === "FIRST_PAGE" ? null : chatNextPageToken) : null;
       if (tokenToUse) params.append("pageToken", tokenToUse);
@@ -420,8 +420,8 @@ export function useMailApp() {
         const data = await res.json();
         const validMessages = data.messages || [];
         let nextToken = data.nextPageToken || "END_ALL";
-        setChatNextPageToken(nextToken); 
-        
+        if (!skipToken) setChatNextPageToken(nextToken);
+
         if (validMessages.length > 0) {
           setEmails(prev => {
             const map = new Map(prev.map(e => [e.id, e]));
@@ -429,7 +429,7 @@ export function useMailApp() {
             return Array.from(map.values());
           });
         }
-        
+
         return { found: validMessages.length > 0, nextToken };
       }
     } catch(e) { console.error(e); }
@@ -693,6 +693,7 @@ export function useMailApp() {
     const mode: SelectionMode = type === "chat" ? "chat_select" : "msg_select";
     setSelectionMode(mode);
     setSelectedIds([id]);
+    if (type === "chat") fetchChatCrossbox(id, false, emailsRef.current, true);
     // 重複して積まない（既にselect履歴エントリがある場合はスキップ）
     if (!hasPushedSelectRef.current && window.history.state?.action !== "select") {
       window.history.pushState({ action: "select" }, "", window.location.href);
@@ -762,8 +763,10 @@ export function useMailApp() {
   };
 
   const toggleSelection = (id: string) => {
-    const next = selectedIds.includes(id) ? selectedIds.filter(i => i !== id) : [...selectedIds, id];
+    const isAdding = !selectedIds.includes(id);
+    const next = isAdding ? [...selectedIds, id] : selectedIds.filter(i => i !== id);
     setSelectedIds(next);
+    if (isAdding && selectionMode.startsWith("chat_")) fetchChatCrossbox(id, false, emailsRef.current, true);
     if (next.length === 0) {
       setSelectionMode("none");
       if (hasPushedSelectRef.current) {
