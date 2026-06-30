@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useEffect } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar } from "./components/ui";
@@ -16,6 +16,15 @@ export default function Home() {
   // モバイルドラッグ選択フラグ
   const isDragChatRef = useRef(false);
   const isDragMsgRef = useRef(false);
+
+  // 選択解除時に pull-to-refresh を復元
+  useEffect(() => {
+    if (state.selectionMode === "none") {
+      document.body.style.overscrollBehavior = "";
+      isDragChatRef.current = false;
+      isDragMsgRef.current = false;
+    }
+  }, [state.selectionMode]);
 
   if (auth.status === "loading") return <div className="flex h-screen items-center justify-center bg-[#313338] text-gray-400 font-bold">読み込み中...</div>;
   if (!auth.session) return (
@@ -226,7 +235,10 @@ export default function Home() {
                           isDragChatRef.current = true;
                           if (!state.selectionMode.startsWith("chat_")) {
                             actions.enterSelectionMode("chat", sender);
+                          } else {
+                            actions.setSelectedIds((prev: string[]) => prev.includes(sender) ? prev : [...prev, sender]);
                           }
+                          document.body.style.overscrollBehavior = 'none';
                         }, 500);
                       }
                     }}
@@ -249,18 +261,16 @@ export default function Home() {
                     }}
                     onTouchEnd={() => {
                       isDragChatRef.current = false;
+                      document.body.style.overscrollBehavior = '';
                       if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                     }}
                     className={innerClass}
                     style={innerStyle}
                   >
-                    {/* チェックボックス: PC=常時表示 / モバイル=選択モード中のみ表示 */}
+                    {/* チェックボックス: 常時表示 */}
                     <div
                       className={`flex-shrink-0 w-4 h-4 mr-3 rounded-sm flex items-center justify-center border cursor-pointer flex-shrink-0
-                        ${isSelected ? 'bg-[#5865F2] border-[#5865F2]'
-                          : 'border-gray-500'
-                        }
-                        ${!state.hasMouse && !state.selectionMode.startsWith("chat_") ? 'hidden' : ''}
+                        ${isSelected ? 'bg-[#5865F2] border-[#5865F2]' : 'border-gray-500'}
                       `}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -442,12 +452,9 @@ export default function Home() {
                         }}
                         className={`flex w-full mb-6 cursor-default transition ${isActionGrayedOut ? 'opacity-30 pointer-events-none grayscale' : ''} ${isMe ? 'justify-end' : 'justify-start'}`}
                       >
-                        {/* チェックボックス列: PC=常時表示 / モバイル=選択モード中のみ表示 */}
-                        {(state.selectionMode.startsWith("msg_") || state.hasMouse) && (
-                          <div
-                            className={`flex-shrink-0 w-8 flex justify-center pt-3 mr-2 cursor-pointer
-                              ${!state.hasMouse && !state.selectionMode.startsWith("msg_") ? 'hidden' : ''}
-                            `}
+                        {/* チェックボックス列: 常時表示 */}
+                        <div
+                          className="flex-shrink-0 w-8 flex justify-center pt-3 mr-2 cursor-pointer"
                             onClick={(e) => {
                               e.stopPropagation();
                               if (isActionGrayedOut) return;
@@ -472,7 +479,6 @@ export default function Home() {
                               {isSelected && <div className="w-2.5 h-2.5 bg-white rounded-sm"></div>}
                             </div>
                           </div>
-                        )}
 
                         {!isMe && !state.selectionMode.startsWith("msg_") && (
                            <img src={`/api/avatar?name=${encodeURIComponent(email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown")}`} alt="" className="w-9 h-9 rounded-full mr-3 flex-shrink-0 mt-1 shadow-sm select-none pointer-events-none" />
@@ -490,7 +496,12 @@ export default function Home() {
                                 if (!state.hasMouse) {
                                   refs.touchTimer.current = setTimeout(() => {
                                     isDragMsgRef.current = true;
-                                    actions.enterSelectionMode("msg", email.id);
+                                    if (!state.selectionMode.startsWith("msg_")) {
+                                      actions.enterSelectionMode("msg", email.id);
+                                    } else {
+                                      actions.setSelectedIds((prev: string[]) => prev.includes(email.id) ? prev : [...prev, email.id]);
+                                    }
+                                    document.body.style.overscrollBehavior = 'none';
                                   }, 500);
                                 }
                               }}
@@ -513,6 +524,7 @@ export default function Home() {
                               }}
                               onTouchEnd={() => {
                                 isDragMsgRef.current = false;
+                                document.body.style.overscrollBehavior = '';
                                 if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                               }}
                            >

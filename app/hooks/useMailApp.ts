@@ -476,6 +476,20 @@ export function useMailApp() {
     return () => { isCancelled = true; if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current); };
   }, [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, searchKeyword]);
 
+  // フィルター変化時に選択をキャンセル
+  useEffect(() => {
+    if (selectionMode === "none") return;
+    setSelectionMode("none");
+    setSelectedIds([]);
+    if (hasPushedSelectRef.current) {
+      hasPushedSelectRef.current = false;
+      if (typeof window !== "undefined" && window.history.state?.action === "select") {
+        window.history.back();
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkInbox, checkArchive, checkSpam, checkTrash, checkSent]);
+
   const handleSearchChange = (val: string) => {
     if (!searchKeyword && val && !hasPushedSearchRef.current) { window.history.pushState({ action: "search" }, ""); hasPushedSearchRef.current = true; } 
     else if (searchKeyword && !val && hasPushedSearchRef.current) { safeBack(); hasPushedSearchRef.current = false; return; }
