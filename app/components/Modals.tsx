@@ -236,8 +236,7 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
 }
 
 export function Modals({ app }: { app: any }) {
-  // ★修正: state から knownBoxes を受け取る
-  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, pinType, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts, knownBoxes } = app.state;
+  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, pinType, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
   const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack, setPinType } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
 
@@ -594,14 +593,13 @@ export function Modals({ app }: { app: any }) {
                   // ★修正: 以前の if (isMySentMail && ...) のブロックを削除。
                   // 送信済みメールが含まれていても、他の受信メールを移動できるようにするため。
 
-                  // ★修正: 「すべてが移動先に存在するか」の判定から送信済み(SENT)を除外して計算する
-                  const isAllInDest = modal.targetMode === "chat" 
+                  // 「すべてが移動先に存在するか」の判定（送信済みを除外して計算）
+                  const isAllInDest = modal.targetMode === "chat"
                     ? modal.targets.length > 0 && modal.targets.every((tId: string) => {
-                        const kb = app.state.knownBoxes?.[tId] || [];
-                        const validKb = kb.filter((b: string) => b !== "SENT"); // 送信済みを無視
-                        if (validKb.length === 0) return false;
-                        if (dest === "ARCHIVE") return validKb.every((b: string) => b === "ARCHIVE");
-                        return validKb.every((b: string) => b === dest);
+                        const chatEmails = (groupedEmails[tId] || []).filter((e: any) => !e.labelIds?.includes("SENT") && !e.isMe);
+                        if (chatEmails.length === 0) return false;
+                        if (dest === "ARCHIVE") return chatEmails.every((e: any) => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+                        return chatEmails.every((e: any) => e.labelIds?.includes(dest));
                       })
                     : targetEmails.length > 0 && targetEmails.every((e: any) => {
                         if (e.labelIds?.includes("SENT") || e.isMe) return true; // 送信済みは「すでに移動済み」扱いで無視させる

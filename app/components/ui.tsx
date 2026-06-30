@@ -14,7 +14,7 @@ export const HighlightText = ({ text, highlight }: { text: string, highlight: st
 
 export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
-  const { selectionMode, selectedIds, knownBoxes } = app.state;
+  const { selectionMode, selectedIds } = app.state;
   const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode, setRenameInput,
           setReplySubject, setReplyBody, setReplyToMessage, safeBack } = app.actions;
 
@@ -28,13 +28,14 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     if (!hasItems) return false;
     return selectedIds.every((id: string) => {
       if (isChat) {
-        const kb: string[] = knownBoxes?.[id] || [];
+        const chatEmails: any[] = app.computed.groupedEmails[id] || [];
+        if (chatEmails.length === 0) return false;
         if (action === "pin" || action === "hide")
-          return kb.length > 0 && kb.every((b: string) => b === "TRASH" || b === "SPAM" || b === "SENT");
+          return chatEmails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SPAM") || e.labelIds?.includes("SENT") || e.isMe);
         if (action === "delete")
-          return kb.length > 0 && kb.every((b: string) => b === "TRASH" || b === "SENT");
+          return chatEmails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
         if (action === "move")
-          return kb.includes("SENT") && kb.length === 1;
+          return chatEmails.every((e: any) => e.labelIds?.includes("SENT") || e.isMe);
       } else {
         const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
         if (!msg) return true;
@@ -53,7 +54,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     if (isChat) {
       return app.computed.groupedEmails[id]?.some((e: any) =>
         !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")
-      ) || (knownBoxes?.[id] || []).some((b: string) => b === "INBOX" || b === "ARCHIVE");
+      );
     } else {
       const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
       return msg && !msg.labelIds?.includes("TRASH") && !msg.labelIds?.includes("SPAM");

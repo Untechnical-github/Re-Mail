@@ -133,75 +133,41 @@ export default function Home() {
                  }
               }
 
-              // ★追加: オンデマンド学習した「記憶」を呼び出す
-              const kb = state.knownBoxes?.[sender] || [];
-              const knownHasTrash = kb.includes("TRASH");
-              const knownHasSpam = kb.includes("SPAM");
-              const knownHasInbox = kb.includes("INBOX");
-              const knownHasArchive = kb.includes("ARCHIVE");
-              const knownHasSent = kb.includes("SENT"); // ★追加
+              const isChatOnlySent = allEmails.every((e: any) => (e.labelIds?.includes("SENT") || e.isMe) && !e.labelIds?.includes("TRASH"));
 
-              // 送信済みのみ判定: ロード済みメールがあればそれを使い、なければknownBoxesで判断
-              // ロード済みメールがある場合: 全て送信済み(SENT/isMe)かつゴミ箱を含まない場合のみ緑
-              const loadedChatEmails: any[] = computed.groupedEmails?.[sender] || [];
-              const isChatOnlySent = loadedChatEmails.length > 0
-                ? loadedChatEmails.every((e: any) => (e.labelIds?.includes("SENT") || e.isMe) && !e.labelIds?.includes("TRASH"))
-                : (knownHasSent && kb.length === 1);
-
-              // ★修正: 移動の無効化判定に記憶データを合流させる（SENTも考慮）
               const isMoveGrayedOut = state.selectionMode === "chat_move" && (
-                 isChatOnlySent || 
-                 (state.moveDestination && 
-                   (visibleEmails.length > 0 && visibleEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!) || (state.moveDestination === "ARCHIVE" && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("SENT") && !e.isMe))) &&
-                   (kb.length === 0 || kb.every((b: string) => b === state.moveDestination || (state.moveDestination === "ARCHIVE" && b === "ARCHIVE")))
+                 isChatOnlySent ||
+                 (state.moveDestination &&
+                   visibleEmails.length > 0 && visibleEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!) || (state.moveDestination === "ARCHIVE" && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("SENT") && !e.isMe))
                  )
               );
 
               // ★修正: ピン留め/非表示の対象(INBOXかARCHIVE)がいるか判定
               const hasValidFetchedMail = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
               
-              // ★修正: 記憶データを「現在のチェックボックスの状態」と照らし合わせて厳格に判定
-              const hasValidKnownMail = (!hasValidFetchedMail && kb.length > 0) ? (
-                  (knownHasInbox && state.checkInbox) ||
-                  (knownHasArchive && state.checkArchive) ||
-                  (knownHasSent && state.checkSent && !knownHasTrash && !knownHasSpam)
-              ) : false;
-
-              const hasLiveTarget = hasValidFetchedMail || hasValidKnownMail;
+              const hasLiveTarget = hasValidFetchedMail;
               
               const isPinGrayedOut = state.selectionMode === "chat_pin" && !hasLiveTarget;
               const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasLiveTarget;
 
-              // ★追加: 削除モード時、ゴミ箱と送信済みだけのチャットはグレーアウトして選択不能にする
-              const isDeleteGrayedOut = state.selectionMode === "chat_delete" && 
-                (kb.length > 0 ? kb.every((b: string) => b === "TRASH" || b === "SENT") : 
-                 (visibleEmails.length > 0 && visibleEmails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe)));
+              const isDeleteGrayedOut = state.selectionMode === "chat_delete" &&
+                visibleEmails.length > 0 && visibleEmails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
 
               const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut || isDeleteGrayedOut;
 
               // グラデーション色を計算（SENTを最優先：ゴミ箱内の送信済みも緑扱い）
               const colorsSet = new Set<string>();
-              if (allEmails.length > 0) {
-                // ロード済みメールがある場合: 各メールをSENT優先で色分け
-                allEmails.forEach((e: any) => {
-                  const isSentE = e.labelIds?.includes("SENT") || e.isMe;
-                  const isTrashE = !isSentE && e.labelIds?.includes("TRASH");
-                  const isSpamE  = !isSentE && e.labelIds?.includes("SPAM");
-                  const isInboxE = !isSentE && !isTrashE && !isSpamE && e.labelIds?.includes("INBOX");
-                  if (isSentE && (state.checkSent || isChatOnlySent)) colorsSet.add(state.boxColors.sent);
-                  else if (isTrashE && state.checkTrash) colorsSet.add(state.boxColors.trash);
-                  else if (isSpamE  && state.checkSpam)  colorsSet.add(state.boxColors.spam);
-                  else if (isInboxE && state.checkInbox) colorsSet.add(state.boxColors.inbox);
-                  else if (!isSentE && !isTrashE && !isSpamE && !isInboxE && state.checkArchive) colorsSet.add(state.boxColors.archive);
-                });
-              } else {
-                // フォールバック: knownBoxes（ロード前のプレースホルダー）
-                if (knownHasSent && (state.checkSent || isChatOnlySent)) colorsSet.add(state.boxColors.sent);
-                if (knownHasTrash && state.checkTrash) colorsSet.add(state.boxColors.trash);
-                if (knownHasSpam && state.checkSpam)  colorsSet.add(state.boxColors.spam);
-                if (knownHasArchive && state.checkArchive) colorsSet.add(state.boxColors.archive);
-                if (knownHasInbox && state.checkInbox) colorsSet.add(state.boxColors.inbox);
-              }
+              allEmails.forEach((e: any) => {
+                const isSentE = e.labelIds?.includes("SENT") || e.isMe;
+                const isTrashE = !isSentE && e.labelIds?.includes("TRASH");
+                const isSpamE  = !isSentE && e.labelIds?.includes("SPAM");
+                const isInboxE = !isSentE && !isTrashE && !isSpamE && e.labelIds?.includes("INBOX");
+                if (isSentE && (state.checkSent || isChatOnlySent)) colorsSet.add(state.boxColors.sent);
+                else if (isTrashE && state.checkTrash) colorsSet.add(state.boxColors.trash);
+                else if (isSpamE  && state.checkSpam)  colorsSet.add(state.boxColors.spam);
+                else if (isInboxE && state.checkInbox) colorsSet.add(state.boxColors.inbox);
+                else if (!isSentE && !isTrashE && !isSpamE && !isInboxE && state.checkArchive) colorsSet.add(state.boxColors.archive);
+              });
               const colors = Array.from(colorsSet);
               
               let wrapperStyle: React.CSSProperties = { borderRadius: '0.5rem' };

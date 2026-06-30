@@ -16,8 +16,6 @@ export function useMailApp() {
   });
   const [chatConfigs, setChatConfigs] = useState<Record<string, ChatConfig>>({});
   
-  const [knownBoxes, setKnownBoxes] = useState<Record<string, string[]>>({});
-
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState("");
   const [checkInbox, setCheckInbox] = useState<boolean>(true);
@@ -67,8 +65,6 @@ export function useMailApp() {
   const hasPushedSelectRef = useRef(false);
   const activeLoadRef = useRef<number>(0);
   const isInitialFilterRun = useRef(true); 
-  const knownBoxesTimer = useRef<NodeJS.Timeout | null>(null); 
-  
   const chatConfigsRef = useRef(chatConfigs);
   useEffect(() => { chatConfigsRef.current = chatConfigs; }, [chatConfigs]);
 
@@ -123,9 +119,7 @@ export function useMailApp() {
           if (c.chat_id === "__GLOBAL_SETTINGS__" && c.custom_name) {
             try { globalSettings = JSON.parse(c.custom_name); } catch (e) {} return;
           }
-          if (c.chat_id === "__KNOWN_BOXES__" && c.custom_name) {
-            try { setKnownBoxes(JSON.parse(c.custom_name)); } catch (e) {} return;
-          }
+          if (c.chat_id === "__KNOWN_BOXES__") { return; }
           let customNameVal = c.custom_name || undefined;
           let forceFetchVal = false;
           let pData = null;
@@ -158,10 +152,6 @@ export function useMailApp() {
     if (typeof window !== "undefined") {
       localStorage.setItem("remail_box_settings", JSON.stringify({ inbox, archive, spam, trash, sent }));
     }
-  };
-
-  const saveKnownBoxesToD1 = async (boxes: Record<string, string[]>) => {
-    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: "__KNOWN_BOXES__", custom_name: JSON.stringify(boxes) }) }); } catch (e) { console.error(e); }
   };
 
   const updateChatConfig = async (targetId: string, updates: Partial<ChatConfig>) => {
@@ -568,55 +558,6 @@ export function useMailApp() {
     return groups;
   }, [allUniqueEmails, session, chatConfigs]);
 
-  useEffect(() => {
-    if (Object.keys(groupedEmails).length === 0) return;
-    
-    setKnownBoxes(prev => {
-      const next = { ...prev };
-      let hasChanged = false;
-      const activeSender = selectedSender;
-
-      Object.keys(groupedEmails).forEach(sender => {
-        const emails = groupedEmails[sender];
-        const currentBoxes = new Set<string>();
-        
-        emails.forEach(e => {
-          // 送信済みメールは場所に関係なく常にSENTとして分類（TRASH内の送信済みもSENT扱い）
-          if (e.labelIds?.includes("SENT") || e.isMe) currentBoxes.add("SENT");
-          else if (e.labelIds?.includes("TRASH")) currentBoxes.add("TRASH");
-          else if (e.labelIds?.includes("SPAM")) currentBoxes.add("SPAM");
-          else if (e.labelIds?.includes("INBOX")) currentBoxes.add("INBOX");
-          else currentBoxes.add("ARCHIVE");
-        });
-        
-        const prevBoxes = prev[sender] || [];
-        const mergedBoxes = new Set(prevBoxes);
-        
-        if (sender === activeSender) {
-          mergedBoxes.clear();
-          currentBoxes.forEach(b => mergedBoxes.add(b));
-        } else {
-          currentBoxes.forEach(b => mergedBoxes.add(b));
-        }
-        
-        const nextArray = Array.from(mergedBoxes).sort();
-        const prevArray = prevBoxes.sort();
-        
-        if (JSON.stringify(nextArray) !== JSON.stringify(prevArray)) {
-          next[sender] = nextArray;
-          hasChanged = true;
-        }
-      });
-      
-      if (hasChanged) {
-        if (knownBoxesTimer.current) clearTimeout(knownBoxesTimer.current);
-        knownBoxesTimer.current = setTimeout(() => saveKnownBoxesToD1(next), 2000); 
-        return next;
-      }
-      return prev;
-    });
-  }, [groupedEmails, selectedSender]);
-
   const prevFiltersRef = useRef({ checkInbox, checkArchive, checkSpam, checkTrash, checkSent }); 
 
   useEffect(() => {
@@ -706,29 +647,7 @@ export function useMailApp() {
         return checkInbox;
       });
 
-      let isKnownToDisplay = false;
-      if (!hasDisplayableEmail) {
-        const kb = knownBoxes[sender] || [];
-        const knownHasTrash = kb.includes("TRASH");
-        const knownHasSpam = kb.includes("SPAM");
-        const knownHasInbox = kb.includes("INBOX");
-        const knownHasArchive = kb.includes("ARCHIVE");
-        const knownHasSent = kb.includes("SENT");
-        
-        if (!config?.isHidden || (!knownHasInbox && !knownHasArchive && !knownHasSent)) {
-          // 記憶データにも絶対権限を適用
-          if (knownHasSent) {
-             if (checkSent) isKnownToDisplay = true;
-          } else {
-             if (knownHasTrash && checkTrash) isKnownToDisplay = true;
-             if (knownHasSpam && checkSpam) isKnownToDisplay = true;
-             if (knownHasArchive && checkArchive) isKnownToDisplay = true;
-             if (knownHasInbox && checkInbox) isKnownToDisplay = true;
-          }
-        }
-      }
-
-      if (!hasDisplayableEmail && !isKnownToDisplay && (!config?.isPinned || (!checkInbox && !checkArchive && !checkSent))) return false;
+      if (!hasDisplayableEmail && (!config?.isPinned || (!checkInbox && !checkArchive && !checkSent))) return false;
       return true;
       
     }).sort((a: string, b: string): number => {
@@ -740,7 +659,7 @@ export function useMailApp() {
       const timeB = getLatestValidDate(b);
       return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
-  }, [groupedEmails, chatConfigs, checkSent, checkInbox, checkArchive, checkSpam, checkTrash, revealedCrossPrompts, knownBoxes]);
+  }, [groupedEmails, chatConfigs, checkSent, checkInbox, checkArchive, checkSpam, checkTrash, revealedCrossPrompts]);
 
   const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined); 
   const hiddenMsgs = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId !== undefined).map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ", date: new Date().toISOString() });
@@ -986,13 +905,6 @@ export function useMailApp() {
           setPersistedEmails(nextPMsgs);
           setRevealedCrossPrompts(prev => prev.filter(id => !trashIds.includes(id)));
 
-          setKnownBoxes(prev => {
-            const next = { ...prev };
-            modal.targets.forEach(t => { if (targetMode === "chat") next[t] = ["TRASH"]; });
-            saveKnownBoxesToD1(next);
-            return next;
-          });
-
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
           
           fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", trashIds }) }).catch(e => console.error(e));
@@ -1033,13 +945,6 @@ export function useMailApp() {
           setEmails(nextEmails); 
           setPersistedEmails(nextPMsgs);
           setRevealedCrossPrompts(prev => prev.filter(id => !idsToMove.includes(id)));
-
-          setKnownBoxes(prev => {
-            const next = { ...prev };
-            modal.targets.forEach(t => { if (targetMode === "chat") next[t] = [moveDestination === "ARCHIVE" ? "ARCHIVE" : moveDestination!]; });
-            saveKnownBoxesToD1(next);
-            return next;
-          });
 
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
 
@@ -1226,7 +1131,7 @@ export function useMailApp() {
     state: {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs,
       isLoadingMore, searchKeyword, checkInbox, checkArchive, checkSpam, checkTrash, checkSent,
-      knownBoxes, currentNextPageToken, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, 
+      currentNextPageToken, chatStatusMessage, msgStatusMessage, isLoadingMoreChats,
       replySubject, replyBody, isSending, replyToMessage,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
       resetOptions, moveDestination, revealedCrossPrompts, boxColors, pinType
