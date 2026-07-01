@@ -8,6 +8,7 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
 
   const { groupedEmails, allUniqueEmails } = app.computed;
   const { setModal, setSelectedIds, safeBack, executeBatchMove } = app.actions;
+  const { revealedCrossPrompts, checkInbox, checkArchive, checkSpam, checkTrash, checkSent } = app.state;
 
   const BOX_LABELS: Record<string, string> = {
     INBOX: "受信箱", ARCHIVE: "アーカイブ", SENT: "送信済み", SPAM: "迷惑メール", TRASH: "ゴミ箱"
@@ -31,6 +32,17 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
     return "ARCHIVE";
   };
 
+  // ボタン状態（未読み込み）の他の場所のメールを除外: 現在のフィルターに合うか明示的に読み込んだものだけ対象
+  const isRevealedEmail = (email: any): boolean => {
+    const box = getEmailBox(email);
+    const isCurrentBox =
+      box === "SENT" ? checkSent :
+      box === "TRASH" ? checkTrash :
+      box === "SPAM" ? checkSpam :
+      box === "INBOX" ? checkInbox : checkArchive;
+    return isCurrentBox || (revealedCrossPrompts as string[]).includes(email.id);
+  };
+
   // 場所ごとの件数と対象IDを計算
   const boxCounts: Record<string, number> = {};
   const boxChatIds: Record<string, string[]> = {};
@@ -40,7 +52,7 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
     targets.forEach(chatId => {
       const emails = groupedEmails[chatId] || [];
       const seen = new Set<string>();
-      emails.forEach((email: any) => {
+      emails.filter(isRevealedEmail).forEach((email: any) => {
         const box = getEmailBox(email);
         if (!boxCounts[box]) { boxCounts[box] = 0; boxChatIds[box] = []; }
         boxCounts[box]++;
@@ -108,7 +120,7 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
         } else {
           (boxChatIds[box] || []).forEach((chatId: string) => {
             const emails = groupedEmails[chatId] || [];
-            emails.filter((e: any) => getEmailBox(e) === box).forEach((e: any) => {
+            emails.filter((e: any) => getEmailBox(e) === box && isRevealedEmail(e)).forEach((e: any) => {
               destGroups[dest].push(e.id);
             });
           });

@@ -521,6 +521,7 @@ export function useMailApp() {
             setCurrentNextPageToken(cached.currentNextPageToken);
             currentNextPageTokenRef.current = cached.currentNextPageToken;
             setChatStatusMessage(null);
+            setIsLoading(false);
           }
           if (selectedSender && !isCancelled) {
             fetchChatCrossbox(selectedSender, false, cached.emails);
