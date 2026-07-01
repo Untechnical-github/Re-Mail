@@ -3,7 +3,7 @@
 import { useRef } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
-import { HighlightText, ActionBar } from "./components/ui";
+import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
 import { Modals, EmailModal } from "./components/Modals";
 
 export default function Home() {
@@ -489,7 +489,7 @@ export default function Home() {
                                   overflow: 'hidden',
                                 } : undefined}
                               >
-                                <HighlightText text={email.body} highlight={state.searchKeyword} />
+                                <BodyWithLinks text={email.body} highlight={state.searchKeyword} />
                               </div>
                               {isCollapsed && (
                                 <div className="text-xs mt-1.5 opacity-60">もっと見る...</div>

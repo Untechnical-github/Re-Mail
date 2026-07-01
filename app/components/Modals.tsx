@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { BodyWithLinks } from "./ui";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
@@ -292,78 +293,6 @@ function prepareHtml(raw: string): string {
   return `<!DOCTYPE html><html><head>${inject}</head><body>${raw}</body></html>`;
 }
 
-function TextWithLinks({ text }: { text: string }) {
-  const [preview, setPreview] = useState<{ url: string; x: number; y: number } | null>(null);
-
-  const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  const re = /https?:\/\/[^\s<>"]+/g;
-
-  while ((match = re.exec(text)) !== null) {
-    const rawUrl = match[0].replace(/[.,;:!?)\]>'"。、，；：！？）]+$/, "");
-    if (!rawUrl) { lastIndex = match.index + match[0].length; continue; }
-    const trailing = match[0].slice(rawUrl.length);
-
-    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
-
-    const url = rawUrl;
-    parts.push(
-      <a
-        key={`url-${match.index}`}
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-[#5865F2] underline underline-offset-2 hover:text-[#7289DA] break-all"
-        onClick={(e) => e.stopPropagation()}
-        onMouseEnter={(e) => {
-          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          const spaceBelow = window.innerHeight - rect.bottom;
-          const y = spaceBelow > 130 ? rect.bottom + 8 : rect.top - 128;
-          setPreview({ url, x: Math.max(8, Math.min(rect.left, window.innerWidth - 296)), y });
-        }}
-        onMouseLeave={() => setPreview(null)}
-      >
-        {url}
-      </a>
-    );
-
-    if (trailing) parts.push(trailing);
-    lastIndex = match.index + match[0].length;
-  }
-
-  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
-
-  let domain = "";
-  if (preview) { try { domain = new URL(preview.url).hostname; } catch {} }
-
-  return (
-    <>
-      <pre className="text-gray-200 text-sm whitespace-pre-wrap break-words font-sans leading-relaxed select-text">
-        {parts}
-      </pre>
-      {preview && (
-        <div
-          className="fixed z-[70] pointer-events-none"
-          style={{ top: preview.y, left: preview.x }}
-        >
-          <div className="bg-[#1E1F22] border border-[#404249] rounded-lg shadow-2xl p-3 w-72">
-            <div className="flex items-center gap-1.5 mb-1">
-              <span className="text-[11px]">🔗</span>
-              <span className="text-xs font-bold text-gray-200 truncate">{domain}</span>
-            </div>
-            <div
-              className="text-[11px] text-gray-500 break-all leading-relaxed"
-              style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } as React.CSSProperties}
-            >
-              {preview.url}
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
 
 export function EmailModal({ app }: { app: any }) {
   const { emailModal } = app.state;
@@ -421,7 +350,9 @@ export function EmailModal({ app }: { app: any }) {
           )}
           {showText && (
             <div className="overflow-y-auto h-full p-4">
-              <TextWithLinks text={email.body || ""} />
+              <pre className="text-gray-200 text-sm whitespace-pre-wrap break-words font-sans leading-relaxed select-text">
+                <BodyWithLinks text={email.body || ""} />
+              </pre>
             </div>
           )}
         </div>

@@ -1,3 +1,7 @@
+"use client";
+
+import React, { useState } from "react";
+
 export const HighlightText = ({ text, highlight }: { text: string, highlight: string }) => {
   if (!highlight) return <>{text}</>;
   const parts = text.split(new RegExp(`(${highlight})`, 'gi'));
@@ -11,6 +15,87 @@ export const HighlightText = ({ text, highlight }: { text: string, highlight: st
     </>
   );
 };
+
+export function BodyWithLinks({ text, highlight }: { text: string; highlight?: string }) {
+  const [preview, setPreview] = useState<{ url: string; x: number; y: number } | null>(null);
+
+  const src = text || "";
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  const re = /https?:\/\/[^\s<>"]+/g;
+
+  while ((match = re.exec(src)) !== null) {
+    const rawUrl = match[0].replace(/[.,;:!?)\]>'"。、，；：！？）]+$/, "");
+    if (!rawUrl) { lastIndex = match.index + match[0].length; continue; }
+    const trailing = match[0].slice(rawUrl.length);
+
+    if (match.index > lastIndex) {
+      const seg = src.slice(lastIndex, match.index);
+      parts.push(highlight
+        ? <HighlightText key={`t-${lastIndex}`} text={seg} highlight={highlight} />
+        : seg
+      );
+    }
+
+    const url = rawUrl;
+    parts.push(
+      <a
+        key={`u-${match.index}`}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-[#5865F2] underline underline-offset-2 hover:text-[#7289DA] break-all"
+        onClick={(e) => e.stopPropagation()}
+        onMouseEnter={(e) => {
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          const spaceBelow = window.innerHeight - rect.bottom;
+          const y = spaceBelow > 130 ? rect.bottom + 8 : rect.top - 128;
+          setPreview({ url, x: Math.max(8, Math.min(rect.left, window.innerWidth - 296)), y });
+        }}
+        onMouseLeave={() => setPreview(null)}
+      >
+        {highlight ? <HighlightText text={url} highlight={highlight} /> : url}
+      </a>
+    );
+
+    if (trailing) parts.push(trailing);
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < src.length) {
+    const remaining = src.slice(lastIndex);
+    parts.push(highlight
+      ? <HighlightText key={`t-tail`} text={remaining} highlight={highlight} />
+      : remaining
+    );
+  }
+
+  let domain = "";
+  if (preview) { try { domain = new URL(preview.url).hostname; } catch {} }
+
+  return (
+    <>
+      {parts}
+      {preview && (
+        <div className="fixed z-[70] pointer-events-none" style={{ top: preview.y, left: preview.x }}>
+          <div className="bg-[#1E1F22] border border-[#404249] rounded-lg shadow-2xl p-3 w-72">
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="text-[11px]">🔗</span>
+              <span className="text-xs font-bold text-gray-200 truncate">{domain}</span>
+            </div>
+            <div
+              className="text-[11px] text-gray-500 break-all leading-relaxed"
+              style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } as React.CSSProperties}
+            >
+              {preview.url}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
