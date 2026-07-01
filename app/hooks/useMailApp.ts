@@ -631,46 +631,9 @@ export function useMailApp() {
     return groups;
   }, [allUniqueEmails, session, chatConfigs]);
 
-  const prevFiltersRef = useRef({ checkInbox, checkArchive, checkSpam, checkTrash, checkSent }); 
-
-  useEffect(() => {
-    const prev = prevFiltersRef.current;
-    const changed = prev.checkInbox !== checkInbox || prev.checkArchive !== checkArchive || prev.checkSpam !== checkSpam || prev.checkTrash !== checkTrash || prev.checkSent !== checkSent; 
-
-    if (changed) {
-      prevFiltersRef.current = { checkInbox, checkArchive, checkSpam, checkTrash, checkSent }; 
-
-      if (selectedSender && !isLoading) {
-        const targetEmails = groupedEmails[selectedSender] || [];
-        const hasVisible = targetEmails.some((e: any) => {
-          const isTrash = e.labelIds?.includes("TRASH");
-          const isSpam = e.labelIds?.includes("SPAM");
-          const isInbox = e.labelIds?.includes("INBOX");
-          const isSent = e.labelIds?.includes("SENT") || e.isMe; 
-          const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
-          
-          let isCurrentBox = false;
-          if (isSent) {
-            isCurrentBox = checkSent;
-          } else {
-            isCurrentBox = (isTrash && checkTrash) || (isSpam && checkSpam) || (isInbox && checkInbox) || (isArchive && checkArchive);
-          }
-          return isCurrentBox || revealedCrossPrompts.includes(e.id);
-        });
-
-        if (!hasVisible && !chatConfigs[selectedSender]?.isPinned) {
-          setSelectedSender(null);
-          if (typeof window !== "undefined") {
-            sessionStorage.removeItem("remail_selected_sender");
-            sessionStorage.removeItem("remail_scroll_main");
-          }
-        }
-      }
-    }
-  }, [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, selectedSender, groupedEmails, chatConfigs, revealedCrossPrompts, isLoading]);
 
   const senderList = useMemo<string[]>(() => {
-    
+
     const getLatestValidDate = (sender: string): number => {
       const allEmails = groupedEmails[sender] || [];
       const config = chatConfigs[sender];
@@ -700,6 +663,7 @@ export function useMailApp() {
 
     return Object.keys(groupedEmails).filter((sender: string) => {
       const config = chatConfigs[sender];
+      if (config?.isHidden) return false;
 
       const hasDisplayableEmail = groupedEmails[sender].some((e: any) => {
         const isTrash = e.labelIds?.includes("TRASH");
@@ -734,8 +698,19 @@ export function useMailApp() {
     });
   }, [groupedEmails, chatConfigs, checkSent, checkInbox, checkArchive, checkSpam, checkTrash, revealedCrossPrompts]);
 
-  const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined); 
+  const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined);
   const hiddenMsgs = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId !== undefined).map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ", date: new Date().toISOString() });
+
+  // senderList からチャットが消えたら（フィルター変更・非表示化など）メッセージ画面を自動クローズ
+  useEffect(() => {
+    if (!isLoading && selectedSender && !senderList.includes(selectedSender)) {
+      setSelectedSender(null);
+      if (typeof window !== "undefined") {
+        sessionStorage.removeItem("remail_selected_sender");
+        sessionStorage.removeItem("remail_scroll_main");
+      }
+    }
+  }, [senderList, isLoading]);
 
   const safeBack = () => {
     const state = window.history.state;
