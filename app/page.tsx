@@ -1,8 +1,7 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
-
-const _imageCache = new Map<string, string>();
+import { getCachedAttachment, setCachedAttachment, memCache } from "./lib/attachmentCache";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
@@ -15,25 +14,33 @@ function InlineAttachmentImage({ attachment, messageId, onOpen }: {
   onOpen: (base64: string) => void;
 }) {
   const cacheKey = `${messageId}:${attachment.attachmentId}`;
-  const [base64, setBase64] = useState<string | null>(() => _imageCache.get(cacheKey) ?? null);
-  const [loading, setLoading] = useState(() => !_imageCache.has(cacheKey));
+  // Synchronous check of in-memory cache for instant display on remount
+  const [base64, setBase64] = useState<string | null>(() => memCache.get(cacheKey) ?? null);
+  const [loading, setLoading] = useState(() => !memCache.has(cacheKey));
 
   useEffect(() => {
-    if (_imageCache.has(cacheKey)) return;
+    if (memCache.has(cacheKey)) return;
     let cancelled = false;
-    fetch(`/api/emails?messageId=${encodeURIComponent(messageId)}&attachmentId=${encodeURIComponent(attachment.attachmentId)}`)
-      .then(r => r.ok ? r.json() : { data: null })
-      .then(({ data }) => {
-        if (!cancelled) {
-          if (data) {
+    (async () => {
+      // L2: check IndexedDB (fast, survives page reload)
+      const cached = await getCachedAttachment(cacheKey);
+      if (cancelled) return;
+      if (cached) { setBase64(cached); setLoading(false); return; }
+      // L3: fetch from API
+      try {
+        const res = await fetch(`/api/emails?messageId=${encodeURIComponent(messageId)}&attachmentId=${encodeURIComponent(attachment.attachmentId)}`);
+        if (cancelled) return;
+        if (res.ok) {
+          const { data } = await res.json();
+          if (!cancelled && data) {
             const b64 = (data as string).replace(/-/g, '+').replace(/_/g, '/');
-            _imageCache.set(cacheKey, b64);
+            setCachedAttachment(cacheKey, b64); // fire and forget
             setBase64(b64);
           }
-          setLoading(false);
         }
-      })
-      .catch(() => { if (!cancelled) setLoading(false); });
+      } catch {}
+      if (!cancelled) setLoading(false);
+    })();
     return () => { cancelled = true; };
   }, [cacheKey]); // eslint-disable-line react-hooks/exhaustive-deps
 

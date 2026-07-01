@@ -2,6 +2,7 @@ import { useSession, signOut } from "next-auth/react";
 import { useState, useEffect, useMemo, useRef } from "react";
 import localforage from "localforage";
 import { ChatConfig, SelectionMode, ModalState } from "../types/mail";
+import { getCachedAttachment, setCachedAttachment } from "../lib/attachmentCache";
 
 export function useMailApp() {
   const { data: session, status } = useSession();
@@ -899,12 +900,19 @@ export function useMailApp() {
       return;
     }
     setAttachmentModal({ ...attachment, base64: null, isLoading: true });
+    const cacheKey = `${attachment.messageId}:${attachment.attachmentId}`;
+    const cached = await getCachedAttachment(cacheKey);
+    if (cached) {
+      setAttachmentModal(prev => prev ? { ...prev, base64: cached, isLoading: false } : null);
+      return;
+    }
     try {
       const res = await fetch(`/api/emails?messageId=${encodeURIComponent(attachment.messageId)}&attachmentId=${encodeURIComponent(attachment.attachmentId)}`);
       if (res.ok) {
         const { data } = await res.json();
         if (data) {
           const base64 = (data as string).replace(/-/g, '+').replace(/_/g, '/');
+          setCachedAttachment(cacheKey, base64);
           setAttachmentModal(prev => prev ? { ...prev, base64, isLoading: false } : null);
         } else {
           setAttachmentModal(prev => prev ? { ...prev, isLoading: false } : null);
