@@ -1,6 +1,8 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
+
+const _imageCache = new Map<string, string>();
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
@@ -12,22 +14,28 @@ function InlineAttachmentImage({ attachment, messageId, onOpen }: {
   messageId: string;
   onOpen: (base64: string) => void;
 }) {
-  const [base64, setBase64] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = `${messageId}:${attachment.attachmentId}`;
+  const [base64, setBase64] = useState<string | null>(() => _imageCache.get(cacheKey) ?? null);
+  const [loading, setLoading] = useState(() => !_imageCache.has(cacheKey));
 
   useEffect(() => {
+    if (_imageCache.has(cacheKey)) return;
     let cancelled = false;
     fetch(`/api/emails?messageId=${encodeURIComponent(messageId)}&attachmentId=${encodeURIComponent(attachment.attachmentId)}`)
       .then(r => r.ok ? r.json() : { data: null })
       .then(({ data }) => {
         if (!cancelled) {
-          if (data) setBase64((data as string).replace(/-/g, '+').replace(/_/g, '/'));
+          if (data) {
+            const b64 = (data as string).replace(/-/g, '+').replace(/_/g, '/');
+            _imageCache.set(cacheKey, b64);
+            setBase64(b64);
+          }
           setLoading(false);
         }
       })
       .catch(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [messageId, attachment.attachmentId]);
+  }, [cacheKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) return (
     <div className="w-40 h-24 rounded-xl bg-black/20 flex items-center justify-center">

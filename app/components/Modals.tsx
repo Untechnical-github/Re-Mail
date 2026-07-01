@@ -594,130 +594,185 @@ export function AttachmentModal({ app }: { app: any }) {
     const img = imgRef.current;
     const container = imgContainerRef.current;
     if (!img || !container) return;
+
+    // Container may not be laid out yet if image was cached (fires synchronously)
+    if (container.clientWidth === 0) {
+      requestAnimationFrame(() => { if (imgRef.current && imgContainerRef.current) onImgLoad(); });
+      return;
+    }
+
     if (imgCleanupRef.current) { imgCleanupRef.current(); imgCleanupRef.current = null; }
 
-    const nW = img.naturalWidth;
-    const nH = img.naturalHeight;
     const cW = container.clientWidth;
     const cH = container.clientHeight;
-    const fitScale = Math.min(1, cW / nW, cH / nH);
-    const state = { x: (cW - nW * fitScale) / 2, y: (cH - nH * fitScale) / 2, scale: fitScale };
+    // Use offsetWidth/offsetHeight (CSS-rendered size, respects max-width/max-height)
+    const imgW = img.offsetWidth;
+    const imgH = img.offsetHeight;
 
-    img.style.position = 'absolute';
-    img.style.top = '0';
-    img.style.left = '0';
-    img.style.width = nW + 'px';
-    img.style.height = nH + 'px';
-    img.style.transformOrigin = '0 0';
-    img.style.willChange = 'transform';
-    img.draggable = false;
+    let state = { x: 0, y: 0, scale: 1 };
+    let canMoveX = false, canMoveY = false;
 
     const updateTransform = () => {
-      img.style.transform = `translate3d(${state.x}px,${state.y}px,0) scale(${state.scale})`;
+      img.style.transform = `translate3d(${state.x}px, ${state.y}px, 0) scale(${state.scale})`;
     };
-    const clamp = () => {
-      const vW = nW * state.scale;
-      const vH = nH * state.scale;
-      state.x = vW <= cW ? (cW - vW) / 2 : Math.max(cW - vW, Math.min(0, state.x));
-      state.y = vH <= cH ? (cH - vH) / 2 : Math.max(cH - vH, Math.min(0, state.y));
+
+    const checkMovability = () => {
+      canMoveX = imgW * state.scale > cW + 1;
+      canMoveY = imgH * state.scale > cH + 1;
     };
-    clamp(); updateTransform();
+
+    const clampState = () => {
+      const currentW = imgW * state.scale;
+      const currentH = imgH * state.scale;
+      if (currentW <= cW) { state.x = (cW - currentW) / 2; }
+      else { if (state.x > 0) state.x = 0; const minX = cW - currentW; if (state.x < minX) state.x = minX; }
+      if (currentH <= cH) { state.y = (cH - currentH) / 2; }
+      else { if (state.y > 0) state.y = 0; const minY = cH - currentH; if (state.y < minY) state.y = minY; }
+    };
+
+    const centerImage = (animated = true) => {
+      state.scale = 1;
+      state.x = (cW - imgW) / 2;
+      state.y = (cH - imgH) / 2;
+      clampState();
+      img.style.transition = animated ? 'transform 0.1s ease-out' : 'none';
+      updateTransform();
+      container.style.cursor = 'grab';
+    };
+
+    centerImage(false);
     img.style.opacity = '1';
 
-    // Drag
+    // Wheel zoom — always zoom, no ctrlKey restriction needed for still images
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const direction = e.deltaY > 0 ? -1 : 1;
+      let newScale = state.scale * (1 + direction * 0.15);
+      if (newScale <= 1) { centerImage(); return; }
+      const rect = container.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const imageInternalX = (mouseX - state.x) / state.scale;
+      const imageInternalY = (mouseY - state.y) / state.scale;
+      state.x = mouseX - imageInternalX * newScale;
+      state.y = mouseY - imageInternalY * newScale;
+      state.scale = newScale;
+      clampState();
+      img.style.transition = 'transform 0.05s ease-out';
+      updateTransform();
+    };
+
+    // Mouse drag
     let isDragging = false;
-    let dragSX = 0, dragSY = 0, dragStartX = 0, dragStartY = 0;
+    let dragStartMouseX = 0, dragStartMouseY = 0, dragStartImageX = 0, dragStartImageY = 0;
+
     const onMouseDown = (e: MouseEvent) => {
-      if (e.button !== 0) return;
+      if (state.scale <= 1) return;
       e.preventDefault();
       isDragging = true;
-      dragStartX = e.clientX; dragStartY = e.clientY;
-      dragSX = state.x; dragSY = state.y;
+      checkMovability();
+      dragStartMouseX = e.clientX; dragStartMouseY = e.clientY;
+      dragStartImageX = state.x; dragStartImageY = state.y;
       container.style.cursor = 'grabbing';
+      img.style.transition = 'none';
     };
     const onMouseMove = (e: MouseEvent) => {
       if (!isDragging) return;
-      if (!(e.buttons & 1)) { isDragging = false; container.style.cursor = 'grab'; return; }
-      state.x = dragSX + e.clientX - dragStartX;
-      state.y = dragSY + e.clientY - dragStartY;
-      clamp(); updateTransform();
-    };
-    const onMouseUp = () => { isDragging = false; container.style.cursor = 'grab'; };
-
-    // Wheel zoom (ctrlKey = pinch gesture, else = scroll wheel)
-    const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const rect = container.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-      const bx = (mx - state.x) / state.scale;
-      const by = (my - state.y) / state.scale;
-      const newScale = Math.max(fitScale, Math.min(5, state.scale * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.002))));
-      state.x = mx - bx * newScale;
-      state.y = my - by * newScale;
-      state.scale = newScale;
-      clamp(); updateTransform();
+      let dx = e.clientX - dragStartMouseX;
+      let dy = e.clientY - dragStartMouseY;
+      if (!canMoveX) dx = 0;
+      if (!canMoveY) dy = 0;
+      state.x = dragStartImageX + dx;
+      state.y = dragStartImageY + dy;
+      clampState(); updateTransform();
+    };
+    const onMouseUp = () => {
+      if (isDragging) {
+        isDragging = false;
+        container.style.cursor = 'grab';
+        img.style.transition = 'transform 0.1s ease-out';
+      }
     };
 
-    // Pinch / pan touch
-    let pinchStartDist = 0, pinchStartScale = 1, pinchStartBX = 0, pinchStartBY = 0;
-    let singleActive = false, touchSX = 0, touchSY = 0, touchStartX = 0, touchStartY = 0;
-    const d2 = (t: TouchList) => { const dx = t[0].clientX - t[1].clientX; const dy = t[0].clientY - t[1].clientY; return Math.sqrt(dx*dx + dy*dy); };
+    // Touch pinch & pan
+    let lastTouchDistance = 0;
+    let lastTouchCenter = { x: 0, y: 0 };
+    let isPinching = false;
+    let lastTouchX = 0, lastTouchY = 0;
+
+    const getTouchDist = (t: TouchList) => { const dx = t[0].clientX - t[1].clientX; const dy = t[0].clientY - t[1].clientY; return Math.sqrt(dx*dx + dy*dy); };
+    const getTouchMid = (t: TouchList) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+
     const onTouchStart = (e: TouchEvent) => {
-      e.preventDefault();
-      const rect = container.getBoundingClientRect();
-      if (e.touches.length >= 2) {
-        singleActive = false;
-        pinchStartDist = d2(e.touches);
-        pinchStartScale = state.scale;
-        const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-        const my = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
-        pinchStartBX = (mx - state.x) / state.scale;
-        pinchStartBY = (my - state.y) / state.scale;
-      } else {
-        singleActive = true;
-        touchStartX = e.touches[0].clientX - rect.left;
-        touchStartY = e.touches[0].clientY - rect.top;
-        touchSX = state.x; touchSY = state.y;
+      if (e.touches.length === 1) {
+        if (state.scale > 1) {
+          checkMovability();
+          lastTouchX = e.touches[0].clientX; lastTouchY = e.touches[0].clientY;
+          img.style.transition = 'none';
+        }
+      } else if (e.touches.length === 2) {
+        isPinching = true;
+        lastTouchDistance = getTouchDist(e.touches);
+        lastTouchCenter = getTouchMid(e.touches);
+        img.style.transition = 'none';
       }
     };
     const onTouchMove = (e: TouchEvent) => {
-      e.preventDefault();
-      const rect = container.getBoundingClientRect();
-      if (e.touches.length >= 2) {
-        singleActive = false;
-        const dist = d2(e.touches);
-        const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-        const my = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
-        const newScale = Math.max(fitScale, Math.min(5, pinchStartScale * dist / pinchStartDist));
-        state.x = mx - pinchStartBX * newScale;
-        state.y = my - pinchStartBY * newScale;
+      if (e.cancelable) e.preventDefault();
+      if (e.touches.length === 1 && !isPinching) {
+        if (state.scale <= 1) return;
+        let dx = e.touches[0].clientX - lastTouchX;
+        let dy = e.touches[0].clientY - lastTouchY;
+        if (!canMoveX) dx = 0;
+        if (!canMoveY) dy = 0;
+        state.x += dx; state.y += dy;
+        lastTouchX = e.touches[0].clientX; lastTouchY = e.touches[0].clientY;
+        clampState(); img.style.transition = 'none'; updateTransform();
+      } else if (e.touches.length === 2) {
+        const currentDist = getTouchDist(e.touches);
+        const currentCenter = getTouchMid(e.touches);
+        if (lastTouchDistance === 0) return;
+        const ratio = currentDist / lastTouchDistance;
+        let newScale = state.scale * ratio;
+        if (newScale <= 1) { centerImage(); return; }
+        const relX = lastTouchCenter.x - state.x;
+        const relY = lastTouchCenter.y - state.y;
+        state.x = currentCenter.x - relX * ratio;
+        state.y = currentCenter.y - relY * ratio;
         state.scale = newScale;
-        clamp(); updateTransform();
-      } else if (e.touches.length === 1 && singleActive) {
-        state.x = touchSX + e.touches[0].clientX - rect.left - touchStartX;
-        state.y = touchSY + e.touches[0].clientY - rect.top - touchStartY;
-        clamp(); updateTransform();
+        lastTouchDistance = currentDist;
+        lastTouchCenter = currentCenter;
+        clampState(); img.style.transition = 'none'; updateTransform();
       }
     };
-    const onTouchEnd = (e: TouchEvent) => { if (e.touches.length < 2) singleActive = e.touches.length === 1; };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) isPinching = false;
+      if (e.touches.length === 1) {
+        checkMovability(); lastTouchX = e.touches[0].clientX; lastTouchY = e.touches[0].clientY;
+        img.style.transition = 'none';
+      } else if (e.touches.length === 0) {
+        img.style.transition = 'transform 0.1s ease-out';
+      }
+    };
 
-    container.addEventListener('mousedown', onMouseDown);
+    // Events on img element directly (reference code pattern)
+    img.addEventListener('wheel', onWheel, { passive: false });
+    img.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
-    container.addEventListener('wheel', onWheel, { passive: false });
-    container.addEventListener('touchstart', onTouchStart, { passive: false });
-    container.addEventListener('touchmove', onTouchMove, { passive: false });
-    container.addEventListener('touchend', onTouchEnd);
+    img.addEventListener('touchstart', onTouchStart, { passive: false });
+    img.addEventListener('touchmove', onTouchMove, { passive: false });
+    img.addEventListener('touchend', onTouchEnd);
 
     imgCleanupRef.current = () => {
-      container.removeEventListener('mousedown', onMouseDown);
+      img.removeEventListener('wheel', onWheel);
+      img.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
-      container.removeEventListener('wheel', onWheel);
-      container.removeEventListener('touchstart', onTouchStart);
-      container.removeEventListener('touchmove', onTouchMove);
-      container.removeEventListener('touchend', onTouchEnd);
+      img.removeEventListener('touchstart', onTouchStart);
+      img.removeEventListener('touchmove', onTouchMove);
+      img.removeEventListener('touchend', onTouchEnd);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -795,7 +850,15 @@ export function AttachmentModal({ app }: { app: any }) {
                 src={dataUrl}
                 alt={filename}
                 onLoad={onImgLoad}
-                style={{ opacity: 0, display: 'block', userSelect: 'none', pointerEvents: 'none' }}
+                style={{
+                  opacity: 0,
+                  display: 'block',
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  transformOrigin: '0 0',
+                  willChange: 'transform',
+                  userSelect: 'none',
+                }}
                 draggable={false}
               />
             </div>
