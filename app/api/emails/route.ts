@@ -70,6 +70,25 @@ function getTextBody(payload: any): string {
   return "";
 }
 
+function extractHtmlLinks(html: string): Array<{text: string, href: string}> {
+  const links: Array<{text: string, href: string}> = [];
+  const seen = new Set<string>();
+  const re = /<a\b[^>]*?\bhref=["']?(https?:\/\/[^"'\s>]+)["']?[^>]*>([\s\S]*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const href = m[1].trim();
+    const rawText = m[2].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+    // テキストが空・長すぎ・そのままURLの場合はスキップ
+    if (rawText && rawText.length > 0 && rawText.length <= 150 && !rawText.startsWith("http")) {
+      if (!seen.has(rawText)) {
+        seen.add(rawText);
+        links.push({ text: rawText, href });
+      }
+    }
+  }
+  return links;
+}
+
 function getHtmlBody(payload: any): string {
   if (payload.mimeType === "text/html" && payload.body?.data) return decodeBase64Url(payload.body.data);
   if (payload.parts) {
@@ -176,8 +195,10 @@ export async function GET(request: Request) {
       const labelIds = message.labelIds || []; 
       const rawBody = getTextBody(payload) || message.snippet || "";
       const cleansedBody = cleanseBody(rawBody);
-      
-      return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds };
+      const htmlBodyForLinks = getHtmlBody(payload);
+      const htmlLinks = htmlBodyForLinks ? extractHtmlLinks(htmlBodyForLinks) : [];
+
+      return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks };
     });
 
     return NextResponse.json({ messages: parsedMessages, topIds, nextPageToken });

@@ -16,59 +16,105 @@ export const HighlightText = ({ text, highlight }: { text: string, highlight: st
   );
 };
 
-export function BodyWithLinks({ text, highlight }: { text: string; highlight?: string }) {
+export function BodyWithLinks({ text, highlight, htmlLinks }: {
+  text: string;
+  highlight?: string;
+  htmlLinks?: Array<{ text: string; href: string }>;
+}) {
   const [preview, setPreview] = useState<{ url: string; x: number; y: number } | null>(null);
 
   const src = text || "";
-  const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  const re = /https?:\/\/[^\s<>"]+/g;
 
-  while ((match = re.exec(src)) !== null) {
-    const rawUrl = match[0].replace(/[.,;:!?)\]>'"。、，；：！？）]+$/, "");
-    if (!rawUrl) { lastIndex = match.index + match[0].length; continue; }
-    const trailing = match[0].slice(rawUrl.length);
+  // クリック可能な範囲を収集
+  type Range =
+    | { kind: "url"; start: number; end: number; rawEnd: number; url: string; trailing: string }
+    | { kind: "html"; start: number; end: number; href: string; linkText: string };
 
-    if (match.index > lastIndex) {
-      const seg = src.slice(lastIndex, match.index);
-      parts.push(highlight
-        ? <HighlightText key={`t-${lastIndex}`} text={seg} highlight={highlight} />
-        : seg
-      );
+  const ranges: Range[] = [];
+
+  // 生URLの範囲を収集
+  const urlRe = /https?:\/\/[^\s<>"]+/g;
+  let um: RegExpExecArray | null;
+  while ((um = urlRe.exec(src)) !== null) {
+    const url = um[0].replace(/[.,;:!?)\]>'"。、，；：！？）]+$/, "");
+    if (url) {
+      ranges.push({ kind: "url", start: um.index, end: um.index + url.length, rawEnd: um.index + um[0].length, url, trailing: um[0].slice(url.length) });
     }
-
-    const url = rawUrl;
-    parts.push(
-      <a
-        key={`u-${match.index}`}
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-[#5865F2] underline underline-offset-2 hover:text-[#7289DA] break-all"
-        onClick={(e) => e.stopPropagation()}
-        onMouseEnter={(e) => {
-          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          const spaceBelow = window.innerHeight - rect.bottom;
-          const y = spaceBelow > 130 ? rect.bottom + 8 : rect.top - 128;
-          setPreview({ url, x: Math.max(8, Math.min(rect.left, window.innerWidth - 296)), y });
-        }}
-        onMouseLeave={() => setPreview(null)}
-      >
-        {highlight ? <HighlightText text={url} highlight={highlight} /> : url}
-      </a>
-    );
-
-    if (trailing) parts.push(trailing);
-    lastIndex = match.index + match[0].length;
   }
 
-  if (lastIndex < src.length) {
-    const remaining = src.slice(lastIndex);
-    parts.push(highlight
-      ? <HighlightText key={`t-tail`} text={remaining} highlight={highlight} />
-      : remaining
-    );
+  // HTML リンクの範囲を収集（既存範囲と重複しない最初の出現箇所）
+  if (htmlLinks?.length) {
+    const isUsed = (s: number, e: number) =>
+      ranges.some(r => r.start < e && (r.kind === "url" ? r.rawEnd : r.end) > s);
+    for (const { text: lt, href } of htmlLinks) {
+      if (!lt) continue;
+      let from = 0;
+      while (from < src.length) {
+        const idx = src.indexOf(lt, from);
+        if (idx === -1) break;
+        const end = idx + lt.length;
+        if (!isUsed(idx, end)) {
+          ranges.push({ kind: "html", start: idx, end, href, linkText: lt });
+          break;
+        }
+        from = idx + 1;
+      }
+    }
+  }
+
+  ranges.sort((a, b) => a.start - b.start);
+
+  const parts: React.ReactNode[] = [];
+  let lastIdx = 0;
+
+  for (const r of ranges) {
+    if (r.start < lastIdx) continue;
+    if (r.start > lastIdx) {
+      const seg = src.slice(lastIdx, r.start);
+      parts.push(highlight ? <HighlightText key={`t-${lastIdx}`} text={seg} highlight={highlight} /> : seg);
+    }
+    if (r.kind === "url") {
+      const url = r.url;
+      parts.push(
+        <a key={`u-${r.start}`} href={url} target="_blank" rel="noopener noreferrer"
+          className="text-[#5865F2] underline underline-offset-2 hover:text-[#7289DA] break-all"
+          onClick={(e) => e.stopPropagation()}
+          onMouseEnter={(e) => {
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            const y = (window.innerHeight - rect.bottom) > 130 ? rect.bottom + 8 : rect.top - 128;
+            setPreview({ url, x: Math.max(8, Math.min(rect.left, window.innerWidth - 296)), y });
+          }}
+          onMouseLeave={() => setPreview(null)}
+        >
+          {highlight ? <HighlightText text={url} highlight={highlight} /> : url}
+        </a>
+      );
+      if (r.trailing) parts.push(r.trailing);
+      lastIdx = r.rawEnd;
+    } else {
+      // HTMLリンク: 下線+クリック+プレビュー
+      const hrefForPreview = r.href;
+      parts.push(
+        <a key={`h-${r.start}`} href={r.href} target="_blank" rel="noopener noreferrer"
+          className="text-[#5865F2] underline underline-offset-2 hover:text-[#7289DA]"
+          onClick={(e) => e.stopPropagation()}
+          onMouseEnter={(e) => {
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            const y = (window.innerHeight - rect.bottom) > 130 ? rect.bottom + 8 : rect.top - 128;
+            setPreview({ url: hrefForPreview, x: Math.max(8, Math.min(rect.left, window.innerWidth - 296)), y });
+          }}
+          onMouseLeave={() => setPreview(null)}
+        >
+          {highlight ? <HighlightText text={r.linkText} highlight={highlight} /> : r.linkText}
+        </a>
+      );
+      lastIdx = r.end;
+    }
+  }
+
+  if (lastIdx < src.length) {
+    const remaining = src.slice(lastIdx);
+    parts.push(highlight ? <HighlightText key="t-tail" text={remaining} highlight={highlight} /> : remaining);
   }
 
   let domain = "";
@@ -84,10 +130,8 @@ export function BodyWithLinks({ text, highlight }: { text: string; highlight?: s
               <span className="text-[11px]">🔗</span>
               <span className="text-xs font-bold text-gray-200 truncate">{domain}</span>
             </div>
-            <div
-              className="text-[11px] text-gray-500 break-all leading-relaxed"
-              style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } as React.CSSProperties}
-            >
+            <div className="text-[11px] text-gray-500 break-all leading-relaxed"
+              style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } as React.CSSProperties}>
               {preview.url}
             </div>
           </div>

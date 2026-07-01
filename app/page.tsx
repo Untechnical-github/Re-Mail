@@ -489,7 +489,7 @@ export default function Home() {
                                   overflow: 'hidden',
                                 } : undefined}
                               >
-                                <BodyWithLinks text={email.body} highlight={state.searchKeyword} />
+                                <BodyWithLinks text={email.body} highlight={state.searchKeyword} htmlLinks={email.htmlLinks} />
                               </div>
                               {isCollapsed && (
                                 <div className="text-xs mt-1.5 opacity-60">もっと見る...</div>
