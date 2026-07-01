@@ -47,7 +47,7 @@ export function useMailApp() {
   const [modal, setModal] = useState<ModalState>(null);
   const [renameInput, setRenameInput] = useState("");
   const touchTimer = useRef<NodeJS.Timeout | null>(null);
-  const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true, crossBox: false, oldEmails: false });
+  const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true, crossBox: false });
   const [moveDestination, setMoveDestination] = useState<"INBOX" | "ARCHIVE" | "SPAM" | "TRASH" | null>(null);
   const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
 
@@ -241,12 +241,19 @@ export function useMailApp() {
             newConfig.isHidden = false; newConfig.hiddenAtDate = undefined; newConfig.roomId = undefined; hasUpdate = true;
           }
         } else {
-          const hasInboxOrArchive = latestEmails.some(e => {
-             const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
-             return room === targetId && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
-          });
-          if (!hasInboxOrArchive) {
-            newConfig.isHidden = false; newConfig.hiddenAtDate = undefined; hasUpdate = true;
+          // unhideOnNew が有効な場合のみ、非表示日時より新しいメールがあれば自動解除
+          if (config.unhideOnNew) {
+            const hiddenDate = config.hiddenAtDate ? new Date(config.hiddenAtDate) : new Date(0);
+            const hasNewEmail = latestEmails.some(e => {
+              const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
+              return room === targetId &&
+                     !e.labelIds?.includes("TRASH") &&
+                     !e.labelIds?.includes("SPAM") &&
+                     new Date(e.date) > hiddenDate;
+            });
+            if (hasNewEmail) {
+              newConfig.isHidden = false; newConfig.hiddenAtDate = undefined; newConfig.unhideOnNew = false; hasUpdate = true;
+            }
           }
         }
       }
@@ -739,6 +746,16 @@ export function useMailApp() {
     }
   };
 
+  // アクション実行後: モーダルと選択モードを両方終了し履歴も整理する
+  const exitAfterAction = () => {
+    setModal(null);
+    setSelectionMode("none");
+    setSelectedIds([]);
+    const steps = hasPushedSelectRef.current ? 2 : 1;
+    hasPushedSelectRef.current = false;
+    window.history.go(-steps);
+  };
+
   const openChat = async (sender: string) => {
     // 現在のチャットを LRU キャッシュに保存
     const prevSender = selectedSender;
@@ -809,7 +826,7 @@ export function useMailApp() {
 
     if (act === "reset") {
       if (!inSelection || selectedIds.length === 0) return;
-      setResetOptions({ pin: true, hide: true, name: true, crossBox: false, oldEmails: false });
+      setResetOptions({ pin: true, hide: true, name: true, crossBox: false });
       setModal({ type: "confirm_reset", targetMode: "specific_chat", targets: [...selectedIds] });
       window.history.pushState({ action: "modal" }, "", window.location.href);
       return;
@@ -819,6 +836,8 @@ export function useMailApp() {
 
     if (act === "pin") {
       setModal({ type: "confirm_pin", targetMode: targetMode as any, targets: [...selectedIds] });
+    } else if (act === "unpin") {
+      setModal({ type: "confirm_unpin", targetMode: targetMode as any, targets: [...selectedIds] });
     } else if (act === "hide") {
       if (targetMode === "chat") {
         setModal({ type: "confirm_hide", targetMode: "chat", targets: [...selectedIds] });
@@ -958,7 +977,7 @@ export function useMailApp() {
     }
 
     setPersistedEmails(pMsgs);
-    safeBack();
+    exitAfterAction();
   };
 
   const getActionableEmails = (targets: string[], targetMode: string) => {
@@ -1075,7 +1094,7 @@ export function useMailApp() {
       if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
     }
     else if (type === "confirm_reset") {
-      const { pin, hide, name, crossBox, oldEmails } = resetOptions; let keysToProcess = Object.keys(chatConfigs);
+      const { pin, hide, name, crossBox } = resetOptions; let keysToProcess = Object.keys(chatConfigs);
       if (targetMode === "current_chat") keysToProcess = keysToProcess.filter(k => k === targets[0] || chatConfigs[k]?.roomId === targets[0]);
       else if (targetMode === "specific_chat") keysToProcess = keysToProcess.filter(k => targets.includes(k) || targets.some((t: string) => chatConfigs[k]?.roomId === t));
       keysToProcess.forEach(target => {
@@ -1087,46 +1106,42 @@ export function useMailApp() {
       });
       if (pin) setPersistedEmails(prev => prev.filter(e => !keysToProcess.includes(e.id) && !keysToProcess.includes(e.senderRoom)));
 
-      // 他の場所・過去メールの読み込み状態リセット（チャットレベルのキーのみ対象）
-      if (crossBox || oldEmails) {
+      // 他の場所の読み込みリセット: メールを消さずに revealedCrossPrompts を消してボタンに戻す
+      if (crossBox) {
         const affectedSenders = new Set(keysToProcess.filter(k => !chatConfigs[k]?.roomId));
-        const removedIds = new Set<string>();
-
-        setEmails(prev => prev.filter((e: any) => {
-          const room = e.senderRoom || (e.from?.split("<")[0].replace(/"/g, "").trim() || "Unknown");
+        setRevealedCrossPrompts((prev: string[]) => prev.filter(id => {
+          const email = emailsRef.current.find((e: any) => e.id === id);
+          if (!email) return false;
+          const room = email.senderRoom || (email.from?.split("<")[0].replace(/"/g, "").trim() || "Unknown");
           if (!affectedSenders.has(room)) return true;
-          if (oldEmails) { removedIds.add(e.id); return false; }
-          // crossBox のみ: フィルター対象外の場所のメールだけ削除
-          const isTrash = e.labelIds?.includes("TRASH");
-          const isSpam  = e.labelIds?.includes("SPAM");
-          const isInbox = e.labelIds?.includes("INBOX");
-          const isSent  = e.labelIds?.includes("SENT") || e.isMe;
+          const isTrash = email.labelIds?.includes("TRASH");
+          const isSpam  = email.labelIds?.includes("SPAM");
+          const isInbox = email.labelIds?.includes("INBOX");
+          const isSent  = email.labelIds?.includes("SENT") || email.isMe;
           const inFilter = isSent ? checkSent : (isTrash ? checkTrash : (isSpam ? checkSpam : (isInbox ? checkInbox : checkArchive)));
-          if (!inFilter) { removedIds.add(e.id); return false; }
-          return true;
+          return inFilter;
         }));
-
-        setRevealedCrossPrompts((prev: string[]) => prev.filter(id => !removedIds.has(id)));
-        affectedSenders.forEach(s => chatCacheRef.current.delete(s));
-
-        // 現在開いているチャットが対象なら再フェッチ
-        if (oldEmails && selectedSender && affectedSenders.has(selectedSender)) {
-          setChatNextPageToken("FIRST_PAGE");
-          safeBack();
-          fetchChatCrossbox(selectedSender, false);
-          return;
-        }
+      }
+    }
+    else if (type === "confirm_unpin") {
+      targets.forEach((targetId: string) => {
+        updateChatConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null });
+      });
+      if (targetMode === "chat") {
+        setPersistedEmails(prev => prev.filter(e => !targets.includes(e.senderRoom)));
+      } else {
+        setPersistedEmails(prev => prev.filter(e => !targets.includes(e.id)));
       }
     }
     else if (type === "confirm_unhide") { targets.forEach(target => updateChatConfig(target, { isHidden: false })); }
-    
-    safeBack();
+
+    exitAfterAction();
   };
 
   // 場所ごとに異なる移動先へバッチ移動
   const executeBatchMove = async (groups: { ids: string[], destination: string }[]) => {
     const allIds = groups.flatMap(g => g.ids);
-    if (allIds.length === 0) { safeBack(); return; }
+    if (allIds.length === 0) { exitAfterAction(); return; }
 
     const getDestForId = (id: string) => groups.find(g => g.ids.includes(id))?.destination;
 
@@ -1156,10 +1171,7 @@ export function useMailApp() {
       }).catch((e: any) => console.error(e));
     });
 
-    safeBack();
-    setSelectionMode("none");
-    setSelectedIds([]);
-    setModal(null);
+    exitAfterAction();
   };
 
 
@@ -1294,7 +1306,7 @@ export function useMailApp() {
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,
       handleSend, executePin, executeConfirmedAction,
-      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, enterSelectionMode, executeBatchMove,
+      openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, exitAfterAction, enterSelectionMode, executeBatchMove,
       setChatCacheLimit,
       openEmailModal, closeEmailModal, toggleMsgExpand,
     },

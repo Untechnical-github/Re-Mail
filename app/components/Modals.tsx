@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
@@ -236,7 +236,7 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
 
 function ChatHideConfirm({ app, modal }: { app: any; modal: NonNullable<any> }) {
   const [unhideOnNew, setUnhideOnNew] = useState(false);
-  const { safeBack, updateChatConfig, setSelectedSender } = app.actions;
+  const { safeBack, exitAfterAction, updateChatConfig, setSelectedSender } = app.actions;
   const { selectedSender } = app.state;
 
   const handleExecute = () => {
@@ -244,7 +244,7 @@ function ChatHideConfirm({ app, modal }: { app: any; modal: NonNullable<any> }) 
       updateChatConfig(target, { isHidden: true, hiddenAtDate: new Date().toISOString(), unhideOnNew });
     });
     if (modal.targets.includes(selectedSender)) setSelectedSender(null);
-    safeBack();
+    exitAfterAction();
   };
 
   return (
@@ -273,34 +273,94 @@ function ChatHideConfirm({ app, modal }: { app: any; modal: NonNullable<any> }) 
 function prepareHtml(raw: string): string {
   const inject =
     '<base target="_blank">' +
-    '<style>*{box-sizing:border-box;max-width:100%;}img{height:auto;}body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}</style>';
+    '<style>*{box-sizing:border-box;max-width:100%!important;}img{height:auto;}body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;word-break:break-word;}</style>';
   if (/<head[\s>]/i.test(raw)) {
     return raw.replace(/(<head[^>]*>)/i, `$1${inject}`);
   }
   return `<!DOCTYPE html><html><head>${inject}</head><body>${raw}</body></html>`;
 }
 
+function TextWithLinks({ text }: { text: string }) {
+  const [preview, setPreview] = useState<{ url: string; x: number; y: number } | null>(null);
+
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  const re = /https?:\/\/[^\s<>"]+/g;
+
+  while ((match = re.exec(text)) !== null) {
+    const rawUrl = match[0].replace(/[.,;:!?)\]>'"。、，；：！？）]+$/, "");
+    if (!rawUrl) { lastIndex = match.index + match[0].length; continue; }
+    const trailing = match[0].slice(rawUrl.length);
+
+    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+
+    const url = rawUrl;
+    parts.push(
+      <a
+        key={`url-${match.index}`}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-[#5865F2] underline underline-offset-2 hover:text-[#7289DA] break-all"
+        onClick={(e) => e.stopPropagation()}
+        onMouseEnter={(e) => {
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          const spaceBelow = window.innerHeight - rect.bottom;
+          const y = spaceBelow > 130 ? rect.bottom + 8 : rect.top - 128;
+          setPreview({ url, x: Math.max(8, Math.min(rect.left, window.innerWidth - 296)), y });
+        }}
+        onMouseLeave={() => setPreview(null)}
+      >
+        {url}
+      </a>
+    );
+
+    if (trailing) parts.push(trailing);
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+
+  let domain = "";
+  if (preview) { try { domain = new URL(preview.url).hostname; } catch {} }
+
+  return (
+    <>
+      <pre className="text-gray-200 text-sm whitespace-pre-wrap break-words font-sans leading-relaxed select-text">
+        {parts}
+      </pre>
+      {preview && (
+        <div
+          className="fixed z-[70] pointer-events-none"
+          style={{ top: preview.y, left: preview.x }}
+        >
+          <div className="bg-[#1E1F22] border border-[#404249] rounded-lg shadow-2xl p-3 w-72">
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="text-[11px]">🔗</span>
+              <span className="text-xs font-bold text-gray-200 truncate">{domain}</span>
+            </div>
+            <div
+              className="text-[11px] text-gray-500 break-all leading-relaxed"
+              style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } as React.CSSProperties}
+            >
+              {preview.url}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function EmailModal({ app }: { app: any }) {
   const { emailModal } = app.state;
   const { closeEmailModal } = app.actions;
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-
-  useEffect(() => {
-    if (!emailModal || emailModal.isLoading || !emailModal.htmlBody) return;
-    const iframe = iframeRef.current;
-    if (!iframe) return;
-    const doc = iframe.contentDocument || iframe.contentWindow?.document;
-    if (doc) {
-      doc.open();
-      doc.write(prepareHtml(emailModal.htmlBody));
-      doc.close();
-    }
-  }, [emailModal?.htmlBody, emailModal?.isLoading]);
 
   if (!emailModal) return null;
 
   const { email, htmlBody, isLoading } = emailModal;
-  const showHtml = !isLoading && htmlBody;
+  const showHtml = !isLoading && !!htmlBody;
   const showText = !isLoading && !htmlBody;
 
   return (
@@ -310,8 +370,8 @@ export function EmailModal({ app }: { app: any }) {
     >
       <div
         className="bg-[#2B2D31] rounded-lg shadow-2xl w-full max-w-3xl flex flex-col border border-[#1E1F22]"
-        style={{ maxHeight: "92dvh" }}
-        onClick={e => e.stopPropagation()}
+        style={{ height: "92dvh" }}
+        onClick={(e) => e.stopPropagation()}
       >
         {/* ヘッダー */}
         <div className="flex items-start gap-3 p-4 border-b border-[#1E1F22] flex-shrink-0">
@@ -319,9 +379,7 @@ export function EmailModal({ app }: { app: any }) {
             <div className="font-bold text-white text-sm leading-snug break-words">
               {email.subject || "(件名なし)"}
             </div>
-            <div className="text-[11px] text-gray-400 mt-1 truncate">
-              {email.from}
-            </div>
+            <div className="text-[11px] text-gray-400 mt-1 truncate">{email.from}</div>
             <div className="text-[11px] text-gray-500">
               {new Date(email.date).toLocaleString("ja-JP")}
             </div>
@@ -334,27 +392,24 @@ export function EmailModal({ app }: { app: any }) {
           </button>
         </div>
 
-        {/* コンテンツ */}
-        <div className="flex-1 min-h-0 relative">
+        {/* コンテンツ - 両モードとも h-full で同一高さ */}
+        <div className="flex-1 min-h-0">
           {isLoading && (
-            <div className="flex items-center justify-center h-full min-h-[200px] text-gray-400 text-sm">
+            <div className="flex items-center justify-center h-full text-gray-400 text-sm">
               読み込み中...
             </div>
           )}
           {showHtml && (
             <iframe
-              ref={iframeRef}
+              srcDoc={prepareHtml(htmlBody!)}
               sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
-              className="w-full border-none block bg-white"
-              style={{ minHeight: "60dvh", maxHeight: "calc(92dvh - 100px)" }}
+              className="w-full h-full border-none block bg-white"
               title="メール本文"
             />
           )}
           {showText && (
-            <div className="overflow-y-auto p-4" style={{ maxHeight: "calc(92dvh - 100px)" }}>
-              <pre className="text-gray-200 text-sm whitespace-pre-wrap break-words font-sans leading-relaxed select-text">
-                {email.body}
-              </pre>
+            <div className="overflow-y-auto h-full p-4">
+              <TextWithLinks text={email.body || ""} />
             </div>
           )}
         </div>
@@ -444,6 +499,19 @@ export function Modals({ app }: { app: any }) {
             </div>
           );
         })()}
+
+        {modal.type === "confirm_unpin" && (
+          <div className="p-5">
+            <h2 className="text-lg font-bold text-white mb-2">ピン留めを解除</h2>
+            <p className="text-sm text-gray-300 mb-6 leading-relaxed">
+              選択した {modal.targets.length} 件の{modal.targetMode === "chat" ? "チャット" : "メッセージ"}のピン留めを解除しますか？
+            </p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+              <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">解除する</button>
+            </div>
+          </div>
+        )}
 
         {modal.type === "confirm_delete" && (() => {
           const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
@@ -634,16 +702,12 @@ export function Modals({ app }: { app: any }) {
               <div className="border-t border-[#1E1F22] my-1" />
               <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition">
                 <input type="checkbox" checked={resetOptions.crossBox} onChange={(e) => setResetOptions({...resetOptions, crossBox: e.target.checked})} className="accent-[#5865F2] w-4 h-4" />
-                <span>他の場所のメールの読み込みをリセット<span className="block text-xs text-gray-400">現在のフィルター対象外のメールを非表示に戻す</span></span>
-              </label>
-              <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition">
-                <input type="checkbox" checked={resetOptions.oldEmails} onChange={(e) => setResetOptions({...resetOptions, oldEmails: e.target.checked})} className="accent-[#5865F2] w-4 h-4" />
-                <span>過去のメールの読み込みをリセット<span className="block text-xs text-gray-400">追加で読み込んだ過去のメールをクリアし最初から読み込み直す</span></span>
+                <span>他の場所のメールの読み込みをリセット<span className="block text-xs text-gray-400">現在のフィルター対象外のメールを読み込みボタンに戻す</span></span>
               </label>
             </div>
             <div className="flex justify-end gap-3">
               <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-              <button onClick={executeConfirmedAction} disabled={!resetOptions.pin && !resetOptions.hide && !resetOptions.name && !resetOptions.crossBox && !resetOptions.oldEmails} className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c] disabled:bg-[#3f4147] disabled:text-gray-500">リセットする</button>
+              <button onClick={executeConfirmedAction} disabled={!resetOptions.pin && !resetOptions.hide && !resetOptions.name && !resetOptions.crossBox} className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c] disabled:bg-[#3f4147] disabled:text-gray-500">リセットする</button>
             </div>
           </div>
         )}

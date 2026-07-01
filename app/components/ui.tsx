@@ -98,6 +98,10 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     ? app.computed.allUniqueEmails.find((e: any) => e.id === selectedIds[0])
     : null;
 
+  const allPinned = isAnySelection && hasItems && selectedIds.every((id: string) =>
+    app.state.chatConfigs[id]?.isPinned
+  );
+
   const showBanner = isAnySelection && hasItems;
 
   return (
@@ -173,9 +177,9 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         </>
       )}
 
-      {/* ピン留め */}
-      <button onClick={() => handleMenuBarClick(`${modePrefix}_pin`)} className={getBtnClass("pin")}>
-        {renderText("ピン留め")}
+      {/* ピン留め / ピン解除 */}
+      <button onClick={() => handleMenuBarClick(`${modePrefix}_${allPinned ? "unpin" : "pin"}`)} className={getBtnClass("pin")}>
+        {renderText(allPinned ? "ピン解除" : "ピン留め")}
       </button>
 
       {/* 移動 */}
