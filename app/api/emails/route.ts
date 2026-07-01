@@ -70,6 +70,22 @@ function getTextBody(payload: any): string {
   return "";
 }
 
+function extractAttachments(payload: any): Array<{ filename: string; mimeType: string; size: number; attachmentId: string }> {
+  const results: Array<{ filename: string; mimeType: string; size: number; attachmentId: string }> = [];
+  function walk(part: any) {
+    if (!part) return;
+    if (part.body?.attachmentId && part.filename?.trim()) {
+      const disp = (part.headers || []).find((h: any) => h.name?.toLowerCase() === 'content-disposition')?.value?.toLowerCase() ?? '';
+      if (!disp.startsWith('inline')) {
+        results.push({ filename: part.filename, mimeType: part.mimeType || 'application/octet-stream', size: part.body.size || 0, attachmentId: part.body.attachmentId });
+      }
+    }
+    if (part.parts) part.parts.forEach(walk);
+  }
+  walk(payload);
+  return results;
+}
+
 function extractHtmlLinks(html: string): Array<{text: string, href: string}> {
   const links: Array<{text: string, href: string}> = [];
   const seen = new Set<string>();
@@ -124,8 +140,26 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
 
-  // 単一メッセージのHTML本文取得（モーダル表示用）
   const messageId = searchParams.get("messageId");
+
+  // 添付ファイルデータの取得
+  const attachmentId = searchParams.get("attachmentId");
+  if (messageId && attachmentId) {
+    if (messageId.startsWith("fake-")) return NextResponse.json({ data: null });
+    try {
+      const res = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+        { headers: { Authorization: `Bearer ${session.accessToken}` } }
+      );
+      if (!res.ok) return NextResponse.json({ data: null });
+      const json = await res.json();
+      return NextResponse.json({ data: json.data ?? null });
+    } catch {
+      return NextResponse.json({ data: null });
+    }
+  }
+
+  // 単一メッセージのHTML本文取得（モーダル表示用）
   if (messageId && searchParams.get("html") === "true") {
     if (messageId.startsWith("fake-")) return NextResponse.json({ htmlBody: null, hasHtml: false });
     try {
@@ -198,7 +232,8 @@ export async function GET(request: Request) {
       const htmlBodyForLinks = getHtmlBody(payload);
       const htmlLinks = htmlBodyForLinks ? extractHtmlLinks(htmlBodyForLinks) : [];
 
-      return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks };
+      const attachments = extractAttachments(payload);
+      return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments };
     });
 
     return NextResponse.json({ messages: parsedMessages, topIds, nextPageToken });

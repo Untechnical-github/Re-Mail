@@ -141,6 +141,25 @@ export function BodyWithLinks({ text, highlight, htmlLinks }: {
   );
 }
 
+export function getFileIcon(mimeType: string): string {
+  if (mimeType.startsWith('image/')) return '🖼️';
+  if (mimeType === 'application/pdf') return '📄';
+  if (mimeType.startsWith('audio/')) return '🎵';
+  if (mimeType.startsWith('video/')) return '🎬';
+  if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) return '📊';
+  if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) return '📊';
+  if (mimeType.includes('document') || mimeType.includes('word')) return '📝';
+  if (mimeType.startsWith('text/')) return '📝';
+  if (mimeType.includes('zip') || mimeType.includes('rar') || mimeType.includes('compressed') || mimeType.includes('archive')) return '🗜️';
+  return '📎';
+}
+
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
 export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
   const { selectionMode, selectedIds } = app.state;

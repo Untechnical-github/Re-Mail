@@ -4,7 +4,8 @@ import { useRef } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
-import { Modals, EmailModal } from "./components/Modals";
+import { Modals, EmailModal, AttachmentModal } from "./components/Modals";
+import { getFileIcon, formatFileSize } from "./components/ui";
 
 export default function Home() {
   const app = useMailApp();
@@ -29,6 +30,7 @@ export default function Home() {
     <div className="flex h-[100dvh] w-full bg-[#313338] overflow-hidden text-gray-200 relative select-none" onClick={actions.handleBackgroundClick}>
 <Modals app={app} />
 <EmailModal app={app} />
+<AttachmentModal app={app} />
 
       {showChatList && (
         <aside className={`${state.isMobile ? 'w-full' : 'w-[320px] border-r'} border-[#1E1F22] bg-[#2B2D31] flex flex-col h-full min-h-0 cursor-pointer`}>
@@ -495,6 +497,23 @@ export default function Home() {
                                 <div className="text-xs mt-1.5 opacity-60">もっと見る...</div>
                               )}
                            </div>
+                           {email.attachments && email.attachments.length > 0 && (
+                             <div className={`flex flex-wrap gap-2 mt-2 mx-1 ${isMe ? 'justify-end' : 'justify-start'}`}>
+                               {email.attachments.map((att: any) => (
+                                 <button
+                                   key={att.attachmentId}
+                                   onClick={(e) => { e.stopPropagation(); actions.openAttachmentModal({ ...att, messageId: email.id }); }}
+                                   className="flex items-center gap-2 px-3 py-2 rounded-xl bg-black/20 border border-white/10 hover:bg-black/30 transition text-left max-w-[200px]"
+                                 >
+                                   <span className="text-lg flex-shrink-0">{getFileIcon(att.mimeType)}</span>
+                                   <div className="min-w-0">
+                                     <div className="text-xs font-bold truncate text-gray-200">{att.filename}</div>
+                                     <div className="text-[10px] text-gray-400">{formatFileSize(att.size)}</div>
+                                   </div>
+                                 </button>
+                               ))}
+                             </div>
+                           )}
                         </div>
 
                         {isMe && !state.selectionMode.startsWith("msg_") && (

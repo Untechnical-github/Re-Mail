@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
-import { BodyWithLinks } from "./ui";
+import { BodyWithLinks, getFileIcon, formatFileSize } from "./ui";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
@@ -550,6 +550,145 @@ export function EmailModal({ app }: { app: any }) {
               </pre>
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function AttachmentModal({ app }: { app: any }) {
+  const { attachmentModal } = app.state;
+  const { closeAttachmentModal } = app.actions;
+  const [textContent, setTextContent] = useState<string | null>(null);
+
+  useLayoutEffect(() => {
+    if (!attachmentModal?.base64 || !attachmentModal.mimeType.startsWith('text/')) {
+      setTextContent(null);
+      return;
+    }
+    try {
+      const bytes = Uint8Array.from(atob(attachmentModal.base64), (c: string) => c.charCodeAt(0));
+      setTextContent(new TextDecoder().decode(bytes));
+    } catch {
+      setTextContent(null);
+    }
+  }, [attachmentModal?.base64, attachmentModal?.mimeType]);
+
+  useLayoutEffect(() => {
+    if (!attachmentModal) return;
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    const original = meta?.content ?? '';
+    if (meta) meta.content = 'width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no';
+    return () => { if (meta) meta.content = original; };
+  }, [!!attachmentModal]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!attachmentModal) return null;
+
+  const { filename, mimeType, size, base64, isLoading } = attachmentModal;
+  const isImage = mimeType.startsWith('image/');
+  const isPdf = mimeType === 'application/pdf';
+  const isTextFile = mimeType.startsWith('text/');
+  const isAudio = mimeType.startsWith('audio/');
+  const isVideo = mimeType.startsWith('video/');
+  const canPreview = isImage || isPdf || isTextFile || isAudio || isVideo;
+  const dataUrl = base64 ? `data:${mimeType};base64,${base64}` : null;
+
+  const handleDownload = () => {
+    if (!dataUrl) return;
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleShare = async () => {
+    if (!base64) return;
+    try {
+      const bytes = Uint8Array.from(atob(base64), (c: string) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: mimeType });
+      const file = new File([blob], filename, { type: mimeType });
+      if ((navigator as any).canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: filename });
+        return;
+      }
+    } catch {}
+    handleDownload();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-[60] flex items-center justify-center p-2 sm:p-4" onClick={closeAttachmentModal}>
+      <div
+        className="bg-[#2B2D31] rounded-lg shadow-2xl w-full max-w-2xl flex flex-col border border-[#1E1F22]"
+        style={{ height: canPreview ? '90dvh' : 'auto' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* ヘッダー */}
+        <div className="flex items-center gap-3 p-4 border-b border-[#1E1F22] flex-shrink-0">
+          <span className="text-2xl flex-shrink-0">{getFileIcon(mimeType)}</span>
+          <div className="flex-1 min-w-0">
+            <div className="font-bold text-white text-sm truncate">{filename}</div>
+            <div className="text-[11px] text-gray-400">{formatFileSize(size)} · {mimeType}</div>
+          </div>
+          <button onClick={closeAttachmentModal} className="text-gray-400 hover:text-white text-xl font-bold flex-shrink-0 leading-none">×</button>
+        </div>
+
+        {/* プレビューエリア */}
+        <div className="flex-1 min-h-0 relative overflow-hidden">
+          {isLoading && (
+            <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm">読み込み中...</div>
+          )}
+          {!isLoading && !base64 && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm p-4 text-center">
+              <span className="text-4xl">{getFileIcon(mimeType)}</span>
+              <span>ファイルを読み込めませんでした</span>
+            </div>
+          )}
+          {!isLoading && dataUrl && isImage && (
+            <div className="w-full h-full overflow-auto flex items-center justify-center bg-[#1E1F22]">
+              <img src={dataUrl} alt={filename} className="max-w-full max-h-full object-contain" />
+            </div>
+          )}
+          {!isLoading && dataUrl && isPdf && (
+            <iframe src={dataUrl} className="w-full h-full border-none" title={filename} />
+          )}
+          {!isLoading && dataUrl && isAudio && (
+            <div className="w-full h-full flex items-center justify-center bg-[#1E1F22] p-8">
+              <audio controls src={dataUrl} className="w-full max-w-md" />
+            </div>
+          )}
+          {!isLoading && dataUrl && isVideo && (
+            <div className="w-full h-full flex items-center justify-center bg-black">
+              <video controls src={dataUrl} className="max-w-full max-h-full" />
+            </div>
+          )}
+          {!isLoading && base64 && isTextFile && (
+            <div className="w-full h-full overflow-auto p-4 bg-[#1E1F22]">
+              <pre className="text-gray-200 text-sm whitespace-pre-wrap break-words font-mono leading-relaxed select-text">
+                {textContent ?? '（テキストを読み込めませんでした）'}
+              </pre>
+            </div>
+          )}
+          {!isLoading && base64 && !canPreview && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-gray-400 p-8 text-center">
+              <span className="text-6xl">{getFileIcon(mimeType)}</span>
+              <span className="text-sm font-bold text-gray-300">{filename}</span>
+              <span className="text-xs text-gray-500">このファイル形式はプレビューできません</span>
+            </div>
+          )}
+        </div>
+
+        {/* フッター */}
+        <div className="p-4 border-t border-[#1E1F22] flex gap-3 flex-shrink-0">
+          <button onClick={handleDownload} disabled={!base64}
+            className="flex-1 py-2.5 bg-[#5865F2] hover:bg-[#4752C4] disabled:bg-[#3f4147] disabled:text-gray-500 text-white font-bold rounded text-sm transition">
+            ダウンロード
+          </button>
+          <button onClick={handleShare} disabled={!base64}
+            className="flex-1 py-2.5 bg-[#2B2D31] border border-[#4752C4] hover:bg-[#35373C] disabled:opacity-30 text-gray-200 font-bold rounded text-sm transition">
+            共有
+          </button>
         </div>
       </div>
     </div>

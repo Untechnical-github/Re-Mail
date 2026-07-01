@@ -61,6 +61,16 @@ export function useMailApp() {
     isLoading: boolean;
   } | null>(null);
 
+  const [attachmentModal, setAttachmentModal] = useState<{
+    filename: string;
+    mimeType: string;
+    size: number;
+    attachmentId: string;
+    messageId: string;
+    base64: string | null;
+    isLoading: boolean;
+  } | null>(null);
+
   const [boxColors, setBoxColors] = useState({
     inbox: "#5865F2", 
     archive: "#95A5A6",
@@ -281,6 +291,7 @@ export function useMailApp() {
       const state = e.state;
       setModal(null);
       setEmailModal(null);
+      setAttachmentModal(null);
       if (!state || state.action !== "select") { setSelectionMode("none"); setSelectedIds([]); hasPushedSelectRef.current = false; } else { hasPushedSelectRef.current = true; }
       if (!state || state.action !== "search") { setSearchKeyword(""); hasPushedSearchRef.current = false; } else { hasPushedSearchRef.current = true; }
       if (window.innerWidth < 768 && window.location.hash !== '#chat') {
@@ -876,6 +887,33 @@ export function useMailApp() {
     setEmailModal(null);
   };
 
+  const openAttachmentModal = async (attachment: { filename: string; mimeType: string; size: number; attachmentId: string; messageId: string }) => {
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    if (meta) meta.content = 'width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no';
+    setAttachmentModal({ ...attachment, base64: null, isLoading: true });
+    window.history.pushState({ action: "modal" }, "", window.location.href);
+    try {
+      const res = await fetch(`/api/emails?messageId=${encodeURIComponent(attachment.messageId)}&attachmentId=${encodeURIComponent(attachment.attachmentId)}`);
+      if (res.ok) {
+        const { data } = await res.json();
+        if (data) {
+          const base64 = (data as string).replace(/-/g, '+').replace(/_/g, '/');
+          setAttachmentModal(prev => prev ? { ...prev, base64, isLoading: false } : null);
+        } else {
+          setAttachmentModal(prev => prev ? { ...prev, isLoading: false } : null);
+        }
+      } else {
+        setAttachmentModal(prev => prev ? { ...prev, isLoading: false } : null);
+      }
+    } catch {
+      setAttachmentModal(prev => prev ? { ...prev, isLoading: false } : null);
+    }
+  };
+
+  const closeAttachmentModal = () => {
+    setAttachmentModal(null);
+  };
+
   const toggleMsgExpand = (id: string) => {
     setExpandedMsgIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
@@ -1277,7 +1315,7 @@ export function useMailApp() {
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
       resetOptions, moveDestination, revealedCrossPrompts, boxColors,
       chatCacheLimit,
-      collapseLinesCount, expandedMsgIds, emailModal,
+      collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
     },
     actions: {
       setSearchKeyword, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent,
@@ -1288,6 +1326,7 @@ export function useMailApp() {
       openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, exitAfterAction, enterSelectionMode, executeBatchMove,
       setChatCacheLimit,
       openEmailModal, closeEmailModal, toggleMsgExpand,
+      openAttachmentModal, closeAttachmentModal,
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
     refs: { touchTimer, hasPushedSelectRef, hasPushedSearchRef, activeLoadRef, searchTimeoutRef }
