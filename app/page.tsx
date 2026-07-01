@@ -244,7 +244,7 @@ export default function Home() {
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-baseline">
                         <div className="flex items-center gap-1 truncate pr-2">
-                          {config?.isPinned && (state.checkInbox || state.checkArchive || state.checkSent) && <span className="text-[#FEE75C] text-[10px]">📌</span>}
+                          {config?.isPinned && <span className="text-[#FEE75C] text-[10px]">📌</span>}
                           <span className="font-bold text-sm truncate"><HighlightText text={config?.customName || sender} highlight={state.searchKeyword} /></span>
                         </div>
                         <span className="text-[10px] text-gray-500 flex-shrink-0">{latestDate}</span>
@@ -477,7 +477,7 @@ export default function Home() {
                                 if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                               }}
                            >
-                              {state.chatConfigs[email.id]?.isPinned && (state.checkInbox || state.checkArchive || state.checkSent) && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
+                              {state.chatConfigs[email.id]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
                               {email.subject && !email.subject.startsWith("Re:") && (
                                 <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={email.subject} highlight={state.searchKeyword} /></div>
                               )}

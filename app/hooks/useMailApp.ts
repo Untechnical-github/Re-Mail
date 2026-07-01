@@ -720,12 +720,12 @@ export function useMailApp() {
         return checkInbox;
       });
 
-      if (!hasDisplayableEmail && (!config?.isPinned || (!checkInbox && !checkArchive && !checkSent))) return false;
+      if (!hasDisplayableEmail && !config?.isPinned) return false;
       return true;
-      
+
     }).sort((a: string, b: string): number => {
-      const pinA = (chatConfigs[a]?.isPinned && (checkInbox || checkArchive || checkSent)) ? 1 : 0; 
-      const pinB = (chatConfigs[b]?.isPinned && (checkInbox || checkArchive || checkSent)) ? 1 : 0; 
+      const pinA = chatConfigs[a]?.isPinned ? 1 : 0;
+      const pinB = chatConfigs[b]?.isPinned ? 1 : 0;
       if (pinA !== pinB) return pinB - pinA;
       
       const timeA = getLatestValidDate(a);
