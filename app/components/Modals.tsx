@@ -287,7 +287,7 @@ function prepareHtml(raw: string): string {
   // max-width:100%!important は削除 — メールを自然な幅でレンダリングし、zoom でフィットさせる
   const inject =
     '<base target="_blank">' +
-    '<style>*{box-sizing:border-box;}img{max-width:100%;height:auto;}body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;word-break:break-word;transform-origin:0 0;will-change:transform;}</style>';
+    '<style>*{box-sizing:border-box;}img{max-width:100%;height:auto;}body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;word-break:break-word;opacity:0;transform-origin:0 0;will-change:transform;}</style>';
   if (/<head[\s>]/i.test(raw)) {
     return raw.replace(/(<head[^>]*>)/i, `$1${inject}`);
   }
@@ -330,13 +330,13 @@ export function EmailModal({ app }: { app: any }) {
     const bodyEl = doc.body;
     const htmlEl = doc.documentElement as HTMLElement;
 
+    // overflow 設定前に自然な寸法を計測（設定後は scrollWidth が clientWidth になるため）
+    const naturalWidth = Math.max(bodyEl.scrollWidth, 1);
+    const naturalHeight = Math.max(bodyEl.scrollHeight, 1);
+
     // ネイティブスクロール無効化（transform で制御するため）
     htmlEl.style.overflow = 'hidden';
     bodyEl.style.overflow = 'hidden';
-
-    // 自然な寸法を計測（overflow:hidden 適用後はスクロールサイズが正確）
-    const naturalWidth = Math.max(bodyEl.scrollWidth, 1);
-    const naturalHeight = Math.max(bodyEl.scrollHeight, 1);
     const frameWidth = iframe.clientWidth;
     const frameHeight = iframe.clientHeight;
     const fitScale = Math.max(0.01, Math.min(1, frameWidth / naturalWidth));
@@ -357,6 +357,7 @@ export function EmailModal({ app }: { app: any }) {
 
     clamp();
     updateTransform();
+    bodyEl.style.opacity = '1'; // 変換適用後に表示（flash 防止）
 
     // カーソル/ピンチ中心を固定してズーム
     const applyZoom = (newScale: number, pivotX: number, pivotY: number) => {
@@ -399,6 +400,8 @@ export function EmailModal({ app }: { app: any }) {
     };
     const onWinMouseMove = (e: MouseEvent) => {
       if (!isDragging) return;
+      // ボタンが離されていたらドラッグ終了（iframe 内 mouseup は window に伝播しないため）
+      if (!(e.buttons & 1)) { isDragging = false; htmlEl.style.cursor = ''; return; }
       // parent 座標 → iframe 座標に変換してデルタを計算
       state.x = dragStartSX + (e.clientX - iframeOffsetX) - dragStartX;
       state.y = dragStartSY + (e.clientY - iframeOffsetY) - dragStartY;
@@ -468,6 +471,7 @@ export function EmailModal({ app }: { app: any }) {
     window.addEventListener('mouseup', onWinMouseUp);
     doc.addEventListener('wheel', onWheel, { passive: false });
     doc.addEventListener('mousedown', onMouseDown);
+    doc.addEventListener('mouseup', onWinMouseUp); // iframe 内での mouseup（window には伝播しないため）
     doc.addEventListener('touchstart', onTouchStart, { passive: false });
     doc.addEventListener('touchmove', onTouchMove, { passive: false });
     doc.addEventListener('touchend', onTouchEnd);
