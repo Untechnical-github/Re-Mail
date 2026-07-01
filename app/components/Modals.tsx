@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { BodyWithLinks } from "./ui";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
@@ -287,7 +287,7 @@ function prepareHtml(raw: string): string {
   // max-width:100%!important は削除 — メールを自然な幅でレンダリングし、zoom でフィットさせる
   const inject =
     '<base target="_blank">' +
-    '<style>*{box-sizing:border-box;}img{max-width:100%;height:auto;}body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;word-break:break-word;}</style>';
+    '<style>*{box-sizing:border-box;}img{max-width:100%;height:auto;}body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;word-break:break-word;transform-origin:0 0;will-change:transform;}</style>';
   if (/<head[\s>]/i.test(raw)) {
     return raw.replace(/(<head[^>]*>)/i, `$1${inject}`);
   }
@@ -300,115 +300,182 @@ export function EmailModal({ app }: { app: any }) {
   const { closeEmailModal } = app.actions;
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  // ズーム状態（CSS zoom + scrollLeft/scrollTop でカーソル/ピンチ中心を維持）
-  const fitScaleRef = useRef(1);
-  const currentZoomRef = useRef(1);
-  // ピンチジェスチャー用: touchstart 時点の値（ジェスチャー中は更新しない）
-  const pinchStartDist = useRef<number | null>(null);
-  const pinchStartZoom = useRef(1);
-  // 前フレームのピンチ中心（パン計算に使う、フレームごとに更新）
-  const pinchLastMid = useRef({ x: 0, y: 0 });
+  const cleanupRef = useRef<(() => void) | null>(null);
 
-  // モーダル表示中はブラウザのピンチズームを無効化（Safari 含む）
-  useEffect(() => {
+  // レンダー直後・ペイント前にビューポートをロック（モーダル開閉と同期）
+  useLayoutEffect(() => {
     if (!emailModal) return;
     const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
     const original = meta?.content ?? '';
-    if (meta) meta.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no';
+    if (meta) meta.content = 'width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no';
     return () => { if (meta) meta.content = original; };
   }, [!!emailModal]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // モーダルが閉じたら window リスナーをクリーンアップ
+  useEffect(() => {
+    if (!emailModal) { cleanupRef.current?.(); cleanupRef.current = null; }
+  }, [emailModal]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // アンマウント時のクリーンアップ
+  useEffect(() => { return () => { cleanupRef.current?.(); }; }, []);
+
   const onIframeLoad = useCallback(() => {
+    if (cleanupRef.current) { cleanupRef.current(); cleanupRef.current = null; }
+
     const iframe = iframeRef.current;
     if (!iframe) return;
     const doc = iframe.contentDocument;
-    if (!doc) return;
-    const html = doc.documentElement;
+    if (!doc?.body) return;
 
-    // zoom 適用前に自然な横幅を計測してフィットスケールを算出
-    const emailWidth = html.scrollWidth;
+    const bodyEl = doc.body;
+    const htmlEl = doc.documentElement as HTMLElement;
+
+    // ネイティブスクロール無効化（transform で制御するため）
+    htmlEl.style.overflow = 'hidden';
+    bodyEl.style.overflow = 'hidden';
+
+    // 自然な寸法を計測（overflow:hidden 適用後はスクロールサイズが正確）
+    const naturalWidth = Math.max(bodyEl.scrollWidth, 1);
+    const naturalHeight = Math.max(bodyEl.scrollHeight, 1);
     const frameWidth = iframe.clientWidth;
-    const fitScale = emailWidth > 0 ? Math.min(1, frameWidth / emailWidth) : 1;
-    fitScaleRef.current = fitScale;
-    currentZoomRef.current = fitScale;
-    html.style.zoom = String(fitScale);
+    const frameHeight = iframe.clientHeight;
+    const fitScale = Math.max(0.01, Math.min(1, frameWidth / naturalWidth));
 
-    /**
-     * pivotX/Y: iframe viewport 内の座標（その点を中心にズーム）
-     * CSS zoom + scrollLeft/scrollTop を使った座標変換:
-     *   docCoord = (scrollLeft + pivotX) / currentZoom  ← ドキュメント内座標
-     *   newScrollLeft = docCoord * newZoom - pivotX     ← 同じ点が pivot に来るよう調整
-     */
-    const applyZoom = (newZoom: number, pivotX: number, pivotY: number) => {
-      const oldZoom = currentZoomRef.current;
-      const clamped = Math.max(fitScaleRef.current, Math.min(5, newZoom));
-      const docX = (html.scrollLeft + pivotX) / oldZoom;
-      const docY = (html.scrollTop + pivotY) / oldZoom;
-      html.style.zoom = String(clamped);
-      html.scrollLeft = docX * clamped - pivotX;
-      html.scrollTop = docY * clamped - pivotY;
-      currentZoomRef.current = clamped;
+    // ズーム・パン状態（transform の引数として使う）
+    const state = { x: 0, y: 0, scale: fitScale };
+
+    const updateTransform = () => {
+      bodyEl.style.transform = `translate3d(${state.x}px,${state.y}px,0) scale(${state.scale})`;
     };
 
-    // ホイール: ctrlKey=true → タッチパッドピンチ or Ctrl+スクロール → ズーム
-    //           ctrlKey=false → タッチパッドスクロール or マウスホイール → ネイティブスクロールに委ねる
+    const clamp = () => {
+      const cW = naturalWidth * state.scale;
+      const cH = naturalHeight * state.scale;
+      state.x = cW <= frameWidth ? 0 : Math.max(frameWidth - cW, Math.min(0, state.x));
+      state.y = cH <= frameHeight ? 0 : Math.max(frameHeight - cH, Math.min(0, state.y));
+    };
+
+    clamp();
+    updateTransform();
+
+    // カーソル/ピンチ中心を固定してズーム
+    const applyZoom = (newScale: number, pivotX: number, pivotY: number) => {
+      const clamped = Math.max(fitScale, Math.min(5, newScale));
+      const bpX = (pivotX - state.x) / state.scale;
+      const bpY = (pivotY - state.y) / state.scale;
+      state.x = pivotX - bpX * clamped;
+      state.y = pivotY - bpY * clamped;
+      state.scale = clamped;
+      clamp();
+      updateTransform();
+    };
+
+    // ホイール: ctrlKey → ズーム、else → パン（transform で制御、ネイティブスクロールなし）
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
       e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-      applyZoom(currentZoomRef.current * factor, e.clientX, e.clientY);
+      if (e.ctrlKey) {
+        applyZoom(state.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY);
+      } else {
+        const d = e.deltaMode === 0 ? 1 : 20;
+        state.x -= e.deltaX * d;
+        state.y -= e.deltaY * d;
+        clamp();
+        updateTransform();
+      }
     };
 
-    // タッチ: 1本指はネイティブスクロール、2本指はピンチズーム
+    // マウスドラッグ（iframe 外に出ても追跡できるよう window に登録）
+    let isDragging = false, iframeOffsetX = 0, iframeOffsetY = 0;
+    let dragStartX = 0, dragStartY = 0, dragStartSX = 0, dragStartSY = 0;
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const r = iframe.getBoundingClientRect();
+      iframeOffsetX = r.left; iframeOffsetY = r.top;
+      isDragging = true;
+      dragStartX = e.clientX; dragStartY = e.clientY; // iframe 座標系
+      dragStartSX = state.x; dragStartSY = state.y;
+      htmlEl.style.cursor = 'grabbing';
+    };
+    const onWinMouseMove = (e: MouseEvent) => {
+      if (!isDragging) return;
+      // parent 座標 → iframe 座標に変換してデルタを計算
+      state.x = dragStartSX + (e.clientX - iframeOffsetX) - dragStartX;
+      state.y = dragStartSY + (e.clientY - iframeOffsetY) - dragStartY;
+      clamp();
+      updateTransform();
+    };
+    const onWinMouseUp = () => {
+      if (!isDragging) return;
+      isDragging = false;
+      htmlEl.style.cursor = '';
+    };
+
+    // タッチ: 1本指パン・2本指ピンチズーム
     const getDist = (t: TouchList) => {
-      const dx = t[0].clientX - t[1].clientX;
-      const dy = t[0].clientY - t[1].clientY;
+      const dx = t[0].clientX - t[1].clientX, dy = t[0].clientY - t[1].clientY;
       return Math.sqrt(dx * dx + dy * dy);
     };
-    const getMid = (t: TouchList) => ({
-      x: (t[0].clientX + t[1].clientX) / 2,
-      y: (t[0].clientY + t[1].clientY) / 2,
-    });
+    const getMid = (t: TouchList) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+
+    let isPinching = false, lastTX = 0, lastTY = 0;
+    let pinchStartDist = 0, pinchStartScale = 1;
+    let pinchStartBodyX = 0, pinchStartBodyY = 0; // ジェスチャー開始時のピンチ中心 (body 座標)
 
     const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length === 2) {
-        pinchStartDist.current = getDist(e.touches);
-        pinchStartZoom.current = currentZoomRef.current;
-        pinchLastMid.current = getMid(e.touches);
+      if (e.touches.length === 1) {
+        lastTX = e.touches[0].clientX; lastTY = e.touches[0].clientY;
+      } else if (e.touches.length >= 2) {
+        isPinching = true;
+        pinchStartDist = getDist(e.touches);
+        pinchStartScale = state.scale;
+        const startMid = getMid(e.touches);
+        pinchStartBodyX = (startMid.x - state.x) / state.scale;
+        pinchStartBodyY = (startMid.y - state.y) / state.scale;
         e.preventDefault();
       }
     };
 
     const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length !== 2 || pinchStartDist.current === null) return;
-      e.preventDefault();
-      const dist = getDist(e.touches);
-      const mid = getMid(e.touches);
-
-      // ズーム: ジェスチャー開始時からの累積比率（ドリフト防止）
-      const ratio = dist / pinchStartDist.current;
-      const newZoom = Math.max(fitScaleRef.current, Math.min(5, pinchStartZoom.current * ratio));
-
-      // パン: 前フレームのピンチ中心で docCoord を求め、現フレーム中心に合わせる
-      const oldZoom = currentZoomRef.current;
-      const docX = (html.scrollLeft + pinchLastMid.current.x) / oldZoom;
-      const docY = (html.scrollTop + pinchLastMid.current.y) / oldZoom;
-      html.style.zoom = String(newZoom);
-      html.scrollLeft = docX * newZoom - mid.x;
-      html.scrollTop = docY * newZoom - mid.y;
-      currentZoomRef.current = newZoom;
-      pinchLastMid.current = mid;
+      if (e.cancelable) e.preventDefault();
+      if (e.touches.length === 1 && !isPinching) {
+        state.x += e.touches[0].clientX - lastTX;
+        state.y += e.touches[0].clientY - lastTY;
+        clamp();
+        updateTransform();
+        lastTX = e.touches[0].clientX; lastTY = e.touches[0].clientY;
+      } else if (e.touches.length >= 2) {
+        const dist = getDist(e.touches), mid = getMid(e.touches);
+        // スケール: ジェスチャー開始時からの累積比率
+        const newScale = Math.max(fitScale, Math.min(5, pinchStartScale * dist / pinchStartDist));
+        // パン: ピンチ開始点 (body 座標固定) が現在のピンチ中心に来るよう offset を更新
+        state.x = mid.x - pinchStartBodyX * newScale;
+        state.y = mid.y - pinchStartBodyY * newScale;
+        state.scale = newScale;
+        clamp();
+        updateTransform();
+      }
     };
 
     const onTouchEnd = (e: TouchEvent) => {
-      if (e.touches.length < 2) pinchStartDist.current = null;
+      if (e.touches.length < 2) {
+        isPinching = false;
+        if (e.touches.length === 1) { lastTX = e.touches[0].clientX; lastTY = e.touches[0].clientY; }
+      }
     };
 
+    window.addEventListener('mousemove', onWinMouseMove);
+    window.addEventListener('mouseup', onWinMouseUp);
     doc.addEventListener('wheel', onWheel, { passive: false });
+    doc.addEventListener('mousedown', onMouseDown);
     doc.addEventListener('touchstart', onTouchStart, { passive: false });
     doc.addEventListener('touchmove', onTouchMove, { passive: false });
     doc.addEventListener('touchend', onTouchEnd);
-    // srcDoc が変わると doc ごと置き換わるため、リスナーの明示的な削除は不要
+
+    cleanupRef.current = () => {
+      window.removeEventListener('mousemove', onWinMouseMove);
+      window.removeEventListener('mouseup', onWinMouseUp);
+    };
   }, []);
 
   if (!emailModal) return null;

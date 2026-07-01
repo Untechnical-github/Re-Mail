@@ -850,6 +850,9 @@ export function useMailApp() {
   };
 
   const openEmailModal = async (email: any) => {
+    // メッセージをクリックした瞬間にブラウザのピンチズームを無効化（useLayoutEffect より前に実行）
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    if (meta) meta.content = 'width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no';
     setEmailModal({ email, htmlBody: null, isLoading: true });
     window.history.pushState({ action: "modal" }, "", window.location.href);
     if (email.id.startsWith("fake-")) {
