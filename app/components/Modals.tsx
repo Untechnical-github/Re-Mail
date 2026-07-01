@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { BodyWithLinks } from "./ui";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
@@ -298,6 +298,70 @@ export function EmailModal({ app }: { app: any }) {
   const { emailModal } = app.state;
   const { closeEmailModal } = app.actions;
 
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const pinchStartDist = useRef<number | null>(null);
+  const pinchStartScale = useRef(1);
+  const currentScaleRef = useRef(1);
+
+  // モーダル表示中はブラウザのピンチズームを無効化（Safari 含む）
+  useEffect(() => {
+    if (!emailModal) return;
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    const original = meta?.content ?? '';
+    if (meta) meta.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no';
+    return () => { if (meta) meta.content = original; };
+  }, [!!emailModal]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onIframeLoad = useCallback(() => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    const doc = iframe.contentDocument;
+    if (!doc) return;
+
+    // メール横幅をiframe幅に合わせる初期スケールを算出
+    const emailWidth = doc.documentElement.scrollWidth;
+    const frameWidth = iframe.clientWidth;
+    const fitScale = emailWidth > 0 ? Math.min(1, frameWidth / emailWidth) : 1;
+    doc.documentElement.style.zoom = String(fitScale);
+    currentScaleRef.current = fitScale;
+
+    const getDist = (t: TouchList) => {
+      const dx = t[0].clientX - t[1].clientX;
+      const dy = t[0].clientY - t[1].clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+    const applyScale = (s: number) => {
+      const clamped = Math.max(0.25, Math.min(5, s));
+      doc.documentElement.style.zoom = String(clamped);
+      currentScaleRef.current = clamped;
+    };
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        pinchStartDist.current = getDist(e.touches);
+        pinchStartScale.current = currentScaleRef.current;
+        e.preventDefault();
+      }
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && pinchStartDist.current !== null) {
+        applyScale(pinchStartScale.current * getDist(e.touches) / pinchStartDist.current);
+        e.preventDefault();
+      }
+    };
+    const onTouchEnd = () => { pinchStartDist.current = null; };
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      applyScale(currentScaleRef.current * (e.deltaY < 0 ? 1.1 : 0.9));
+    };
+
+    doc.addEventListener('touchstart', onTouchStart, { passive: false });
+    doc.addEventListener('touchmove', onTouchMove, { passive: false });
+    doc.addEventListener('touchend', onTouchEnd);
+    doc.addEventListener('wheel', onWheel, { passive: false });
+    // srcDoc が変わると doc ごと置き換わるため、リスナーの明示的な削除は不要
+  }, []);
+
   if (!emailModal) return null;
 
   const { email, htmlBody, isLoading } = emailModal;
@@ -342,10 +406,12 @@ export function EmailModal({ app }: { app: any }) {
           )}
           {showHtml && (
             <iframe
+              ref={iframeRef}
               srcDoc={prepareHtml(htmlBody!)}
               sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
               className="w-full h-full border-none block bg-white"
               title="メール本文"
+              onLoad={onIframeLoad}
             />
           )}
           {showText && (
