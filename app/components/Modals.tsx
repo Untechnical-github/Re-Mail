@@ -330,15 +330,24 @@ export function EmailModal({ app }: { app: any }) {
     const bodyEl = doc.body;
     const htmlEl = doc.documentElement as HTMLElement;
 
-    // overflow 設定前に自然な寸法を計測（設定後は scrollWidth が clientWidth になるため）
+    // overflow 設定前に自然な寸法を計測（設定後は scrollWidth が clientWidth に変わるため）
     const naturalWidth = Math.max(bodyEl.scrollWidth, 1);
     const naturalHeight = Math.max(bodyEl.scrollHeight, 1);
+    const frameWidth = iframe.clientWidth;
+    const frameHeight = iframe.clientHeight;
+
+    // body 幅を固定（html 幅変更時のリフロー防止）
+    bodyEl.style.width = naturalWidth + 'px';
+    // html を最大ズーム(5倍)分のサイズに設定する。
+    // overflow:hidden のクリップは layout 座標で働くため、html が iframe 幅(375px)のままだと
+    // body の layout [375px, 600px] がクリップされ、transform scale 後の視覚的右側が消える。
+    // html を body の5倍幅にすることで、ズーム時も body がクリップされない。
+    htmlEl.style.width = naturalWidth * 5 + 'px';
+    htmlEl.style.height = naturalHeight * 5 + 'px';
 
     // ネイティブスクロール無効化（transform で制御するため）
     htmlEl.style.overflow = 'hidden';
     bodyEl.style.overflow = 'hidden';
-    const frameWidth = iframe.clientWidth;
-    const frameHeight = iframe.clientHeight;
     const fitScale = Math.max(0.01, Math.min(1, frameWidth / naturalWidth));
 
     // ズーム・パン状態（transform の引数として使う）
