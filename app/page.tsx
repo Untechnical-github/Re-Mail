@@ -1,11 +1,51 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState, useEffect } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
 import { Modals, EmailModal, AttachmentModal } from "./components/Modals";
 import { getFileIcon, formatFileSize } from "./components/ui";
+
+function InlineAttachmentImage({ attachment, messageId, onOpen }: {
+  attachment: { filename: string; mimeType: string; size: number; attachmentId: string };
+  messageId: string;
+  onOpen: (base64: string) => void;
+}) {
+  const [base64, setBase64] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/emails?messageId=${encodeURIComponent(messageId)}&attachmentId=${encodeURIComponent(attachment.attachmentId)}`)
+      .then(r => r.ok ? r.json() : { data: null })
+      .then(({ data }) => {
+        if (!cancelled) {
+          if (data) setBase64((data as string).replace(/-/g, '+').replace(/_/g, '/'));
+          setLoading(false);
+        }
+      })
+      .catch(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [messageId, attachment.attachmentId]);
+
+  if (loading) return (
+    <div className="w-40 h-24 rounded-xl bg-black/20 flex items-center justify-center">
+      <div className="w-4 h-4 border-2 border-gray-500 border-t-white rounded-full animate-spin" />
+    </div>
+  );
+  if (!base64) return null;
+
+  return (
+    <img
+      src={`data:${attachment.mimeType};base64,${base64}`}
+      alt={attachment.filename}
+      className="max-w-[280px] max-h-52 rounded-xl cursor-pointer object-contain block hover:brightness-90 transition"
+      onClick={(e) => { e.stopPropagation(); onOpen(base64); }}
+      draggable={false}
+    />
+  );
+}
 
 export default function Home() {
   const app = useMailApp();
@@ -499,19 +539,32 @@ export default function Home() {
                            </div>
                            {email.attachments && email.attachments.length > 0 && (
                              <div className={`flex flex-wrap gap-2 mt-2 mx-1 ${isMe ? 'justify-end' : 'justify-start'}`}>
-                               {email.attachments.map((att: any) => (
-                                 <button
-                                   key={att.attachmentId}
-                                   onClick={(e) => { e.stopPropagation(); actions.openAttachmentModal({ ...att, messageId: email.id }); }}
-                                   className="flex items-center gap-2 px-3 py-2 rounded-xl bg-black/20 border border-white/10 hover:bg-black/30 transition text-left max-w-[200px]"
-                                 >
-                                   <span className="text-lg flex-shrink-0">{getFileIcon(att.mimeType)}</span>
-                                   <div className="min-w-0">
-                                     <div className="text-xs font-bold truncate text-gray-200">{att.filename}</div>
-                                     <div className="text-[10px] text-gray-400">{formatFileSize(att.size)}</div>
-                                   </div>
-                                 </button>
-                               ))}
+                               {email.attachments.map((att: any) => {
+                                 if (att.mimeType.startsWith('image/')) {
+                                   return (
+                                     <InlineAttachmentImage
+                                       key={att.attachmentId}
+                                       attachment={att}
+                                       messageId={email.id}
+                                       onOpen={(base64) => actions.openAttachmentModal({ ...att, messageId: email.id }, base64)}
+                                     />
+                                   );
+                                 }
+                                 const isVideo = att.mimeType.startsWith('video/');
+                                 return (
+                                   <button
+                                     key={att.attachmentId}
+                                     onClick={(e) => { e.stopPropagation(); actions.openAttachmentModal({ ...att, messageId: email.id }); }}
+                                     className={`flex items-center gap-2 px-3 py-2 rounded-xl bg-black/20 border border-white/10 hover:bg-black/30 transition text-left ${isVideo ? 'min-w-[140px]' : 'max-w-[200px]'}`}
+                                   >
+                                     <span className="text-xl flex-shrink-0">{isVideo ? '▶' : getFileIcon(att.mimeType)}</span>
+                                     <div className="min-w-0">
+                                       <div className="text-xs font-bold truncate text-gray-200">{att.filename}</div>
+                                       <div className="text-[10px] text-gray-400">{formatFileSize(att.size)}</div>
+                                     </div>
+                                   </button>
+                                 );
+                               })}
                              </div>
                            )}
                         </div>

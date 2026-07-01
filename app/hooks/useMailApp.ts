@@ -887,11 +887,18 @@ export function useMailApp() {
     setEmailModal(null);
   };
 
-  const openAttachmentModal = async (attachment: { filename: string; mimeType: string; size: number; attachmentId: string; messageId: string }) => {
+  const openAttachmentModal = async (
+    attachment: { filename: string; mimeType: string; size: number; attachmentId: string; messageId: string },
+    prefetchedBase64?: string
+  ) => {
     const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
     if (meta) meta.content = 'width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no';
-    setAttachmentModal({ ...attachment, base64: null, isLoading: true });
     window.history.pushState({ action: "modal" }, "", window.location.href);
+    if (prefetchedBase64) {
+      setAttachmentModal({ ...attachment, base64: prefetchedBase64, isLoading: false });
+      return;
+    }
+    setAttachmentModal({ ...attachment, base64: null, isLoading: true });
     try {
       const res = await fetch(`/api/emails?messageId=${encodeURIComponent(attachment.messageId)}&attachmentId=${encodeURIComponent(attachment.attachmentId)}`);
       if (res.ok) {

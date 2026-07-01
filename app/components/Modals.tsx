@@ -560,6 +560,9 @@ export function AttachmentModal({ app }: { app: any }) {
   const { attachmentModal } = app.state;
   const { closeAttachmentModal } = app.actions;
   const [textContent, setTextContent] = useState<string | null>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const imgContainerRef = useRef<HTMLDivElement>(null);
+  const imgCleanupRef = useRef<(() => void) | null>(null);
 
   useLayoutEffect(() => {
     if (!attachmentModal?.base64 || !attachmentModal.mimeType.startsWith('text/')) {
@@ -581,6 +584,142 @@ export function AttachmentModal({ app }: { app: any }) {
     if (meta) meta.content = 'width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no';
     return () => { if (meta) meta.content = original; };
   }, [!!attachmentModal]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Cleanup zoom listeners when attachment changes or modal closes
+  useEffect(() => {
+    return () => { if (imgCleanupRef.current) { imgCleanupRef.current(); imgCleanupRef.current = null; } };
+  }, [attachmentModal?.attachmentId ?? '']);
+
+  const onImgLoad = useCallback(() => {
+    const img = imgRef.current;
+    const container = imgContainerRef.current;
+    if (!img || !container) return;
+    if (imgCleanupRef.current) { imgCleanupRef.current(); imgCleanupRef.current = null; }
+
+    const nW = img.naturalWidth;
+    const nH = img.naturalHeight;
+    const cW = container.clientWidth;
+    const cH = container.clientHeight;
+    const fitScale = Math.min(1, cW / nW, cH / nH);
+    const state = { x: (cW - nW * fitScale) / 2, y: (cH - nH * fitScale) / 2, scale: fitScale };
+
+    img.style.position = 'absolute';
+    img.style.top = '0';
+    img.style.left = '0';
+    img.style.width = nW + 'px';
+    img.style.height = nH + 'px';
+    img.style.transformOrigin = '0 0';
+    img.style.willChange = 'transform';
+    img.draggable = false;
+
+    const updateTransform = () => {
+      img.style.transform = `translate3d(${state.x}px,${state.y}px,0) scale(${state.scale})`;
+    };
+    const clamp = () => {
+      const vW = nW * state.scale;
+      const vH = nH * state.scale;
+      state.x = vW <= cW ? (cW - vW) / 2 : Math.max(cW - vW, Math.min(0, state.x));
+      state.y = vH <= cH ? (cH - vH) / 2 : Math.max(cH - vH, Math.min(0, state.y));
+    };
+    clamp(); updateTransform();
+    img.style.opacity = '1';
+
+    // Drag
+    let isDragging = false;
+    let dragSX = 0, dragSY = 0, dragStartX = 0, dragStartY = 0;
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      isDragging = true;
+      dragStartX = e.clientX; dragStartY = e.clientY;
+      dragSX = state.x; dragSY = state.y;
+      container.style.cursor = 'grabbing';
+    };
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDragging) return;
+      if (!(e.buttons & 1)) { isDragging = false; container.style.cursor = 'grab'; return; }
+      state.x = dragSX + e.clientX - dragStartX;
+      state.y = dragSY + e.clientY - dragStartY;
+      clamp(); updateTransform();
+    };
+    const onMouseUp = () => { isDragging = false; container.style.cursor = 'grab'; };
+
+    // Wheel zoom (ctrlKey = pinch gesture, else = scroll wheel)
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const bx = (mx - state.x) / state.scale;
+      const by = (my - state.y) / state.scale;
+      const newScale = Math.max(fitScale, Math.min(5, state.scale * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.002))));
+      state.x = mx - bx * newScale;
+      state.y = my - by * newScale;
+      state.scale = newScale;
+      clamp(); updateTransform();
+    };
+
+    // Pinch / pan touch
+    let pinchStartDist = 0, pinchStartScale = 1, pinchStartBX = 0, pinchStartBY = 0;
+    let singleActive = false, touchSX = 0, touchSY = 0, touchStartX = 0, touchStartY = 0;
+    const d2 = (t: TouchList) => { const dx = t[0].clientX - t[1].clientX; const dy = t[0].clientY - t[1].clientY; return Math.sqrt(dx*dx + dy*dy); };
+    const onTouchStart = (e: TouchEvent) => {
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      if (e.touches.length >= 2) {
+        singleActive = false;
+        pinchStartDist = d2(e.touches);
+        pinchStartScale = state.scale;
+        const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+        const my = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+        pinchStartBX = (mx - state.x) / state.scale;
+        pinchStartBY = (my - state.y) / state.scale;
+      } else {
+        singleActive = true;
+        touchStartX = e.touches[0].clientX - rect.left;
+        touchStartY = e.touches[0].clientY - rect.top;
+        touchSX = state.x; touchSY = state.y;
+      }
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      if (e.touches.length >= 2) {
+        singleActive = false;
+        const dist = d2(e.touches);
+        const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+        const my = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+        const newScale = Math.max(fitScale, Math.min(5, pinchStartScale * dist / pinchStartDist));
+        state.x = mx - pinchStartBX * newScale;
+        state.y = my - pinchStartBY * newScale;
+        state.scale = newScale;
+        clamp(); updateTransform();
+      } else if (e.touches.length === 1 && singleActive) {
+        state.x = touchSX + e.touches[0].clientX - rect.left - touchStartX;
+        state.y = touchSY + e.touches[0].clientY - rect.top - touchStartY;
+        clamp(); updateTransform();
+      }
+    };
+    const onTouchEnd = (e: TouchEvent) => { if (e.touches.length < 2) singleActive = e.touches.length === 1; };
+
+    container.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    container.addEventListener('wheel', onWheel, { passive: false });
+    container.addEventListener('touchstart', onTouchStart, { passive: false });
+    container.addEventListener('touchmove', onTouchMove, { passive: false });
+    container.addEventListener('touchend', onTouchEnd);
+
+    imgCleanupRef.current = () => {
+      container.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      container.removeEventListener('wheel', onWheel);
+      container.removeEventListener('touchstart', onTouchStart);
+      container.removeEventListener('touchmove', onTouchMove);
+      container.removeEventListener('touchend', onTouchEnd);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!attachmentModal) return null;
 
@@ -646,8 +785,19 @@ export function AttachmentModal({ app }: { app: any }) {
             </div>
           )}
           {!isLoading && dataUrl && isImage && (
-            <div className="w-full h-full overflow-auto flex items-center justify-center bg-[#1E1F22]">
-              <img src={dataUrl} alt={filename} className="max-w-full max-h-full object-contain" />
+            <div
+              ref={imgContainerRef}
+              className="w-full h-full overflow-hidden bg-[#111] relative"
+              style={{ cursor: 'grab' }}
+            >
+              <img
+                ref={imgRef}
+                src={dataUrl}
+                alt={filename}
+                onLoad={onImgLoad}
+                style={{ opacity: 0, display: 'block', userSelect: 'none', pointerEvents: 'none' }}
+                draggable={false}
+              />
             </div>
           )}
           {!isLoading && dataUrl && isPdf && (
