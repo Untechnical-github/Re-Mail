@@ -284,9 +284,10 @@ function ChatHideConfirm({ app, modal }: { app: any; modal: NonNullable<any> }) 
 }
 
 function prepareHtml(raw: string): string {
+  // max-width:100%!important は削除 — メールを自然な幅でレンダリングし、zoom でフィットさせる
   const inject =
     '<base target="_blank">' +
-    '<style>*{box-sizing:border-box;max-width:100%!important;}img{height:auto;}body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;word-break:break-word;}</style>';
+    '<style>*{box-sizing:border-box;}img{max-width:100%;height:auto;}body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;word-break:break-word;}</style>';
   if (/<head[\s>]/i.test(raw)) {
     return raw.replace(/(<head[^>]*>)/i, `$1${inject}`);
   }
@@ -299,9 +300,14 @@ export function EmailModal({ app }: { app: any }) {
   const { closeEmailModal } = app.actions;
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  // ズーム状態（CSS zoom + scrollLeft/scrollTop でカーソル/ピンチ中心を維持）
+  const fitScaleRef = useRef(1);
+  const currentZoomRef = useRef(1);
+  // ピンチジェスチャー用: touchstart 時点の値（ジェスチャー中は更新しない）
   const pinchStartDist = useRef<number | null>(null);
-  const pinchStartScale = useRef(1);
-  const currentScaleRef = useRef(1);
+  const pinchStartZoom = useRef(1);
+  // 前フレームのピンチ中心（パン計算に使う、フレームごとに更新）
+  const pinchLastMid = useRef({ x: 0, y: 0 });
 
   // モーダル表示中はブラウザのピンチズームを無効化（Safari 含む）
   useEffect(() => {
@@ -317,48 +323,91 @@ export function EmailModal({ app }: { app: any }) {
     if (!iframe) return;
     const doc = iframe.contentDocument;
     if (!doc) return;
+    const html = doc.documentElement;
 
-    // メール横幅をiframe幅に合わせる初期スケールを算出
-    const emailWidth = doc.documentElement.scrollWidth;
+    // zoom 適用前に自然な横幅を計測してフィットスケールを算出
+    const emailWidth = html.scrollWidth;
     const frameWidth = iframe.clientWidth;
     const fitScale = emailWidth > 0 ? Math.min(1, frameWidth / emailWidth) : 1;
-    doc.documentElement.style.zoom = String(fitScale);
-    currentScaleRef.current = fitScale;
+    fitScaleRef.current = fitScale;
+    currentZoomRef.current = fitScale;
+    html.style.zoom = String(fitScale);
 
+    /**
+     * pivotX/Y: iframe viewport 内の座標（その点を中心にズーム）
+     * CSS zoom + scrollLeft/scrollTop を使った座標変換:
+     *   docCoord = (scrollLeft + pivotX) / currentZoom  ← ドキュメント内座標
+     *   newScrollLeft = docCoord * newZoom - pivotX     ← 同じ点が pivot に来るよう調整
+     */
+    const applyZoom = (newZoom: number, pivotX: number, pivotY: number) => {
+      const oldZoom = currentZoomRef.current;
+      const clamped = Math.max(fitScaleRef.current, Math.min(5, newZoom));
+      const docX = (html.scrollLeft + pivotX) / oldZoom;
+      const docY = (html.scrollTop + pivotY) / oldZoom;
+      html.style.zoom = String(clamped);
+      html.scrollLeft = docX * clamped - pivotX;
+      html.scrollTop = docY * clamped - pivotY;
+      currentZoomRef.current = clamped;
+    };
+
+    // ホイール: ctrlKey=true → タッチパッドピンチ or Ctrl+スクロール → ズーム
+    //           ctrlKey=false → タッチパッドスクロール or マウスホイール → ネイティブスクロールに委ねる
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      applyZoom(currentZoomRef.current * factor, e.clientX, e.clientY);
+    };
+
+    // タッチ: 1本指はネイティブスクロール、2本指はピンチズーム
     const getDist = (t: TouchList) => {
       const dx = t[0].clientX - t[1].clientX;
       const dy = t[0].clientY - t[1].clientY;
       return Math.sqrt(dx * dx + dy * dy);
     };
-    const applyScale = (s: number) => {
-      const clamped = Math.max(0.25, Math.min(5, s));
-      doc.documentElement.style.zoom = String(clamped);
-      currentScaleRef.current = clamped;
-    };
+    const getMid = (t: TouchList) => ({
+      x: (t[0].clientX + t[1].clientX) / 2,
+      y: (t[0].clientY + t[1].clientY) / 2,
+    });
 
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 2) {
         pinchStartDist.current = getDist(e.touches);
-        pinchStartScale.current = currentScaleRef.current;
+        pinchStartZoom.current = currentZoomRef.current;
+        pinchLastMid.current = getMid(e.touches);
         e.preventDefault();
       }
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && pinchStartDist.current !== null) {
-        applyScale(pinchStartScale.current * getDist(e.touches) / pinchStartDist.current);
-        e.preventDefault();
-      }
-    };
-    const onTouchEnd = () => { pinchStartDist.current = null; };
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      applyScale(currentScaleRef.current * (e.deltaY < 0 ? 1.1 : 0.9));
     };
 
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 2 || pinchStartDist.current === null) return;
+      e.preventDefault();
+      const dist = getDist(e.touches);
+      const mid = getMid(e.touches);
+
+      // ズーム: ジェスチャー開始時からの累積比率（ドリフト防止）
+      const ratio = dist / pinchStartDist.current;
+      const newZoom = Math.max(fitScaleRef.current, Math.min(5, pinchStartZoom.current * ratio));
+
+      // パン: 前フレームのピンチ中心で docCoord を求め、現フレーム中心に合わせる
+      const oldZoom = currentZoomRef.current;
+      const docX = (html.scrollLeft + pinchLastMid.current.x) / oldZoom;
+      const docY = (html.scrollTop + pinchLastMid.current.y) / oldZoom;
+      html.style.zoom = String(newZoom);
+      html.scrollLeft = docX * newZoom - mid.x;
+      html.scrollTop = docY * newZoom - mid.y;
+      currentZoomRef.current = newZoom;
+      pinchLastMid.current = mid;
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) pinchStartDist.current = null;
+    };
+
+    doc.addEventListener('wheel', onWheel, { passive: false });
     doc.addEventListener('touchstart', onTouchStart, { passive: false });
     doc.addEventListener('touchmove', onTouchMove, { passive: false });
     doc.addEventListener('touchend', onTouchEnd);
-    doc.addEventListener('wheel', onWheel, { passive: false });
     // srcDoc が変わると doc ごと置き換わるため、リスナーの明示的な削除は不要
   }, []);
 
