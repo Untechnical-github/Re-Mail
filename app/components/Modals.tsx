@@ -606,56 +606,56 @@ export function AttachmentModal({ app }: { app: any }) {
     const imgW = img.offsetWidth;
     const imgH = img.offsetHeight;
 
-    // Keep state UNCLAMPED. getVisual() clamps only for display.
-    // This prevents drift: zoom anchor is always computed from the visual (clamped) position,
-    // not from a potentially stale clamped state.x that was set by a prior zoom step.
     let scale = 1;
     let x = (cW - imgW) / 2;
     let y = (cH - imgH) / 2;
 
-    const getVisual = () => {
+    // Apply x,y,scale directly — NO clamping during gesture (prevents anchor drift)
+    const setTransform = (transition = 'none') => {
+      img.style.transition = transition;
+      img.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
+    };
+
+    // Correct position — called ONLY after gesture ends
+    const snap = (transition = 'transform 0.2s ease-out') => {
       const vW = imgW * scale;
       const vH = imgH * scale;
-      return {
-        x: vW <= cW ? (cW - vW) / 2 : Math.max(cW - vW, Math.min(0, x)),
-        y: vH <= cH ? (cH - vH) / 2 : Math.max(cH - vH, Math.min(0, y)),
-      };
-    };
-
-    const updateTransform = (transition = 'none') => {
-      const v = getVisual();
+      if (scale <= 1) {
+        scale = 1; x = (cW - imgW) / 2; y = (cH - imgH) / 2;
+      } else {
+        x = vW <= cW ? (cW - vW) / 2 : Math.max(cW - vW, Math.min(0, x));
+        y = vH <= cH ? (cH - vH) / 2 : Math.max(cH - vH, Math.min(0, y));
+      }
       img.style.transition = transition;
-      img.style.transform = `translate3d(${v.x}px, ${v.y}px, 0) scale(${scale})`;
+      img.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
     };
-
-    // Sync unclamped x/y to visual — call before drag/pinch to avoid jump on interaction start
-    const syncToVisual = () => { const v = getVisual(); x = v.x; y = v.y; };
 
     const centerImage = (animated = true) => {
       scale = 1; x = (cW - imgW) / 2; y = (cH - imgH) / 2;
-      syncToVisual();
-      updateTransform(animated ? 'transform 0.1s ease-out' : 'none');
+      setTransform(animated ? 'transform 0.2s ease-out' : 'none');
       container.style.cursor = 'grab';
     };
 
     centerImage(false);
     img.style.opacity = '1';
 
-    // Wheel zoom: uses getVisual().x/y as anchor → correct even after boundary clamping
+    // Wheel zoom: anchor from unclamped x,y → zero drift
+    let wheelSnapTimer: ReturnType<typeof setTimeout> | null = null;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      let newScale = scale * (1 + (e.deltaY > 0 ? -1 : 1) * 0.15);
+      if (wheelSnapTimer) { clearTimeout(wheelSnapTimer); wheelSnapTimer = null; }
+      const newScale = scale * (1 + (e.deltaY > 0 ? -1 : 1) * 0.15);
       if (newScale <= 1) { centerImage(); return; }
       const rect = container.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
-      const v = getVisual();
-      const bx = (mx - v.x) / scale;
-      const by = (my - v.y) / scale;
+      const bx = (mx - x) / scale;
+      const by = (my - y) / scale;
       x = mx - bx * newScale;
       y = my - by * newScale;
       scale = newScale;
-      updateTransform('transform 0.05s ease-out');
+      setTransform('transform 0.05s ease-out');
+      wheelSnapTimer = setTimeout(() => { snap(); wheelSnapTimer = null; }, 300);
     };
 
     // Mouse drag
@@ -671,7 +671,7 @@ export function AttachmentModal({ app }: { app: any }) {
     const onMouseDown = (e: MouseEvent) => {
       if (scale <= 1) return;
       e.preventDefault();
-      syncToVisual();
+      snap('none'); // sync to valid position before drag starts
       isDragging = true;
       checkMovability();
       dragStartMouseX = e.clientX; dragStartMouseY = e.clientY;
@@ -688,14 +688,13 @@ export function AttachmentModal({ app }: { app: any }) {
       if (!canMoveY) dy = 0;
       x = dragStartImageX + dx;
       y = dragStartImageY + dy;
-      updateTransform();
+      setTransform();
     };
     const onMouseUp = () => {
       if (isDragging) {
         isDragging = false;
-        syncToVisual();
         container.style.cursor = 'grab';
-        img.style.transition = 'transform 0.1s ease-out';
+        snap('transform 0.1s ease-out');
       }
     };
 
@@ -719,18 +718,17 @@ export function AttachmentModal({ app }: { app: any }) {
       e.preventDefault();
       if (e.touches.length === 2) {
         isPinching = true; singleTouching = false;
-        syncToVisual(); // ensure x,y are accurate before recording anchor
         const mid = getTouchMid(e.touches);
         pinchStartDist = getTouchDist(e.touches);
         pinchStartScale = scale;
-        // Absolute anchor: image point under the initial pinch midpoint, recorded ONCE
+        // Absolute anchor from unclamped x,y — recorded ONCE, used every frame
         pinchStartBodyX = (mid.x - x) / scale;
         pinchStartBodyY = (mid.y - y) / scale;
         img.style.transition = 'none';
       } else if (e.touches.length === 1 && !isPinching) {
         singleTouching = true;
         if (scale > 1) {
-          syncToVisual(); checkMovability();
+          checkMovability();
           lastTouchX = e.touches[0].clientX; lastTouchY = e.touches[0].clientY;
           img.style.transition = 'none';
         }
@@ -742,14 +740,14 @@ export function AttachmentModal({ app }: { app: any }) {
       if (e.touches.length === 2 && isPinching) {
         const currentDist = getTouchDist(e.touches);
         const currentMid = getTouchMid(e.touches);
-        let newScale = pinchStartScale * currentDist / pinchStartDist;
+        const newScale = pinchStartScale * currentDist / pinchStartDist;
         if (newScale <= 1) { centerImage(); return; }
-        // Compute from initial anchor every frame — no incremental error accumulation
+        // Recompute from absolute anchor every frame — no incremental error
         scale = newScale;
         x = currentMid.x - pinchStartBodyX * newScale;
         y = currentMid.y - pinchStartBodyY * newScale;
         img.style.transition = 'none';
-        updateTransform();
+        setTransform();
       } else if (e.touches.length === 1 && singleTouching && !isPinching && scale > 1) {
         let dx = e.touches[0].clientX - lastTouchX;
         let dy = e.touches[0].clientY - lastTouchY;
@@ -758,19 +756,19 @@ export function AttachmentModal({ app }: { app: any }) {
         x += dx; y += dy;
         lastTouchX = e.touches[0].clientX; lastTouchY = e.touches[0].clientY;
         img.style.transition = 'none';
-        updateTransform();
+        setTransform();
       }
     };
 
     const onTouchEnd = (e: TouchEvent) => {
-      if (e.touches.length < 2) { isPinching = false; syncToVisual(); }
+      if (e.touches.length < 2) { isPinching = false; }
       if (e.touches.length === 1 && !isPinching) {
         singleTouching = true; checkMovability();
         lastTouchX = e.touches[0].clientX; lastTouchY = e.touches[0].clientY;
         img.style.transition = 'none';
       } else if (e.touches.length === 0) {
         singleTouching = false;
-        img.style.transition = 'transform 0.1s ease-out';
+        snap();
       }
     };
 
@@ -783,6 +781,7 @@ export function AttachmentModal({ app }: { app: any }) {
     img.addEventListener('touchend', onTouchEnd);
 
     imgCleanupRef.current = () => {
+      if (wheelSnapTimer) { clearTimeout(wheelSnapTimer); wheelSnapTimer = null; }
       img.removeEventListener('wheel', onWheel);
       img.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mousemove', onMouseMove);

@@ -62,6 +62,30 @@ function InlineAttachmentImage({ attachment, messageId, onOpen }: {
   );
 }
 
+function VideoAttachmentChip({ attachment, onOpen }: {
+  attachment: { filename: string; mimeType: string; size: number; attachmentId: string };
+  onOpen: () => void;
+}) {
+  return (
+    <div
+      className="relative rounded-xl overflow-hidden cursor-pointer group select-none flex-shrink-0"
+      style={{ width: 200, height: 112 }}
+      onClick={(e) => { e.stopPropagation(); onOpen(); }}
+    >
+      <div className="absolute inset-0 bg-gradient-to-br from-[#1a1a2e] to-[#2d1b69]" />
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="w-12 h-12 bg-white/90 rounded-full flex items-center justify-center shadow-xl group-hover:scale-110 transition-transform">
+          <span className="text-black text-base ml-0.5">▶</span>
+        </div>
+      </div>
+      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2.5 pb-1.5 pt-4">
+        <div className="text-xs text-white font-medium truncate">{attachment.filename}</div>
+        <div className="text-[10px] text-white/50">{formatFileSize(attachment.size)}</div>
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const app = useMailApp();
   const { auth, state, actions, computed, refs } = app;
@@ -565,14 +589,22 @@ export default function Home() {
                                      />
                                    );
                                  }
-                                 const isVideo = att.mimeType.startsWith('video/');
+                                 if (att.mimeType.startsWith('video/')) {
+                                   return (
+                                     <VideoAttachmentChip
+                                       key={att.attachmentId}
+                                       attachment={att}
+                                       onOpen={() => actions.openAttachmentModal({ ...att, messageId: email.id })}
+                                     />
+                                   );
+                                 }
                                  return (
                                    <button
                                      key={att.attachmentId}
                                      onClick={(e) => { e.stopPropagation(); actions.openAttachmentModal({ ...att, messageId: email.id }); }}
-                                     className={`flex items-center gap-2 px-3 py-2 rounded-xl bg-black/20 border border-white/10 hover:bg-black/30 transition text-left ${isVideo ? 'min-w-[140px]' : 'max-w-[200px]'}`}
+                                     className="flex items-center gap-2 px-3 py-2 rounded-xl bg-black/20 border border-white/10 hover:bg-black/30 transition text-left max-w-[200px]"
                                    >
-                                     <span className="text-xl flex-shrink-0">{isVideo ? '▶' : getFileIcon(att.mimeType)}</span>
+                                     <span className="text-xl flex-shrink-0">{getFileIcon(att.mimeType)}</span>
                                      <div className="min-w-0">
                                        <div className="text-xs font-bold truncate text-gray-200">{att.filename}</div>
                                        <div className="text-[10px] text-gray-400">{formatFileSize(att.size)}</div>
