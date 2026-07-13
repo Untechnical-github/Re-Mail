@@ -381,6 +381,9 @@ export function useMailApp() {
       if (res.ok) {
         if (getIsCancelled()) return { success: false, emails: currentEmailsState };
         const data = await res.json();
+        // res.json() 待機中に新しいフィルターへ切り替えられている可能性があるため再チェック。
+        // ここで弾かないと、古いフィルターの結果が新しいフィルターの結果を上書きしてしまう
+        if (getIsCancelled()) return { success: false, emails: currentEmailsState };
         const newMessages = data.messages || [];
         let updatedEmails;
 
