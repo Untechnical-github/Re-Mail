@@ -4,6 +4,16 @@ import localforage from "localforage";
 import { ChatConfig, SelectionMode, ModalState } from "../types/mail";
 import { getCachedAttachment, setCachedAttachment } from "../lib/attachmentCache";
 
+function getSavedBoxSettings(): { inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; sent?: boolean } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const saved = localStorage.getItem("remail_box_settings");
+    return saved ? JSON.parse(saved) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function useMailApp() {
   const { data: session, status } = useSession();
   const [emails, setEmails] = useState<any[]>([]);
@@ -19,11 +29,11 @@ export function useMailApp() {
   
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState("");
-  const [checkInbox, setCheckInbox] = useState<boolean>(true);
-  const [checkArchive, setCheckArchive] = useState<boolean>(true);
-  const [checkSpam, setCheckSpam] = useState<boolean>(false);
-  const [checkTrash, setCheckTrash] = useState<boolean>(false);
-  const [checkSent, setCheckSent] = useState<boolean>(false);
+  const [checkInbox, setCheckInbox] = useState<boolean>(() => getSavedBoxSettings()?.inbox ?? true);
+  const [checkArchive, setCheckArchive] = useState<boolean>(() => getSavedBoxSettings()?.archive ?? true);
+  const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
+  const [checkTrash, setCheckTrash] = useState<boolean>(() => getSavedBoxSettings()?.trash ?? false);
+  const [checkSent, setCheckSent] = useState<boolean>(() => getSavedBoxSettings()?.sent ?? false);
   const [currentNextPageToken, setCurrentNextPageToken] = useState<string | null>(null);
   
   const [chatNextPageToken, setChatNextPageToken] = useState<string | null>("FIRST_PAGE");
@@ -84,6 +94,7 @@ export function useMailApp() {
   const hasPushedSearchRef = useRef(false);
   const hasPushedSelectRef = useRef(false);
   const activeLoadRef = useRef<number>(0);
+  const signingOutRef = useRef(false);
   const isInitialFilterRun = useRef(true); 
   const chatConfigsRef = useRef(chatConfigs);
   useEffect(() => { chatConfigsRef.current = chatConfigs; }, [chatConfigs]);
@@ -356,9 +367,14 @@ export function useMailApp() {
 
       const res = await fetch(`/api/emails?${params.toString()}`);
       if (res.status === 401 || res.status === 403) {
-        await localforage.clear();
-        signOut({ callbackUrl: "/" });
-        window.location.href = "/";
+        if (!signingOutRef.current) {
+          signingOutRef.current = true;
+          await localforage.clear();
+          // signOut のサーバー側処理（セッションCookie破棄）が終わる前に遷移すると、
+          // 古いセッションが残ったままリロードされ無限ループになるため必ず完了を待つ
+          await signOut({ redirect: false });
+          window.location.href = "/";
+        }
         return { success: false, emails: currentEmailsState };
       }
 
@@ -406,22 +422,16 @@ export function useMailApp() {
         try {
           setIsLoading(true);
           await loadD1Configs();
-          
-          let localSettings: any = null;
-          if (typeof window !== "undefined") {
-            const saved = localStorage.getItem("remail_box_settings");
-            if (saved) {
-              try { localSettings = JSON.parse(saved); } catch (e) {}
-            }
-          }
 
-          const initInbox = localSettings?.inbox ?? true; 
-          const initArchive = localSettings?.archive ?? true; 
-          const initSpam = localSettings?.spam ?? false; 
-          const initTrash = localSettings?.trash ?? false;
-          const initSent = localSettings?.sent ?? false;
-          setCheckInbox(initInbox); setCheckArchive(initArchive); setCheckSpam(initSpam); setCheckTrash(initTrash); setCheckSent(initSent);
+          // チェックボックスの状態はマウント時点で localStorage から同期的に復元済みなので、
+          // ここでは読み直さず現在の state をそのまま使う（読み込み中に見た目が切り替わるのを防ぐ）
+          const initInbox = checkInbox;
+          const initArchive = checkArchive;
+          const initSpam = checkSpam;
+          const initTrash = checkTrash;
+          const initSent = checkSent;
           filterKeyRef.current = `${initInbox}-${initArchive}-${initSpam}-${initTrash}-${initSent}`;
+          isInitialFilterRun.current = false;
 
           setEmails([]);
           
