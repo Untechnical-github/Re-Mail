@@ -836,6 +836,14 @@ export function AttachmentModal({ app }: { app: any }) {
     document.body.removeChild(a);
   };
 
+  const handleOpenPdfInNewTab = () => {
+    // Android Chrome は iframe に埋め込んだPDFを表示できないことがあるため、
+    // 新しいタブで開いてブラウザ標準のPDFビューアに直接表示させる。
+    // data:URI だとURL長の上限に引っかかる大きめのPDFもあるため blob: URL を使う
+    if (pdfBlobUrl) { window.open(pdfBlobUrl, '_blank'); return; }
+    if (dataUrl) window.open(dataUrl, '_blank');
+  };
+
   const handleShare = async () => {
     if (!base64) return;
     try {
@@ -902,8 +910,8 @@ export function AttachmentModal({ app }: { app: any }) {
               />
             </div>
           )}
-          {!isLoading && pdfBlobUrl && isPdf && (
-            <iframe src={pdfBlobUrl} className="w-full h-full border-none" title={filename} />
+          {!isLoading && dataUrl && isPdf && (
+            <iframe src={dataUrl} className="w-full h-full border-none" title={filename} />
           )}
           {!isLoading && dataUrl && isAudio && (
             <div className="w-full h-full flex items-center justify-center bg-[#1E1F22] p-8">
@@ -933,6 +941,12 @@ export function AttachmentModal({ app }: { app: any }) {
 
         {/* フッター */}
         <div className="p-4 border-t border-[#1E1F22] flex gap-3 flex-shrink-0">
+          {isPdf && (
+            <button onClick={handleOpenPdfInNewTab} disabled={!base64}
+              className="flex-1 py-2.5 bg-[#2B2D31] border border-[#4752C4] hover:bg-[#35373C] disabled:opacity-30 text-gray-200 font-bold rounded text-sm transition">
+              新しいタブで開く
+            </button>
+          )}
           <button onClick={handleDownload} disabled={!base64}
             className="flex-1 py-2.5 bg-[#5865F2] hover:bg-[#4752C4] disabled:bg-[#3f4147] disabled:text-gray-500 text-white font-bold rounded text-sm transition">
             ダウンロード
