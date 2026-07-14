@@ -551,9 +551,9 @@ export default function Home() {
                     const replyTarget = (email.replyToId || email.inReplyTo)
                       ? computed.allUniqueEmails.find((e: any) => (email.replyToId && e.id === email.replyToId) || (email.inReplyTo && e.messageIdHeader === email.inReplyTo))
                       : null;
-                    // 件名(Re:以外)も本文も無いメール（添付のみの返信など）は吹き出しが空白になるため、
-                    // その場合は「(件名なし)」を表示する
-                    const hasVisibleSubject = !!email.subject && !email.subject.startsWith("Re:");
+                    // 件名も本文も無いメール（添付のみの返信など）は吹き出しが空白になるため、
+                    // その場合は「(件名なし)」を表示する。返信(Re:)でも件名自体は表示する
+                    const hasVisibleSubject = !!email.subject && email.subject !== "(件名なし)";
                     const hasBody = !!email.body && !!email.body.trim();
                     return (
                       <div
