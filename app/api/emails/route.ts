@@ -105,18 +105,29 @@ function extractHtmlLinks(html: string): Array<{text: string, href: string}> {
   return links;
 }
 
+// multipart/related や multipart/alternative が何重にもネストしていても取りこぼさないよう、
+// 木構造を最後まで走査してすべての text/html パートを集め、最も内容量の多いものを採用する
+// （マーケティングメールなどで、装飾用の小さいhtml断片が本文より先に見つかってしまうのを防ぐ）
 function getHtmlBody(payload: any): string {
-  if (payload.mimeType === "text/html" && payload.body?.data) return decodeBase64Url(payload.body.data);
-  if (payload.parts) {
-    for (const part of payload.parts) {
-      if (part.mimeType === "text/html" && part.body?.data) return decodeBase64Url(part.body.data);
-      if (part.parts) {
-        const nested = getHtmlBody(part);
-        if (nested) return nested;
-      }
+  const candidates: string[] = [];
+  function walk(part: any) {
+    if (!part) return;
+    if (part.mimeType === "text/html" && part.body?.data) {
+      const decoded = decodeBase64Url(part.body.data);
+      if (decoded) candidates.push(decoded);
     }
+    if (part.parts) part.parts.forEach(walk);
   }
-  return "";
+  walk(payload);
+  if (candidates.length === 0) return "";
+  return candidates.reduce((longest, cur) => (cur.length > longest.length ? cur : longest));
+}
+
+// 一部のメール（Yahoo!メールなど）は text/plain パートの生成が壊れており、
+// <style>ブロックの中身（CSSの宣言）がタグなしでそのまま紛れ込んでいることがある。
+// 通常の文章にはまず現れない「セレクタ { プロパティ: 値; ... }」という並びを検出して除去する
+function stripLooseCssRules(text: string): string {
+  return text.replace(/[^\n{}]{0,80}\{\s*(?:[\w-]+\s*:\s*[^;{}]+;\s*)+\}/g, "");
 }
 
 function cleanseBody(text: string): string {
@@ -127,6 +138,7 @@ function cleanseBody(text: string): string {
   cleaned = cleaned.replace(/<\/p>|<\/div>|<\/tr>|<\/li>/gi, "\n");
   cleaned = cleaned.replace(/<[^>]+>/g, "");
   cleaned = cleaned.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&zwnj;/g, "");
+  cleaned = stripLooseCssRules(cleaned);
   // 各行をトリム → 空白行のみの行を空行に統一 → 連続する空行を1行に圧縮
   cleaned = cleaned.split("\n").map(l => l.trim()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
   return cleaned;
@@ -228,7 +240,9 @@ export async function GET(request: Request) {
       const date = getHeader(headers, "Date");
       const labelIds = message.labelIds || []; 
       const rawBody = getTextBody(payload) || message.snippet || "";
-      const cleansedBody = cleanseBody(rawBody);
+      let cleansedBody = cleanseBody(rawBody);
+      // CSSの除去などで本文が空になってしまった場合は、Gmail側で生成されたスニペットに差し替える
+      if (!cleansedBody.trim() && message.snippet) cleansedBody = cleanseBody(message.snippet);
       const htmlBodyForLinks = getHtmlBody(payload);
       const htmlLinks = htmlBodyForLinks ? extractHtmlLinks(htmlBodyForLinks) : [];
 
