@@ -5,6 +5,12 @@ const _store = localforage.createInstance({
   storeName: "attachments",
 });
 
+// Gmail APIの attachmentId はメッセージ再取得のたびに変わることがあるため、
+// キャッシュキーには使わずファイル名+サイズ+添付順で安定したキーを組み立てる
+export function attachmentCacheKey(messageId: string, index: number, filename: string, size: number): string {
+  return `${messageId}:${index}:${filename}:${size}`;
+}
+
 // L1: in-memory (survives re-renders, lost on page reload)
 export const memCache = new Map<string, string>();
 
@@ -40,5 +46,34 @@ export async function setCachedAttachment(key: string, base64: string): Promise<
   memCache.set(key, base64);
   try {
     await _store.setItem(key, base64ToUint8(base64));
+  } catch {}
+}
+
+// 動画サムネイル（フレーム画像 + アスペクト比）のキャッシュ
+export type VideoThumb = { dataUrl: string; ratio: number };
+
+const _thumbStore = localforage.createInstance({
+  name: "remail",
+  storeName: "video_thumbs",
+});
+
+export const videoThumbMemCache = new Map<string, VideoThumb>();
+
+export async function getCachedVideoThumb(key: string): Promise<VideoThumb | null> {
+  const mem = videoThumbMemCache.get(key);
+  if (mem) return mem;
+  try {
+    const stored = await _thumbStore.getItem<VideoThumb>(key);
+    if (stored) videoThumbMemCache.set(key, stored);
+    return stored ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setCachedVideoThumb(key: string, thumb: VideoThumb): Promise<void> {
+  videoThumbMemCache.set(key, thumb);
+  try {
+    await _thumbStore.setItem(key, thumb);
   } catch {}
 }

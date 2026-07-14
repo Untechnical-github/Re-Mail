@@ -1,19 +1,20 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
-import { getCachedAttachment, setCachedAttachment, memCache } from "./lib/attachmentCache";
+import { getCachedAttachment, setCachedAttachment, memCache, getCachedVideoThumb, setCachedVideoThumb, videoThumbMemCache, attachmentCacheKey } from "./lib/attachmentCache";
+import { generateVideoThumbnail } from "./lib/videoThumbnail";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
 import { Modals, EmailModal, AttachmentModal } from "./components/Modals";
 import { getFileIcon, formatFileSize } from "./components/ui";
 
-function InlineAttachmentImage({ attachment, messageId, onOpen }: {
+function InlineAttachmentImage({ attachment, messageId, cacheKey, onOpen }: {
   attachment: { filename: string; mimeType: string; size: number; attachmentId: string };
   messageId: string;
+  cacheKey: string;
   onOpen: (base64: string) => void;
 }) {
-  const cacheKey = `${messageId}:${attachment.attachmentId}`;
   // Synchronous check of in-memory cache for instant display on remount
   const [base64, setBase64] = useState<string | null>(() => memCache.get(cacheKey) ?? null);
   const [loading, setLoading] = useState(() => !memCache.has(cacheKey));
@@ -62,18 +63,78 @@ function InlineAttachmentImage({ attachment, messageId, onOpen }: {
   );
 }
 
-function VideoAttachmentChip({ attachment, onOpen }: {
+const VIDEO_CHIP_MAX_W = 220;
+const VIDEO_CHIP_MAX_H = 260;
+
+function fitBox(ratio: number, maxW: number, maxH: number) {
+  let w = maxW;
+  let h = w / ratio;
+  if (h > maxH) { h = maxH; w = h * ratio; }
+  return { w: Math.round(w), h: Math.round(h) };
+}
+
+function VideoAttachmentChip({ attachment, messageId, cacheKey, onOpen }: {
   attachment: { filename: string; mimeType: string; size: number; attachmentId: string };
+  messageId: string;
+  cacheKey: string;
   onOpen: () => void;
 }) {
+  const [thumb, setThumb] = useState<{ dataUrl: string; ratio: number } | null>(() => videoThumbMemCache.get(cacheKey) ?? null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (thumb || videoThumbMemCache.has(cacheKey)) return;
+    let cancelled = false;
+    (async () => {
+      const cachedThumb = await getCachedVideoThumb(cacheKey);
+      if (cancelled) return;
+      if (cachedThumb) { setThumb(cachedThumb); return; }
+
+      // 再生時と同じキャッシュを共有するので、後で開いたときに二重ダウンロードにならない
+      let base64 = await getCachedAttachment(cacheKey);
+      if (!base64) {
+        try {
+          const res = await fetch(`/api/emails?messageId=${encodeURIComponent(messageId)}&attachmentId=${encodeURIComponent(attachment.attachmentId)}`);
+          if (res.ok) {
+            const { data } = await res.json();
+            if (data) {
+              base64 = (data as string).replace(/-/g, '+').replace(/_/g, '/');
+              setCachedAttachment(cacheKey, base64);
+            }
+          }
+        } catch {}
+      }
+      if (cancelled) return;
+      if (!base64) { setFailed(true); return; }
+
+      const generated = await generateVideoThumbnail(base64, attachment.mimeType);
+      if (cancelled) return;
+      if (generated) {
+        setThumb(generated);
+        setCachedVideoThumb(cacheKey, generated);
+      } else {
+        setFailed(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [cacheKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const { w, h } = fitBox(thumb?.ratio || 16 / 9, VIDEO_CHIP_MAX_W, VIDEO_CHIP_MAX_H);
+
   return (
     <div
-      className="relative rounded-xl overflow-hidden cursor-pointer group select-none flex-shrink-0"
-      style={{ width: 200, height: 112 }}
+      className="relative rounded-xl overflow-hidden cursor-pointer group select-none flex-shrink-0 bg-black"
+      style={{ width: w, height: h }}
       onClick={(e) => { e.stopPropagation(); onOpen(); }}
     >
-      <div className="absolute inset-0 bg-gradient-to-br from-[#1a1a2e] to-[#2d1b69]" />
-      <div className="absolute inset-0 flex items-center justify-center">
+      {thumb ? (
+        <img src={thumb.dataUrl} alt="" className="absolute inset-0 w-full h-full object-cover" draggable={false} />
+      ) : (
+        <div className="absolute inset-0 bg-gradient-to-br from-[#1a1a2e] to-[#2d1b69] flex items-center justify-center">
+          {!failed && <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
+        </div>
+      )}
+      <div className="absolute inset-0 flex items-center justify-center bg-black/10 group-hover:bg-black/25 transition">
         <div className="w-12 h-12 bg-white/90 rounded-full flex items-center justify-center shadow-xl group-hover:scale-110 transition-transform">
           <span className="text-black text-base ml-0.5">▶</span>
         </div>
@@ -578,30 +639,36 @@ export default function Home() {
                            </div>
                            {email.attachments && email.attachments.length > 0 && (
                              <div className={`flex flex-wrap gap-2 mt-2 mx-1 ${isMe ? 'justify-end' : 'justify-start'}`}>
-                               {email.attachments.map((att: any) => {
+                               {email.attachments.map((att: any, attIdx: number) => {
+                                 // attachmentId は再取得のたびに変わることがあるため、
+                                 // 添付順+ファイル名+サイズで安定したキャッシュキーを作る
+                                 const cacheKey = attachmentCacheKey(email.id, attIdx, att.filename, att.size);
                                  if (att.mimeType.startsWith('image/')) {
                                    return (
                                      <InlineAttachmentImage
-                                       key={att.attachmentId}
+                                       key={cacheKey}
                                        attachment={att}
                                        messageId={email.id}
-                                       onOpen={(base64) => actions.openAttachmentModal({ ...att, messageId: email.id }, base64)}
+                                       cacheKey={cacheKey}
+                                       onOpen={(base64) => actions.openAttachmentModal({ ...att, messageId: email.id, cacheKey }, base64)}
                                      />
                                    );
                                  }
                                  if (att.mimeType.startsWith('video/')) {
                                    return (
                                      <VideoAttachmentChip
-                                       key={att.attachmentId}
+                                       key={cacheKey}
                                        attachment={att}
-                                       onOpen={() => actions.openAttachmentModal({ ...att, messageId: email.id })}
+                                       messageId={email.id}
+                                       cacheKey={cacheKey}
+                                       onOpen={() => actions.openAttachmentModal({ ...att, messageId: email.id, cacheKey })}
                                      />
                                    );
                                  }
                                  return (
                                    <button
-                                     key={att.attachmentId}
-                                     onClick={(e) => { e.stopPropagation(); actions.openAttachmentModal({ ...att, messageId: email.id }); }}
+                                     key={cacheKey}
+                                     onClick={(e) => { e.stopPropagation(); actions.openAttachmentModal({ ...att, messageId: email.id, cacheKey }); }}
                                      className="flex items-center gap-2 px-3 py-2 rounded-xl bg-black/20 border border-white/10 hover:bg-black/30 transition text-left max-w-[200px]"
                                    >
                                      <span className="text-xl flex-shrink-0">{getFileIcon(att.mimeType)}</span>

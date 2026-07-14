@@ -902,7 +902,7 @@ export function useMailApp() {
   };
 
   const openAttachmentModal = async (
-    attachment: { filename: string; mimeType: string; size: number; attachmentId: string; messageId: string },
+    attachment: { filename: string; mimeType: string; size: number; attachmentId: string; messageId: string; cacheKey?: string },
     prefetchedBase64?: string
   ) => {
     const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
@@ -913,7 +913,7 @@ export function useMailApp() {
       return;
     }
     setAttachmentModal({ ...attachment, base64: null, isLoading: true });
-    const cacheKey = `${attachment.messageId}:${attachment.attachmentId}`;
+    const cacheKey = attachment.cacheKey || `${attachment.messageId}:${attachment.attachmentId}`;
     const cached = await getCachedAttachment(cacheKey);
     if (cached) {
       setAttachmentModal(prev => prev ? { ...prev, base64: cached, isLoading: false } : null);
