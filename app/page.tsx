@@ -598,7 +598,7 @@ export default function Home() {
                              <button
                                onClick={(e) => { e.stopPropagation(); actions.jumpToReplyTarget(email); }}
                                className={`flex items-center gap-2 mb-1 max-w-[85%] pl-3 pr-4 py-2 rounded-lg bg-black/20 border-l-4 hover:bg-black/30 transition text-left ${isMe ? 'self-end' : 'self-start'}`}
-                               style={{ borderColor: replyTarget ? getMsgColor(replyTarget) : '#5865F2' }}
+                               style={{ borderColor: replyTarget ? getMsgColor(replyTarget) : '#6B7280' /* 未解決時は色分けと紛らわしくないグレーにする */ }}
                              >
                                <span className="text-sm flex-shrink-0 opacity-70">↩</span>
                                <span className="text-sm text-gray-300">{replyTarget ? (replyTarget.subject || "(件名なし)") : "元のメッセージ"}</span>

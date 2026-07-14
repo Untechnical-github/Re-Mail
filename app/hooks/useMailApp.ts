@@ -1407,9 +1407,12 @@ export function useMailApp() {
   };
 
   const scrollToMsg = (id: string) => {
-    // 読み込み直後は要素がまだDOMに反映されていないことがあるため、次のフレームで実行する
+    // 読み込み直後は要素がまだDOMに反映されていない、あるいはレイアウトが確定していないことがあるため、
+    // 2フレーム待ってから実行する（1フレームだけだとスクロール位置がずれてボタンを通り過ぎることがあった）
     requestAnimationFrame(() => {
-      document.getElementById(`msg-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      requestAnimationFrame(() => {
+        document.getElementById(`msg-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
     });
   };
 
@@ -1421,8 +1424,8 @@ export function useMailApp() {
   // Discord風の返信チップをクリックしたときのジャンプ処理。
   // ①今のフィルターで表示中 → そのままスクロール
   // ②読み込み済みだが他の場所（アーカイブ等）にあり「〜が含まれています」のプロンプトになっている → そのボタンへスクロール
-  // ③まだ読み込んでいない過去のメール → Message-IDを指定してGmailに直接問い合わせる（rfc822msgid: 検索）。
-  //   1〜2回のAPI呼び出しで即座に結果が返るため、モーダルでの読み込み表示やキャンセル操作は不要
+  // ③まだ読み込んでいない過去のメール、またはローカルのラベル情報が古い可能性がある場合 →
+  //   Message-IDを指定してGmailに直接問い合わせ（rfc822msgid: 検索）、最新の状態で上書きする
   // ④見つからない（削除済み等） → 「このメールは存在しません」をトースト表示
   const jumpToReplyTarget = async (email: any) => {
     if (!selectedSender || isJumpingToReplyRef.current) return;
@@ -1433,16 +1436,46 @@ export function useMailApp() {
     const matches = (m: any) => (!!targetId && m.id === targetId) || (!!targetHeader && !!m.messageIdHeader && m.messageIdHeader === targetHeader);
 
     const already = emailsRef.current.find(matches);
-    if (already) { scrollToMsg(already.id); return; }
+    // 移動などの楽観的更新がこのメッセージに正しく反映されていない場合に備え、
+    // 見つかった場合もすぐ確定させず、裏で最新状態を取得して上書きする（表示は先にスクロールする）
+    if (already) { scrollToMsg(already.id); }
 
-    if (!targetHeader) { showReplyNotFoundToast(); return; }
+    if (!targetHeader) {
+      if (!already) showReplyNotFoundToast();
+      return;
+    }
+
+    if (already && !isJumpingToReplyRef.current) {
+      // 既存表示は崩さず、裏で静かに最新情報へ更新するだけ（見つからなくてもトーストは出さない）
+      fetch(`/api/emails?lookupByMessageId=${encodeURIComponent(targetHeader)}`)
+        .then(res => (res.ok ? res.json() : null))
+        .then(data => {
+          if (data?.found && data.email) {
+            setEmails(prev => {
+              const idx = prev.findIndex(e => e.id === data.email.id);
+              if (idx === -1) return prev;
+              const next = [...prev];
+              next[idx] = data.email;
+              return next;
+            });
+          }
+        })
+        .catch(() => {});
+      return;
+    }
 
     isJumpingToReplyRef.current = true;
     try {
       const res = await fetch(`/api/emails?lookupByMessageId=${encodeURIComponent(targetHeader)}`);
       const data = res.ok ? await res.json() : { found: false };
       if (data.found && data.email) {
-        setEmails(prev => (prev.some(e => e.id === data.email.id) ? prev : [...prev, data.email]));
+        setEmails(prev => {
+          const idx = prev.findIndex(e => e.id === data.email.id);
+          if (idx === -1) return [...prev, data.email];
+          const next = [...prev];
+          next[idx] = data.email; // ローカルに古い情報が残っていた場合に備え、最新の内容で上書きする
+          return next;
+        });
         scrollToMsg(data.email.id);
       } else {
         showReplyNotFoundToast();
