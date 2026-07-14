@@ -345,14 +345,14 @@ export function EmailModal({ app }: { app: any }) {
       frameWidth = Math.max(iframe.clientWidth, 1);
       frameHeight = Math.max(iframe.clientHeight, 1);
 
-      // body 幅を固定（html 幅変更時のリフロー防止）
+      // body 幅を固定（リフロー防止）。html 自体は元のiframeサイズ（frameWidth/frameHeight）の
+      // ままにする。overflow:hidden のクリップはhtmlの実サイズ基準で働くため、htmlを広げなくても
+      // transform（scale + translate）で body の任意の位置を映すことができる。
+      // ★以前は html を naturalWidth*5 に拡げていたが、レスポンシブなメールテンプレート
+      // （メディアクエリでレイアウトを切り替えるもの）だと、この幅の変更でメール内のCSSが
+      // 「デスクトップ幅」と誤認して再レイアウトしてしまい、幅を固定したbody内で内容が
+      // はみ出す→拡大時に右側が見切れる/欠けるという不具合の原因になっていた
       bodyEl.style.width = naturalWidth + 'px';
-      // html を最大ズーム(5倍)分のサイズに設定する。
-      // overflow:hidden のクリップは layout 座標で働くため、html が iframe 幅(375px)のままだと
-      // body の layout [375px, 600px] がクリップされ、transform scale 後の視覚的右側が消える。
-      // html を body の5倍幅にすることで、ズーム時も body がクリップされない。
-      htmlEl.style.width = naturalWidth * 5 + 'px';
-      htmlEl.style.height = naturalHeight * 5 + 'px';
 
       // ネイティブスクロール無効化（transform で制御するため）
       htmlEl.style.overflow = 'hidden';
