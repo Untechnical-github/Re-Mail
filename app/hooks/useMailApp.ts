@@ -336,6 +336,17 @@ export function useMailApp() {
     return () => { mediaQuery.removeEventListener('change', handler); window.removeEventListener('resize', resizeHandler); };
   }, []);
 
+  // リロード/タブ復元で selectedSender が localStorage から直接セットされた場合、
+  // openChat() を経由していないため history に "#chat" が積まれていない。
+  // その状態のままモバイルの戻るボタン(safeBack)を押すと history.state に
+  // 何も入っていないため「チャット画面を閉じる」が発火せず、画面が固定されてしまう。
+  // isMobile が確定した時点で history 側もチャットが開いている状態に揃えておく
+  useEffect(() => {
+    if (isMobile && selectedSender && window.location.hash !== '#chat') {
+      window.history.pushState({ chat: selectedSender }, '', '#chat');
+    }
+  }, [isMobile]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     const handlePopState = (e: PopStateEvent) => {
       const state = e.state;
