@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { BodyWithLinks, getFileIcon, formatFileSize } from "./ui";
+import { PdfPreview } from "./PdfPreview";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
@@ -879,8 +880,8 @@ export function AttachmentModal({ app }: { app: any }) {
               />
             </div>
           )}
-          {!isLoading && dataUrl && isPdf && (
-            <iframe src={dataUrl} className="w-full h-full border-none" title={filename} />
+          {!isLoading && base64 && isPdf && (
+            <PdfPreview base64={base64} filename={filename} />
           )}
           {!isLoading && dataUrl && isAudio && (
             <div className="w-full h-full flex items-center justify-center bg-[#1E1F22] p-8">
