@@ -188,6 +188,30 @@ function cleanseBody(text: string): string {
   return cleaned;
 }
 
+// 一覧取得・返信元の単体検索の両方で使う、メッセージ生データ→フロントエンド向け整形の共通処理
+function parseMessageDetail(message: any) {
+  const payload = message.payload;
+  const headers = payload?.headers || [];
+
+  const subject = decodeMimeHeader(getHeader(headers, "Subject")) || "(件名なし)";
+  const from = decodeMimeHeader(getHeader(headers, "From"));
+  const to = decodeMimeHeader(getHeader(headers, "To"));
+  const date = getHeader(headers, "Date");
+  const labelIds = message.labelIds || [];
+  // Discord風の「返信先」チップ表示のため、Message-ID / In-Reply-To を保持しておく
+  const messageIdHeader = getHeader(headers, "Message-ID") || undefined;
+  const inReplyTo = getHeader(headers, "In-Reply-To") || undefined;
+  const rawBody = getTextBody(payload) || message.snippet || "";
+  let cleansedBody = cleanseBody(rawBody);
+  // CSSの除去などで本文が空になってしまった場合は、Gmail側で生成されたスニペットに差し替える
+  if (!cleansedBody.trim() && message.snippet) cleansedBody = cleanseBody(message.snippet);
+  const htmlBodyForLinks = stripHtmlQuote(getHtmlBody(payload));
+  const htmlLinks = htmlBodyForLinks ? extractHtmlLinks(htmlBodyForLinks) : [];
+
+  const attachments = extractAttachments(payload);
+  return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, inReplyTo };
+}
+
 export async function GET(request: Request) {
   const session = await auth() as any;
   if (!session || !session.accessToken || session.error === "RefreshAccessTokenError") {
@@ -212,6 +236,33 @@ export async function GET(request: Request) {
       return NextResponse.json({ data: json.data ?? null });
     } catch {
       return NextResponse.json({ data: null });
+    }
+  }
+
+  // 返信元メッセージの単体検索（Discord風の返信チップで、未読み込みの過去メールへジャンプする用）。
+  // ページを何十件も読み込んで探すのではなく、Gmailの rfc822msgid: 検索で
+  // Message-ID を直接指定し、1〜2回のAPI呼び出しで存在有無と場所を判定する
+  const lookupByMessageId = searchParams.get("lookupByMessageId");
+  if (lookupByMessageId) {
+    try {
+      const searchRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=1&includeSpamTrash=true&q=${encodeURIComponent(`rfc822msgid:${lookupByMessageId}`)}`,
+        { headers: { Authorization: `Bearer ${session.accessToken}` } }
+      );
+      if (!searchRes.ok) return NextResponse.json({ found: false });
+      const searchData = await searchRes.json();
+      const hit = (searchData.messages || [])[0];
+      if (!hit) return NextResponse.json({ found: false });
+
+      const detailRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${hit.id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`,
+        { headers: { Authorization: `Bearer ${session.accessToken}` } }
+      );
+      if (!detailRes.ok) return NextResponse.json({ found: false });
+      const message = await detailRes.json();
+      return NextResponse.json({ found: true, email: parseMessageDetail(message) });
+    } catch {
+      return NextResponse.json({ found: false });
     }
   }
 
@@ -273,29 +324,7 @@ export async function GET(request: Request) {
       detailedMessages.push(...chunkResults);
     }
 
-    const parsedMessages = detailedMessages.map((message) => {
-      const payload = message.payload;
-      const headers = payload?.headers || [];
-      
-      // ★修正: 取得した生データを、フロントエンドに渡す前にすべて綺麗な日本語に解読する
-      const subject = decodeMimeHeader(getHeader(headers, "Subject")) || "(件名なし)";
-      const from = decodeMimeHeader(getHeader(headers, "From"));
-      const to = decodeMimeHeader(getHeader(headers, "To"));
-      const date = getHeader(headers, "Date");
-      const labelIds = message.labelIds || [];
-      // Discord風の「返信先」チップ表示のため、Message-ID / In-Reply-To を保持しておく
-      const messageIdHeader = getHeader(headers, "Message-ID") || undefined;
-      const inReplyTo = getHeader(headers, "In-Reply-To") || undefined;
-      const rawBody = getTextBody(payload) || message.snippet || "";
-      let cleansedBody = cleanseBody(rawBody);
-      // CSSの除去などで本文が空になってしまった場合は、Gmail側で生成されたスニペットに差し替える
-      if (!cleansedBody.trim() && message.snippet) cleansedBody = cleanseBody(message.snippet);
-      const htmlBodyForLinks = stripHtmlQuote(getHtmlBody(payload));
-      const htmlLinks = htmlBodyForLinks ? extractHtmlLinks(htmlBodyForLinks) : [];
-
-      const attachments = extractAttachments(payload);
-      return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, inReplyTo };
-    });
+    const parsedMessages = detailedMessages.map(parseMessageDetail);
 
     return NextResponse.json({ messages: parsedMessages, topIds, nextPageToken });
   } catch (error) {

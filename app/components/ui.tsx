@@ -166,6 +166,8 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode, setRenameInput,
           setReplySubject, setReplyBody, setReplyToMessage, safeBack, enterSelectionMode } = app.actions;
 
+  const [showCopiedToast, setShowCopiedToast] = useState(false);
+
   const isAnySelection = selectionMode === `${modePrefix}_select`;
   const hasItems = selectedIds.length > 0;
 
@@ -253,7 +255,13 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const showBanner = isAnySelection && hasItems;
 
   return (
-    <div className={containerClass} onClick={(e) => e.stopPropagation()}>
+    <>
+      {showCopiedToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] bg-[#2B2D31] text-white text-sm font-bold px-4 py-2 rounded-full shadow-lg border border-[#4752C4] animate-fade-in pointer-events-none">
+          コピーしました
+        </div>
+      )}
+      <div className={containerClass} onClick={(e) => e.stopPropagation()}>
       {showBanner && (
         <div className="w-full text-center text-[10px] text-[#5865F2] font-bold py-0.5">
           {selectedIds.length}件選択中
@@ -298,6 +306,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
               setReplyToMessage(null);
               setReplySubject(`Fwd: ${selectedMsg.subject || ""}`);
               setReplyBody(`\n\n--- 転送メッセージ ---\n差出人: ${selectedMsg.from}\n件名: ${selectedMsg.subject || ""}\n日時: ${new Date(selectedMsg.date).toLocaleString("ja-JP")}\n\n${selectedMsg.body || ""}`);
+              if (isAnySelection) safeBack();
             }}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
           >
@@ -308,6 +317,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
               if (!selectedMsg) return;
               setReplyToMessage(selectedMsg);
               setReplySubject(`Re: ${selectedMsg.subject || ""}`);
+              if (isAnySelection) safeBack();
             }}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
           >
@@ -316,7 +326,11 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
           <button
             onClick={() => {
               if (!selectedMsg) return;
-              navigator.clipboard.writeText(selectedMsg.body || "").catch(() => {});
+              navigator.clipboard.writeText(selectedMsg.body || "").then(() => {
+                setShowCopiedToast(true);
+                setTimeout(() => setShowCopiedToast(false), 1500);
+              }).catch(() => {});
+              if (isAnySelection) safeBack();
             }}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
           >
@@ -364,6 +378,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
       >
         非表示解除
       </button>
-    </div>
+      </div>
+    </>
   );
 }

@@ -6,7 +6,7 @@ import { generateVideoThumbnail } from "./lib/videoThumbnail";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
-import { Modals, EmailModal, AttachmentModal } from "./components/Modals";
+import { Modals, EmailModal, AttachmentModal, ReplyLookupModal } from "./components/Modals";
 import { getFileIcon, formatFileSize } from "./components/ui";
 
 function InlineAttachmentImage({ attachment, messageId, cacheKey, onOpen }: {
@@ -166,11 +166,22 @@ export default function Home() {
   const showChatList = !state.isMobile || !state.selectedSender;
   const showTalk = !state.isMobile || state.selectedSender;
 
+  // メッセージが属する場所（受信箱・送信済み等）に応じた色を返す（返信元チップの色分けにも使う）
+  const getMsgColor = (msg: any) => {
+    const isTrash = msg.labelIds?.includes("TRASH");
+    const isSpam = msg.labelIds?.includes("SPAM");
+    const isInbox = msg.labelIds?.includes("INBOX");
+    const isSent = msg.labelIds?.includes("SENT") || msg.isMe;
+    const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
+    return isSent ? state.boxColors.sent : isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isArchive ? state.boxColors.archive : state.boxColors.inbox;
+  };
+
   return (
     <div className="flex h-[100dvh] w-full bg-[#313338] overflow-hidden text-gray-200 relative select-none" onClick={actions.handleBackgroundClick}>
 <Modals app={app} />
 <EmailModal app={app} />
 <AttachmentModal app={app} />
+<ReplyLookupModal app={app} />
 
       {showChatList && (
         <aside className={`${state.isMobile ? 'w-full' : 'w-[320px] border-r'} border-[#1E1F22] bg-[#2B2D31] flex flex-col h-full min-h-0 cursor-pointer`}>
@@ -486,7 +497,7 @@ export default function Home() {
                     if (!isCurrentBox && !state.revealedCrossPrompts.includes(email.id)) {
                         const roundedClass = isMe ? 'rounded-2xl rounded-tr-sm' : 'rounded-2xl rounded-tl-sm';
                         return (
-                          <div key={`prompt-${email.id}`} className={`flex w-full mb-6 cursor-default transition ${isMe ? 'justify-end' : 'justify-start'}`}>
+                          <div id={`msg-${email.id}`} key={`prompt-${email.id}`} className={`flex w-full mb-6 cursor-default transition ${isMe ? 'justify-end' : 'justify-start'}`}>
                             {!isMe && !state.selectionMode.startsWith("msg_") && (
                                <img src={`/api/avatar?name=${encodeURIComponent(email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown")}`} alt="" className="w-9 h-9 rounded-full mr-3 flex-shrink-0 mt-1 shadow-sm select-none pointer-events-none opacity-80" />
                             )}
@@ -579,14 +590,14 @@ export default function Home() {
                         )}
 
                         <div className={`flex flex-col max-w-[75%] ${isMe ? 'items-end' : 'items-start'}`}>
-                           {replyTarget && (
+                           {(email.replyToId || email.inReplyTo) && (
                              <button
-                               onClick={(e) => { e.stopPropagation(); document.getElementById(`msg-${replyTarget.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}
+                               onClick={(e) => { e.stopPropagation(); actions.jumpToReplyTarget(email); }}
                                className={`flex items-center gap-2 mb-1 max-w-[85%] pl-3 pr-4 py-2 rounded-lg bg-black/20 border-l-4 hover:bg-black/30 transition text-left ${isMe ? 'self-end' : 'self-start'}`}
-                               style={{ borderColor: msgColor }}
+                               style={{ borderColor: replyTarget ? getMsgColor(replyTarget) : '#5865F2' }}
                              >
                                <span className="text-sm flex-shrink-0 opacity-70">↩</span>
-                               <span className="text-sm text-gray-300 truncate">{replyTarget.subject || "(件名なし)"}</span>
+                               <span className="text-sm text-gray-300">{replyTarget ? (replyTarget.subject || "(件名なし)") : "元のメッセージ"}</span>
                              </button>
                            )}
                            <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
