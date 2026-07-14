@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { BodyWithLinks, getFileIcon, formatFileSize } from "./ui";
-import { PdfPreview } from "./PdfPreview";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
@@ -580,8 +579,9 @@ export function AttachmentModal({ app }: { app: any }) {
 
   useLayoutEffect(() => {
     if (!attachmentModal) return;
-    // 画像・PDFともに独自のピンチズーム実装を使うため、モーダル表示中は
-    // ブラウザネイティブの拡大操作を無効化する
+    // PDFはブラウザ標準のビューアにズーム操作ごと任せるため、ビューポートを固定しない
+    // （画像プレビューは独自のズーム実装を使うため固定する）
+    if (attachmentModal.mimeType === 'application/pdf') return;
     const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
     const original = meta?.content ?? '';
     if (meta) meta.content = 'width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no';
@@ -882,8 +882,8 @@ export function AttachmentModal({ app }: { app: any }) {
               />
             </div>
           )}
-          {!isLoading && base64 && isPdf && (
-            <PdfPreview base64={base64} filename={filename} />
+          {!isLoading && dataUrl && isPdf && (
+            <iframe src={dataUrl} className="w-full h-full border-none" title={filename} />
           )}
           {!isLoading && dataUrl && isAudio && (
             <div className="w-full h-full flex items-center justify-center bg-[#1E1F22] p-8">
