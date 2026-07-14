@@ -62,9 +62,9 @@ export function useMailApp() {
   const [resetOptions, setResetOptions] = useState({ pin: true, hide: true, name: true, crossBox: false });
   const [moveDestination, setMoveDestination] = useState<"INBOX" | "ARCHIVE" | "SPAM" | "TRASH" | null>(null);
   const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
-  // 返信元メッセージへジャンプする際、未読み込みの過去メールを探している間の状態
-  const [replyLookupStatus, setReplyLookupStatus] = useState<"loading" | "not_found" | null>(null);
-  const replyLookupCancelRef = useRef(false);
+  // 返信元メッセージへジャンプしようとして見つからなかった場合のトースト表示
+  const [replyNotFoundToast, setReplyNotFoundToast] = useState(false);
+  const isJumpingToReplyRef = useRef(false);
 
   // メッセージ折りたたみ・モーダル関連
   // collapseLinesCount: null = 折りたたまない（設定画面から変更予定）
@@ -356,10 +356,6 @@ export function useMailApp() {
       setModal(null);
       setEmailModal(null);
       setAttachmentModal(null);
-      // 返信元ジャンプの読み込み中モーダルも、ブラウザバックや「←」ボタン（内部的にhistory.backを呼ぶ）で
-      // 閉じられたら読み込みを中断する
-      replyLookupCancelRef.current = true;
-      setReplyLookupStatus(null);
       if (!state || state.action !== "select") { setSelectionMode("none"); setSelectedIds([]); hasPushedSelectRef.current = false; } else { hasPushedSelectRef.current = true; }
       if (!state || state.action !== "search") { setSearchKeyword(""); hasPushedSearchRef.current = false; } else { hasPushedSearchRef.current = true; }
       if (window.innerWidth < 768 && window.location.hash !== '#chat') {
@@ -1417,20 +1413,19 @@ export function useMailApp() {
     });
   };
 
-  const cancelReplyLookup = () => {
-    replyLookupCancelRef.current = true;
-    setReplyLookupStatus(null);
+  const showReplyNotFoundToast = () => {
+    setReplyNotFoundToast(true);
+    setTimeout(() => setReplyNotFoundToast(false), 2000);
   };
 
   // Discord風の返信チップをクリックしたときのジャンプ処理。
   // ①今のフィルターで表示中 → そのままスクロール
   // ②読み込み済みだが他の場所（アーカイブ等）にあり「〜が含まれています」のプロンプトになっている → そのボタンへスクロール
-  // ③まだ読み込んでいない過去のメール → モーダルで読み込み中を表示しつつ、Message-IDを指定してGmailに
-  //   直接問い合わせる（rfc822msgid: 検索）。ページを総当たりで読み込まないので、
-  //   存在しない（削除済み等）場合でも1〜2回のAPI呼び出しだけで判定できる
-  // ④見つからない（削除済み等） → モーダルに「このメールは存在しません」を表示
+  // ③まだ読み込んでいない過去のメール → Message-IDを指定してGmailに直接問い合わせる（rfc822msgid: 検索）。
+  //   1〜2回のAPI呼び出しで即座に結果が返るため、モーダルでの読み込み表示やキャンセル操作は不要
+  // ④見つからない（削除済み等） → 「このメールは存在しません」をトースト表示
   const jumpToReplyTarget = async (email: any) => {
-    if (!selectedSender || replyLookupStatus === "loading") return;
+    if (!selectedSender || isJumpingToReplyRef.current) return;
     const targetId = email.replyToId as string | undefined;
     const targetHeader = email.inReplyTo as string | undefined;
     if (!targetId && !targetHeader) return;
@@ -1440,29 +1435,22 @@ export function useMailApp() {
     const already = emailsRef.current.find(matches);
     if (already) { scrollToMsg(already.id); return; }
 
-    if (!targetHeader) { setReplyLookupStatus("not_found"); return; }
+    if (!targetHeader) { showReplyNotFoundToast(); return; }
 
-    replyLookupCancelRef.current = false;
-    setReplyLookupStatus("loading");
-    window.history.pushState({ action: "modal" }, "", window.location.href);
-
+    isJumpingToReplyRef.current = true;
     try {
       const res = await fetch(`/api/emails?lookupByMessageId=${encodeURIComponent(targetHeader)}`);
-      if (replyLookupCancelRef.current) return;
       const data = res.ok ? await res.json() : { found: false };
-      if (replyLookupCancelRef.current) return;
-
       if (data.found && data.email) {
         setEmails(prev => (prev.some(e => e.id === data.email.id) ? prev : [...prev, data.email]));
-        // 他のモーダルの閉じるボタンと同様、history.back() は呼ばない
-        // （pushした履歴エントリはそのまま残るが、次に戻る操作をしても何も起きないだけで無害）
-        setReplyLookupStatus(null);
         scrollToMsg(data.email.id);
       } else {
-        setReplyLookupStatus("not_found");
+        showReplyNotFoundToast();
       }
-    } catch (e) {
-      if (!replyLookupCancelRef.current) setReplyLookupStatus("not_found");
+    } catch {
+      showReplyNotFoundToast();
+    } finally {
+      isJumpingToReplyRef.current = false;
     }
   };
 
@@ -1505,7 +1493,7 @@ export function useMailApp() {
       resetOptions, moveDestination, revealedCrossPrompts, boxColors,
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
-      replyLookupStatus,
+      replyNotFoundToast,
     },
     actions: {
       setSearchKeyword, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent,
@@ -1517,7 +1505,7 @@ export function useMailApp() {
       setChatCacheLimit,
       openEmailModal, closeEmailModal, toggleMsgExpand,
       openAttachmentModal, closeAttachmentModal,
-      jumpToReplyTarget, cancelReplyLookup,
+      jumpToReplyTarget,
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat },
     refs: { touchTimer, hasPushedSelectRef, hasPushedSearchRef, activeLoadRef, searchTimeoutRef }

@@ -6,7 +6,7 @@ import { generateVideoThumbnail } from "./lib/videoThumbnail";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
-import { Modals, EmailModal, AttachmentModal, ReplyLookupModal } from "./components/Modals";
+import { Modals, EmailModal, AttachmentModal } from "./components/Modals";
 import { getFileIcon, formatFileSize } from "./components/ui";
 
 function InlineAttachmentImage({ attachment, messageId, cacheKey, onOpen }: {
@@ -181,7 +181,11 @@ export default function Home() {
 <Modals app={app} />
 <EmailModal app={app} />
 <AttachmentModal app={app} />
-<ReplyLookupModal app={app} />
+{state.replyNotFoundToast && (
+  <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] bg-[#2B2D31] text-white text-sm font-bold px-4 py-2 rounded-full shadow-lg border border-[#4752C4] pointer-events-none">
+    このメールは存在しません
+  </div>
+)}
 
       {showChatList && (
         <aside className={`${state.isMobile ? 'w-full' : 'w-[320px] border-r'} border-[#1E1F22] bg-[#2B2D31] flex flex-col h-full min-h-0 cursor-pointer`}>

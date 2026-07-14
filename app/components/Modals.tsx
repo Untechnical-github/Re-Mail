@@ -972,41 +972,6 @@ export function AttachmentModal({ app }: { app: any }) {
   );
 }
 
-// 返信元メッセージへジャンプする際、未読み込みの過去メールを探している間・
-// 見つからなかった場合に表示する小さなモーダル
-export function ReplyLookupModal({ app }: { app: any }) {
-  const { replyLookupStatus } = app.state;
-  const { cancelReplyLookup } = app.actions;
-
-  if (!replyLookupStatus) return null;
-
-  return (
-    <div className="fixed inset-0 bg-black/80 z-[70] flex items-center justify-center p-4" onClick={cancelReplyLookup}>
-      <div
-        className="bg-[#2B2D31] rounded-lg shadow-2xl w-full max-w-xs p-6 border border-[#1E1F22] flex flex-col items-center gap-4"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {replyLookupStatus === "loading" ? (
-          <>
-            <div className="w-6 h-6 border-2 border-gray-500 border-t-white rounded-full animate-spin" />
-            <div className="text-sm text-gray-300">元のメッセージを読み込み中...</div>
-            <button onClick={cancelReplyLookup} className="w-full py-2 bg-[#383A40] hover:bg-[#3f4147] text-gray-200 font-bold rounded text-sm transition">
-              キャンセル
-            </button>
-          </>
-        ) : (
-          <>
-            <div className="text-sm text-gray-300 text-center">このメールは存在しません</div>
-            <button onClick={cancelReplyLookup} className="w-full py-2 bg-[#383A40] hover:bg-[#3f4147] text-gray-200 font-bold rounded text-sm transition">
-              閉じる
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export function Modals({ app }: { app: any }) {
   const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
   const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack } = app.actions;
