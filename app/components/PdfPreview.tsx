@@ -121,27 +121,23 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
 
     let scale = 1, x = 0, y = 0;
 
-    // ズーム中は container のネイティブスクロールを完全に無効化し、x/y だけで位置を管理する。
-    // overflow:hidden にした後の scrollTop の扱いはブラウザによって差があり、そのまま頼ると
-    // 2ページ目以降でズームの中心が1ページ目側にずれる原因になっていた。
-    // そのため「ズームに入る瞬間」に現在のスクロール量を x/y に折り込んで 0 にリセットし、
-    // 「ズームを抜ける瞬間」に x/y からスクロール量を復元する、という自前管理に切り替える
+    // ズーム中は container のネイティブスクロールを無効化し、x/y だけで位置を管理する。
+    // 「現在のスクロール量」は読み取って y に引き継ぐだけにし、scrollTop 自体には
+    // 一切書き込まない（auto のままの状態で scrollTop に書き込むと、その場でネイティブ
+    // スクロールが実際に先頭へ飛んでしまう＝1ページ目に強制的に飛ばされる不具合の原因だった）。
+    // scrollTop に触れなければ、ズームを抜けて auto に戻したときも元の位置にそのまま復元される
     const isZoomMode = () => container.style.overflow === "hidden";
 
     const enterZoomMode = () => {
       if (isZoomMode()) return;
       y -= container.scrollTop;
       x -= container.scrollLeft;
-      container.scrollTop = 0;
-      container.scrollLeft = 0;
       container.style.overflow = "hidden";
     };
 
     const exitZoomMode = () => {
       if (!isZoomMode()) return;
       container.style.overflow = "auto";
-      container.scrollTop = Math.max(0, Math.round(-y));
-      container.scrollLeft = Math.max(0, Math.round(-x));
     };
 
     const setTransform = (transition = "none") => {
