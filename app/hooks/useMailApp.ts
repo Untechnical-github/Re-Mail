@@ -21,7 +21,8 @@ export function useMailApp() {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedSender, setSelectedSender] = useState<string | null>(() => {
     if (typeof window !== "undefined") {
-      return sessionStorage.getItem("remail_selected_sender");
+      // リロードやタブを閉じても開いていたメッセージ画面を復元できるよう localStorage に保存する
+      return localStorage.getItem("remail_selected_sender");
     }
     return null;
   });
@@ -134,12 +135,23 @@ export function useMailApp() {
     const handleScrollSave = () => {
       const asideEl = document.querySelector("aside > div.flex-1");
       const mainEl = document.querySelector("main > div.flex-1");
-      if (asideEl) sessionStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
-      if (mainEl) sessionStorage.setItem("remail_scroll_main", mainEl.scrollTop.toString());
+      if (asideEl) localStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
+      if (mainEl) localStorage.setItem("remail_scroll_main", mainEl.scrollTop.toString());
+    };
+    const handleVisibilityHidden = () => {
+      if (document.visibilityState === "hidden") handleScrollSave();
     };
 
+    // beforeunload はタブを閉じる際やモバイルで発火しないことがあるため、
+    // pagehide / visibilitychange も併用して確実に保存する
     window.addEventListener("beforeunload", handleScrollSave);
-    return () => window.removeEventListener("beforeunload", handleScrollSave);
+    window.addEventListener("pagehide", handleScrollSave);
+    document.addEventListener("visibilitychange", handleVisibilityHidden);
+    return () => {
+      window.removeEventListener("beforeunload", handleScrollSave);
+      window.removeEventListener("pagehide", handleScrollSave);
+      document.removeEventListener("visibilitychange", handleVisibilityHidden);
+    };
   }, [selectedSender]);
 
   const allUniqueEmails = useMemo(() => {
@@ -308,7 +320,7 @@ export function useMailApp() {
       if (!state || state.action !== "search") { setSearchKeyword(""); hasPushedSearchRef.current = false; } else { hasPushedSearchRef.current = true; }
       if (window.innerWidth < 768 && window.location.hash !== '#chat') {
         setSelectedSender(null);
-        sessionStorage.removeItem("remail_selected_sender");
+        localStorage.removeItem("remail_selected_sender");
       }
     };
     window.addEventListener('popstate', handlePopState);
@@ -318,7 +330,7 @@ export function useMailApp() {
   useEffect(() => {
     if (!selectedSender && isMobile) {
       setTimeout(() => {
-        const asideScroll = sessionStorage.getItem("remail_scroll_aside");
+        const asideScroll = localStorage.getItem("remail_scroll_aside");
         const asideEl = document.querySelector("aside > div.flex-1");
         if (asideScroll && asideEl) {
           asideEl.scrollTop = parseInt(asideScroll, 10);
@@ -445,8 +457,8 @@ export function useMailApp() {
           }
 
           setTimeout(() => {
-            const asideScroll = sessionStorage.getItem("remail_scroll_aside");
-            const mainScroll = sessionStorage.getItem("remail_scroll_main");
+            const asideScroll = localStorage.getItem("remail_scroll_aside");
+            const mainScroll = localStorage.getItem("remail_scroll_main");
             const asideEl = document.querySelector("aside > div.flex-1");
             const mainEl = document.querySelector("main > div.flex-1");
             if (asideScroll && asideEl) asideEl.scrollTop = parseInt(asideScroll, 10);
@@ -732,8 +744,8 @@ export function useMailApp() {
     if (!isLoading && selectedSender && !senderList.includes(selectedSender)) {
       setSelectedSender(null);
       if (typeof window !== "undefined") {
-        sessionStorage.removeItem("remail_selected_sender");
-        sessionStorage.removeItem("remail_scroll_main");
+        localStorage.removeItem("remail_selected_sender");
+        localStorage.removeItem("remail_scroll_main");
       }
     }
   }, [senderList, isLoading]);
@@ -780,10 +792,10 @@ export function useMailApp() {
 
     setSelectedSender(sender);
     if (typeof window !== "undefined") {
-      sessionStorage.setItem("remail_selected_sender", sender);
-      sessionStorage.removeItem("remail_scroll_main");
+      localStorage.setItem("remail_selected_sender", sender);
+      localStorage.removeItem("remail_scroll_main");
       const asideEl = document.querySelector("aside > div.flex-1");
-      if (asideEl) sessionStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
+      if (asideEl) localStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
     }
     setReplyToMessage(null);
     setMsgStatusMessage(null);
