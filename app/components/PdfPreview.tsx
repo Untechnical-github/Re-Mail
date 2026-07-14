@@ -160,22 +160,32 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
     });
 
     // ホイールはCtrl併用時のみズーム（トラックパッドのピンチはctrlKey付きのwheelとして届く）。
-    // 通常のホイール/2本指スクロールはページ送りのスクロールに使わせる
+    // 通常のホイール/2本指スクロールはページ送りのスクロールに使わせる。
+    // トラックパッドのピンチは短時間に大量のwheelイベントを発火するため、毎回アンカーを
+    // 取り直すと（scrollTopの読み直しなどで）誤差が蓄積してズームの中心が徐々にずれてしまう。
+    // タッチのピンチと同じく、一連のジェスチャーが続いている間はジェスチャー開始時に
+    // 一度だけ求めたアンカー座標を使い回す
     let wheelSnapTimer: ReturnType<typeof setTimeout> | null = null;
+    let wheelAnchor: { cx: number; cy: number } | null = null;
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
-      if (wheelSnapTimer) { clearTimeout(wheelSnapTimer); wheelSnapTimer = null; }
+      if (wheelSnapTimer) clearTimeout(wheelSnapTimer);
       const newScale = Math.min(MAX_SCALE, Math.max(1, scale * (1 + (e.deltaY > 0 ? -1 : 1) * 0.15)));
-      if (newScale === scale) return;
-      const rect = container.getBoundingClientRect();
-      const { cx: mx, cy: my } = clientToContentPoint(e.clientX, e.clientY, rect);
-      const bx = (mx - x) / scale, by = (my - y) / scale;
+      if (newScale === scale) {
+        wheelSnapTimer = setTimeout(() => { snap(); wheelSnapTimer = null; wheelAnchor = null; }, 300);
+        return;
+      }
+      if (!wheelAnchor) {
+        const rect = container.getBoundingClientRect();
+        wheelAnchor = clientToContentPoint(e.clientX, e.clientY, rect);
+      }
+      const bx = (wheelAnchor.cx - x) / scale, by = (wheelAnchor.cy - y) / scale;
       scale = newScale;
-      x = mx - bx * scale; y = my - by * scale;
+      x = wheelAnchor.cx - bx * scale; y = wheelAnchor.cy - by * scale;
       setTransform("transform 0.05s ease-out");
       applyOverflow();
-      wheelSnapTimer = setTimeout(() => { snap(); wheelSnapTimer = null; }, 300);
+      wheelSnapTimer = setTimeout(() => { snap(); wheelSnapTimer = null; wheelAnchor = null; }, 300);
     };
 
     // マウスドラッグ：等倍のときは何もしない＝テキスト選択をブラウザ標準のまま使える
