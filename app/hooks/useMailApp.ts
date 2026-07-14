@@ -79,6 +79,7 @@ export function useMailApp() {
     size: number;
     attachmentId: string;
     messageId: string;
+    cacheKey?: string;
     base64: string | null;
     isLoading: boolean;
   } | null>(null);
@@ -132,27 +133,52 @@ export function useMailApp() {
   const filterKeyRef = useRef<string>("true-true-false-false-false");
 
   useEffect(() => {
-    const handleScrollSave = () => {
+    const handleStateSave = () => {
       const asideEl = document.querySelector("aside > div.flex-1");
       const mainEl = document.querySelector("main > div.flex-1");
       if (asideEl) localStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
       if (mainEl) localStorage.setItem("remail_scroll_main", mainEl.scrollTop.toString());
+
+      // 表示中のモーダル・選択中の内容・作成中の返信もリロード/タブを閉じた後に復元できるよう保存する。
+      // emailModal/replyToMessage はデータ再取得後に同じメッセージを探し直すのではなく、
+      // 表示に必要な内容そのものを保存しておく（再取得タイミングに依存させないため）
+      const uiState = {
+        selectionMode,
+        selectedIds,
+        modal,
+        renameInput,
+        resetOptions,
+        moveDestination,
+        replySubject,
+        replyBody,
+        replyToMessage: replyToMessage ?? null,
+        emailModalEmail: emailModal?.email ?? null,
+        attachmentModal: attachmentModal ? {
+          filename: attachmentModal.filename,
+          mimeType: attachmentModal.mimeType,
+          size: attachmentModal.size,
+          attachmentId: attachmentModal.attachmentId,
+          messageId: attachmentModal.messageId,
+          cacheKey: attachmentModal.cacheKey,
+        } : null,
+      };
+      try { localStorage.setItem("remail_ui_state", JSON.stringify(uiState)); } catch {}
     };
     const handleVisibilityHidden = () => {
-      if (document.visibilityState === "hidden") handleScrollSave();
+      if (document.visibilityState === "hidden") handleStateSave();
     };
 
     // beforeunload はタブを閉じる際やモバイルで発火しないことがあるため、
     // pagehide / visibilitychange も併用して確実に保存する
-    window.addEventListener("beforeunload", handleScrollSave);
-    window.addEventListener("pagehide", handleScrollSave);
+    window.addEventListener("beforeunload", handleStateSave);
+    window.addEventListener("pagehide", handleStateSave);
     document.addEventListener("visibilitychange", handleVisibilityHidden);
     return () => {
-      window.removeEventListener("beforeunload", handleScrollSave);
-      window.removeEventListener("pagehide", handleScrollSave);
+      window.removeEventListener("beforeunload", handleStateSave);
+      window.removeEventListener("pagehide", handleStateSave);
       document.removeEventListener("visibilitychange", handleVisibilityHidden);
     };
-  }, [selectedSender]);
+  }, [selectedSender, selectionMode, selectedIds, modal, renameInput, resetOptions, moveDestination, replySubject, replyBody, replyToMessage, emailModal, attachmentModal]);
 
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
@@ -458,6 +484,28 @@ export function useMailApp() {
           if (selectedSender && res.success) {
             fetchChatCrossbox(selectedSender, false, res.emails);
           }
+
+          // 表示中のモーダル・選択中の内容・作成中の返信を復元する。
+          // 表示に必要な内容そのものを保存してあるため、データの再取得完了を待たずに復元できる
+          try {
+            const savedUiState = localStorage.getItem("remail_ui_state");
+            if (savedUiState) {
+              const ui = JSON.parse(savedUiState);
+              if (ui.selectionMode && ui.selectionMode !== "none" && Array.isArray(ui.selectedIds) && ui.selectedIds.length > 0) {
+                setSelectionMode(ui.selectionMode);
+                setSelectedIds(ui.selectedIds);
+              }
+              if (ui.modal) setModal(ui.modal);
+              if (ui.renameInput) setRenameInput(ui.renameInput);
+              if (ui.resetOptions) setResetOptions(ui.resetOptions);
+              if (ui.moveDestination) setMoveDestination(ui.moveDestination);
+              if (ui.replySubject) setReplySubject(ui.replySubject);
+              if (ui.replyBody) setReplyBody(ui.replyBody);
+              if (ui.replyToMessage) setReplyToMessage(ui.replyToMessage);
+              if (ui.emailModalEmail) openEmailModal(ui.emailModalEmail);
+              if (ui.attachmentModal) openAttachmentModal(ui.attachmentModal);
+            }
+          } catch (e) { console.error(e); }
 
           setTimeout(() => {
             const asideScroll = localStorage.getItem("remail_scroll_aside");
