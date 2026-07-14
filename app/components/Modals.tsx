@@ -560,6 +560,7 @@ export function AttachmentModal({ app }: { app: any }) {
   const { attachmentModal } = app.state;
   const { closeAttachmentModal } = app.actions;
   const [textContent, setTextContent] = useState<string | null>(null);
+  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const imgCleanupRef = useRef<(() => void) | null>(null);
@@ -575,6 +576,25 @@ export function AttachmentModal({ app }: { app: any }) {
     } catch {
       setTextContent(null);
     }
+  }, [attachmentModal?.base64, attachmentModal?.mimeType]);
+
+  // PDFは data:URI だと Android Chrome の iframe 内で表示できないことがあるため、
+  // blob: URL に変換して渡す（Android Chrome でも埋め込みPDFビューアが起動しやすくなる）
+  useEffect(() => {
+    if (!attachmentModal?.base64 || attachmentModal.mimeType !== 'application/pdf') {
+      setPdfBlobUrl(null);
+      return;
+    }
+    let url: string | null = null;
+    try {
+      const bytes = Uint8Array.from(atob(attachmentModal.base64), (c: string) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      url = URL.createObjectURL(blob);
+      setPdfBlobUrl(url);
+    } catch {
+      setPdfBlobUrl(null);
+    }
+    return () => { if (url) URL.revokeObjectURL(url); };
   }, [attachmentModal?.base64, attachmentModal?.mimeType]);
 
   useLayoutEffect(() => {
@@ -882,8 +902,8 @@ export function AttachmentModal({ app }: { app: any }) {
               />
             </div>
           )}
-          {!isLoading && dataUrl && isPdf && (
-            <iframe src={dataUrl} className="w-full h-full border-none" title={filename} />
+          {!isLoading && pdfBlobUrl && isPdf && (
+            <iframe src={pdfBlobUrl} className="w-full h-full border-none" title={filename} />
           )}
           {!isLoading && dataUrl && isAudio && (
             <div className="w-full h-full flex items-center justify-center bg-[#1E1F22] p-8">
