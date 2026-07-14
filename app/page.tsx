@@ -536,6 +536,10 @@ export default function Home() {
                     const replyTarget = (email.replyToId || email.inReplyTo)
                       ? computed.allUniqueEmails.find((e: any) => (email.replyToId && e.id === email.replyToId) || (email.inReplyTo && e.messageIdHeader === email.inReplyTo))
                       : null;
+                    // 件名(Re:以外)も本文も無いメール（添付のみの返信など）は吹き出しが空白になるため、
+                    // その場合は「(件名なし)」を表示する
+                    const hasVisibleSubject = !!email.subject && !email.subject.startsWith("Re:");
+                    const hasBody = !!email.body && !!email.body.trim();
                     return (
                       <div
                         id={`msg-${email.id}`}
@@ -578,10 +582,11 @@ export default function Home() {
                            {replyTarget && (
                              <button
                                onClick={(e) => { e.stopPropagation(); document.getElementById(`msg-${replyTarget.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}
-                               className={`flex items-center gap-1 mb-1 mx-1 max-w-full text-[11px] text-gray-500 hover:text-white transition ${isMe ? 'justify-end' : 'justify-start'}`}
+                               className={`flex items-center gap-2 mb-1 max-w-[85%] pl-3 pr-4 py-2 rounded-lg bg-black/20 border-l-4 hover:bg-black/30 transition text-left ${isMe ? 'self-end' : 'self-start'}`}
+                               style={{ borderColor: msgColor }}
                              >
-                               <span className="opacity-60">↩</span>
-                               <span className="truncate max-w-[220px] underline decoration-dotted underline-offset-2">{replyTarget.subject || "(件名なし)"}</span>
+                               <span className="text-sm flex-shrink-0 opacity-70">↩</span>
+                               <span className="text-sm text-gray-300 truncate">{replyTarget.subject || "(件名なし)"}</span>
                              </button>
                            )}
                            <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
@@ -633,7 +638,7 @@ export default function Home() {
                               }}
                            >
                               {state.chatConfigs[email.id]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
-                              {email.subject && !email.subject.startsWith("Re:") && (
+                              {hasVisibleSubject && (
                                 <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={email.subject} highlight={state.searchKeyword} /></div>
                               )}
                               <div
@@ -644,7 +649,11 @@ export default function Home() {
                                   overflow: 'hidden',
                                 } : undefined}
                               >
-                                <BodyWithLinks text={email.body} highlight={state.searchKeyword} htmlLinks={email.htmlLinks} />
+                                {hasVisibleSubject || hasBody ? (
+                                  <BodyWithLinks text={email.body} highlight={state.searchKeyword} htmlLinks={email.htmlLinks} />
+                                ) : (
+                                  <span>(件名なし)</span>
+                                )}
                               </div>
                               {isCollapsed && (
                                 <div className="text-xs mt-1.5 opacity-60">もっと見る...</div>
