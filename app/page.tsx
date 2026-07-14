@@ -719,6 +719,22 @@ export default function Home() {
                 </div>
               </div>
             </>
+          ) : state.selectedSender ? (
+            // リロード直後・タブ復元直後などデータ読み込み中は、
+            // 「チャットを選択してください」ではなくメッセージ画面のUIを先に出す
+            <>
+              <header className="px-4 py-3 bg-[#313338] border-b border-[#1E1F22] shadow-sm z-10 flex items-center gap-3 cursor-default">
+                {state.isMobile && (
+                  <button onClick={(e) => { e.stopPropagation(); actions.safeBack(); }} className="text-gray-400 hover:text-white font-bold p-1 text-lg transition active:scale-90">←</button>
+                )}
+                <div className="flex-1 min-w-0">
+                  <h2 className="font-bold text-base truncate text-white">{state.chatConfigs[state.selectedSender]?.customName || state.selectedSender}</h2>
+                </div>
+              </header>
+              <div className="flex flex-1 items-center justify-center text-gray-500 text-sm cursor-default">
+                読み込み中...
+              </div>
+            </>
           ) : (
             <div className="flex flex-1 items-center justify-center text-gray-500 font-bold cursor-default">
               左のリストからチャットを選択してください

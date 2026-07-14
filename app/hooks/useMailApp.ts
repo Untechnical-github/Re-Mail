@@ -493,7 +493,11 @@ export function useMailApp() {
           const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash, sent: initSent }, null, false, false, [], () => false, true);
 
           if (selectedSender && res.success) {
-            fetchChatCrossbox(selectedSender, false, res.emails);
+            // await せずに進むと、復元したチャットのメッセージがまだ senderList に
+            // 反映される前に hasLoadedOnceRef が立ってしまい、「チャットが消えた」と
+            // 誤判定されて selectedSender がクリアされてしまう（＝復元直後に一瞬だけ
+            // 「チャットを選択してください」画面に戻ってしまう不具合の原因だった）
+            await fetchChatCrossbox(selectedSender, false, res.emails);
           }
 
           // 表示中のモーダル・選択中の内容・作成中の返信を復元する。
