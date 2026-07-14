@@ -70,14 +70,24 @@ function getTextBody(payload: any): string {
   return "";
 }
 
+// S/MIME署名ファイル（smime.p7s など）は、メールの本文とは無関係な電子署名データで、
+// Gmail自身も添付ファイルとして表示しない。銀行系のメールなどで必ず付与されることが多いため、
+// re:mailでも同様に一覧から除外する
+function isSmimeSignaturePart(mimeType: string, filename: string): boolean {
+  const mt = mimeType.toLowerCase();
+  if (mt === 'application/pkcs7-signature' || mt === 'application/x-pkcs7-signature') return true;
+  return /^smime\.p7[sm]$/i.test(filename.trim());
+}
+
 function extractAttachments(payload: any): Array<{ filename: string; mimeType: string; size: number; attachmentId: string }> {
   const results: Array<{ filename: string; mimeType: string; size: number; attachmentId: string }> = [];
   function walk(part: any) {
     if (!part) return;
     if (part.body?.attachmentId && part.filename?.trim()) {
       const disp = (part.headers || []).find((h: any) => h.name?.toLowerCase() === 'content-disposition')?.value?.toLowerCase() ?? '';
-      if (!disp.startsWith('inline')) {
-        results.push({ filename: part.filename, mimeType: part.mimeType || 'application/octet-stream', size: part.body.size || 0, attachmentId: part.body.attachmentId });
+      const mimeType = part.mimeType || 'application/octet-stream';
+      if (!disp.startsWith('inline') && !isSmimeSignaturePart(mimeType, part.filename)) {
+        results.push({ filename: part.filename, mimeType, size: part.body.size || 0, attachmentId: part.body.attachmentId });
       }
     }
     if (part.parts) part.parts.forEach(walk);
