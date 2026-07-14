@@ -429,6 +429,9 @@ export function useMailApp() {
   };
 
   const initLoadDoneRef = useRef(false);
+  // 初回のメール取得が完了するまでは senderList が空のまま（未取得なだけ）なので、
+  // 「フィルターでチャットが消えた」判定を初回取得完了まで抑止するためのフラグ
+  const hasLoadedOnceRef = useRef(false);
 
   useEffect(() => {
     if (session && !initLoadDoneRef.current) {
@@ -465,7 +468,7 @@ export function useMailApp() {
             if (mainScroll && mainEl) mainEl.scrollTop = parseInt(mainScroll, 10);
           }, 150);
 
-        } catch (err) { console.error(err); } finally { setIsLoading(false); }
+        } catch (err) { console.error(err); } finally { setIsLoading(false); hasLoadedOnceRef.current = true; }
       };
       initLoad();
     }
@@ -740,8 +743,9 @@ export function useMailApp() {
   const hiddenMsgs = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId !== undefined).map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ", date: new Date().toISOString() });
 
   // senderList からチャットが消えたら（フィルター変更・非表示化など）メッセージ画面を自動クローズ
+  // ただし初回のメール取得が終わるまでは senderList が「まだ空なだけ」なので判定しない
   useEffect(() => {
-    if (!isLoading && selectedSender && !senderList.includes(selectedSender)) {
+    if (hasLoadedOnceRef.current && !isLoading && selectedSender && !senderList.includes(selectedSender)) {
       setSelectedSender(null);
       if (typeof window !== "undefined") {
         localStorage.removeItem("remail_selected_sender");

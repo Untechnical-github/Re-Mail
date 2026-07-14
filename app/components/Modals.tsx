@@ -580,6 +580,8 @@ export function AttachmentModal({ app }: { app: any }) {
 
   useLayoutEffect(() => {
     if (!attachmentModal) return;
+    // 画像・PDFともに独自のピンチズーム実装を使うため、モーダル表示中は
+    // ブラウザネイティブの拡大操作を無効化する
     const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
     const original = meta?.content ?? '';
     if (meta) meta.content = 'width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no';
