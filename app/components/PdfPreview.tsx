@@ -121,7 +121,28 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
 
     let scale = 1, x = 0, y = 0;
 
-    const applyOverflow = () => { container.style.overflow = scale > 1 ? "hidden" : "auto"; };
+    // ズーム中は container のネイティブスクロールを完全に無効化し、x/y だけで位置を管理する。
+    // overflow:hidden にした後の scrollTop の扱いはブラウザによって差があり、そのまま頼ると
+    // 2ページ目以降でズームの中心が1ページ目側にずれる原因になっていた。
+    // そのため「ズームに入る瞬間」に現在のスクロール量を x/y に折り込んで 0 にリセットし、
+    // 「ズームを抜ける瞬間」に x/y からスクロール量を復元する、という自前管理に切り替える
+    const isZoomMode = () => container.style.overflow === "hidden";
+
+    const enterZoomMode = () => {
+      if (isZoomMode()) return;
+      y -= container.scrollTop;
+      x -= container.scrollLeft;
+      container.scrollTop = 0;
+      container.scrollLeft = 0;
+      container.style.overflow = "hidden";
+    };
+
+    const exitZoomMode = () => {
+      if (!isZoomMode()) return;
+      container.style.overflow = "auto";
+      container.scrollTop = Math.max(0, Math.round(-y));
+      container.scrollLeft = Math.max(0, Math.round(-x));
+    };
 
     const setTransform = (transition = "none") => {
       content.style.transition = transition;
@@ -129,10 +150,10 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
     };
 
     const reset = (animated = false) => {
+      exitZoomMode();
       scale = 1; x = 0; y = 0;
       setTransform(animated ? "transform 0.2s ease-out" : "none");
       container.style.cursor = "";
-      applyOverflow();
     };
 
     const checkMovability = () => ({
@@ -148,15 +169,13 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
       y = vH <= cH ? 0 : Math.max(cH - vH, Math.min(0, y));
       setTransform(transition);
       container.style.cursor = "grab";
-      applyOverflow();
     };
 
-    // container は overflow-auto でスクロールしているため、拡大の基準点を求めるときは
-    // クリック位置をビューポート相対ではなく「スクロール量を足したコンテンツ内の絶対座標」に
-    // 変換する必要がある（これを忘れると2ページ目以降でズームの中心が1ページ目側にずれる）
+    // クリック/タップ位置を、現在の transform を打ち消した「コンテンツ内の絶対座標」に変換する。
+    // enterZoomMode() 済みであれば container のスクロールは常に0なので、rect基準の座標だけでよい
     const clientToContentPoint = (clientX: number, clientY: number, rect: DOMRect) => ({
-      cx: clientX - rect.left + container.scrollLeft,
-      cy: clientY - rect.top + container.scrollTop,
+      cx: clientX - rect.left,
+      cy: clientY - rect.top,
     });
 
     // ホイールはCtrl併用時のみズーム（トラックパッドのピンチはctrlKey付きのwheelとして届く）。
@@ -176,6 +195,7 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
         wheelSnapTimer = setTimeout(() => { snap(); wheelSnapTimer = null; wheelAnchor = null; }, 300);
         return;
       }
+      enterZoomMode();
       if (!wheelAnchor) {
         const rect = container.getBoundingClientRect();
         wheelAnchor = clientToContentPoint(e.clientX, e.clientY, rect);
@@ -184,7 +204,6 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
       scale = newScale;
       x = wheelAnchor.cx - bx * scale; y = wheelAnchor.cy - by * scale;
       setTransform("transform 0.05s ease-out");
-      applyOverflow();
       wheelSnapTimer = setTimeout(() => { snap(); wheelSnapTimer = null; wheelAnchor = null; }, 300);
     };
 
@@ -231,6 +250,7 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
       if (e.touches.length === 2) {
         e.preventDefault();
         isPinching = true; singleTouching = false;
+        enterZoomMode();
         pinchRect = container.getBoundingClientRect();
         const mid = getTouchMid(e.touches);
         const { cx, cy } = clientToContentPoint(mid.x, mid.y, pinchRect);
@@ -258,7 +278,6 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
         x = cx - pinchAnchorX * scale;
         y = cy - pinchAnchorY * scale;
         setTransform();
-        applyOverflow();
       } else if (e.touches.length === 1 && singleTouching && !isPinching && scale > 1) {
         if (e.cancelable) e.preventDefault();
         let dx = e.touches[0].clientX - lastTouchX, dy = e.touches[0].clientY - lastTouchY;
@@ -316,7 +335,7 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
   }, [status]);
 
   return (
-    <div ref={containerRef} className="w-full h-full overflow-auto bg-[#525659]">
+    <div ref={containerRef} className="w-full h-full overflow-auto bg-[#525659] touch-pan-y">
       {status === "loading" && (
         <div className="w-full h-full flex items-center justify-center text-gray-300 text-sm">読み込み中...</div>
       )}
