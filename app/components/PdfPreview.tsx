@@ -151,6 +151,14 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
       applyOverflow();
     };
 
+    // container は overflow-auto でスクロールしているため、拡大の基準点を求めるときは
+    // クリック位置をビューポート相対ではなく「スクロール量を足したコンテンツ内の絶対座標」に
+    // 変換する必要がある（これを忘れると2ページ目以降でズームの中心が1ページ目側にずれる）
+    const clientToContentPoint = (clientX: number, clientY: number, rect: DOMRect) => ({
+      cx: clientX - rect.left + container.scrollLeft,
+      cy: clientY - rect.top + container.scrollTop,
+    });
+
     // ホイールはCtrl併用時のみズーム（トラックパッドのピンチはctrlKey付きのwheelとして届く）。
     // 通常のホイール/2本指スクロールはページ送りのスクロールに使わせる
     let wheelSnapTimer: ReturnType<typeof setTimeout> | null = null;
@@ -161,7 +169,7 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
       const newScale = Math.min(MAX_SCALE, Math.max(1, scale * (1 + (e.deltaY > 0 ? -1 : 1) * 0.15)));
       if (newScale === scale) return;
       const rect = container.getBoundingClientRect();
-      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const { cx: mx, cy: my } = clientToContentPoint(e.clientX, e.clientY, rect);
       const bx = (mx - x) / scale, by = (my - y) / scale;
       scale = newScale;
       x = mx - bx * scale; y = my - by * scale;
@@ -202,6 +210,7 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
     // パンとして扱い、等倍時はネイティブのスクロール／長押しテキスト選択を邪魔しない
     let isPinching = false;
     let pinchStartDist = 0, pinchStartScale = 1, pinchAnchorX = 0, pinchAnchorY = 0;
+    let pinchRect: DOMRect | null = null;
     let singleTouching = false;
     let lastTouchX = 0, lastTouchY = 0;
 
@@ -212,11 +221,13 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
       if (e.touches.length === 2) {
         e.preventDefault();
         isPinching = true; singleTouching = false;
+        pinchRect = container.getBoundingClientRect();
         const mid = getTouchMid(e.touches);
+        const { cx, cy } = clientToContentPoint(mid.x, mid.y, pinchRect);
         pinchStartDist = getTouchDist(e.touches);
         pinchStartScale = scale;
-        pinchAnchorX = (mid.x - x) / scale;
-        pinchAnchorY = (mid.y - y) / scale;
+        pinchAnchorX = (cx - x) / scale;
+        pinchAnchorY = (cy - y) / scale;
         content.style.transition = "none";
       } else if (e.touches.length === 1 && !isPinching && scale > 1) {
         e.preventDefault();
@@ -228,13 +239,14 @@ export function PdfPreview({ base64, filename }: { base64: string; filename: str
     };
 
     const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && isPinching) {
+      if (e.touches.length === 2 && isPinching && pinchRect) {
         if (e.cancelable) e.preventDefault();
         const currentDist = getTouchDist(e.touches);
         const currentMid = getTouchMid(e.touches);
+        const { cx, cy } = clientToContentPoint(currentMid.x, currentMid.y, pinchRect);
         scale = Math.min(MAX_SCALE, Math.max(1, pinchStartScale * currentDist / pinchStartDist));
-        x = currentMid.x - pinchAnchorX * scale;
-        y = currentMid.y - pinchAnchorY * scale;
+        x = cx - pinchAnchorX * scale;
+        y = cy - pinchAnchorY * scale;
         setTransform();
         applyOverflow();
       } else if (e.touches.length === 1 && singleTouching && !isPinching && scale > 1) {
