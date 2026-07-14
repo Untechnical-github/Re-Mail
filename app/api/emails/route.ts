@@ -133,11 +133,44 @@ function getHtmlBody(payload: any): string {
   return candidates.reduce((longest, cur) => (cur.length > longest.length ? cur : longest));
 }
 
+// HTML版の返信引用ブロックを除去する。Gmailは "gmail_attr"（差出人/日時の一行）+
+// "gmail_quote"（引用本文）というdivで、他クライアントは<blockquote>で末尾に引用を付与する。
+// これらは常にメール本文の末尾に置かれるため、最初に見つかった開始位置から後ろを丸ごと切り落とす
+function stripHtmlQuote(html: string): string {
+  if (!html) return html;
+  let cut = html.length;
+  const patterns = [/<div[^>]*class=["'][^"']*gmail_attr[^"']*["'][^>]*>/i, /<div[^>]*class=["'][^"']*gmail_quote[^"']*["'][^>]*>/i, /<blockquote\b/i];
+  for (const re of patterns) {
+    const idx = html.search(re);
+    if (idx !== -1 && idx < cut) cut = idx;
+  }
+  return html.slice(0, cut).trim();
+}
+
 // 一部のメール（Yahoo!メールなど）は text/plain パートの生成が壊れており、
 // <style>ブロックの中身（CSSの宣言）がタグなしでそのまま紛れ込んでいることがある。
 // 通常の文章にはまず現れない「セレクタ { プロパティ: 値; ... }」という並びを検出して除去する
 function stripLooseCssRules(text: string): string {
   return text.replace(/[^\n{}]{0,80}\{\s*(?:[\w-]+\s*:\s*[^;{}]+;\s*)+\}/g, "");
+}
+
+// 返信メールの末尾に自動付与される「引用元」ブロック（Gmailの
+// 「YYYY年M月D日(曜) H:MM 差出人 <email>:」+「> 本文」形式、および
+// 英語版の「On ... wrote:」形式）を検出して取り除く。
+// チャットUIでは代わりに「どのメッセージへの返信か」を専用のチップで表示するため、
+// 本文側にこの定型引用文が残っていると二重表示・ノイズになる
+function stripQuotedReply(text: string): string {
+  if (!text) return text;
+  let stripped = text.replace(/\n{0,2}\d{4}年\d{1,2}月\d{1,2}日\([日月火水木金土]\)\s*\d{1,2}:\d{2}\s+[^\n]*?:\s*[\s\S]*$/, "");
+  stripped = stripped.replace(/\n{0,2}On\s.{0,150}?wrote:\s*[\s\S]*$/i, "");
+  // 上記の定型文に一致しなくても、末尾に「>」始まりの引用行が続く場合は削る
+  const lines = stripped.split("\n");
+  let cut = lines.length;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].trim();
+    if (l === "" || l.startsWith(">")) { cut = i; } else { break; }
+  }
+  return lines.slice(0, cut).join("\n").trim();
 }
 
 function cleanseBody(text: string): string {
@@ -149,6 +182,7 @@ function cleanseBody(text: string): string {
   cleaned = cleaned.replace(/<[^>]+>/g, "");
   cleaned = cleaned.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&zwnj;/g, "");
   cleaned = stripLooseCssRules(cleaned);
+  cleaned = stripQuotedReply(cleaned);
   // 各行をトリム → 空白行のみの行を空行に統一 → 連続する空行を1行に圧縮
   cleaned = cleaned.split("\n").map(l => l.trim()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
   return cleaned;
@@ -191,7 +225,7 @@ export async function GET(request: Request) {
       );
       if (!detailRes.ok) return NextResponse.json({ htmlBody: null, hasHtml: false });
       const message = await detailRes.json();
-      const htmlBody = getHtmlBody(message.payload);
+      const htmlBody = stripHtmlQuote(getHtmlBody(message.payload));
       return NextResponse.json({ htmlBody: htmlBody || null, hasHtml: !!htmlBody });
     } catch {
       return NextResponse.json({ htmlBody: null, hasHtml: false });
@@ -248,16 +282,19 @@ export async function GET(request: Request) {
       const from = decodeMimeHeader(getHeader(headers, "From"));
       const to = decodeMimeHeader(getHeader(headers, "To"));
       const date = getHeader(headers, "Date");
-      const labelIds = message.labelIds || []; 
+      const labelIds = message.labelIds || [];
+      // Discord風の「返信先」チップ表示のため、Message-ID / In-Reply-To を保持しておく
+      const messageIdHeader = getHeader(headers, "Message-ID") || undefined;
+      const inReplyTo = getHeader(headers, "In-Reply-To") || undefined;
       const rawBody = getTextBody(payload) || message.snippet || "";
       let cleansedBody = cleanseBody(rawBody);
       // CSSの除去などで本文が空になってしまった場合は、Gmail側で生成されたスニペットに差し替える
       if (!cleansedBody.trim() && message.snippet) cleansedBody = cleanseBody(message.snippet);
-      const htmlBodyForLinks = getHtmlBody(payload);
+      const htmlBodyForLinks = stripHtmlQuote(getHtmlBody(payload));
       const htmlLinks = htmlBodyForLinks ? extractHtmlLinks(htmlBodyForLinks) : [];
 
       const attachments = extractAttachments(payload);
-      return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments };
+      return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, inReplyTo };
     });
 
     return NextResponse.json({ messages: parsedMessages, topIds, nextPageToken });
@@ -278,8 +315,8 @@ export async function POST(request: Request) {
 
     // ① メールの送信
     if (action === "send" || !action) {
-      const { to, subject, body, threadId } = bodyData;
-      
+      const { to, subject, body, threadId, inReplyTo } = bodyData;
+
       const formattedTo = (to || "").split(',').map((addr: string) => {
         const match = addr.match(/^(.*?)(<[^>]+>)$/);
         if (match) {
@@ -292,14 +329,21 @@ export async function POST(request: Request) {
       }).join(', ');
 
       const encodedSubject = subject ? `=?utf-8?B?${encodeBase64(subject)}?=` : "";
-      
-      const rawMessage = [
-        `To: ${formattedTo || to || ""}`, 
-        `Subject: ${encodedSubject}`, 
-        "Content-Type: text/plain; charset=utf-8", 
-        "", 
-        body || ""
-      ].join("\r\n");
+
+      const headerLines = [
+        `To: ${formattedTo || to || ""}`,
+        `Subject: ${encodedSubject}`,
+      ];
+      // In-Reply-To / References を設定しておくことで、返信メールのボディに
+      // 引用文を埋め込まなくても、チャットUI側で「どのメッセージへの返信か」を判定できる
+      const safeInReplyTo = typeof inReplyTo === "string" ? inReplyTo.replace(/[\r\n]/g, "").trim() : "";
+      if (safeInReplyTo) {
+        headerLines.push(`In-Reply-To: ${safeInReplyTo}`);
+        headerLines.push(`References: ${safeInReplyTo}`);
+      }
+      headerLines.push("Content-Type: text/plain; charset=utf-8", "", body || "");
+
+      const rawMessage = headerLines.join("\r\n");
       
       const encodedMessage = encodeBase64(rawMessage).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
       const requestBody: any = { raw: encodedMessage };

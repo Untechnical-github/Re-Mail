@@ -1034,27 +1034,44 @@ export function useMailApp() {
       
       const actualTo = partnerEmail ? partnerEmail.from : (targetEmails[0]?.to || selectedSender);
       
-      let finalBody = replyBody; let threadId = undefined; let finalSubject = replySubject;
-      if (replyToMessage) { finalBody = `${replyBody}\n\n> ${replyToMessage.body.replace(/\n/g, "\n> ")}`; threadId = replyToMessage.threadId; if (!finalSubject) finalSubject = replyToMessage.subject.startsWith("Re:") ? replyToMessage.subject : `Re: ${replyToMessage.subject}`; }
-      
+      // ★修正: re:mail上の表示はDiscordのように「どのメッセージへの返信か」をチップで
+      // 表示する方式にしたが、送信するメール本体には従来通りの引用文を付ける。
+      // 受信側の表示は本文から自動で引用文を取り除くロジック(stripQuotedReply)が
+      // 常にかかるため、Gmail等で開いたときは従来通りの引用付き表示のまま、
+      // re:mail側ではチップ表示、の両方が両立する
+      let finalBody = replyBody; let bodyToSend = replyBody; let threadId = undefined; let finalSubject = replySubject; let inReplyTo: string | undefined = undefined;
+      if (replyToMessage) {
+        threadId = replyToMessage.threadId;
+        inReplyTo = replyToMessage.messageIdHeader;
+        if (!finalSubject) finalSubject = replyToMessage.subject.startsWith("Re:") ? replyToMessage.subject : `Re: ${replyToMessage.subject}`;
+        if (replyToMessage.body) {
+          const d = new Date(replyToMessage.date);
+          const weekday = ["日", "月", "火", "水", "木", "金", "土"][d.getDay()];
+          const quoteHeader = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${weekday}) ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")} ${replyToMessage.from}:`;
+          bodyToSend = `${replyBody}\n\n${quoteHeader}\n${(replyToMessage.body as string).split("\n").map((l: string) => `> ${l}`).join("\n")}`;
+        }
+      }
+
       const res = await fetch("/api/emails", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "send", to: actualTo, subject: finalSubject, body: finalBody, threadId })
+        body: JSON.stringify({ action: "send", to: actualTo, subject: finalSubject, body: bodyToSend, threadId, inReplyTo })
       });
-      
+
       if (res.ok) {
-        const sentFake = { 
-          id: `fake-${Date.now()}`, 
-          threadId: threadId || "", 
-          subject: finalSubject || "(件名なし)", 
-          from: session?.user?.email || "自分", 
-          to: actualTo, 
-          date: new Date().toUTCString(), 
-          body: finalBody, 
-          snippet: finalBody.slice(0, 60), 
-          senderRoom: selectedSender, 
-          isMe: true, 
-          labelIds: ["SENT"]
+        const sentFake = {
+          id: `fake-${Date.now()}`,
+          threadId: threadId || "",
+          subject: finalSubject || "(件名なし)",
+          from: session?.user?.email || "自分",
+          to: actualTo,
+          date: new Date().toUTCString(),
+          body: finalBody,
+          snippet: finalBody.slice(0, 60),
+          senderRoom: selectedSender,
+          isMe: true,
+          labelIds: ["SENT"],
+          inReplyTo: replyToMessage?.messageIdHeader,
+          replyToId: replyToMessage?.id,
         };
         setEmails([sentFake, ...emails]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null);
       } else {

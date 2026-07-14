@@ -532,6 +532,10 @@ export default function Home() {
 
                     const msgIdx = computed.groupedEmails[state.selectedSender!].indexOf(email);
                     const isCollapsed = state.collapseLinesCount !== null && !state.expandedMsgIds.includes(email.id);
+                    // Discord風の「返信先」チップ用: このメッセージがどのメッセージへの返信かを解決する
+                    const replyTarget = (email.replyToId || email.inReplyTo)
+                      ? computed.allUniqueEmails.find((e: any) => (email.replyToId && e.id === email.replyToId) || (email.inReplyTo && e.messageIdHeader === email.inReplyTo))
+                      : null;
                     return (
                       <div
                         id={`msg-${email.id}`}
@@ -571,6 +575,15 @@ export default function Home() {
                         )}
 
                         <div className={`flex flex-col max-w-[75%] ${isMe ? 'items-end' : 'items-start'}`}>
+                           {replyTarget && (
+                             <button
+                               onClick={(e) => { e.stopPropagation(); document.getElementById(`msg-${replyTarget.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}
+                               className={`flex items-center gap-1 mb-1 mx-1 max-w-full text-[11px] text-gray-500 hover:text-white transition ${isMe ? 'justify-end' : 'justify-start'}`}
+                             >
+                               <span className="opacity-60">↩</span>
+                               <span className="truncate max-w-[220px] underline decoration-dotted underline-offset-2">{replyTarget.subject || "(件名なし)"}</span>
+                             </button>
+                           )}
                            <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
                               {!isMe && <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>}
                               <span>{new Date(email.date).toLocaleString("ja-JP", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
