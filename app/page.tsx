@@ -551,9 +551,9 @@ export default function Home() {
                     const replyTarget = (email.replyToId || email.inReplyTo)
                       ? computed.allUniqueEmails.find((e: any) => (email.replyToId && e.id === email.replyToId) || (email.inReplyTo && e.messageIdHeader === email.inReplyTo))
                       : null;
-                    // 件名も本文も無いメール（添付のみの返信など）は吹き出しが空白になるため、
-                    // その場合は「(件名なし)」を表示する。返信(Re:)でも件名自体は表示する
-                    const hasVisibleSubject = !!email.subject && email.subject !== "(件名なし)";
+                    // 件名は先頭の「Re:」だけ取り除いて表示する（「(件名なし)」等はそのまま表示する）
+                    const displaySubject = (email.subject || "").replace(/^(re:\s*)+/i, "").trim();
+                    const hasVisibleSubject = !!displaySubject;
                     const hasBody = !!email.body && !!email.body.trim();
                     return (
                       <div
@@ -654,7 +654,7 @@ export default function Home() {
                            >
                               {state.chatConfigs[email.id]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
                               {hasVisibleSubject && (
-                                <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={email.subject} highlight={state.searchKeyword} /></div>
+                                <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={displaySubject} highlight={state.searchKeyword} /></div>
                               )}
                               <div
                                 style={isCollapsed && state.collapseLinesCount ? {
