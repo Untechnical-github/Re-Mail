@@ -14,6 +14,21 @@ function getSavedBoxSettings(): { inbox?: boolean; archive?: boolean; spam?: boo
   }
 }
 
+// グループチャットの「送信済みメール」判定用: DBには何も永続化せず、Toヘッダーの宛先セットが
+// メンバー全員と完全一致するかどうかだけで、その都度判定する（送信履歴が増えてもD1を圧迫しない）
+function parseAddressSet(field: string): Set<string> {
+  const set = new Set<string>();
+  (field || "").split(",").forEach((part: string) => {
+    const match = part.match(/<([^>]+)>/);
+    const addr = (match ? match[1] : part).trim().toLowerCase();
+    if (addr) set.add(addr);
+  });
+  return set;
+}
+function sameAddressSet(a: Set<string>, b: Set<string>): boolean {
+  return a.size > 0 && a.size === b.size && [...a].every(addr => b.has(addr));
+}
+
 export function useMailApp() {
   const { data: session, status } = useSession();
   const [emails, setEmails] = useState<any[]>([]);
@@ -243,13 +258,13 @@ export function useMailApp() {
     return Array.from(map.values());
   }, [emails, persistedEmails, searchKeyword, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, chatConfigs, revealedCrossPrompts]);
 
-  const loadD1Configs = async (): Promise<{ limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean } | null> => {
+  const loadD1Configs = async (): Promise<{ globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean } | null; formatted: Record<string, ChatConfig> }> => {
     let globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean } | null = null;
+    const formatted: Record<string, ChatConfig> = {};
     try {
       const res = await fetch("/api/config");
       if (res.ok) {
         const data = await res.json();
-        const formatted: Record<string, ChatConfig> = {};
         const pMsgs: any[] = [];
         data.configs?.forEach((c: any) => {
           if (c.chat_id === "__GLOBAL_SETTINGS__" && c.custom_name) {
@@ -285,7 +300,7 @@ export function useMailApp() {
         setChatConfigs(formatted); setPersistedEmails(pMsgs);
       }
     } catch (e) { console.error(e); }
-    return globalSettings;
+    return { globalSettings, formatted };
   };
 
   const saveGlobalSettings = async (inbox: boolean, archive: boolean, spam: boolean, trash: boolean, sent: boolean) => {
@@ -542,7 +557,7 @@ export function useMailApp() {
       const initLoad = async () => {
         try {
           setIsLoading(true);
-          await loadD1Configs();
+          const { formatted: loadedConfigs } = await loadD1Configs();
 
           // チェックボックスの状態はマウント時点で localStorage から同期的に復元済みなので、
           // ここでは読み直さず現在の state をそのまま使う（読み込み中に見た目が切り替わるのを防ぐ）
@@ -570,7 +585,13 @@ export function useMailApp() {
             // 反映される前に hasLoadedOnceRef が立ってしまい、「チャットが消えた」と
             // 誤判定されて selectedSender がクリアされてしまう（＝復元直後に一瞬だけ
             // 「チャットを選択してください」画面に戻ってしまう不具合の原因だった）
-            await fetchChatCrossbox(selectedSender, false, res.emails);
+            const restoredConfig = loadedConfigs[selectedSender];
+            if (restoredConfig?.isGroup) {
+              // グループのルームキーはGmail検索語にならないため、メンバーごとに個別取得する
+              await Promise.all((restoredConfig.groupMembers || []).map(m => fetchChatCrossbox(m, false, res.emails).catch(() => {})));
+            } else {
+              await fetchChatCrossbox(selectedSender, false, res.emails);
+            }
           }
 
           // 表示中のモーダル・選択中の内容・作成中の返信を復元する。
@@ -659,6 +680,17 @@ export function useMailApp() {
     return { found: false, nextToken: isLoadMore ? chatNextPageTokenRef.current : "FIRST_PAGE", messages: [] };
   };
 
+  // ルームの履歴を取得する。グループチャットの場合はルームキー自体がGmail検索語にならないため、
+  // メンバーそれぞれのアドレスで個別に取得する
+  const fetchCrossboxForRoom = async (room: string, knownEmails = emailsRef.current) => {
+    const cfg = chatConfigsRef.current[room];
+    if (cfg?.isGroup) {
+      await Promise.all((cfg.groupMembers || []).map(m => fetchChatCrossbox(m, false, knownEmails).catch(() => {})));
+    } else {
+      await fetchChatCrossbox(room, false, knownEmails);
+    }
+  };
+
   useEffect(() => {
     if (!session) return;
 
@@ -702,14 +734,14 @@ export function useMailApp() {
             setIsLoading(false);
           }
           if (selectedSender && !isCancelled) {
-            fetchChatCrossbox(selectedSender, false, cached.emails);
+            fetchCrossboxForRoom(selectedSender, cached.emails);
           }
         } else {
           if (!isCancelled) { setEmails([]); setChatStatusMessage(null); }
           const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, false, [], () => isCancelled, true);
           if (!isCancelled) setChatStatusMessage(null);
           if (selectedSender && !isCancelled && res.success) {
-            fetchChatCrossbox(selectedSender, false, res.emails);
+            fetchCrossboxForRoom(selectedSender, res.emails);
           }
         }
       }, searchKeyword ? 300 : 0);
@@ -806,21 +838,17 @@ export function useMailApp() {
       }
     });
 
-    // グループチャット: メンバーからの受信メールを集約する。
-    // 自分がグループから送信したメールは、送信時に付与した senderRoom タグにより
-    // 上のループで既に groups[グループのルームキー] へ自動集約済み（重複追加はしない）。
+    // グループチャット: メンバーからの受信メールと、グループから送信したメールを集約する。
+    // 送信メールの判定はDBに何も永続化せず、その都度「宛先セットがメンバー全員と完全一致するか」
+    // だけで判定する（Gmail自身が持つToヘッダーの情報だけで完結するため、送信履歴が増えても
+    // D1の容量やロード時間を圧迫しない）。一斉送信は1通のメールなので、各メンバー個別チャットにも
+    // 同じメールを反映する。
     Object.keys(chatConfigs).forEach(room => {
       const cfg = chatConfigs[room];
       if (!cfg?.isGroup) return;
       const mode = cfg.groupMode || "normal";
-
-      if (mode === "inbound_only") {
-        // 受信専用: 誤って senderRoom タグが付いた送信済みメールがあっても除外する
-        groups[room] = (groups[room] || []).filter((e: any) => !e.isMe);
-      }
-      if (mode === "outbound_only") return; // 送信専用: 送信済みメールのみ表示（追加の受信集約はしない）
-
       const members = cfg.groupMembers || [];
+
       const memberAddresses = new Set(
         members.map((m: string) => {
           const msgs = groups[m];
@@ -832,16 +860,37 @@ export function useMailApp() {
         }).filter(Boolean)
       );
 
-      const existing = groups[room] || [];
-      const existingIds = new Set(existing.map((e: any) => e.id));
+      // このグループから送信されたメール = 宛先セットがメンバー全員と完全一致する送信済みメール
+      const sentViaGroup = allUniqueEmails.filter((e: any) => e.isMe && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
+
+      // 一斉送信したメールを各メンバーの個別チャットにも反映する
+      sentViaGroup.forEach((sentMsg: any) => {
+        members.forEach((member: string) => {
+          if (!groups[member]) groups[member] = [];
+          if (!groups[member].some((e: any) => e.id === sentMsg.id)) groups[member].push(sentMsg);
+        });
+      });
+
+      if (mode === "outbound_only") {
+        groups[room] = sentViaGroup;
+        return;
+      }
+
       const received = allUniqueEmails.filter((e: any) => {
-        if (existingIds.has(e.id) || e.isMe) return false;
+        if (e.isMe) return false;
         const addrMatch = (e.from || "").match(/<([^>]+)>/);
         const addr = (addrMatch ? addrMatch[1] : e.from || "").trim().toLowerCase();
         return memberAddresses.has(addr);
       });
 
-      groups[room] = [...existing, ...received];
+      if (mode === "inbound_only") {
+        groups[room] = received;
+      } else {
+        const merged = [...received];
+        const mergedIds = new Set(merged.map((e: any) => e.id));
+        sentViaGroup.forEach((e: any) => { if (!mergedIds.has(e.id)) { merged.push(e); mergedIds.add(e.id); } });
+        groups[room] = merged;
+      }
     });
 
     Object.keys(groups).forEach(sender => groups[sender].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
@@ -892,7 +941,7 @@ export function useMailApp() {
           return resolved || m.trim().toLowerCase();
         }).filter(Boolean)
       );
-      const sentViaGroup = allUniqueEmails.filter((e: any) => e.senderRoom === room);
+      const sentViaGroup = allUniqueEmails.filter((e: any) => e.isMe && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
       const received = allUniqueEmails.filter((e: any) => {
         if (e.isMe) return false;
         const addrMatch = (e.from || "").match(/<([^>]+)>/);
@@ -1071,7 +1120,7 @@ export function useMailApp() {
       setChatNextPageToken(cached.chatNextPageToken || "FIRST_PAGE");
     } else {
       setChatNextPageToken("FIRST_PAGE");
-      await fetchChatCrossbox(sender, false);
+      await fetchCrossboxForRoom(sender);
     }
     // 追加読み込みはuseEffectベースの自動トリガー（chatNextPageToken変化で発火）に委ねる
   };
@@ -1311,9 +1360,13 @@ export function useMailApp() {
       });
 
       if (res.ok) {
+        // Gmailが実際に採番したIDを使う（リロード後の再取得でも同じメールとして同一視できるようにするため）。
+        // 取得できなかった場合のみ、その場限りのフェイクIDにフォールバックする
+        const sentData = await res.json().catch(() => ({} as any));
+        const sentId: string = sentData.id || `fake-${Date.now()}`;
         const sentFake = {
-          id: `fake-${Date.now()}`,
-          threadId: threadId || "",
+          id: sentId,
+          threadId: sentData.threadId || threadId || "",
           subject: finalSubject || "(件名なし)",
           from: session?.user?.email || "自分",
           to: actualTo,

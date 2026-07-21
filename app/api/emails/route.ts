@@ -391,8 +391,11 @@ export async function POST(request: Request) {
 
       // ★修正: 送信したメールを受信箱(INBOX)に強制移動させていた余計な modify 処理を完全撤廃。
       // これにより、送信したメールは本家Gmailと同じく、無条件で綺麗な「送信済み（アーカイブ状態）」として統合されます。
-      
-      return NextResponse.json({ success: true });
+
+      // Gmailが実際に採番したメッセージID/スレッドIDをクライアントへ返す。
+      // グループチャットで送信したメールをリロード後も正しく識別するために必要
+      const sentData = await res.json().catch(() => ({} as any));
+      return NextResponse.json({ success: true, id: sentData.id, threadId: sentData.threadId });
     }
 
     // ③ メールの削除（完全削除含む）

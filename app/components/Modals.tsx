@@ -255,8 +255,6 @@ function ComposeNewChatModal({ app }: { app: any }) {
   const [step, setStep] = useState<"select" | "group_setup">("select");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
-  const [showAddInput, setShowAddInput] = useState(false);
-  const [newAddress, setNewAddress] = useState("");
 
   const [groupName, setGroupName] = useState("");
   const [groupMode, setGroupMode] = useState<"normal" | "inbound_only" | "outbound_only">("normal");
@@ -270,20 +268,21 @@ function ComposeNewChatModal({ app }: { app: any }) {
   };
 
   const availableContacts = (contactDirectory as any[]).filter(c => !selected.includes(c.room));
-  const query = search.trim().toLowerCase();
+  const trimmedSearch = search.trim();
+  const query = trimmedSearch.toLowerCase();
   const filteredContacts = query
     ? availableContacts.filter(c => c.label.toLowerCase().includes(query) || c.address.toLowerCase().includes(query))
     : availableContacts;
 
+  // 検索欄に英数字(メールアドレスを構成しうる文字)だけが入力されている場合、
+  // それを候補の一番上に「新しい宛先」として表示する。メアド形式になるまではクリックできない
+  const looksLikeAddressInput = /^[A-Za-z0-9._%+-]+@?[A-Za-z0-9.-]*$/.test(trimmedSearch);
+  const newAddressCandidate = (trimmedSearch.length > 0 && looksLikeAddressInput && !selected.includes(trimmedSearch)
+    && !availableContacts.some(c => c.address.toLowerCase() === query))
+    ? trimmedSearch : null;
+
   const addSelected = (id: string) => setSelected(prev => (prev.includes(id) ? prev : [...prev, id]));
   const removeSelected = (id: string) => setSelected(prev => prev.filter(x => x !== id));
-
-  const handleAddNew = () => {
-    const v = newAddress.trim();
-    if (!isValidEmail(v)) return;
-    addSelected(v);
-    setNewAddress("");
-  };
 
   // 単数選択: 従来通りその場でチャットを開く/作成する。複数選択: グループチャットの設定画面へ進む
   const handleNext = () => {
@@ -409,43 +408,15 @@ function ComposeNewChatModal({ app }: { app: any }) {
         <h2 className="text-lg font-bold text-white">チャットを作成</h2>
       </div>
 
-      <div className="p-3 border-b border-[#1E1F22] space-y-2">
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="宛先を検索 (名前・アドレス)"
-            className="flex-1 bg-[#1E1F22] text-sm text-gray-200 px-3 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
-            autoFocus
-          />
-          <button
-            onClick={() => setShowAddInput(v => !v)}
-            className="w-8 h-8 flex-shrink-0 flex items-center justify-center bg-[#2B2D31] hover:bg-[#3f4147] text-white font-bold rounded-full border border-[#4752C4] transition"
-          >
-            +
-          </button>
-        </div>
-        {showAddInput && (
-          <div className="flex items-center gap-2">
-            <input
-              type="email"
-              autoFocus
-              value={newAddress}
-              onChange={(e) => setNewAddress(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleAddNew(); }}
-              placeholder="メールアドレスを入力"
-              className="flex-1 bg-[#1E1F22] text-sm text-gray-200 px-3 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
-            />
-            <button
-              onClick={handleAddNew}
-              disabled={!isValidEmail(newAddress)}
-              className="px-3 py-1.5 bg-[#5865F2] hover:bg-[#4752C4] disabled:bg-[#3f4147] disabled:text-gray-500 text-white text-xs font-bold rounded transition"
-            >
-              追加
-            </button>
-          </div>
-        )}
+      <div className="p-3 border-b border-[#1E1F22]">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="宛先を検索、またはメールアドレスを入力"
+          className="w-full bg-[#1E1F22] text-sm text-gray-200 px-3 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
+          autoFocus
+        />
       </div>
 
       <div className="overflow-y-auto flex-1 p-2 space-y-4">
@@ -464,8 +435,20 @@ function ComposeNewChatModal({ app }: { app: any }) {
         )}
 
         <div>
-          <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">これまでにやり取りした宛先</div>
+          <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">候補</div>
           <div className="flex flex-col gap-1">
+            {newAddressCandidate && (
+              <button
+                onClick={() => { if (isValidEmail(newAddressCandidate)) addSelected(newAddressCandidate); }}
+                disabled={!isValidEmail(newAddressCandidate)}
+                className={`flex flex-col items-start p-2 rounded text-left transition ${isValidEmail(newAddressCandidate) ? "hover:bg-[#2B2D31]" : "opacity-50 cursor-default"}`}
+              >
+                <span className="text-sm text-gray-200 truncate w-full">{newAddressCandidate}</span>
+                <span className="text-[11px] text-gray-500 truncate w-full">
+                  {isValidEmail(newAddressCandidate) ? "クリックしてこの宛先を選択" : "メールアドレスの形式で入力してください"}
+                </span>
+              </button>
+            )}
             {filteredContacts.map((c) => (
               <button
                 key={c.room}
@@ -478,7 +461,7 @@ function ComposeNewChatModal({ app }: { app: any }) {
                 )}
               </button>
             ))}
-            {filteredContacts.length === 0 && (
+            {filteredContacts.length === 0 && !newAddressCandidate && (
               <div className="text-gray-500 text-xs p-2 px-2">
                 {query ? "一致する宛先が見つかりません" : "やり取りした宛先はありません"}
               </div>
