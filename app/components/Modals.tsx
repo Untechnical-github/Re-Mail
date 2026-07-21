@@ -291,8 +291,10 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
     if (selected.length === 1) {
       const target = selected[0];
       // 履歴のpushStateはopenChat内（モバイル時）でも行われるため、
-      // 先にモーダルを閉じてから作成/オープンする（順序が逆だと履歴操作が競合する）
-      safeBack();
+      // 先にモーダルを閉じてから作成/オープンする（順序が逆だと履歴操作が競合する）。
+      // アクションバーの選択状態から開いた場合はその選択も一緒に終了させる必要があるため、
+      // safeBack（モーダルの履歴だけ1つ戻す）ではなく exitAfterAction を使う
+      app.actions.exitAfterAction();
       createOrOpenChat(target);
       return;
     }
@@ -316,7 +318,7 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
     // メンバーの実メールアドレスは今この画面で分かっている情報から確定させておく
     // （リロード直後などデータが揃っていないタイミングで送信済みメールとの照合に失敗しないようにするため）
     const memberAddresses = selected.map(resolveAddress);
-    safeBack();
+    app.actions.exitAfterAction();
     createGroupChat(name, selected, memberAddresses, groupMode, hideMembers);
   };
 
