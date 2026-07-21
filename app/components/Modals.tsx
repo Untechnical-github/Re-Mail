@@ -303,12 +303,20 @@ function ComposeNewChatModal({ app }: { app: any }) {
 
   const allMembersVisible = selected.every(id => memberVisible[id]);
 
+  const resolveAddress = (id: string) => {
+    const contact = (contactDirectory as any[]).find(c => c.room === id);
+    return (contact ? contact.address : id).toLowerCase();
+  };
+
   const handleCreateGroup = () => {
     const name = groupName.trim();
     if (!name) return;
     const hideMembers = selected.filter(id => !memberVisible[id]);
+    // メンバーの実メールアドレスは今この画面で分かっている情報から確定させておく
+    // （リロード直後などデータが揃っていないタイミングで送信済みメールとの照合に失敗しないようにするため）
+    const memberAddresses = selected.map(resolveAddress);
     safeBack();
-    createGroupChat(name, selected, groupMode, hideMembers);
+    createGroupChat(name, selected, memberAddresses, groupMode, hideMembers);
   };
 
   if (step === "group_setup") {

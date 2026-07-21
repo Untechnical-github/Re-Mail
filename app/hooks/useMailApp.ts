@@ -29,6 +29,23 @@ function sameAddressSet(a: Set<string>, b: Set<string>): boolean {
   return a.size > 0 && a.size === b.size && [...a].every(addr => b.has(addr));
 }
 
+// グループのメンバーの実メールアドレス集合を求める。作成時に確定させて保存した値を正とし、
+// （古い形式のグループ等で）保存が無い場合のみ、そのメンバーの個別チャットの受信メールから推定する
+function resolveGroupMemberAddresses(cfg: ChatConfig, roomLookup: Record<string, any[]>, myEmail: string): Set<string> {
+  const members = cfg.groupMembers || [];
+  const addresses = (cfg.groupMemberAddresses && cfg.groupMemberAddresses.length === members.length)
+    ? cfg.groupMemberAddresses
+    : members.map((m: string) => {
+        const msgs = roomLookup[m];
+        const partner = msgs?.find((e: any) => !e.isMe && !(e.from || "").includes(myEmail));
+        const raw = partner ? partner.from : "";
+        const match = (raw || "").match(/<([^>]+)>/);
+        const resolved = ((match ? match[1] : raw) || "").trim().toLowerCase();
+        return resolved || m.trim().toLowerCase();
+      });
+  return new Set(addresses.map((a: string) => a.toLowerCase()).filter(Boolean));
+}
+
 export function useMailApp() {
   const { data: session, status } = useSession();
   const [emails, setEmails] = useState<any[]>([]);
@@ -277,12 +294,14 @@ export function useMailApp() {
           let roomIdVal = undefined;
           let isGroupVal = undefined;
           let groupMembersVal = undefined;
+          let groupMemberAddressesVal = undefined;
           let groupModeVal = undefined;
           if (customNameVal && customNameVal.startsWith('{')) {
             try {
               const parsed = JSON.parse(customNameVal);
               customNameVal = parsed.name; forceFetchVal = parsed.forceFetch; pData = parsed.data; roomIdVal = parsed.roomId;
               isGroupVal = parsed.isGroup; groupMembersVal = parsed.groupMembers; groupModeVal = parsed.groupMode;
+              groupMemberAddressesVal = parsed.groupMemberAddresses;
               if (pData) {
                 // ★修正: 過去のバグで保存された「送信済みメールのINBOXラベル」をロード時に強制消去する
                 const cleanData = (Array.isArray(pData) ? pData : [pData]).map(e => {
@@ -295,7 +314,7 @@ export function useMailApp() {
               }
             } catch (e) {}
           }
-          formatted[c.chat_id] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, roomId: roomIdVal, isGroup: isGroupVal, groupMembers: groupMembersVal, groupMode: groupModeVal };
+          formatted[c.chat_id] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, roomId: roomIdVal, isGroup: isGroupVal, groupMembers: groupMembersVal, groupMemberAddresses: groupMemberAddressesVal, groupMode: groupModeVal };
         });
         setChatConfigs(formatted); setPersistedEmails(pMsgs);
       }
@@ -316,7 +335,7 @@ export function useMailApp() {
     if (nextConfig.forceFetch || nextConfig.roomId || nextConfig.isGroup) {
       nameToSave = JSON.stringify({
         name: nextConfig.customName, forceFetch: nextConfig.forceFetch, data: nextConfig.persistedData, roomId: nextConfig.roomId,
-        isGroup: nextConfig.isGroup, groupMembers: nextConfig.groupMembers, groupMode: nextConfig.groupMode,
+        isGroup: nextConfig.isGroup, groupMembers: nextConfig.groupMembers, groupMemberAddresses: nextConfig.groupMemberAddresses, groupMode: nextConfig.groupMode,
       });
     }
     try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
@@ -848,17 +867,7 @@ export function useMailApp() {
       if (!cfg?.isGroup) return;
       const mode = cfg.groupMode || "normal";
       const members = cfg.groupMembers || [];
-
-      const memberAddresses = new Set(
-        members.map((m: string) => {
-          const msgs = groups[m];
-          const partner = msgs?.find((e: any) => !e.isMe && !(e.from || "").includes(session?.user?.email || ""));
-          const raw = partner ? partner.from : "";
-          const match = (raw || "").match(/<([^>]+)>/);
-          const resolved = ((match ? match[1] : raw) || "").trim().toLowerCase();
-          return resolved || m.trim().toLowerCase();
-        }).filter(Boolean)
-      );
+      const memberAddresses = resolveGroupMemberAddresses(cfg, groups, session?.user?.email || "");
 
       // このグループから送信されたメール = 宛先セットがメンバー全員と完全一致する送信済みメール
       const sentViaGroup = allUniqueEmails.filter((e: any) => e.isMe && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
@@ -930,17 +939,7 @@ export function useMailApp() {
     Object.keys(chatConfigs).forEach(room => {
       const cfg = chatConfigs[room];
       if (!cfg?.isGroup) return;
-      const members = cfg.groupMembers || [];
-      const memberAddresses = new Set(
-        members.map((m: string) => {
-          const msgs = groupedEmails[m];
-          const partner = msgs?.find((e: any) => !e.isMe && !(e.from || "").includes(session?.user?.email || ""));
-          const raw = partner ? partner.from : "";
-          const match = (raw || "").match(/<([^>]+)>/);
-          const resolved = ((match ? match[1] : raw) || "").trim().toLowerCase();
-          return resolved || m.trim().toLowerCase();
-        }).filter(Boolean)
-      );
+      const memberAddresses = resolveGroupMemberAddresses(cfg, groupedEmails, session?.user?.email || "");
       const sentViaGroup = allUniqueEmails.filter((e: any) => e.isMe && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
       const received = allUniqueEmails.filter((e: any) => {
         if (e.isMe) return false;
@@ -1148,9 +1147,9 @@ export function useMailApp() {
   };
 
   // 「作成」モーダルで複数の宛先を選んだ場合のグループチャット作成
-  const createGroupChat = async (name: string, members: string[], mode: GroupMode, hideMemberIndividualChats: string[]) => {
+  const createGroupChat = async (name: string, members: string[], memberAddresses: string[], mode: GroupMode, hideMemberIndividualChats: string[]) => {
     const groupRoom = `group:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await updateChatConfig(groupRoom, { customName: name, isGroup: true, groupMembers: members, groupMode: mode });
+    await updateChatConfig(groupRoom, { customName: name, isGroup: true, groupMembers: members, groupMemberAddresses: memberAddresses, groupMode: mode });
 
     hideMemberIndividualChats.forEach(member => {
       // 既に個別チャットが存在する相手のみ対象（初対面の宛先には個別チャットが存在しない）
@@ -1325,11 +1324,7 @@ export function useMailApp() {
       let actualTo: string;
       if (groupCfg?.isGroup) {
         // グループチャット: メンバー全員へ1通のメールとして一斉送信する
-        const members = groupCfg.groupMembers || [];
-        actualTo = members
-          .map((m: string) => (groupedEmails[m] ? getRoomAddress(m) : m.trim().toLowerCase()))
-          .filter(Boolean)
-          .join(", ");
+        actualTo = Array.from(resolveGroupMemberAddresses(groupCfg, groupedEmails, session?.user?.email || "")).join(", ");
       } else {
         const targetEmails = groupedEmails[selectedSender] || [];
         const partnerEmail = targetEmails.find((e: any) => !e.isMe && !e.from.includes(session?.user?.email || ""));

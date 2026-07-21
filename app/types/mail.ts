@@ -11,6 +11,9 @@ export type ChatConfig = {
   roomId?: string;
   isGroup?: boolean;
   groupMembers?: string[];
+  // groupMembers と同じ並び順でのメンバーの実メールアドレス。作成時に一度だけ確定させて保存する
+  // （メンバー数分だけの固定サイズなので、送信のたびに増え続けるデータにはならない）
+  groupMemberAddresses?: string[];
   groupMode?: GroupMode;
 };
 
