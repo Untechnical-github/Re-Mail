@@ -492,8 +492,15 @@ export function useMailApp() {
           isInitialFilterRun.current = false;
 
           setEmails([]);
-          
-          const res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash, sent: initSent }, null, false, false, [], () => false, true);
+
+          let res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash, sent: initSent }, null, false, false, [], () => false, true);
+          if (!res.success) {
+            // デプロイ直後の再起動やネットワーク瞬断でここが失敗すると、全体一覧が空のまま
+            // fetchChatCrossbox（開いていたチャットだけの取得）が成功してしまい、
+            // 「そのチャットしか表示されない」ように見える不具合になるため1回だけ再試行する
+            await new Promise(r => setTimeout(r, 1500));
+            res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash, sent: initSent }, null, false, false, [], () => false, true);
+          }
 
           if (selectedSender && res.success) {
             // await せずに進むと、復元したチャットのメッセージがまだ senderList に
