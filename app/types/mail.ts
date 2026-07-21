@@ -28,4 +28,8 @@ export type ModalState = {
   targets: any[];
   action?: "pin" | "hide" | "delete" | "move";
   refinedTargets?: string[];
+  // compose_new_chat 用: "forward" のとき、宛先選択後のボタンは「転送」になり、
+  // forwardMessage を選択した宛先へ転送する（新しいチャットを開いたりグループを作ったりはしない）
+  composeMode?: "create" | "forward";
+  forwardMessage?: any;
 } | null;

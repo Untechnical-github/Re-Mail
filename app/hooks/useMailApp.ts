@@ -1439,6 +1439,51 @@ export function useMailApp() {
     } catch (error) { console.error(error); } finally { setIsSending(false); }
   };
 
+  // メッセージを任意の宛先（既存のチャットに限らず、新規アドレスも含む）へ転送する。
+  // 現在開いているチャットとは無関係に送信できるようにするため handleSend とは独立させている
+  const forwardMessageTo = async (message: any, recipientIds: string[]) => {
+    if (!message || recipientIds.length === 0) return;
+    const addresses = recipientIds
+      .map((id: string) => (groupedEmails[id] ? getRoomAddress(id) : id.trim().toLowerCase()))
+      .filter(Boolean);
+    const to = addresses.join(", ");
+    if (!to) return;
+
+    const subject = (message.subject || "").startsWith("Fwd:") ? message.subject : `Fwd: ${message.subject || ""}`;
+    const body = `\n\n--- 転送メッセージ ---\n差出人: ${message.from}\n件名: ${message.subject || ""}\n日時: ${new Date(message.date).toLocaleString("ja-JP")}\n\n${message.body || ""}`;
+
+    try {
+      const res = await fetch("/api/emails", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "send", to, subject, body }),
+      });
+
+      if (!res.ok) {
+        console.error("Failed to forward:", await res.json().catch(() => ({})));
+        alert("メールの転送に失敗しました。宛先が正しいか確認してください。");
+        return;
+      }
+
+      const sentData = await res.json().catch(() => ({} as any));
+      // 転送先が既存の個別チャット1件だけの場合は、そのチャットにすぐ反映されるようローカルにも追加する
+      // （複数宛先やグループ・新規アドレスの場合は、対応する単一のルームが存在しないため追加しない）
+      if (recipientIds.length === 1 && groupedEmails[recipientIds[0]] && !chatConfigsRef.current[recipientIds[0]]?.isGroup) {
+        const room = recipientIds[0];
+        const sentFake = {
+          id: sentData.id || `fake-${Date.now()}`,
+          threadId: sentData.threadId || "",
+          subject, from: session?.user?.email || "自分", to,
+          date: new Date().toUTCString(), body, snippet: body.slice(0, 60),
+          senderRoom: room, isMe: true, labelIds: ["SENT"],
+        };
+        setEmails(prev => [sentFake, ...prev]);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("メールの転送に失敗しました。宛先が正しいか確認してください。");
+    }
+  };
+
   const executePin = () => {
     if (!modal) return;
     const isChatMode = modal.targetMode === "chat";
@@ -1902,7 +1947,7 @@ export function useMailApp() {
       setChatCacheLimit,
       openEmailModal, closeEmailModal, toggleMsgExpand,
       openAttachmentModal, closeAttachmentModal,
-      jumpToReplyTarget, createOrOpenChat, createGroupChat, deleteChatConfig,
+      jumpToReplyTarget, createOrOpenChat, createGroupChat, deleteChatConfig, forwardMessageTo,
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat, contactDirectory, groupReplyPools },
     refs: { touchTimer, hasPushedSelectRef, hasPushedSearchRef, activeLoadRef, searchTimeoutRef }

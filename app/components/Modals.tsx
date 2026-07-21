@@ -250,7 +250,8 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
 // 「作成」モーダル: 過去にやり取りした宛先の選択・検索・新規アドレス追加を行い、チャットを作成/オープンする
 function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
   const { contactDirectory } = app.computed;
-  const { safeBack, createOrOpenChat, createGroupChat } = app.actions;
+  const { safeBack, createOrOpenChat, createGroupChat, forwardMessageTo, exitAfterAction } = app.actions;
+  const isForward = modal?.composeMode === "forward";
 
   const [step, setStep] = useState<"select" | "group_setup">("select");
   const [search, setSearch] = useState("");
@@ -285,16 +286,23 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
   const addSelected = (id: string) => setSelected(prev => (prev.includes(id) ? prev : [...prev, id]));
   const removeSelected = (id: string) => setSelected(prev => prev.filter(x => x !== id));
 
-  // 単数選択: 従来通りその場でチャットを開く/作成する。複数選択: グループチャットの設定画面へ進む
+  // 転送モード: 単数・複数を問わず、選択した宛先へその場で転送する（新規チャットは開かない）。
+  // 通常モード: 単数選択は従来通りその場でチャットを開く/作成する。複数選択はグループ設定画面へ進む
   const handleNext = () => {
     if (selected.length === 0) return;
+    if (isForward) {
+      // 履歴の戻し方はメッセージ選択モードの終了も兼ねる exitAfterAction に統一する
+      exitAfterAction();
+      forwardMessageTo(modal.forwardMessage, selected);
+      return;
+    }
     if (selected.length === 1) {
       const target = selected[0];
       // 履歴のpushStateはopenChat内（モバイル時）でも行われるため、
       // 先にモーダルを閉じてから作成/オープンする（順序が逆だと履歴操作が競合する）。
       // アクションバーの選択状態から開いた場合はその選択も一緒に終了させる必要があるため、
       // safeBack（モーダルの履歴だけ1つ戻す）ではなく exitAfterAction を使う
-      app.actions.exitAfterAction();
+      exitAfterAction();
       createOrOpenChat(target);
       return;
     }
@@ -318,7 +326,7 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
     // メンバーの実メールアドレスは今この画面で分かっている情報から確定させておく
     // （リロード直後などデータが揃っていないタイミングで送信済みメールとの照合に失敗しないようにするため）
     const memberAddresses = selected.map(resolveAddress);
-    app.actions.exitAfterAction();
+    exitAfterAction();
     createGroupChat(name, selected, memberAddresses, groupMode, hideMembers);
   };
 
@@ -416,7 +424,12 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
   return (
     <div className="flex flex-col max-h-[80vh]">
       <div className="p-4 border-b border-[#1E1F22]">
-        <h2 className="text-lg font-bold text-white">チャットを作成</h2>
+        <h2 className="text-lg font-bold text-white">{isForward ? "メールを転送" : "チャットを作成"}</h2>
+        {isForward && (
+          <p className="text-xs text-gray-400 mt-1 truncate">
+            件名: {modal.forwardMessage?.subject || "(件名なし)"}
+          </p>
+        )}
       </div>
 
       <div className="p-3 border-b border-[#1E1F22]">
@@ -501,7 +514,7 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
           onClick={handleNext}
           className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-gray-600 disabled:text-gray-400"
         >
-          {selected.length > 1 ? "次へ (グループ設定)" : "チャットを作成"}
+          {isForward ? "転送" : (selected.length > 1 ? "次へ (グループ設定)" : "チャットを作成")}
         </button>
       </div>
     </div>

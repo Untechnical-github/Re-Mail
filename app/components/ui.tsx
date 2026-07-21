@@ -329,10 +329,11 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
           <button
             onClick={() => {
               if (!selectedMsg) return;
-              setReplyToMessage(null);
-              setReplySubject(`Fwd: ${selectedMsg.subject || ""}`);
-              setReplyBody(`\n\n--- 転送メッセージ ---\n差出人: ${selectedMsg.from}\n件名: ${selectedMsg.subject || ""}\n日時: ${new Date(selectedMsg.date).toLocaleString("ja-JP")}\n\n${selectedMsg.body || ""}`);
-              if (isAnySelection) safeBack();
+              // 「作成」と同じ宛先選択モーダルを転送モードで開く。選択モードの履歴の上に
+              // モーダルの履歴を重ねるだけにし、選択の終了はモーダル側の完了処理に任せる
+              // （先にここで選択を終了すると、その非同期popstateがモーダルを巻き込んで閉じてしまうため）
+              setModal({ type: "compose_new_chat", targetMode: "current_chat", targets: [], composeMode: "forward", forwardMessage: selectedMsg } as any);
+              window.history.pushState({ action: "modal" }, "", window.location.href);
             }}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
           >
