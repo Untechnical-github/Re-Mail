@@ -311,12 +311,13 @@ export function useMailApp() {
           let groupMembersVal = undefined;
           let groupMemberAddressesVal = undefined;
           let groupModeVal = undefined;
+          let groupHiddenMembersVal = undefined;
           if (customNameVal && customNameVal.startsWith('{')) {
             try {
               const parsed = JSON.parse(customNameVal);
               customNameVal = parsed.name; forceFetchVal = parsed.forceFetch; pData = parsed.data; roomIdVal = parsed.roomId;
               isGroupVal = parsed.isGroup; groupMembersVal = parsed.groupMembers; groupModeVal = parsed.groupMode;
-              groupMemberAddressesVal = parsed.groupMemberAddresses;
+              groupMemberAddressesVal = parsed.groupMemberAddresses; groupHiddenMembersVal = parsed.groupHiddenMembers;
               if (pData) {
                 // ★修正: 過去のバグで保存された「送信済みメールのINBOXラベル」をロード時に強制消去する
                 const cleanData = (Array.isArray(pData) ? pData : [pData]).map(e => {
@@ -329,7 +330,7 @@ export function useMailApp() {
               }
             } catch (e) {}
           }
-          formatted[c.chat_id] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, roomId: roomIdVal, isGroup: isGroupVal, groupMembers: groupMembersVal, groupMemberAddresses: groupMemberAddressesVal, groupMode: groupModeVal };
+          formatted[c.chat_id] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, roomId: roomIdVal, isGroup: isGroupVal, groupMembers: groupMembersVal, groupMemberAddresses: groupMemberAddressesVal, groupMode: groupModeVal, groupHiddenMembers: groupHiddenMembersVal };
         });
         setChatConfigs(formatted); setPersistedEmails(pMsgs);
       }
@@ -351,6 +352,7 @@ export function useMailApp() {
       nameToSave = JSON.stringify({
         name: nextConfig.customName, forceFetch: nextConfig.forceFetch, data: nextConfig.persistedData, roomId: nextConfig.roomId,
         isGroup: nextConfig.isGroup, groupMembers: nextConfig.groupMembers, groupMemberAddresses: nextConfig.groupMemberAddresses, groupMode: nextConfig.groupMode,
+        groupHiddenMembers: nextConfig.groupHiddenMembers,
       });
     }
     try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
@@ -358,11 +360,22 @@ export function useMailApp() {
 
   // グループチャットの削除: 設定行そのものを消すだけで、メンバーの個別チャットや実際のメールには一切触れない
   const deleteChatConfig = async (targetId: string) => {
+    // グループを削除する場合、そのグループの作成によって非表示にした個別チャットは表示に戻す
+    const cfg = chatConfigsRef.current[targetId];
+    if (cfg?.isGroup && cfg.groupHiddenMembers?.length) {
+      cfg.groupHiddenMembers.forEach(member => {
+        updateChatConfig(member, { isHidden: false });
+      });
+    }
+
     setChatConfigs(prev => {
       const next = { ...prev };
       delete next[targetId];
       return next;
     });
+    // ピン留めされていた場合、ローカルにキャッシュしていたメッセージのコピーも消しておく
+    // （D1側の行は削除で一括して消えるが、ローカルstateはそれとは別に残ってしまうため）
+    setPersistedEmails(prev => prev.filter((e: any) => e.senderRoom !== targetId));
     if (selectedSender === targetId) {
       setSelectedSender(null);
       if (typeof window !== "undefined") {
@@ -1182,13 +1195,21 @@ export function useMailApp() {
   // 「作成」モーダルで複数の宛先を選んだ場合のグループチャット作成
   const createGroupChat = async (name: string, members: string[], memberAddresses: string[], mode: GroupMode, hideMemberIndividualChats: string[]) => {
     const groupRoom = `group:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await updateChatConfig(groupRoom, { customName: name, isGroup: true, groupMembers: members, groupMemberAddresses: memberAddresses, groupMode: mode });
 
-    hideMemberIndividualChats.forEach(member => {
-      // 既に個別チャットが存在する相手のみ対象（初対面の宛先には個別チャットが存在しない）
-      if (groupedEmails[member]) {
-        updateChatConfig(member, { isHidden: true, hiddenAtDate: new Date().toISOString() });
-      }
+    // グループ作成によって新たに非表示にするメンバーだけを記録する（既に非表示だったものは対象外。
+    // グループ削除時にこの一覧の分だけ非表示を解除するため）
+    const groupHiddenMembers = hideMemberIndividualChats.filter(
+      member => groupedEmails[member] && !chatConfigsRef.current[member]?.isHidden
+    );
+
+    await updateChatConfig(groupRoom, {
+      customName: name, isGroup: true, groupMembers: members, groupMemberAddresses: memberAddresses, groupMode: mode,
+      groupHiddenMembers,
+    });
+
+    groupHiddenMembers.forEach(member => {
+      // unhideOnNew は明示的に false にする（新着があっても自動で表示に戻らないようにするため）
+      updateChatConfig(member, { isHidden: true, hiddenAtDate: new Date().toISOString(), unhideOnNew: false });
     });
 
     setSelectedSender(groupRoom);
