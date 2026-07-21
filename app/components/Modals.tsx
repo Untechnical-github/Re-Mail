@@ -482,13 +482,9 @@ function ComposeNewChatModal({ app }: { app: any }) {
                 {query ? "一致する宛先が見つかりません" : "やり取りした宛先はありません"}
               </div>
             )}
-            {(contactDirectory as any[]).length > 0 && (
+            {app.state.isLoadingMoreChats && (
               <div className="flex justify-center py-2">
-                {app.state.chatStatusMessage ? (
-                  <span className="text-xs text-gray-500">{app.state.chatStatusMessage}</span>
-                ) : app.state.isLoadingMoreChats ? (
-                  <span className="text-xs text-[#5865F2] animate-pulse">読み込み中...</span>
-                ) : null}
+                <span className="text-xs text-[#5865F2] animate-pulse">読み込み中...</span>
               </div>
             )}
           </div>
