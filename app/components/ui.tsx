@@ -316,7 +316,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
             onClick={() => {
               if (!selectedMsg) return;
               setReplyToMessage(selectedMsg);
-              setReplySubject(`Re: ${selectedMsg.subject || ""}`);
+              setReplySubject(selectedMsg.subject?.startsWith("Re:") ? selectedMsg.subject : `Re: ${selectedMsg.subject || ""}`);
               if (isAnySelection) safeBack();
             }}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}

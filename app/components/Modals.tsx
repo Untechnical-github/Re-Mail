@@ -1222,7 +1222,7 @@ export function Modals({ app }: { app: any }) {
                     <button
                       onClick={() => {
                         setReplyToMessage(m);
-                        setReplySubject(`Re: ${m.subject || ""}`);
+                        setReplySubject(m.subject?.startsWith("Re:") ? m.subject : `Re: ${m.subject || ""}`);
                         safeBack();
                       }}
                       className="px-3 py-1.5 bg-[#5865F2] hover:bg-[#4752C4] text-white text-xs font-bold rounded flex-shrink-0"
