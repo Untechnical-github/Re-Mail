@@ -166,6 +166,10 @@ export default function Home() {
   const showChatList = !state.isMobile || !state.selectedSender;
   const showTalk = !state.isMobile || state.selectedSender;
 
+  const selectedGroupConfig = state.selectedSender ? state.chatConfigs[state.selectedSender] : undefined;
+  const isInboundOnlyGroup = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "inbound_only");
+  const isOutboundOnlyGroup = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "outbound_only");
+
   // メッセージが属する場所（受信箱・送信済み等）に応じた色を返す（返信元チップの色分けにも使う）
   const getMsgColor = (msg: any) => {
     const isTrash = msg.labelIds?.includes("TRASH");
@@ -198,7 +202,19 @@ export default function Home() {
               </div>
               <h1 className="text-xl font-extrabold text-white tracking-wide">Re:Mail</h1>
             </div>
-            <button onClick={(e) => { e.stopPropagation(); signOut({ callbackUrl: "/" }); }} className="text-xs text-gray-400 hover:text-white transition">ログアウト</button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  actions.setModal({ type: "compose_new_chat", targetMode: "current_chat", targets: [] });
+                  window.history.pushState({ action: "modal" }, "", window.location.href);
+                }}
+                className="text-xs font-bold text-[#5865F2] hover:text-white transition"
+              >
+                ＋作成
+              </button>
+              <button onClick={(e) => { e.stopPropagation(); signOut({ callbackUrl: "/" }); }} className="text-xs text-gray-400 hover:text-white transition">ログアウト</button>
+            </div>
           </div>
 
           <div className="p-3 border-b border-[#1E1F22] bg-[#232428] cursor-default">
@@ -254,18 +270,19 @@ export default function Home() {
                  return true;
               });
 
+              const isDraft = state.draftChats.includes(sender) && allEmails.length === 0;
               const latestEmail = visibleEmails[0];
-              if (!latestEmail) return null;
+              if (!latestEmail && !isDraft) return null;
 
               const isSelected = state.selectedIds.includes(sender);
               const isOpened = state.selectedSender === sender && !state.isMobile;
               const count = visibleEmails.length;
-              const latestDate = new Date(latestEmail.date).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+              const latestDate = latestEmail ? new Date(latestEmail.date).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
 
-              let previewSubject = latestEmail.subject || "No Subject";
+              let previewSubject = latestEmail ? (latestEmail.subject || "No Subject") : "";
               let previewSnippet = "";
-              
-              if (state.searchKeyword) {
+
+              if (latestEmail && state.searchKeyword) {
                  const kwLower = state.searchKeyword.toLowerCase();
                  const matched = visibleEmails.find((e: any) => e.subject?.toLowerCase().includes(kwLower) || e.body?.toLowerCase().includes(kwLower) || e.from?.toLowerCase().includes(kwLower) || e.to?.toLowerCase().includes(kwLower));
                  if (matched) {
@@ -406,10 +423,14 @@ export default function Home() {
                         </div>
                         <span className="text-[10px] text-gray-500 flex-shrink-0">{latestDate}</span>
                       </div>
-                      <div className="text-[10px] text-[#5865F2] font-bold mt-0.5">{count}件のメッセージ</div>
+                      <div className="text-[10px] text-[#5865F2] font-bold mt-0.5">{isDraft ? "新規作成中" : `${count}件のメッセージ`}</div>
                       <div className="text-xs text-gray-500 truncate mt-0.5">
-                        <HighlightText text={previewSubject} highlight={state.searchKeyword} />
-                        {previewSnippet && <span className="ml-1 text-gray-400">- <HighlightText text={previewSnippet} highlight={state.searchKeyword} /></span>}
+                        {isDraft ? "まだメッセージがありません" : (
+                          <>
+                            <HighlightText text={previewSubject} highlight={state.searchKeyword} />
+                            {previewSnippet && <span className="ml-1 text-gray-400">- <HighlightText text={previewSnippet} highlight={state.searchKeyword} /></span>}
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -433,7 +454,7 @@ export default function Home() {
 
       {showTalk && (
         <main className={`${state.isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-[#313338] relative cursor-pointer`}>
-          {state.selectedSender && computed.groupedEmails[state.selectedSender!] && computed.groupedEmails[state.selectedSender!].length > 0 ? (
+          {state.selectedSender && ((computed.groupedEmails[state.selectedSender!] && computed.groupedEmails[state.selectedSender!].length > 0) || state.draftChats.includes(state.selectedSender!)) ? (
             <>
               <header className="px-4 py-3 bg-[#313338] border-b border-[#1E1F22] shadow-sm z-10 flex items-center gap-3 cursor-default">
                 {state.isMobile && (
@@ -441,8 +462,13 @@ export default function Home() {
                 )}
                 <div className="flex-1 min-w-0 flex items-baseline gap-2">
                   <h2 className="font-bold text-base truncate text-white">{state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}</h2>
-                  {(() => {
-                    const firstPartner = computed.groupedEmails[state.selectedSender!].find((e: any) => !e.isMe && !e.from.includes(auth.session?.user?.email || ""));
+                  {selectedGroupConfig?.isGroup ? (
+                    <span className="text-xs text-gray-500 truncate">
+                      グループ・{(selectedGroupConfig.groupMembers || []).length}人
+                      {isInboundOnlyGroup ? "・受信専用" : isOutboundOnlyGroup ? "・送信専用" : ""}
+                    </span>
+                  ) : (() => {
+                    const firstPartner = (computed.groupedEmails[state.selectedSender!] || []).find((e: any) => !e.isMe && !e.from.includes(auth.session?.user?.email || ""));
                     if (!firstPartner) return null;
                     const addrMatch = firstPartner.from.match(/<([^>]+)>/);
                     const addr = addrMatch ? addrMatch[1].trim() : firstPartner.from.trim();
@@ -474,7 +500,12 @@ export default function Home() {
                   }
                 }}
               >
-                {computed.groupedEmails[state.selectedSender!].map((email: any) => {
+                {(computed.groupedEmails[state.selectedSender!] || []).length === 0 && (
+                  <div className="flex-1 flex items-center justify-center text-gray-500 text-sm cursor-default">
+                    まだメッセージがありません。最初のメッセージを送信しましょう。
+                  </div>
+                )}
+                {(computed.groupedEmails[state.selectedSender!] || []).map((email: any) => {
                     const isTrash = email.labelIds?.includes("TRASH");
                     const isSpam = email.labelIds?.includes("SPAM");
                     const isInbox = email.labelIds?.includes("INBOX");
@@ -739,13 +770,17 @@ export default function Home() {
               </div>
 
               <div className="p-4 bg-[#313338] cursor-default" onClick={(e) => e.stopPropagation()}>
-                <div className="bg-[#383A40] rounded-lg p-3 border border-[#1E1F22]">
+                <div className={`bg-[#383A40] rounded-lg p-3 border border-[#1E1F22] ${isInboundOnlyGroup ? "opacity-40 pointer-events-none grayscale" : ""}`}>
+                  {isInboundOnlyGroup && (
+                    <div className="text-[11px] text-gray-400 mb-2">受信専用のグループチャットのため、送信・返信はできません</div>
+                  )}
                   <div className="flex items-center gap-2 bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">
                     <span className="text-gray-400 flex-shrink-0">返信先:</span>
                     <span className={`truncate flex-1 ${state.replyToMessage ? "" : "text-gray-500"}`}>
                       {state.replyToMessage ? (state.replyToMessage.subject || state.replyToMessage.snippet || "(件名なし)") : "未選択"}
                     </span>
                     <button
+                      disabled={isInboundOnlyGroup}
                       onClick={(e) => {
                         e.stopPropagation();
                         actions.setModal({ type: "select_reply_target", targetMode: "current_chat", targets: [] });
@@ -759,10 +794,10 @@ export default function Home() {
                       <button onClick={(e) => { e.stopPropagation(); actions.setReplyToMessage(null); }} className="font-bold px-1 hover:text-white flex-shrink-0">×</button>
                     )}
                   </div>
-                  <input type="text" placeholder="件名 (省略可)" value={state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
+                  <input disabled={isInboundOnlyGroup} type="text" placeholder="件名 (省略可)" value={state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
                   <div className="flex items-end gap-2">
-                    <textarea placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}`} rows={state.isMobile ? 1 : 2} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
-                    <button onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={state.isSending || !state.replyBody.trim()} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
+                    <textarea disabled={isInboundOnlyGroup} placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}`} rows={state.isMobile ? 1 : 2} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
+                    <button onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={isInboundOnlyGroup || state.isSending || !state.replyBody.trim()} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
                       {state.isSending ? "..." : "送信"}
                     </button>
                   </div>

@@ -247,6 +247,260 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
   );
 }
 
+// 「作成」モーダル: 過去にやり取りした宛先の選択・検索・新規アドレス追加を行い、チャットを作成/オープンする
+function ComposeNewChatModal({ app }: { app: any }) {
+  const { contactDirectory } = app.computed;
+  const { safeBack, createOrOpenChat, createGroupChat } = app.actions;
+
+  const [step, setStep] = useState<"select" | "group_setup">("select");
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [showAddInput, setShowAddInput] = useState(false);
+  const [newAddress, setNewAddress] = useState("");
+
+  const [groupName, setGroupName] = useState("");
+  const [groupMode, setGroupMode] = useState<"normal" | "inbound_only" | "outbound_only">("normal");
+  const [memberVisible, setMemberVisible] = useState<Record<string, boolean>>({});
+
+  const isValidEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+
+  const getLabel = (id: string) => {
+    const contact = (contactDirectory as any[]).find(c => c.room === id);
+    return contact ? contact.label : id;
+  };
+
+  const availableContacts = (contactDirectory as any[]).filter(c => !selected.includes(c.room));
+  const query = search.trim().toLowerCase();
+  const filteredContacts = query
+    ? availableContacts.filter(c => c.label.toLowerCase().includes(query) || c.address.toLowerCase().includes(query))
+    : availableContacts;
+
+  const addSelected = (id: string) => setSelected(prev => (prev.includes(id) ? prev : [...prev, id]));
+  const removeSelected = (id: string) => setSelected(prev => prev.filter(x => x !== id));
+
+  const handleAddNew = () => {
+    const v = newAddress.trim();
+    if (!isValidEmail(v)) return;
+    addSelected(v);
+    setNewAddress("");
+  };
+
+  // 単数選択: 従来通りその場でチャットを開く/作成する。複数選択: グループチャットの設定画面へ進む
+  const handleNext = () => {
+    if (selected.length === 0) return;
+    if (selected.length === 1) {
+      const target = selected[0];
+      // 履歴のpushStateはopenChat内（モバイル時）でも行われるため、
+      // 先にモーダルを閉じてから作成/オープンする（順序が逆だと履歴操作が競合する）
+      safeBack();
+      createOrOpenChat(target);
+      return;
+    }
+    setMemberVisible(Object.fromEntries(selected.map(id => [id, true])));
+    setGroupName("");
+    setGroupMode("normal");
+    setStep("group_setup");
+  };
+
+  const allMembersVisible = selected.every(id => memberVisible[id]);
+
+  const handleCreateGroup = () => {
+    const name = groupName.trim();
+    if (!name) return;
+    const hideMembers = selected.filter(id => !memberVisible[id]);
+    safeBack();
+    createGroupChat(name, selected, groupMode, hideMembers);
+  };
+
+  if (step === "group_setup") {
+    const MODE_OPTIONS: { value: "normal" | "inbound_only" | "outbound_only"; label: string; desc: string }[] = [
+      { value: "normal", label: "通常", desc: "複数の宛先からのメールと、グループで送信したメールを表示します" },
+      { value: "inbound_only", label: "受信専用", desc: "送信・返信はできません。自分が送信したメールも表示されません" },
+      { value: "outbound_only", label: "送信専用", desc: "自分がグループで送信したメールのみ表示します。返信先は相手のメールからも選べます" },
+    ];
+    return (
+      <div className="flex flex-col max-h-[80vh]">
+        <div className="p-4 border-b border-[#1E1F22] flex items-center gap-3">
+          <button onClick={() => setStep("select")} className="text-gray-400 hover:text-white font-bold text-lg transition">←</button>
+          <h2 className="text-lg font-bold text-white">グループチャットの設定</h2>
+        </div>
+
+        <div className="overflow-y-auto flex-1 p-4 space-y-5">
+          <div>
+            <label className="text-xs font-bold text-gray-400 mb-1.5 block">チャット名</label>
+            <input
+              type="text"
+              autoFocus
+              value={groupName}
+              onChange={(e) => setGroupName(e.target.value)}
+              placeholder="グループ名を入力"
+              className="w-full bg-[#1E1F22] text-sm text-white px-3 py-2 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-bold text-gray-400 mb-1.5 block">表示モード</label>
+            <div className="flex flex-col gap-1.5">
+              {MODE_OPTIONS.map(opt => (
+                <label key={opt.value} className="flex items-start gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition">
+                  <input
+                    type="radio"
+                    name="groupMode"
+                    checked={groupMode === opt.value}
+                    onChange={() => setGroupMode(opt.value)}
+                    className="accent-[#5865F2] w-4 h-4 mt-0.5 flex-shrink-0"
+                  />
+                  <span>
+                    <span className="block text-sm font-bold text-gray-200">{opt.label}</span>
+                    <span className="block text-xs text-gray-500">{opt.desc}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-bold text-gray-400">個別チャットの表示設定</label>
+              <button
+                onClick={() => {
+                  const next = !allMembersVisible;
+                  setMemberVisible(Object.fromEntries(selected.map(id => [id, next])));
+                }}
+                className={`text-xs font-bold px-2.5 py-1 rounded-full border transition ${allMembersVisible ? "bg-[#2B2D31] border-[#4752C4] text-[#5865F2]" : "bg-[#1E1F22] border-[#1E1F22] text-gray-500"}`}
+              >
+                {allMembersVisible ? "すべて表示" : "すべて非表示"}
+              </button>
+            </div>
+            <div className="text-xs text-gray-500 mb-2">オンにすると、その宛先の個別チャットも一覧に表示されたままになります</div>
+            <div className="flex flex-col gap-1">
+              {selected.map(id => (
+                <div key={id} className="flex items-center justify-between gap-2 p-2 hover:bg-[#2B2D31] rounded">
+                  <span className="text-sm text-gray-200 truncate">{getLabel(id)}</span>
+                  <button
+                    onClick={() => setMemberVisible(prev => ({ ...prev, [id]: !prev[id] }))}
+                    className={`text-xs font-bold px-2.5 py-1 rounded-full border transition flex-shrink-0 ${memberVisible[id] ? "bg-[#2B2D31] border-[#4752C4] text-[#5865F2]" : "bg-[#1E1F22] border-[#1E1F22] text-gray-500"}`}
+                  >
+                    {memberVisible[id] ? "表示" : "非表示"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-[#1E1F22] flex justify-end gap-3">
+          <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+          <button
+            disabled={!groupName.trim()}
+            onClick={handleCreateGroup}
+            className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-gray-600 disabled:text-gray-400"
+          >
+            チャットを作成
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col max-h-[80vh]">
+      <div className="p-4 border-b border-[#1E1F22]">
+        <h2 className="text-lg font-bold text-white">チャットを作成</h2>
+      </div>
+
+      <div className="p-3 border-b border-[#1E1F22] space-y-2">
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="宛先を検索 (名前・アドレス)"
+            className="flex-1 bg-[#1E1F22] text-sm text-gray-200 px-3 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
+            autoFocus
+          />
+          <button
+            onClick={() => setShowAddInput(v => !v)}
+            className="w-8 h-8 flex-shrink-0 flex items-center justify-center bg-[#2B2D31] hover:bg-[#3f4147] text-white font-bold rounded-full border border-[#4752C4] transition"
+          >
+            +
+          </button>
+        </div>
+        {showAddInput && (
+          <div className="flex items-center gap-2">
+            <input
+              type="email"
+              autoFocus
+              value={newAddress}
+              onChange={(e) => setNewAddress(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleAddNew(); }}
+              placeholder="メールアドレスを入力"
+              className="flex-1 bg-[#1E1F22] text-sm text-gray-200 px-3 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
+            />
+            <button
+              onClick={handleAddNew}
+              disabled={!isValidEmail(newAddress)}
+              className="px-3 py-1.5 bg-[#5865F2] hover:bg-[#4752C4] disabled:bg-[#3f4147] disabled:text-gray-500 text-white text-xs font-bold rounded transition"
+            >
+              追加
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="overflow-y-auto flex-1 p-2 space-y-4">
+        {selected.length > 0 && (
+          <div>
+            <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">選択中の宛先</div>
+            <div className="flex flex-col gap-1">
+              {selected.map((id) => (
+                <div key={id} className="flex items-center justify-between gap-2 p-2 bg-[rgba(88,101,242,0.15)] rounded">
+                  <span className="text-sm text-white truncate">{getLabel(id)}</span>
+                  <button onClick={() => removeSelected(id)} className="text-gray-300 hover:text-white font-bold px-2 flex-shrink-0">×</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div>
+          <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">これまでにやり取りした宛先</div>
+          <div className="flex flex-col gap-1">
+            {filteredContacts.map((c) => (
+              <button
+                key={c.room}
+                onClick={() => addSelected(c.room)}
+                className="flex flex-col items-start p-2 hover:bg-[#2B2D31] rounded text-left transition"
+              >
+                <span className="text-sm text-gray-200 truncate w-full">{c.label}</span>
+                {c.address && c.address !== c.label.toLowerCase() && (
+                  <span className="text-[11px] text-gray-500 truncate w-full">{c.address}</span>
+                )}
+              </button>
+            ))}
+            {filteredContacts.length === 0 && (
+              <div className="text-gray-500 text-xs p-2 px-2">
+                {query ? "一致する宛先が見つかりません" : "やり取りした宛先はありません"}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="p-4 border-t border-[#1E1F22] flex justify-end gap-3">
+        <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+        <button
+          disabled={selected.length === 0}
+          onClick={handleNext}
+          className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-gray-600 disabled:text-gray-400"
+        >
+          {selected.length > 1 ? "次へ (グループ設定)" : "チャットを作成"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ChatHideConfirm({ app, modal }: { app: any; modal: NonNullable<any> }) {
   const [unhideOnNew, setUnhideOnNew] = useState(false);
   const { safeBack, exitAfterAction, updateChatConfig, setSelectedSender } = app.actions;
@@ -974,7 +1228,7 @@ export function AttachmentModal({ app }: { app: any }) {
 
 export function Modals({ app }: { app: any }) {
   const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
-  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack, setReplyToMessage, setReplySubject, openEmailModal } = app.actions;
+  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
 
   if (!modal) return null;
@@ -1008,6 +1262,10 @@ export function Modals({ app }: { app: any }) {
 
         {modal.type === "categorized_action_select" && (
           <CategorizedActionSelect app={app} modal={modal} />
+        )}
+
+        {modal.type === "compose_new_chat" && (
+          <ComposeNewChatModal app={app} />
         )}
 
         {modal.type === "confirm_pin" && (() => {
@@ -1103,6 +1361,28 @@ export function Modals({ app }: { app: any }) {
             </div>
           );
         })()}
+
+        {modal.type === "confirm_delete_group" && (
+          <div className="p-5">
+            <h2 className="text-lg font-bold text-white mb-2">グループチャットの削除</h2>
+            <p className="text-sm text-gray-300 mb-6 leading-relaxed">
+              選択した{modal.targets.length}件のグループチャットのみを削除します。<br/>
+              <span className="text-[#5865F2] font-bold">グループに含まれる個別のチャットや、実際のメール自体は削除されません。</span>
+            </p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+              <button
+                onClick={() => {
+                  modal.targets.forEach((room: string) => app.actions.deleteChatConfig(room));
+                  exitAfterAction();
+                }}
+                className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c]"
+              >
+                削除する
+              </button>
+            </div>
+          </div>
+        )}
 
         {modal.type === "confirm_hide" && (() => {
           if (modal.targetMode === "chat") {
@@ -1206,7 +1486,9 @@ export function Modals({ app }: { app: any }) {
         )}
 
         {modal.type === "select_reply_target" && (() => {
-          const msgs = ((groupedEmails[selectedSender!] || []) as any[]).slice().sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          const isGroup = chatConfigs[selectedSender!]?.isGroup;
+          const source = isGroup ? (app.computed.groupReplyPools[selectedSender!] || []) : (groupedEmails[selectedSender!] || []);
+          const msgs = (source as any[]).slice().sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
           return (
             <div className="flex flex-col max-h-[80vh]">
               <div className="p-4 border-b border-[#1E1F22]">

@@ -254,6 +254,11 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const showBanner = isAnySelection && hasItems;
 
+  // グループチャットの表示モードによるアクションバー制限
+  const selectedGroupConfig = !isChat ? app.state.chatConfigs[app.state.selectedSender] : undefined;
+  const isInboundOnlyGroupBar = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "inbound_only");
+  const isOutboundOnlyGroupBar = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "outbound_only");
+
   return (
     <>
       {showCopiedToast && (
@@ -261,7 +266,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
           コピーしました
         </div>
       )}
-      <div className={containerClass} onClick={(e) => e.stopPropagation()}>
+      <div className={`${containerClass} ${isOutboundOnlyGroupBar ? "opacity-30 pointer-events-none grayscale" : ""}`} onClick={(e) => e.stopPropagation()}>
       {showBanner && (
         <div className="w-full text-center text-[10px] text-[#5865F2] font-bold py-0.5">
           {selectedIds.length}件選択中
@@ -314,12 +319,12 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
           </button>
           <button
             onClick={() => {
-              if (!selectedMsg) return;
+              if (!selectedMsg || isInboundOnlyGroupBar) return;
               setReplyToMessage(selectedMsg);
               setReplySubject(selectedMsg.subject?.startsWith("Re:") ? selectedMsg.subject : `Re: ${selectedMsg.subject || ""}`);
               if (isAnySelection) safeBack();
             }}
-            className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
+            className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${(!selectedMsg || isInboundOnlyGroupBar) ? "opacity-30 pointer-events-none grayscale" : ""}`}
           >
             リプライ
           </button>

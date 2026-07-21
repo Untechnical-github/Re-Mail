@@ -51,3 +51,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Database Error", details: error.message }, { status: 500 });
   }
 }
+
+export async function DELETE(request: Request) {
+  const session = await auth();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  try {
+    const { searchParams } = new URL(request.url);
+    const chatId = searchParams.get("chat_id");
+    if (!chatId) return NextResponse.json({ error: "chat_id is required" }, { status: 400 });
+
+    const db = getRequestContext().env.DB;
+    await db.prepare(`DELETE FROM configs WHERE chat_id = ?`).bind(chatId).run();
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    console.error("DB DELETE Error:", error);
+    return NextResponse.json({ error: "Database Error", details: error.message }, { status: 500 });
+  }
+}
