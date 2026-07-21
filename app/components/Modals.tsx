@@ -18,7 +18,8 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
   const BOX_ORDER = ["INBOX", "ARCHIVE", "SENT", "SPAM", "TRASH"];
 
   const isBoxRestricted = (box: string): boolean => {
-    if (action === "pin" || action === "hide") return box === "TRASH" || box === "SPAM" || box === "SENT";
+    // ピン留め・非表示は送信済みメールも対象にできる（ゴミ箱・迷惑メールのみ対象外）
+    if (action === "pin" || action === "hide") return box === "TRASH" || box === "SPAM";
     if (action === "delete") return box === "TRASH" || box === "SENT";
     if (action === "move") return box === "SENT";
     return false;
@@ -133,7 +134,7 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
     }
 
     if (action === "pin") {
-      setModal({ type: "select_pin_type", targetMode, targets: filteredTargets } as any);
+      setModal({ type: "confirm_pin", targetMode, targets: filteredTargets });
     } else if (action === "hide") {
       setModal({ type: "confirm_hide", targetMode, targets: filteredTargets });
     } else if (action === "delete") {

@@ -1254,7 +1254,11 @@ export function useMailApp() {
     if (!inSelection || selectedIds.length === 0) return;
 
     if (act === "pin") {
-      setModal({ type: "confirm_pin", targetMode: targetMode as any, targets: [...selectedIds] });
+      if (targetMode === "chat") {
+        setModal({ type: "confirm_pin", targetMode: "chat", targets: [...selectedIds] });
+      } else {
+        setModal({ type: "categorized_action_select", targetMode: "msg", targets: [...selectedIds], action: "pin" } as any);
+      }
     } else if (act === "unpin") {
       setModal({ type: "confirm_unpin", targetMode: targetMode as any, targets: [...selectedIds] });
     } else if (act === "hide") {
@@ -1511,7 +1515,7 @@ export function useMailApp() {
 
       modal.targets.forEach((targetId: string) => {
         const found = allUniqueEmails.find((e: any) => e.id === targetId);
-        if (found && !found.labelIds?.includes("TRASH") && !found.labelIds?.includes("SPAM") && !found.isMe) {
+        if (found && !found.labelIds?.includes("TRASH") && !found.labelIds?.includes("SPAM")) {
           const pData = { ...found, senderRoom: selectedSender };
           pMsgs.push(pData);
           updateChatConfig(targetId, { isPinned: true, forceFetch: true, persistedData: pData, roomId: selectedSender! });

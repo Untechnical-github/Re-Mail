@@ -189,7 +189,8 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         const isTrash = msg.labelIds?.includes("TRASH");
         const isSpam = msg.labelIds?.includes("SPAM");
         const isSent = msg.labelIds?.includes("SENT") || msg.isMe;
-        if (action === "pin" || action === "hide") return isTrash || isSpam || isSent;
+        // ピン留め・非表示は送信済みメールも対象にできる（ゴミ箱・迷惑メールのみ対象外）
+        if (action === "pin" || action === "hide") return isTrash || isSpam;
         if (action === "delete") return isTrash || isSent;
         if (action === "move") return isSent;
       }
