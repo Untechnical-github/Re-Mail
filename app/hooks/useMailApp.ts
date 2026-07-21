@@ -203,6 +203,13 @@ export function useMailApp() {
   // フィルター単位のキャッシュ（フィルター切り替え時に復元）
   const filterCacheRef = useRef<Map<string, { emails: any[]; currentNextPageToken: string | null }>>(new Map());
   const filterKeyRef = useRef<string>("true-true-false-false-false");
+  // emails state が実際にどのフィルターの取得結果を反映しているかを示す。
+  // フィルターを連続で切り替えると、直前の取得がキャンセルされ emails が更新されないまま
+  // filterKeyRef だけ次のキーに進んでしまうことがある。その状態でキャッシュへ書き込むと
+  // 「まだ何も取得していない新フィルター」に「古いフィルターの中身」が誤って紐付いてしまい、
+  // 次にそのフィルターへ戻ったときに空(または無関係)なキャッシュが復元される不具合になるため、
+  // 実際に取得が完了したフィルターキーと filterKeyRef が一致する場合のみキャッシュを書き込む
+  const emailsFilterKeyRef = useRef<string>(filterKeyRef.current);
 
   useEffect(() => {
     const handleStateSave = () => {
@@ -598,6 +605,7 @@ export function useMailApp() {
             await new Promise(r => setTimeout(r, 1500));
             res = await fetchEmails(100, "", { inbox: initInbox, archive: initArchive, spam: initSpam, trash: initTrash, sent: initSent }, null, false, false, [], () => false, true);
           }
+          emailsFilterKeyRef.current = filterKeyRef.current;
 
           if (selectedSender && res.success) {
             // await せずに進むと、復元したチャットのメッセージがまだ senderList に
@@ -722,8 +730,10 @@ export function useMailApp() {
     const isFilterChange = filterKeyRef.current !== newFilterKey;
 
     if (isFilterChange) {
-      // 旧フィルターの状態をキャッシュに保存（検索中でなければ）
-      if (!searchKeyword) {
+      // 旧フィルターの状態をキャッシュに保存する。ただし emails が本当に「旧フィルターの取得結果」を
+      // 反映している場合に限る（連続切り替えで直前の取得がキャンセルされていた場合、emails は
+      // さらに古いフィルターのデータのままなので、それを誤って旧フィルター名義でキャッシュしない）
+      if (!searchKeyword && emailsFilterKeyRef.current === filterKeyRef.current) {
         filterCacheRef.current.set(filterKeyRef.current, {
           emails: emailsRef.current,
           currentNextPageToken: currentNextPageTokenRef.current,
@@ -751,6 +761,7 @@ export function useMailApp() {
             currentNextPageTokenRef.current = cached.currentNextPageToken;
             setChatStatusMessage(null);
             setIsLoading(false);
+            emailsFilterKeyRef.current = newFilterKey;
           }
           if (selectedSender && !isCancelled) {
             fetchCrossboxForRoom(selectedSender, cached.emails);
@@ -758,7 +769,7 @@ export function useMailApp() {
         } else {
           if (!isCancelled) { setEmails([]); setChatStatusMessage(null); }
           const res = await fetchEmails(100, searchKeyword, { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, false, [], () => isCancelled, true);
-          if (!isCancelled) setChatStatusMessage(null);
+          if (!isCancelled) { setChatStatusMessage(null); emailsFilterKeyRef.current = newFilterKey; }
           if (selectedSender && !isCancelled && res.success) {
             fetchCrossboxForRoom(selectedSender, res.emails);
           }
