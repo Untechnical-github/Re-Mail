@@ -974,7 +974,7 @@ export function AttachmentModal({ app }: { app: any }) {
 
 export function Modals({ app }: { app: any }) {
   const { modal, renameInput, moveDestination, resetOptions, chatConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
-  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack } = app.actions;
+  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack, setReplyToMessage, setReplySubject, openEmailModal } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
 
   if (!modal) return null;
@@ -1204,6 +1204,47 @@ export function Modals({ app }: { app: any }) {
             </div>
           </div>
         )}
+
+        {modal.type === "select_reply_target" && (() => {
+          const msgs = ((groupedEmails[selectedSender!] || []) as any[]).slice().sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          return (
+            <div className="flex flex-col max-h-[80vh]">
+              <div className="p-4 border-b border-[#1E1F22]">
+                <h2 className="text-lg font-bold text-white">返信先を選択</h2>
+              </div>
+              <div className="p-2 overflow-y-auto flex-1 space-y-1">
+                {msgs.map((m: any) => (
+                  <div key={m.id} className="flex items-center gap-2 p-2 hover:bg-[#2B2D31] rounded">
+                    <div className="flex-1 min-w-0 text-sm">
+                      <div className="text-gray-400 text-[11px]">{new Date(m.date).toLocaleString("ja-JP")}</div>
+                      <div className="text-gray-200 truncate">{m.subject || m.snippet || "(件名なし)"}</div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setReplyToMessage(m);
+                        setReplySubject(`Re: ${m.subject || ""}`);
+                        safeBack();
+                      }}
+                      className="px-3 py-1.5 bg-[#5865F2] hover:bg-[#4752C4] text-white text-xs font-bold rounded flex-shrink-0"
+                    >
+                      選択
+                    </button>
+                    <button
+                      onClick={() => openEmailModal(m)}
+                      className="px-3 py-1.5 bg-[#1E1F22] hover:bg-[#3f4147] text-gray-200 text-xs font-bold rounded flex-shrink-0"
+                    >
+                      詳細
+                    </button>
+                  </div>
+                ))}
+                {msgs.length === 0 && <div className="text-gray-500 text-sm p-4 text-center">このチャットにはまだメッセージがありません</div>}
+              </div>
+              <div className="p-4 border-t border-[#1E1F22] flex justify-end">
+                <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+              </div>
+            </div>
+          );
+        })()}
 
         {modal.type === "rename" && (
           <div className="p-5">

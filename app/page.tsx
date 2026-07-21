@@ -740,12 +740,25 @@ export default function Home() {
 
               <div className="p-4 bg-[#313338] cursor-default" onClick={(e) => e.stopPropagation()}>
                 <div className="bg-[#383A40] rounded-lg p-3 border border-[#1E1F22]">
-                  {state.replyToMessage && (
-                    <div className="flex justify-between items-center bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">
-                      <span className="truncate">Replying to: {state.replyToMessage.subject || state.replyToMessage.snippet}</span>
-                      <button onClick={(e) => { e.stopPropagation(); actions.setReplyToMessage(null); }} className="font-bold px-2 hover:text-white">×</button>
-                    </div>
-                  )}
+                  <div className="flex items-center gap-2 bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">
+                    <span className="text-gray-400 flex-shrink-0">返信先:</span>
+                    <span className={`truncate flex-1 ${state.replyToMessage ? "" : "text-gray-500"}`}>
+                      {state.replyToMessage ? (state.replyToMessage.subject || state.replyToMessage.snippet || "(件名なし)") : "未選択"}
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        actions.setModal({ type: "select_reply_target", targetMode: "current_chat", targets: [] });
+                        window.history.pushState({ action: "modal" }, "", window.location.href);
+                      }}
+                      className="font-bold px-2 text-[#5865F2] hover:text-white flex-shrink-0"
+                    >
+                      {state.replyToMessage ? "返信先を変更" : "返信先を選択"}
+                    </button>
+                    {state.replyToMessage && (
+                      <button onClick={(e) => { e.stopPropagation(); actions.setReplyToMessage(null); }} className="font-bold px-1 hover:text-white flex-shrink-0">×</button>
+                    )}
+                  </div>
                   <input type="text" placeholder="件名 (省略可)" value={state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
                   <div className="flex items-end gap-2">
                     <textarea placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}`} rows={state.isMobile ? 1 : 2} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
