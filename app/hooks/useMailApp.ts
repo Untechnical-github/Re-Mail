@@ -1117,7 +1117,7 @@ export function useMailApp() {
         if (found && !found.labelIds?.includes("TRASH") && !found.labelIds?.includes("SPAM") && !found.isMe) {
           const pData = { ...found, senderRoom: selectedSender };
           pMsgs.push(pData);
-          updateChatConfig(targetId, { isPinned: true, forceFetch: true, persistedData: pData });
+          updateChatConfig(targetId, { isPinned: true, forceFetch: true, persistedData: pData, roomId: selectedSender! });
         }
       });
     }
@@ -1241,10 +1241,22 @@ export function useMailApp() {
     }
     else if (type === "confirm_reset") {
       const { pin, hide, name, crossBox } = resetOptions; let keysToProcess = Object.keys(chatConfigs);
-      if (targetMode === "current_chat") keysToProcess = keysToProcess.filter(k => k === targets[0] || chatConfigs[k]?.roomId === targets[0]);
-      else if (targetMode === "specific_chat") keysToProcess = keysToProcess.filter(k => targets.includes(k) || targets.some((t: string) => chatConfigs[k]?.roomId === t));
+      // roomIdが未設定の古いメッセージ設定を救済するため、実メールデータから所属チャットを逆引きする
+      const getKeyRoom = (k: string) => {
+        const cfg = chatConfigs[k];
+        if (cfg?.roomId !== undefined) return cfg.roomId;
+        const email = allUniqueEmails.find((e: any) => e.id === k);
+        return email ? (email.senderRoom || (email.from?.split("<")[0].replace(/"/g, "").trim() || "Unknown")) : undefined;
+      };
+      if (targetMode === "current_chat") keysToProcess = keysToProcess.filter(k => k === targets[0] || getKeyRoom(k) === targets[0]);
+      else if (targetMode === "specific_chat") keysToProcess = keysToProcess.filter(k => targets.includes(k) || targets.some((t: string) => getKeyRoom(k) === t));
       keysToProcess.forEach(target => {
         const currentConfig = chatConfigs[target]; const updates: Partial<ChatConfig> = {};
+        // roomId欠落を検知したらここで書き戻し、次回以降のリセットで漏れないよう自己修復する
+        if (currentConfig?.roomId === undefined) {
+          const resolvedRoom = getKeyRoom(target);
+          if (resolvedRoom !== undefined) updates.roomId = resolvedRoom;
+        }
         if (pin) { updates.isPinned = false; updates.forceFetch = false; updates.persistedData = null; }
         if (hide) { updates.isHidden = false; updates.hiddenAtDate = undefined; updates.unhideOnNew = false; }
         if (name && currentConfig?.roomId === undefined) updates.customName = undefined;
