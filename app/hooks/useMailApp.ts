@@ -29,6 +29,14 @@ function sameAddressSet(a: Set<string>, b: Set<string>): boolean {
   return a.size > 0 && a.size === b.size && [...a].every(addr => b.has(addr));
 }
 
+// メールが自分の送信したものかどうかの判定。バックエンドが返す「生の」メールデータには
+// isMe フィールドが元々存在せず、送信直後にローカルで作った表示用オブジェクトにだけ isMe:true を
+// 付けている。そのオブジェクトが後から（60秒毎の自動更新や再取得で）生データに上書きされると
+// isMe が失われるため、From に自分のアドレスが含まれるかどうかのフォールバックを必ず併用する
+function isMineEmail(e: any, myEmail: string): boolean {
+  return !!e.isMe || !!(myEmail && (e.from || "").includes(myEmail));
+}
+
 // グループのメンバーの実メールアドレス集合を求める。作成時に確定させて保存した値を正とし、
 // （古い形式のグループ等で）保存が無い場合のみ、そのメンバーの個別チャットの受信メールから推定する
 function resolveGroupMemberAddresses(cfg: ChatConfig, roomLookup: Record<string, any[]>, myEmail: string): Set<string> {
@@ -37,7 +45,7 @@ function resolveGroupMemberAddresses(cfg: ChatConfig, roomLookup: Record<string,
     ? cfg.groupMemberAddresses
     : members.map((m: string) => {
         const msgs = roomLookup[m];
-        const partner = msgs?.find((e: any) => !e.isMe && !(e.from || "").includes(myEmail));
+        const partner = msgs?.find((e: any) => !isMineEmail(e, myEmail));
         const raw = partner ? partner.from : "";
         const match = (raw || "").match(/<([^>]+)>/);
         const resolved = ((match ? match[1] : raw) || "").trim().toLowerCase();
@@ -878,10 +886,11 @@ export function useMailApp() {
       if (!cfg?.isGroup) return;
       const mode = cfg.groupMode || "normal";
       const members = cfg.groupMembers || [];
-      const memberAddresses = resolveGroupMemberAddresses(cfg, groups, session?.user?.email || "");
+      const myEmail = session?.user?.email || "";
+      const memberAddresses = resolveGroupMemberAddresses(cfg, groups, myEmail);
 
       // このグループから送信されたメール = 宛先セットがメンバー全員と完全一致する送信済みメール
-      const sentViaGroup = allUniqueEmails.filter((e: any) => e.isMe && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
+      const sentViaGroup = allUniqueEmails.filter((e: any) => isMineEmail(e, myEmail) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
 
       // 一斉送信したメールを各メンバーの個別チャットにも反映する
       sentViaGroup.forEach((sentMsg: any) => {
@@ -897,7 +906,7 @@ export function useMailApp() {
       }
 
       const received = allUniqueEmails.filter((e: any) => {
-        if (e.isMe) return false;
+        if (isMineEmail(e, myEmail)) return false;
         const addrMatch = (e.from || "").match(/<([^>]+)>/);
         const addr = (addrMatch ? addrMatch[1] : e.from || "").trim().toLowerCase();
         return memberAddresses.has(addr);
@@ -923,7 +932,7 @@ export function useMailApp() {
   // ルーム内の相手メールアドレスを推定する（「作成」機能での重複チャット判定・検索に使用）
   const getRoomAddress = (room: string): string => {
     const msgs = groupedEmails[room] || [];
-    const partner = msgs.find((e: any) => !e.isMe && !(e.from || "").includes(session?.user?.email || ""));
+    const partner = msgs.find((e: any) => !isMineEmail(e, session?.user?.email || ""));
     const raw = partner ? partner.from : (msgs.find((e: any) => e.to)?.to || "");
     const match = (raw || "").match(/<([^>]+)>/);
     return ((match ? match[1] : raw) || "").trim().toLowerCase();
@@ -950,10 +959,11 @@ export function useMailApp() {
     Object.keys(chatConfigs).forEach(room => {
       const cfg = chatConfigs[room];
       if (!cfg?.isGroup) return;
-      const memberAddresses = resolveGroupMemberAddresses(cfg, groupedEmails, session?.user?.email || "");
-      const sentViaGroup = allUniqueEmails.filter((e: any) => e.isMe && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
+      const myEmail = session?.user?.email || "";
+      const memberAddresses = resolveGroupMemberAddresses(cfg, groupedEmails, myEmail);
+      const sentViaGroup = allUniqueEmails.filter((e: any) => isMineEmail(e, myEmail) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
       const received = allUniqueEmails.filter((e: any) => {
-        if (e.isMe) return false;
+        if (isMineEmail(e, myEmail)) return false;
         const addrMatch = (e.from || "").match(/<([^>]+)>/);
         const addr = (addrMatch ? addrMatch[1] : e.from || "").trim().toLowerCase();
         return memberAddresses.has(addr);
