@@ -286,6 +286,25 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         キャンセル
       </button>
 
+      {/* チャット: 作成（未選択なら通常通り新規作成、選択中ならそのチャットを選択済みの状態でモーダルを開く） */}
+      {isChat && (
+        <button
+          onClick={() => {
+            const preSelected = isAnySelection && hasItems
+              ? selectedIds.filter((id: string) => !app.state.chatConfigs[id]?.isGroup)
+              : [];
+            // 選択モード中だった場合は先に選択を終了してからモーダルを開く
+            // （履歴操作の順序が逆だと select と modal の履歴処理が競合するため）
+            if (isAnySelection) safeBack();
+            setModal({ type: "compose_new_chat", targetMode: "current_chat", targets: preSelected });
+            window.history.pushState({ action: "modal" }, "", window.location.href);
+          }}
+          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}
+        >
+          作成
+        </button>
+      )}
+
       {/* チャット: 名前変更（1件選択時のみ有効） */}
       {isChat && (
         <button

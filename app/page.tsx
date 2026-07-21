@@ -202,19 +202,7 @@ export default function Home() {
               </div>
               <h1 className="text-xl font-extrabold text-white tracking-wide">Re:Mail</h1>
             </div>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  actions.setModal({ type: "compose_new_chat", targetMode: "current_chat", targets: [] });
-                  window.history.pushState({ action: "modal" }, "", window.location.href);
-                }}
-                className="text-xs font-bold text-[#5865F2] hover:text-white transition"
-              >
-                ＋作成
-              </button>
-              <button onClick={(e) => { e.stopPropagation(); signOut({ callbackUrl: "/" }); }} className="text-xs text-gray-400 hover:text-white transition">ログアウト</button>
-            </div>
+            <button onClick={(e) => { e.stopPropagation(); signOut({ callbackUrl: "/" }); }} className="text-xs text-gray-400 hover:text-white transition">ログアウト</button>
           </div>
 
           <div className="p-3 border-b border-[#1E1F22] bg-[#232428] cursor-default">

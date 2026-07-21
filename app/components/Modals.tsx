@@ -248,13 +248,14 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
 }
 
 // 「作成」モーダル: 過去にやり取りした宛先の選択・検索・新規アドレス追加を行い、チャットを作成/オープンする
-function ComposeNewChatModal({ app }: { app: any }) {
+function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
   const { contactDirectory } = app.computed;
   const { safeBack, createOrOpenChat, createGroupChat } = app.actions;
 
   const [step, setStep] = useState<"select" | "group_setup">("select");
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<string[]>([]);
+  // アクションバーでチャットを選択した状態から開いた場合、それらを選択済みの状態にしておく
+  const [selected, setSelected] = useState<string[]>(() => (modal?.targets as string[]) || []);
 
   const [groupName, setGroupName] = useState("");
   const [groupMode, setGroupMode] = useState<"normal" | "inbound_only" | "outbound_only">("normal");
@@ -1269,7 +1270,7 @@ export function Modals({ app }: { app: any }) {
         )}
 
         {modal.type === "compose_new_chat" && (
-          <ComposeNewChatModal app={app} />
+          <ComposeNewChatModal app={app} modal={modal} />
         )}
 
         {modal.type === "confirm_pin" && (() => {
