@@ -3,8 +3,17 @@ import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
-  trustHost: true, 
-  secret: process.env.AUTH_SECRET, 
+  trustHost: true,
+  secret: process.env.AUTH_SECRET,
+  session: {
+    strategy: "jwt",
+    // ログインセッション自体は最低1年間保持する（Googleのリフレッシュトークンでアクセストークンは別途自動更新される）
+    maxAge: 60 * 60 * 24 * 400, // 400日
+    updateAge: 60 * 60 * 24, // 1日ごとにセッションの有効期限を延長
+  },
+  jwt: {
+    maxAge: 60 * 60 * 24 * 400,
+  },
   providers: [
     Google({
       clientId: process.env.GOOGLE_CLIENT_ID,
