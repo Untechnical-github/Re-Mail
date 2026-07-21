@@ -427,7 +427,15 @@ function ComposeNewChatModal({ app }: { app: any }) {
         />
       </div>
 
-      <div className="overflow-y-auto flex-1 p-2 space-y-4">
+      <div
+        className="overflow-y-auto flex-1 p-2 space-y-4"
+        onScroll={(e) => {
+          const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
+          if (scrollHeight - Math.abs(scrollTop) - clientHeight < 50 && !app.state.isLoadingMoreChats && !app.state.chatStatusMessage) {
+            app.actions.handleLoadMoreChats();
+          }
+        }}
+      >
         {selected.length > 0 && (
           <div>
             <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">選択中の宛先</div>
@@ -472,6 +480,15 @@ function ComposeNewChatModal({ app }: { app: any }) {
             {filteredContacts.length === 0 && !newAddressCandidate && (
               <div className="text-gray-500 text-xs p-2 px-2">
                 {query ? "一致する宛先が見つかりません" : "やり取りした宛先はありません"}
+              </div>
+            )}
+            {(contactDirectory as any[]).length > 0 && (
+              <div className="flex justify-center py-2">
+                {app.state.chatStatusMessage ? (
+                  <span className="text-xs text-gray-500">{app.state.chatStatusMessage}</span>
+                ) : app.state.isLoadingMoreChats ? (
+                  <span className="text-xs text-[#5865F2] animate-pulse">読み込み中...</span>
+                ) : null}
               </div>
             )}
           </div>

@@ -938,7 +938,9 @@ export function useMailApp() {
     return ((match ? match[1] : raw) || "").trim().toLowerCase();
   };
 
-  // 「作成」モーダルの「これまでにやり取りした宛先」一覧（下書き中の空チャット・グループ自体は除く）
+  // 「作成」モーダルの「候補」一覧（下書き中の空チャット・グループ自体は除く）。
+  // ボックスのチェックボックス状態には影響されず（groupedEmails自体が非フィルター済みのため）、
+  // 現在のフィルターに関わらず常に最新のやり取り順（時系列順）で並べる
   const contactDirectory = useMemo(() => {
     return Object.keys(groupedEmails)
       .filter(room => (groupedEmails[room] || []).length > 0 && !chatConfigs[room]?.isGroup)
@@ -946,8 +948,9 @@ export function useMailApp() {
         room,
         label: chatConfigs[room]?.customName || room,
         address: getRoomAddress(room),
+        latestDate: groupedEmails[room][0]?.date ? new Date(groupedEmails[room][0].date).getTime() : 0,
       }))
-      .sort((a, b) => a.label.localeCompare(b.label, "ja"));
+      .sort((a, b) => b.latestDate - a.latestDate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupedEmails, chatConfigs, session]);
 
@@ -1066,15 +1069,24 @@ export function useMailApp() {
   const hiddenMsgs = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId !== undefined).map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ", date: new Date().toISOString() });
 
   // senderList からチャットが消えたら（フィルター変更・非表示化など）メッセージ画面を自動クローズ
-  // ただし初回のメール取得が終わるまでは senderList が「まだ空なだけ」なので判定しない
+  // ただし初回のメール取得が終わるまでは senderList が「まだ空なだけ」なので判定しない。
+  // また、「作成」で候補から直接開いたチャットのように、そもそも現在のフィルターで
+  // 一覧に表示される対象ではないチャットまで閉じてしまわないよう、
+  // 過去に一度でも一覧に表示されていた（＝本当に消えた）場合のみクローズする
+  const prevSenderListRef = useRef<string[]>(senderList);
   useEffect(() => {
-    if (hasLoadedOnceRef.current && !isLoading && selectedSender && !senderList.includes(selectedSender)) {
-      setSelectedSender(null);
-      if (typeof window !== "undefined") {
-        localStorage.removeItem("remail_selected_sender");
-        localStorage.removeItem("remail_scroll_main");
+    if (hasLoadedOnceRef.current && !isLoading && selectedSender) {
+      const wasVisible = prevSenderListRef.current.includes(selectedSender);
+      const isVisible = senderList.includes(selectedSender);
+      if (wasVisible && !isVisible) {
+        setSelectedSender(null);
+        if (typeof window !== "undefined") {
+          localStorage.removeItem("remail_selected_sender");
+          localStorage.removeItem("remail_scroll_main");
+        }
       }
     }
+    prevSenderListRef.current = senderList;
   }, [senderList, isLoading]);
 
   const safeBack = () => {
