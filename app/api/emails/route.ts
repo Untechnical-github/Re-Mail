@@ -217,7 +217,9 @@ function parseMessageDetail(message: any) {
 
   const subject = decodeMimeHeader(getHeader(headers, "Subject")) || "(件名なし)";
   const from = decodeMimeHeader(getHeader(headers, "From"));
-  const to = decodeMimeHeader(getHeader(headers, "To"));
+  // メルマガ等では実際の「To」ヘッダーが空・汎用的な値のことがあり、Gmail自身は
+  // 実配送先を示す「Delivered-To」ヘッダーで表示を補っている。同様にフォールバックする
+  const to = decodeMimeHeader(getHeader(headers, "To")) || decodeMimeHeader(getHeader(headers, "Delivered-To"));
   const date = getHeader(headers, "Date");
   const labelIds = message.labelIds || [];
   // Discord風の「返信先」チップ表示のため、Message-ID / In-Reply-To を保持しておく
