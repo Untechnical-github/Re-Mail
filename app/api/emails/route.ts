@@ -222,10 +222,12 @@ function parseMessageDetail(message: any) {
   const labelIds = message.labelIds || [];
   // Discord風の「返信先」チップ表示のため、Message-ID / In-Reply-To を保持しておく
   const messageIdHeader = getHeader(headers, "Message-ID") || undefined;
-  const inReplyTo = getHeader(headers, "In-Reply-To") || undefined;
   const rawBody = getTextBody(payload) || message.snippet || "";
   const rawHtmlForCheck = getHtmlBody(payload);
   const isForward = looksLikeForward(subject, rawBody) || looksLikeForward(subject, rawHtmlForCheck);
+  // 転送メールはGmail側の都合でIn-Reply-Toが付与されていることがあるが、
+  // 会話上の「返信」ではなく別内容の転送なので、re:mail側の返信チップは出さない
+  const inReplyTo = isForward ? undefined : (getHeader(headers, "In-Reply-To") || undefined);
   let cleansedBody = cleanseBody(rawBody, isForward);
   // CSSの除去などで本文が空になってしまった場合は、Gmail側で生成されたスニペットに差し替える
   if (!cleansedBody.trim() && message.snippet) cleansedBody = cleanseBody(message.snippet, isForward);
