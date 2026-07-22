@@ -87,6 +87,8 @@ export function useMailApp() {
   const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
   const [checkTrash, setCheckTrash] = useState<boolean>(() => getSavedBoxSettings()?.trash ?? false);
   const [checkSent, setCheckSent] = useState<boolean>(() => getSavedBoxSettings()?.sent ?? false);
+  // チャット画面のタブ（個人チャット / グループチャット）
+  const [activeChatTab, setActiveChatTab] = useState<"individual" | "group">("individual");
   const [currentNextPageToken, setCurrentNextPageToken] = useState<string | null>(null);
   
   const [chatNextPageToken, setChatNextPageToken] = useState<string | null>("FIRST_PAGE");
@@ -801,7 +803,7 @@ export function useMailApp() {
     return () => { isCancelled = true; if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current); };
   }, [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, searchKeyword]);
 
-  // フィルター変化時に選択をキャンセル
+  // フィルター変化時（チャットタブの切り替えを含む）に選択をキャンセル
   useEffect(() => {
     if (selectionMode === "none") return;
     setSelectionMode("none");
@@ -813,7 +815,7 @@ export function useMailApp() {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkInbox, checkArchive, checkSpam, checkTrash, checkSent]);
+  }, [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, activeChatTab]);
 
   const handleSearchChange = (val: string) => {
     if (!searchKeyword && val && !hasPushedSearchRef.current) { window.history.pushState({ action: "search" }, ""); hasPushedSearchRef.current = true; } 
@@ -1939,10 +1941,10 @@ export function useMailApp() {
       resetOptions, moveDestination, revealedCrossPrompts, boxColors,
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
-      replyNotFoundToast, draftChats,
+      replyNotFoundToast, draftChats, activeChatTab,
     },
     actions: {
-      setSearchKeyword, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent,
+      setSearchKeyword, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setActiveChatTab,
       setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleSearchChange, handleMenuBarClick, handleBackgroundClick, toggleSelection,

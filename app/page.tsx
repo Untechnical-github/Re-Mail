@@ -221,9 +221,21 @@ export default function Home() {
              </div>
           </div>
 
+          <div className="flex gap-1 px-3 pt-2 bg-[#232428] border-b border-[#1E1F22] cursor-default" onClick={(e) => e.stopPropagation()}>
+            {([["individual", "個人チャット"], ["group", "グループチャット"]] as const).map(([tab, label]) => (
+              <button
+                key={tab}
+                onClick={() => actions.setActiveChatTab(tab)}
+                className={`flex-1 py-1.5 mb-2 rounded text-xs font-bold transition ${state.activeChatTab === tab ? "bg-[#5865F2] text-white" : "bg-[#313338] text-gray-400 hover:bg-[#3f4147]"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           <ActionBar app={app} isChat={true} />
 
-          <div 
+          <div
             className="flex-1 overflow-y-auto p-2 space-y-0.5 min-h-0 cursor-default"
             onScroll={(e) => {
               const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
@@ -233,7 +245,7 @@ export default function Home() {
             }}
           >
              {state.isLoading && <div className="text-xs text-[#5865F2] font-bold p-2 text-center animate-pulse">読み込み中...</div>}
-             {computed.senderList.map((sender) => {
+             {computed.senderList.filter((sender: string) => !!state.chatConfigs[sender]?.isGroup === (state.activeChatTab === "group")).map((sender) => {
               const allEmails = computed.groupedEmails[sender] || [];
               const config = state.chatConfigs[sender];
 

@@ -235,7 +235,10 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const handleSelectAll = () => {
     if (isChat) {
-      const allIds = app.computed.senderList as string[];
+      // 現在表示中のタブ（個人 / グループ）に含まれるチャットだけを対象にする
+      const allIds = (app.computed.senderList as string[]).filter(
+        (id: string) => !!app.state.chatConfigs[id]?.isGroup === (app.state.activeChatTab === "group")
+      );
       if (!isAnySelection) enterSelectionMode("chat", allIds[0]);
       setSelectedIds(allIds);
     } else {
