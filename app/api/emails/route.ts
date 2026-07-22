@@ -148,12 +148,15 @@ function stripHtmlQuote(html: string): string {
 }
 
 // 件名が「Fwd:/Fw:」で始まる、または本文にGmail標準の転送マーカー（"---------- Forwarded
-// message ---------"、日本語版Gmailでもこの部分は英語のまま）が含まれる場合は転送メールとみなす。
-// 転送メールの本文は「引用文」ではなく転送された内容そのものなので、
-// stripHtmlQuote/stripQuotedReply で誤って切り捨てないようにするための判定
+// message ---------"、日本語版Gmailでもこの部分は英語のまま）が引用符（"> "）なしで
+// 含まれる場合は転送メールとみなす。「転送メールへの返信」だと、返信本文が引用した
+// 転送内容の中にこのマーカーが "> " 付きで含まれてしまうため、引用行は対象から除外する
+// （そうしないと、転送への返信自体が転送メール扱いされ、返信タグが消えたり
+// 引用文除去がスキップされて元メッセージがそのまま表示され続けてしまう）
 function looksLikeForward(subject: string, bodyForCheck: string): boolean {
   if (/^\s*(fwd|fw)\s*:/i.test(subject || "")) return true;
-  if (/forwarded message/i.test(bodyForCheck || "")) return true;
+  const match = (bodyForCheck || "").match(/^.*forwarded message.*$/im);
+  if (match && !match[0].trim().startsWith(">")) return true;
   return false;
 }
 
