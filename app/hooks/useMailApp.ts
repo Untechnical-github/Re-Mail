@@ -1475,9 +1475,24 @@ export function useMailApp() {
 
     const bodyText = forwardHeaderText + (message.body || "");
     const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const bodyHtml = originalHtml
-      ? `<div>${escapeHtml(forwardHeaderText).replace(/\n/g, "<br>")}</div><div>${originalHtml}</div>`
-      : undefined;
+
+    // 元のHTMLメールは <html><head>...</head><body>...</body></html> という
+    // 完全なドキュメントであることが多い。これをそのまま<div>の中に入れ子にすると
+    // 不正なHTML構造になり、背景色などのスタイルが正しく反映されなくなるため、
+    // body要素の中身と属性（背景色など）だけを取り出して使う
+    const extractBodyContent = (html: string): { inner: string; attrs: string } => {
+      const bodyMatch = html.match(/<body([^>]*)>([\s\S]*)<\/body>/i);
+      if (bodyMatch) return { inner: bodyMatch[2], attrs: bodyMatch[1] };
+      const htmlMatch = html.match(/<html[^>]*>([\s\S]*)<\/html>/i);
+      if (htmlMatch) return { inner: htmlMatch[1], attrs: "" };
+      return { inner: html, attrs: "" };
+    };
+
+    let bodyHtml: string | undefined;
+    if (originalHtml) {
+      const { inner, attrs } = extractBodyContent(originalHtml);
+      bodyHtml = `<div>${escapeHtml(forwardHeaderText).replace(/\n/g, "<br>")}</div><div${attrs}>${inner}</div>`;
+    }
 
     try {
       const res = await fetch("/api/emails", {

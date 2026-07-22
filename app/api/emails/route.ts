@@ -199,7 +199,7 @@ function cleanseBody(text: string, isForward = false): string {
   cleaned = cleaned.replace(/<br\s*\/?>/gi, "\n");
   cleaned = cleaned.replace(/<\/p>|<\/div>|<\/tr>|<\/li>/gi, "\n");
   cleaned = cleaned.replace(/<[^>]+>/g, "");
-  cleaned = cleaned.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&zwnj;/g, "");
+  cleaned = cleaned.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&zwnj;/g, "").replace(/&shy;/g, "");
   cleaned = cleaned.replace(/&#(\d+);/g, (_, dec) => decodeNumericEntity(dec, false));
   cleaned = cleaned.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => decodeNumericEntity(hex, true));
   cleaned = stripLooseCssRules(cleaned);
