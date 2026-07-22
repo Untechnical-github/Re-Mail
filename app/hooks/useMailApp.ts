@@ -891,6 +891,33 @@ export function useMailApp() {
       }
     });
 
+    // まだ返信がなく表示名が分からないうちは「アドレスそのもの」がルームキーになるが、
+    // 後から返信が来ると差出人の表示名で別のルームが作られてしまい、同じ相手なのに
+    // チャットが2つに分裂する（過去に送信しただけのやり取りが宛先アドレス名義のまま
+    // 取り残される）。表示名ルームが実在する場合は、アドレス名義のルームをそちらへ
+    // 統合する（グループのルームキーは対象外）
+    const emailLikeRoom = (room: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(room.trim());
+    const resolveRoomPartnerAddr = (room: string): string => {
+      const msgs = groups[room];
+      if (!msgs || msgs.length === 0) return "";
+      const partner = msgs.find((e: any) => !isMineEmail(e, session?.user?.email || ""));
+      const raw = partner ? partner.from : (msgs.find((e: any) => e.to)?.to || "");
+      const match = (raw || "").match(/<([^>]+)>/);
+      return ((match ? match[1] : raw) || "").trim().toLowerCase();
+    };
+    Object.keys(groups).forEach(room => {
+      if (!emailLikeRoom(room)) return;
+      const addr = room.trim().toLowerCase();
+      const displayRoom = Object.keys(groups).find(other =>
+        other !== room && !emailLikeRoom(other) && !chatConfigs[other]?.isGroup && resolveRoomPartnerAddr(other) === addr
+      );
+      if (displayRoom) {
+        const existingIds = new Set(groups[displayRoom].map((e: any) => e.id));
+        groups[room].forEach((e: any) => { if (!existingIds.has(e.id)) { groups[displayRoom].push(e); existingIds.add(e.id); } });
+        delete groups[room];
+      }
+    });
+
     // グループチャット: メンバーからの受信メールと、グループから送信したメールを集約する。
     // 送信メールの判定はDBに何も永続化せず、その都度「宛先セットがメンバー全員と完全一致するか」
     // だけで判定する（Gmail自身が持つToヘッダーの情報だけで完結するため、送信履歴が増えても
