@@ -147,6 +147,16 @@ function stripHtmlQuote(html: string): string {
   return html.slice(0, cut).trim();
 }
 
+// 件名が「Fwd:/Fw:」で始まる、または本文にGmail標準の転送マーカー（"---------- Forwarded
+// message ---------"、日本語版Gmailでもこの部分は英語のまま）が含まれる場合は転送メールとみなす。
+// 転送メールの本文は「引用文」ではなく転送された内容そのものなので、
+// stripHtmlQuote/stripQuotedReply で誤って切り捨てないようにするための判定
+function looksLikeForward(subject: string, bodyForCheck: string): boolean {
+  if (/^\s*(fwd|fw)\s*:/i.test(subject || "")) return true;
+  if (/forwarded message/i.test(bodyForCheck || "")) return true;
+  return false;
+}
+
 // 一部のメール（Yahoo!メールなど）は text/plain パートの生成が壊れており、
 // <style>ブロックの中身（CSSの宣言）がタグなしでそのまま紛れ込んでいることがある。
 // 通常の文章にはまず現れない「セレクタ { プロパティ: 値; ... }」という並びを検出して除去する
@@ -173,7 +183,16 @@ function stripQuotedReply(text: string): string {
   return lines.slice(0, cut).join("\n").trim();
 }
 
-function cleanseBody(text: string): string {
+// &#8199; (10進) や &#x1F680; (16進) のようなHTML数値文字参照をデコードする。
+// マーケティングメールがクリップ回避などの目的で埋め込む大量の不可視文字（figure space等）が
+// 名前付きエンティティのデコードだけでは素通しになり、そのまま文字列として表示されてしまうため
+function decodeNumericEntity(codeStr: string, isHex: boolean): string {
+  const cp = parseInt(codeStr, isHex ? 16 : 10);
+  if (!Number.isFinite(cp) || cp < 0 || cp > 0x10FFFF) return "";
+  try { return String.fromCodePoint(cp); } catch { return ""; }
+}
+
+function cleanseBody(text: string, isForward = false): string {
   if (!text) return "";
   let cleaned = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
   cleaned = cleaned.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
@@ -181,8 +200,11 @@ function cleanseBody(text: string): string {
   cleaned = cleaned.replace(/<\/p>|<\/div>|<\/tr>|<\/li>/gi, "\n");
   cleaned = cleaned.replace(/<[^>]+>/g, "");
   cleaned = cleaned.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&zwnj;/g, "");
+  cleaned = cleaned.replace(/&#(\d+);/g, (_, dec) => decodeNumericEntity(dec, false));
+  cleaned = cleaned.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => decodeNumericEntity(hex, true));
   cleaned = stripLooseCssRules(cleaned);
-  cleaned = stripQuotedReply(cleaned);
+  // 転送メールの本文は引用文ではなく転送された内容そのものなので、誤って切り捨てない
+  if (!isForward) cleaned = stripQuotedReply(cleaned);
   // 各行をトリム → 空白行のみの行を空行に統一 → 連続する空行を1行に圧縮
   cleaned = cleaned.split("\n").map(l => l.trim()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
   return cleaned;
@@ -202,10 +224,12 @@ function parseMessageDetail(message: any) {
   const messageIdHeader = getHeader(headers, "Message-ID") || undefined;
   const inReplyTo = getHeader(headers, "In-Reply-To") || undefined;
   const rawBody = getTextBody(payload) || message.snippet || "";
-  let cleansedBody = cleanseBody(rawBody);
+  const rawHtmlForCheck = getHtmlBody(payload);
+  const isForward = looksLikeForward(subject, rawBody) || looksLikeForward(subject, rawHtmlForCheck);
+  let cleansedBody = cleanseBody(rawBody, isForward);
   // CSSの除去などで本文が空になってしまった場合は、Gmail側で生成されたスニペットに差し替える
-  if (!cleansedBody.trim() && message.snippet) cleansedBody = cleanseBody(message.snippet);
-  const htmlBodyForLinks = stripHtmlQuote(getHtmlBody(payload));
+  if (!cleansedBody.trim() && message.snippet) cleansedBody = cleanseBody(message.snippet, isForward);
+  const htmlBodyForLinks = isForward ? rawHtmlForCheck.trim() : stripHtmlQuote(rawHtmlForCheck);
   const htmlLinks = htmlBodyForLinks ? extractHtmlLinks(htmlBodyForLinks) : [];
 
   const attachments = extractAttachments(payload);
@@ -276,7 +300,10 @@ export async function GET(request: Request) {
       );
       if (!detailRes.ok) return NextResponse.json({ htmlBody: null, hasHtml: false });
       const message = await detailRes.json();
-      const htmlBody = stripHtmlQuote(getHtmlBody(message.payload));
+      const rawHtml = getHtmlBody(message.payload);
+      const subject = decodeMimeHeader(getHeader(message.payload?.headers || [], "Subject"));
+      // 転送メールの場合、本文が「引用文」ではなく転送された内容そのものなので切り捨てない
+      const htmlBody = looksLikeForward(subject, rawHtml) ? rawHtml.trim() : stripHtmlQuote(rawHtml);
       return NextResponse.json({ htmlBody: htmlBody || null, hasHtml: !!htmlBody });
     } catch {
       return NextResponse.json({ htmlBody: null, hasHtml: false });
