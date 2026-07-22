@@ -570,8 +570,7 @@ export default function Home() {
                     const replyTarget = (email.replyToId || email.inReplyTo)
                       ? computed.allUniqueEmails.find((e: any) => (email.replyToId && e.id === email.replyToId) || (email.inReplyTo && e.messageIdHeader === email.inReplyTo))
                       : null;
-                    // 件名は先頭の「Re:」だけ取り除いて表示する（「(件名なし)」等はそのまま表示する）
-                    const displaySubject = (email.subject || "").replace(/^(re:\s*)+/i, "").trim();
+                    const displaySubject = (email.subject || "").trim();
                     const hasVisibleSubject = !!displaySubject;
                     const hasBody = !!email.body && !!email.body.trim();
                     return (
