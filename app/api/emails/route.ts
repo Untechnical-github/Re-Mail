@@ -344,7 +344,7 @@ export async function POST(request: Request) {
 
     // ① メールの送信
     if (action === "send" || !action) {
-      const { to, subject, body, threadId, inReplyTo } = bodyData;
+      const { to, subject, body, bodyHtml, threadId, inReplyTo } = bodyData;
 
       const formattedTo = (to || "").split(',').map((addr: string) => {
         const match = addr.match(/^(.*?)(<[^>]+>)$/);
@@ -370,7 +370,13 @@ export async function POST(request: Request) {
         headerLines.push(`In-Reply-To: ${safeInReplyTo}`);
         headerLines.push(`References: ${safeInReplyTo}`);
       }
-      headerLines.push("Content-Type: text/plain; charset=utf-8", "", body || "");
+      // 転送メールなど、元のHTMLメールをそのまま保持して送りたい場合は bodyHtml を使う
+      // （Gmail転送と同じく体裁・情報の欠落を防ぐため、cleanseBodyで加工したテキストは使わない）
+      if (bodyHtml) {
+        headerLines.push("MIME-Version: 1.0", "Content-Type: text/html; charset=utf-8", "", bodyHtml);
+      } else {
+        headerLines.push("Content-Type: text/plain; charset=utf-8", "", body || "");
+      }
 
       const rawMessage = headerLines.join("\r\n");
       

@@ -1456,12 +1456,33 @@ export function useMailApp() {
     if (!to) return;
 
     const subject = (message.subject || "").startsWith("Fwd:") ? message.subject : `Fwd: ${message.subject || ""}`;
-    const body = `\n\n--- 転送メッセージ ---\n差出人: ${message.from}\n件名: ${message.subject || ""}\n日時: ${new Date(message.date).toLocaleString("ja-JP")}\n\n${message.body || ""}`;
+
+    // Gmailの転送と同じヘッダー体裁（この定型文言自体もGmail準拠。日本語版Gmailでもこの部分は英語のまま）
+    const forwardHeaderText = `---------- Forwarded message ---------\nFrom: ${message.from || ""}\nDate: ${new Date(message.date).toLocaleString("ja-JP")}\nSubject: ${message.subject || ""}\nTo: ${message.to || ""}\n\n\n`;
+
+    // cleanseBodyで加工済みのテキスト本文だと情報が欠落するため、転送時は元のHTML本文を取り直して
+    // そのまま使う（Gmailの転送が体裁・内容を保ったまま転送できているのと同じにするため）
+    let originalHtml: string | null = null;
+    if (typeof message.id === "string" && !message.id.startsWith("fake-")) {
+      try {
+        const htmlRes = await fetch(`/api/emails?messageId=${encodeURIComponent(message.id)}&html=true`);
+        if (htmlRes.ok) {
+          const data = await htmlRes.json();
+          originalHtml = data.htmlBody || null;
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    const bodyText = forwardHeaderText + (message.body || "");
+    const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const bodyHtml = originalHtml
+      ? `<div>${escapeHtml(forwardHeaderText).replace(/\n/g, "<br>")}</div><div>${originalHtml}</div>`
+      : undefined;
 
     try {
       const res = await fetch("/api/emails", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "send", to, subject, body }),
+        body: JSON.stringify({ action: "send", to, subject, body: bodyText, bodyHtml }),
       });
 
       if (!res.ok) {
@@ -1479,7 +1500,7 @@ export function useMailApp() {
           id: sentData.id || `fake-${Date.now()}`,
           threadId: sentData.threadId || "",
           subject, from: session?.user?.email || "自分", to,
-          date: new Date().toUTCString(), body, snippet: body.slice(0, 60),
+          date: new Date().toUTCString(), body: bodyText, snippet: bodyText.slice(0, 60),
           senderRoom: room, isMe: true, labelIds: ["SENT"],
         };
         setEmails(prev => [sentFake, ...prev]);
