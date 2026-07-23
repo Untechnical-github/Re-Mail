@@ -1857,8 +1857,8 @@ export function SearchModal({ app }: { app: any }) {
     openChat(room, { replaceHistory: cameFromModal });
   };
 
-  const handleJumpToMessage = (room: string, msgId: string) => {
-    jumpToSearchResult(room, msgId, keyword);
+  const handleJumpToMessage = (room: string, msgId: string, field: "subject" | "body") => {
+    jumpToSearchResult(room, msgId, keyword, field);
   };
 
   const TABS: [SearchTab, string][] = scope === "all"
@@ -1888,7 +1888,7 @@ export function SearchModal({ app }: { app: any }) {
     </button>
   );
 
-  const renderEmailRow = (email: any) => {
+  const renderEmailRow = (email: any, field: "subject" | "body") => {
     const room = emailRoomMap.get(email.id);
     const info = room ? roomInfoMap.get(room) : undefined;
     const boxName = getSearchBoxInfo(email).name;
@@ -1896,7 +1896,7 @@ export function SearchModal({ app }: { app: any }) {
     return (
       <button
         key={email.id}
-        onClick={() => room && handleJumpToMessage(room, email.id)}
+        onClick={() => room && handleJumpToMessage(room, email.id, field)}
         className="w-full text-left px-3 py-2.5 rounded hover:bg-[#35373C] transition border-b border-[#1E1F22]/50 last:border-0"
       >
         <div className="font-bold text-sm text-white truncate">
@@ -1996,8 +1996,8 @@ export function SearchModal({ app }: { app: any }) {
             <>
               {renderSection("宛先名", sortedRecipients.length, sortedRecipients.map(r => renderRoomRow(r, "label")))}
               {renderSection("アドレス", sortedAddresses.length, sortedAddresses.map(r => renderRoomRow(r, "address")))}
-              {renderSection("件名", sortedSubjects.length, sortedSubjects.map(renderEmailRow))}
-              {renderSection("本文", sortedBodies.length, sortedBodies.map(renderEmailRow))}
+              {renderSection("件名", sortedSubjects.length, sortedSubjects.map(e => renderEmailRow(e, "subject")))}
+              {renderSection("本文", sortedBodies.length, sortedBodies.map(e => renderEmailRow(e, "body")))}
             </>
           )}
           {kwLower && activeTab === "recipient" && (
@@ -2007,10 +2007,10 @@ export function SearchModal({ app }: { app: any }) {
             <div className="bg-[#232428] rounded">{sortedAddresses.map(r => renderRoomRow(r, "address"))}</div>
           )}
           {kwLower && activeTab === "subject" && (
-            <div className="bg-[#232428] rounded">{sortedSubjects.map(renderEmailRow)}</div>
+            <div className="bg-[#232428] rounded">{sortedSubjects.map(e => renderEmailRow(e, "subject"))}</div>
           )}
           {kwLower && activeTab === "body" && (
-            <div className="bg-[#232428] rounded">{sortedBodies.map(renderEmailRow)}</div>
+            <div className="bg-[#232428] rounded">{sortedBodies.map(e => renderEmailRow(e, "body"))}</div>
           )}
         </div>
       </div>

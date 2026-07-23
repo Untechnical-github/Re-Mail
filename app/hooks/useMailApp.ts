@@ -2032,16 +2032,16 @@ export function useMailApp() {
   // 消費してポップされてしまう（＝開いた直後に検索バーが消える不具合の原因だった）。
   // そのため、検索モーダル用のエントリはここで同期的に replaceState で上書きし、
   // go()/back() を一切使わずに済ませる。
-  const jumpToSearchResult = (sender: string, msgId: string, keyword: string) => {
+  const jumpToSearchResult = (sender: string, msgId: string, keyword: string, field: "subject" | "body") => {
     setModal(null);
     setSelectionMode("none");
     setSelectedIds([]);
     // 現在のフィルターでは他の場所（アーカイブ等）に隠れている可能性があるため、reveal 済み扱いにする
     setRevealedCrossPrompts(prev => prev.includes(msgId) ? prev : [...prev, msgId]);
     skipFindBarAutoCloseRef.current = true;
-    // 検索バーは毎回、件名・本文の両方を対象にした状態でフレッシュに開く
-    setFindBarSearchSubjectState(true);
-    setFindBarSearchBodyState(true);
+    // 検索モーダルで実際にクリックした結果（件名タブ/本文タブ）を検索バーにもそのまま引き継ぐ
+    setFindBarSearchSubjectState(field === "subject");
+    setFindBarSearchBodyState(field === "body");
 
     const cameFromModal = typeof window !== "undefined" && window.history.state?.action === "modal";
     // モバイルでは openChat 自身が {chat: sender} を積む。検索モーダルのエントリは
@@ -2057,7 +2057,7 @@ export function useMailApp() {
 
     const kw = keyword.trim().toLowerCase();
     const chronological = [...(groupedEmails[sender] || [])].reverse()
-      .filter((e: any) => (e.subject || "").toLowerCase().includes(kw) || (e.body || "").toLowerCase().includes(kw));
+      .filter((e: any) => field === "subject" ? (e.subject || "").toLowerCase().includes(kw) : (e.body || "").toLowerCase().includes(kw));
     const idx = chronological.findIndex((e: any) => e.id === msgId);
 
     setFindBarKeyword(keyword);
