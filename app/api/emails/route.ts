@@ -191,10 +191,14 @@ function stripQuotedReply(text: string): string {
     return stripped.trim();
   }
   let cut = quoteStart;
-  if (cut > 0) {
-    const prevLine = lines[cut - 1].trim();
-    const looksLikeQuoteHeader = /\d{4}年\d{1,2}月\d{1,2}日|さんは書きました|^on\s.+wrote:?$/i.test(prevLine);
-    if (looksLikeQuoteHeader) cut -= 1;
+  // 日付ヘッダー行と引用本文の間に空行が挟まっていることがあるため、
+  // 直前の1行だけでなく、空行をさかのぼって実際のヘッダー行を探す
+  let headerIdx = cut - 1;
+  while (headerIdx >= 0 && lines[headerIdx].trim() === "") headerIdx--;
+  if (headerIdx >= 0) {
+    const candidateLine = lines[headerIdx].trim();
+    const looksLikeQuoteHeader = /\d{4}年\d{1,2}月\d{1,2}日|さんは書きました|^on\s.+wrote:?$/i.test(candidateLine);
+    if (looksLikeQuoteHeader) cut = headerIdx;
   }
   return lines.slice(0, cut).join("\n").trim();
 }
