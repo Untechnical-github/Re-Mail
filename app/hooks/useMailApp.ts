@@ -54,6 +54,21 @@ function resolveGroupMemberAddresses(cfg: ChatConfig, roomLookup: Record<string,
   return new Set(addresses.map((a: string) => a.toLowerCase()).filter(Boolean));
 }
 
+// 大文字小文字を無視して、text内にkwが出現する回数を数える（検索バーの「1件名あたり複数ヒット」対応用）
+function countOccurrences(text: string, kwLower: string): number {
+  if (!kwLower) return 0;
+  const lower = text.toLowerCase();
+  let count = 0;
+  let pos = 0;
+  while (true) {
+    const idx = lower.indexOf(kwLower, pos);
+    if (idx === -1) break;
+    count++;
+    pos = idx + kwLower.length;
+  }
+  return count;
+}
+
 export function useMailApp() {
   const { data: session, status } = useSession();
   const [emails, setEmails] = useState<any[]>([]);
@@ -1947,31 +1962,39 @@ export function useMailApp() {
     loadingMoreMsgRef.current = false;
   };
 
-  const scrollToMsg = (id: string) => {
+  // markIndex: 同じメッセージ内に複数のハイライト箇所がある場合、その何番目にスクロールするか（省略時は先頭）
+  const scrollToMsg = (id: string, markIndex: number = 0) => {
     // 読み込み直後は要素がまだDOMに反映されていない、あるいはレイアウトが確定していないことがあるため、
     // 2フレーム待ってから実行する（1フレームだけだとスクロール位置がずれてボタンを通り過ぎることがあった）
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         const container = document.getElementById(`msg-${id}`);
         // 検索バーでハイライト中の場合は、メッセージ全体ではなくハイライト箇所自体が画面中央に来るようにする
-        const markEl = container?.querySelector("mark");
-        (markEl || container)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        const marks = container?.querySelectorAll("mark");
+        const target = (marks && marks.length > 0) ? (marks[markIndex] || marks[0]) : container;
+        target?.scrollIntoView({ behavior: "smooth", block: "center" });
       });
     });
   };
 
-  // 検索バー用: 現在開いているチャット内でキーワードに一致するメッセージ一覧
+  // 検索バー用: 現在開いているチャット内でキーワードに一致する「箇所」の一覧
   // （画面表示順＝時系列の古い順。groupedEmails自体は新しい順なので反転させる）
+  // 同じメッセージ内に複数回キーワードが出現する場合、それぞれを別カウントの一致として扱う
+  // （件名内の出現→本文内の出現、の順＝実際にmarkタグがDOM上に現れる順と一致させる）
   // 件名/本文のチェックボックスに応じて、一致判定の対象フィールドを絞り込む
   const findBarMatches = useMemo(() => {
     if (!findBarOpen || !selectedSender) return [];
     const kw = findBarKeyword.trim().toLowerCase();
     if (!kw || (!findBarSearchSubject && !findBarSearchBody)) return [];
     const msgs = groupedEmails[selectedSender] || [];
-    return [...msgs].reverse().filter((e: any) =>
-      (findBarSearchSubject && (e.subject || "").toLowerCase().includes(kw)) ||
-      (findBarSearchBody && (e.body || "").toLowerCase().includes(kw))
-    );
+    const result: { id: string; localIndex: number }[] = [];
+    [...msgs].reverse().forEach((e: any) => {
+      let count = 0;
+      if (findBarSearchSubject) count += countOccurrences(e.subject || "", kw);
+      if (findBarSearchBody) count += countOccurrences(e.body || "", kw);
+      for (let i = 0; i < count; i++) result.push({ id: e.id, localIndex: i });
+    });
+    return result;
   }, [findBarOpen, findBarKeyword, selectedSender, groupedEmails, findBarSearchSubject, findBarSearchBody]);
 
   const goToFindMatch = (index: number) => {
@@ -1981,7 +2004,7 @@ export function useMailApp() {
     const target = findBarMatches[wrapped];
     // 現在のフィルターでは他の場所に隠れている可能性があるため、reveal 済み扱いにする
     setRevealedCrossPrompts(prev => prev.includes(target.id) ? prev : [...prev, target.id]);
-    scrollToMsg(target.id);
+    scrollToMsg(target.id, target.localIndex);
   };
 
   const goToNextFindMatch = () => {
@@ -2053,12 +2076,17 @@ export function useMailApp() {
       window.history.replaceState({ action: "findbar" }, "", window.location.href);
       hasPushedFindBarRef.current = true;
     }
-    scrollToMsg(msgId);
+    // 検索モーダルの結果はメッセージ単位（そのメッセージ内の何番目の出現かは指定されない）なので、
+    // 該当メッセージの中では先頭（0番目）の出現位置へスクロールする
+    scrollToMsg(msgId, 0);
 
     const kw = keyword.trim().toLowerCase();
-    const chronological = [...(groupedEmails[sender] || [])].reverse()
-      .filter((e: any) => field === "subject" ? (e.subject || "").toLowerCase().includes(kw) : (e.body || "").toLowerCase().includes(kw));
-    const idx = chronological.findIndex((e: any) => e.id === msgId);
+    const occurrences: { id: string }[] = [];
+    [...(groupedEmails[sender] || [])].reverse().forEach((e: any) => {
+      const count = countOccurrences(field === "subject" ? (e.subject || "") : (e.body || ""), kw);
+      for (let i = 0; i < count; i++) occurrences.push({ id: e.id });
+    });
+    const idx = occurrences.findIndex((o) => o.id === msgId);
 
     setFindBarKeyword(keyword);
     setFindBarOpen(true);
