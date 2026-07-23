@@ -6,7 +6,7 @@ import { generateVideoThumbnail } from "./lib/videoThumbnail";
 import { signIn, signOut } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
-import { Modals, EmailModal, AttachmentModal } from "./components/Modals";
+import { Modals, EmailModal, AttachmentModal, SearchModal } from "./components/Modals";
 import { getFileIcon, formatFileSize } from "./components/ui";
 
 function InlineAttachmentImage({ attachment, messageId, cacheKey, onOpen }: {
@@ -183,6 +183,7 @@ export default function Home() {
   return (
     <div className="flex h-[100dvh] w-full bg-[#313338] overflow-hidden text-gray-200 relative select-none" onClick={actions.handleBackgroundClick}>
 <Modals app={app} />
+<SearchModal app={app} />
 <EmailModal app={app} />
 <AttachmentModal app={app} />
 {state.replyNotFoundToast && (
@@ -196,22 +197,22 @@ export default function Home() {
           <div className="p-4 border-b border-[#1E1F22] shadow-sm flex items-center justify-between cursor-default">
             <div className="flex items-center gap-2">
               <div className="w-6 h-6 flex items-center justify-center">
-                {(state.selectionMode !== "none" || state.searchKeyword !== "") && (
+                {state.selectionMode !== "none" && (
                   <button onClick={(e) => { e.stopPropagation(); actions.safeBack(); }} className="text-gray-400 hover:text-white font-bold text-lg transition active:scale-90">←</button>
                 )}
               </div>
               <h1 className="text-xl font-extrabold text-white tracking-wide">Re:Mail</h1>
             </div>
-            <button onClick={(e) => { e.stopPropagation(); signOut({ callbackUrl: "/" }); }} className="text-xs text-gray-400 hover:text-white transition">ログアウト</button>
+            <div className="flex items-center gap-3">
+              <button onClick={(e) => { e.stopPropagation(); actions.setModal({ type: "search", targetMode: "all_chats", targets: [], searchScope: "all" }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="text-gray-400 hover:text-white transition" title="検索">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" /></svg>
+              </button>
+              <button onClick={(e) => { e.stopPropagation(); signOut({ callbackUrl: "/" }); }} className="text-xs text-gray-400 hover:text-white transition">ログアウト</button>
+            </div>
           </div>
 
           <div className="p-3 border-b border-[#1E1F22] bg-[#232428] cursor-default">
-             <div className="relative w-full">
-               <input onClick={(e) => e.stopPropagation()} type="text" placeholder="キーワード検索 (アドレス・件名・本文)..." className="w-full bg-[#1E1F22] text-sm text-gray-300 pl-3 pr-8 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]" value={state.searchKeyword} onChange={(e) => actions.handleSearchChange(e.target.value)} />
-               {state.searchKeyword && <button onClick={(e) => { e.stopPropagation(); actions.safeBack(); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs font-bold px-1 transition">✕</button>}
-             </div>
-             
-             <div className="flex flex-wrap gap-1 text-[11px] mt-2 font-bold">
+             <div className="flex flex-wrap gap-1 text-[11px] font-bold">
                 <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkInbox} onChange={(e) => actions.setCheckInbox(e.target.checked)} className="accent-[#5865F2]" /> 受信箱</label>
                 <label onClick={(e) => e.stopPropagation()} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]"><input type="checkbox" checked={state.checkArchive} onChange={(e) => actions.setCheckArchive(e.target.checked)} className="accent-[#95A5A6]" /> アーカイブ</label>
                 {/* ★修正: 送信済みチェックボックスを並列で追加 */}
@@ -279,22 +280,7 @@ export default function Home() {
               const count = visibleEmails.length;
               const latestDate = latestEmail ? new Date(latestEmail.date).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
 
-              let previewSubject = latestEmail ? (latestEmail.subject || "No Subject") : "";
-              let previewSnippet = "";
-
-              if (latestEmail && state.searchKeyword) {
-                 const kwLower = state.searchKeyword.toLowerCase();
-                 const matched = visibleEmails.find((e: any) => e.subject?.toLowerCase().includes(kwLower) || e.body?.toLowerCase().includes(kwLower) || e.from?.toLowerCase().includes(kwLower) || e.to?.toLowerCase().includes(kwLower));
-                 if (matched) {
-                    previewSubject = matched.subject || "No Subject";
-                    const bodyStr = matched.body || "";
-                    const idx = bodyStr.toLowerCase().indexOf(kwLower);
-                    if (idx !== -1 && !matched.subject?.toLowerCase().includes(kwLower)) {
-                        const start = Math.max(0, idx - 15);
-                        previewSnippet = (start > 0 ? "..." : "") + bodyStr.substring(start, idx + kwLower.length + 20).replace(/\s+/g, " ") + "...";
-                    }
-                 }
-              }
+              const previewSubject = latestEmail ? (latestEmail.subject || "No Subject") : "";
 
               const isChatOnlySent = allEmails.every((e: any) => (e.labelIds?.includes("SENT") || e.isMe) && !e.labelIds?.includes("TRASH"));
 
@@ -419,18 +405,13 @@ export default function Home() {
                       <div className="flex justify-between items-baseline">
                         <div className="flex items-center gap-1 truncate pr-2">
                           {config?.isPinned && <span className="text-[#FEE75C] text-[10px]">📌</span>}
-                          <span className="font-bold text-sm truncate"><HighlightText text={config?.customName || sender} highlight={state.searchKeyword} /></span>
+                          <span className="font-bold text-sm truncate">{config?.customName || sender}</span>
                         </div>
                         <span className="text-[10px] text-gray-500 flex-shrink-0">{latestDate}</span>
                       </div>
                       <div className="text-[10px] text-[#5865F2] font-bold mt-0.5">{isDraft ? "新規作成中" : `${count}件のメッセージ`}</div>
                       <div className="text-xs text-gray-500 truncate mt-0.5">
-                        {isDraft ? "まだメッセージがありません" : (
-                          <>
-                            <HighlightText text={previewSubject} highlight={state.searchKeyword} />
-                            {previewSnippet && <span className="ml-1 text-gray-400">- <HighlightText text={previewSnippet} highlight={state.searchKeyword} /></span>}
-                          </>
-                        )}
+                        {isDraft ? "まだメッセージがありません" : previewSubject}
                       </div>
                     </div>
                   </div>
@@ -475,6 +456,9 @@ export default function Home() {
                     return <span className="text-xs text-gray-500 truncate">{addr}</span>;
                   })()}
                 </div>
+                <button onClick={(e) => { e.stopPropagation(); actions.setModal({ type: "search", targetMode: "current_chat", targets: [state.selectedSender], searchScope: "current_chat" }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="text-gray-400 hover:text-white transition flex-shrink-0" title="検索">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" /></svg>
+                </button>
               </header>
 
               <ActionBar app={app} isChat={false} />
@@ -684,7 +668,7 @@ export default function Home() {
                            >
                               {state.chatConfigs[email.id]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
                               {hasVisibleSubject && (
-                                <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={displaySubject} highlight={state.searchKeyword} /></div>
+                                <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={displaySubject} highlight={state.searchHighlight} /></div>
                               )}
                               <div
                                 style={isCollapsed && state.collapseLinesCount ? {
@@ -695,7 +679,7 @@ export default function Home() {
                                 } : undefined}
                               >
                                 {hasVisibleSubject || hasBody ? (
-                                  <BodyWithLinks text={email.body} highlight={state.searchKeyword} htmlLinks={email.htmlLinks} />
+                                  <BodyWithLinks text={email.body} highlight={state.searchHighlight} htmlLinks={email.htmlLinks} />
                                 ) : (
                                   <span>(件名なし)</span>
                                 )}

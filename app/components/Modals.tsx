@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
-import { BodyWithLinks, getFileIcon, formatFileSize } from "./ui";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
+import { BodyWithLinks, getFileIcon, formatFileSize, HighlightText } from "./ui";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
@@ -1252,7 +1252,7 @@ export function Modals({ app }: { app: any }) {
   const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
 
-  if (!modal) return null;
+  if (!modal || modal.type === "search") return null;
 
   const getActionableEmails = (targets: string[], targetMode: string) => {
     let result: any[] = [];
@@ -1699,6 +1699,315 @@ export function Modals({ app }: { app: any }) {
           );
         })()}
 
+      </div>
+    </div>
+  );
+}
+
+type SearchTab = "all" | "recipient" | "address" | "subject" | "body";
+type SearchSort = "newest" | "oldest" | "kana";
+type BoxKey = "inbox" | "archive" | "sent" | "spam" | "trash";
+
+const SEARCH_BOX_LABELS: Record<BoxKey, string> = {
+  inbox: "受信箱", archive: "アーカイブ", sent: "送信済み", spam: "迷惑メール", trash: "ゴミ箱",
+};
+
+function getSearchBoxInfo(e: any): { key: BoxKey; name: string } {
+  const isTrash = e.labelIds?.includes("TRASH");
+  const isSpam = e.labelIds?.includes("SPAM");
+  const isInbox = e.labelIds?.includes("INBOX");
+  const isSent = e.labelIds?.includes("SENT") || e.isMe;
+  const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
+  const key: BoxKey = isSent ? "sent" : isTrash ? "trash" : isSpam ? "spam" : isInbox ? "inbox" : "archive";
+  return { key, name: SEARCH_BOX_LABELS[key] };
+}
+
+// 検索結果一覧: チャット画面(すべて/宛先名/アドレス/件名/本文)とメッセージ画面(件名/本文のみ)の
+// 両方の検索ボタンから開かれる。既に読み込み済みのデータ(allUniqueEmails/groupedEmails)のみを
+// 対象にしたクライアント側検索で、Gmailへの再取得は行わない。
+export function SearchModal({ app }: { app: any }) {
+  const { modal, chatConfigs, checkInbox, checkArchive, checkSpam, checkTrash, checkSent } = app.state;
+  const { setModal, safeBack, exitAfterAction, openChat, jumpToSearchResult } = app.actions;
+  const { allUniqueEmails, groupedEmails, contactDirectory } = app.computed;
+
+  const active = modal?.type === "search" ? modal : null;
+  const scope: "all" | "current_chat" = active?.searchScope || "all";
+  const currentChatRoom: string | undefined = scope === "current_chat" ? active?.targets?.[0] : undefined;
+
+  const [keyword, setKeyword] = useState("");
+  const [activeTab, setActiveTab] = useState<SearchTab>(scope === "all" ? "all" : "subject");
+  const [sortOrder, setSortOrder] = useState<SearchSort>("newest");
+  const [boxFilter, setBoxFilter] = useState<Record<BoxKey, boolean>>({
+    inbox: checkInbox, archive: checkArchive, sent: checkSent, spam: checkSpam, trash: checkTrash,
+  });
+
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // モーダルが開いた瞬間にタブとキーワードを初期化し、入力欄にフォーカスする
+  useEffect(() => {
+    if (!active) return;
+    setKeyword("");
+    setActiveTab(scope === "all" ? "all" : "subject");
+    setSortOrder("newest");
+    const t = setTimeout(() => inputRef.current?.focus(), 50);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!active]);
+
+  const kwLower = keyword.trim().toLowerCase();
+
+  const roomInfos = useMemo(() => {
+    const infos: { room: string; label: string; address: string | null; isGroup: boolean; latestDate: number }[] = [];
+    (contactDirectory as any[]).forEach(c => {
+      infos.push({ room: c.room, label: c.label, address: c.address || null, isGroup: false, latestDate: c.latestDate });
+    });
+    Object.keys(chatConfigs).forEach(room => {
+      const cfg = chatConfigs[room];
+      if (cfg?.isGroup && (groupedEmails[room] || []).length > 0) {
+        infos.push({
+          room,
+          label: cfg.customName || room,
+          address: null,
+          isGroup: true,
+          latestDate: groupedEmails[room][0]?.date ? new Date(groupedEmails[room][0].date).getTime() : 0,
+        });
+      }
+    });
+    return infos;
+  }, [contactDirectory, chatConfigs, groupedEmails]);
+
+  const roomInfoMap = useMemo(() => new Map(roomInfos.map(r => [r.room, r])), [roomInfos]);
+
+  const emailRoomMap = useMemo(() => {
+    const map = new Map<string, string>();
+    Object.keys(groupedEmails).forEach(room => (groupedEmails[room] || []).forEach((e: any) => map.set(e.id, room)));
+    return map;
+  }, [groupedEmails]);
+
+  const scopedEmails = useMemo(() => {
+    if (scope === "current_chat" && currentChatRoom) return groupedEmails[currentChatRoom] || [];
+    return allUniqueEmails;
+  }, [scope, currentChatRoom, groupedEmails, allUniqueEmails]);
+
+  const recipientMatches = useMemo(() => {
+    if (!kwLower) return [];
+    return roomInfos.filter(r => r.label.toLowerCase().includes(kwLower));
+  }, [roomInfos, kwLower]);
+
+  const addressMatches = useMemo(() => {
+    if (!kwLower) return [];
+    return roomInfos.filter(r => r.address && r.address.toLowerCase().includes(kwLower));
+  }, [roomInfos, kwLower]);
+
+  const subjectMatches = useMemo(() => {
+    if (!kwLower) return [];
+    return scopedEmails.filter((e: any) => {
+      if (!(e.subject || "").toLowerCase().includes(kwLower)) return false;
+      return boxFilter[getSearchBoxInfo(e).key];
+    });
+  }, [scopedEmails, kwLower, boxFilter]);
+
+  const bodyMatches = useMemo(() => {
+    if (!kwLower) return [];
+    return scopedEmails.filter((e: any) => {
+      if (!(e.body || "").toLowerCase().includes(kwLower)) return false;
+      return boxFilter[getSearchBoxInfo(e).key];
+    });
+  }, [scopedEmails, kwLower, boxFilter]);
+
+  const sortRooms = (list: typeof roomInfos, order: SearchSort) => {
+    const arr = [...list];
+    if (order === "kana") arr.sort((a, b) => a.label.localeCompare(b.label, "ja"));
+    else if (order === "oldest") arr.sort((a, b) => a.latestDate - b.latestDate);
+    else arr.sort((a, b) => b.latestDate - a.latestDate);
+    return arr;
+  };
+  const sortEmailsByDate = (list: any[], order: "newest" | "oldest") => {
+    const arr = [...list];
+    arr.sort((a, b) => order === "oldest"
+      ? new Date(a.date).getTime() - new Date(b.date).getTime()
+      : new Date(b.date).getTime() - new Date(a.date).getTime());
+    return arr;
+  };
+
+  const emailSortOrder: "newest" | "oldest" = sortOrder === "kana" ? "newest" : sortOrder;
+  const sortedRecipients = sortRooms(recipientMatches, sortOrder);
+  const sortedAddresses = sortRooms(addressMatches, sortOrder);
+  const sortedSubjects = sortEmailsByDate(subjectMatches, emailSortOrder);
+  const sortedBodies = sortEmailsByDate(bodyMatches, emailSortOrder);
+
+  const getBodySnippet = (body: string) => {
+    const idx = body.toLowerCase().indexOf(kwLower);
+    if (idx === -1) return body.slice(0, 60).replace(/\s+/g, " ");
+    const start = Math.max(0, idx - 20);
+    const end = Math.min(body.length, idx + kwLower.length + 40);
+    return (start > 0 ? "…" : "") + body.slice(start, end).replace(/\s+/g, " ") + (end < body.length ? "…" : "");
+  };
+
+  const handleClose = () => safeBack();
+
+  const handleOpenChat = (room: string) => {
+    exitAfterAction();
+    openChat(room);
+  };
+
+  const handleJumpToMessage = (room: string, msgId: string) => {
+    exitAfterAction();
+    jumpToSearchResult(room, msgId, keyword);
+  };
+
+  const TABS: [SearchTab, string][] = scope === "all"
+    ? [["all", "すべて"], ["recipient", "宛先名"], ["address", "アドレス"], ["subject", "件名"], ["body", "本文"]]
+    : [["subject", "件名"], ["body", "本文"]];
+
+  const showKanaSort = activeTab === "recipient" || activeTab === "address";
+  const showBoxFilter = activeTab === "subject" || activeTab === "body";
+
+  const renderRoomRow = (info: { room: string; label: string; address: string | null }, primary: "label" | "address") => (
+    <button
+      key={info.room}
+      onClick={() => handleOpenChat(info.room)}
+      className="w-full text-left px-3 py-2.5 rounded hover:bg-[#35373C] transition border-b border-[#1E1F22]/50 last:border-0 flex items-center justify-between gap-2"
+    >
+      {primary === "label" ? (
+        <>
+          <span className="font-bold text-sm text-white truncate"><HighlightText text={info.label} highlight={keyword} /></span>
+          {info.address && <span className="text-xs text-gray-500 truncate flex-shrink-0">{info.address}</span>}
+        </>
+      ) : (
+        <>
+          <span className="font-bold text-sm text-white truncate"><HighlightText text={info.address || ""} highlight={keyword} /></span>
+          <span className="text-xs text-gray-500 truncate flex-shrink-0">{info.label}</span>
+        </>
+      )}
+    </button>
+  );
+
+  const renderEmailRow = (email: any) => {
+    const room = emailRoomMap.get(email.id);
+    const info = room ? roomInfoMap.get(room) : undefined;
+    const boxName = getSearchBoxInfo(email).name;
+    const dateStr = new Date(email.date).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    return (
+      <button
+        key={email.id}
+        onClick={() => room && handleJumpToMessage(room, email.id)}
+        className="w-full text-left px-3 py-2.5 rounded hover:bg-[#35373C] transition border-b border-[#1E1F22]/50 last:border-0"
+      >
+        <div className="font-bold text-sm text-white truncate">
+          <HighlightText text={email.subject || "(件名なし)"} highlight={keyword} />
+        </div>
+        {email.body && (
+          <div className="text-xs text-gray-400 truncate mt-0.5">
+            <HighlightText text={getBodySnippet(email.body)} highlight={keyword} />
+          </div>
+        )}
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px] text-gray-500">
+          <span className="truncate max-w-[150px]">{info?.label || room}</span>
+          {info?.address && <span className="truncate max-w-[150px]">{info.address}</span>}
+          <span>{dateStr}</span>
+          <span>{boxName}</span>
+        </div>
+      </button>
+    );
+  };
+
+  const renderSection = (title: string, count: number, body: React.ReactNode) => count > 0 && (
+    <div className="mb-4">
+      <div className="text-xs font-bold text-gray-400 px-1 mb-1">{title} ({count}件)</div>
+      <div className="bg-[#232428] rounded">{body}</div>
+    </div>
+  );
+
+  if (!active) return null;
+
+  const currentTabCount = activeTab === "all"
+    ? sortedRecipients.length + sortedAddresses.length + sortedSubjects.length + sortedBodies.length
+    : activeTab === "recipient" ? sortedRecipients.length
+    : activeTab === "address" ? sortedAddresses.length
+    : activeTab === "subject" ? sortedSubjects.length
+    : sortedBodies.length;
+  const noResults = !!kwLower && currentTabCount === 0;
+
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={handleClose}>
+      <div
+        className="bg-[#313338] rounded-lg shadow-2xl w-full max-w-2xl flex flex-col border border-[#1E1F22]"
+        style={{ maxHeight: "85dvh" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-4 border-b border-[#1E1F22] flex items-center gap-3 flex-shrink-0">
+          <input
+            ref={inputRef}
+            type="text"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="キーワードを入力..."
+            className="flex-1 bg-[#1E1F22] text-sm text-gray-200 px-3 py-2 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
+          />
+          <button onClick={handleClose} className="text-gray-400 hover:text-white text-lg font-bold px-1 transition">×</button>
+        </div>
+
+        <div className="flex gap-1 px-3 pt-2 border-b border-[#1E1F22] flex-shrink-0 overflow-x-auto scrollbar-none">
+          {TABS.map(([tab, label]) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-3 py-1.5 mb-2 rounded text-xs font-bold transition flex-shrink-0 ${activeTab === tab ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#3f4147]"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 px-3 py-2 border-b border-[#1E1F22] flex-shrink-0 bg-[#232428]">
+          <div className="flex gap-1 text-[11px] font-bold">
+            <button onClick={() => setSortOrder("newest")} className={`px-2 py-1 rounded ${sortOrder === "newest" ? "bg-[#5865F2] text-white" : "bg-[#313338] text-gray-400 hover:bg-[#3f4147]"}`}>新しい順</button>
+            <button onClick={() => setSortOrder("oldest")} className={`px-2 py-1 rounded ${sortOrder === "oldest" ? "bg-[#5865F2] text-white" : "bg-[#313338] text-gray-400 hover:bg-[#3f4147]"}`}>古い順</button>
+            {showKanaSort && (
+              <button onClick={() => setSortOrder("kana")} className={`px-2 py-1 rounded ${sortOrder === "kana" ? "bg-[#5865F2] text-white" : "bg-[#313338] text-gray-400 hover:bg-[#3f4147]"}`}>あいうえお順</button>
+            )}
+          </div>
+          {showBoxFilter && (
+            <div className="flex flex-wrap gap-1 text-[11px] font-bold">
+              {(Object.keys(SEARCH_BOX_LABELS) as BoxKey[]).map(key => (
+                <label key={key} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1 rounded hover:bg-[#3f4147]">
+                  <input type="checkbox" checked={boxFilter[key]} onChange={(e) => setBoxFilter(prev => ({ ...prev, [key]: e.target.checked }))} className="accent-[#5865F2]" />
+                  {SEARCH_BOX_LABELS[key]}
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-3 min-h-0">
+          {!kwLower && (
+            <div className="text-center text-sm text-gray-500 py-10">キーワードを入力してください</div>
+          )}
+          {kwLower && noResults && (
+            <div className="text-center text-sm text-gray-500 py-10">見つかりませんでした</div>
+          )}
+          {kwLower && activeTab === "all" && (
+            <>
+              {renderSection("宛先名", sortedRecipients.length, sortedRecipients.map(r => renderRoomRow(r, "label")))}
+              {renderSection("アドレス", sortedAddresses.length, sortedAddresses.map(r => renderRoomRow(r, "address")))}
+              {renderSection("件名", sortedSubjects.length, sortedSubjects.map(renderEmailRow))}
+              {renderSection("本文", sortedBodies.length, sortedBodies.map(renderEmailRow))}
+            </>
+          )}
+          {kwLower && activeTab === "recipient" && (
+            <div className="bg-[#232428] rounded">{sortedRecipients.map(r => renderRoomRow(r, "label"))}</div>
+          )}
+          {kwLower && activeTab === "address" && (
+            <div className="bg-[#232428] rounded">{sortedAddresses.map(r => renderRoomRow(r, "address"))}</div>
+          )}
+          {kwLower && activeTab === "subject" && (
+            <div className="bg-[#232428] rounded">{sortedSubjects.map(renderEmailRow)}</div>
+          )}
+          {kwLower && activeTab === "body" && (
+            <div className="bg-[#232428] rounded">{sortedBodies.map(renderEmailRow)}</div>
+          )}
+        </div>
       </div>
     </div>
   );

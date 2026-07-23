@@ -23,7 +23,7 @@ export type ChatConfig = {
 export type SelectionMode = "none" | "chat_select" | "msg_select" | "chat_hide" | "chat_delete" | "msg_hide" | "msg_delete" | "chat_pin" | "msg_pin" | "chat_reset" | "msg_reset" | "chat_move" | "msg_move";
 
 export type ModalState = {
-  type: "confirm_delete" | "confirm_hide" | "confirm_unhide" | "unhide_select" | "rename" | "confirm_pin" | "confirm_unpin" | "confirm_reset" | "select_move_dest" | "select_move_dest_context" | "confirm_move" | "categorized_action_select" | "select_reply_target" | "compose_new_chat" | "confirm_delete_group";
+  type: "confirm_delete" | "confirm_hide" | "confirm_unhide" | "unhide_select" | "rename" | "confirm_pin" | "confirm_unpin" | "confirm_reset" | "select_move_dest" | "select_move_dest_context" | "confirm_move" | "categorized_action_select" | "select_reply_target" | "compose_new_chat" | "confirm_delete_group" | "search";
   targetMode: "chat" | "msg" | "all_chats" | "current_chat" | "specific_chat";
   targets: any[];
   action?: "pin" | "hide" | "delete" | "move";
@@ -32,4 +32,6 @@ export type ModalState = {
   // forwardMessage を選択した宛先へ転送する（新しいチャットを開いたりグループを作ったりはしない）
   composeMode?: "create" | "forward";
   forwardMessage?: any;
+  // search 用: "all" はチャット画面からの検索（全タブ表示）、"current_chat" はメッセージ画面からの検索（件名/本文タブのみ）
+  searchScope?: "all" | "current_chat";
 } | null;
