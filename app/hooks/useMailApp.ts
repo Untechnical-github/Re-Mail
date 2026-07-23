@@ -87,8 +87,16 @@ export function useMailApp() {
   const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
   const [checkTrash, setCheckTrash] = useState<boolean>(() => getSavedBoxSettings()?.trash ?? false);
   const [checkSent, setCheckSent] = useState<boolean>(() => getSavedBoxSettings()?.sent ?? false);
-  // チャット画面のタブ（個人チャット / グループチャット）
-  const [activeChatTab, setActiveChatTab] = useState<"individual" | "group">("individual");
+  // チャット画面のタブ（個人チャット / グループチャット）。フィルターのチェックボックスと同様、
+  // この端末のブラウザにだけ保存する（D1には保存しない＝他の端末には同期されない）ので、
+  // リロード・タブを閉じる・ログアウトをまたいでも維持されるが、別端末には影響しない
+  const [activeChatTab, setActiveChatTab] = useState<"individual" | "group">(() => {
+    if (typeof window === "undefined") return "individual";
+    return localStorage.getItem("remail_active_chat_tab") === "group" ? "group" : "individual";
+  });
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("remail_active_chat_tab", activeChatTab);
+  }, [activeChatTab]);
   const [currentNextPageToken, setCurrentNextPageToken] = useState<string | null>(null);
   
   const [chatNextPageToken, setChatNextPageToken] = useState<string | null>("FIRST_PAGE");
@@ -1356,7 +1364,15 @@ export function useMailApp() {
   };
 
   const closeEmailModal = () => {
-    setEmailModal(null);
+    // このモーダルを開いた際に積んだ履歴が残ったままだと、閉じた直後にブラウザバックしても
+    // その履歴を消費するだけの「何も起きない1回」になってしまう（もう1回押してようやく
+    // チャット画面から戻れる、という不具合の原因）。履歴が残っていればここで消費しておく
+    const state = window.history.state;
+    if (state && (state.action || state.chat)) {
+      window.history.back(); // popstate側で emailModal のクリアも行われる
+    } else {
+      setEmailModal(null);
+    }
   };
 
   const openAttachmentModal = async (
@@ -1397,6 +1413,12 @@ export function useMailApp() {
   };
 
   const closeAttachmentModal = () => {
+    // closeEmailModal と同じ理由で、開いた際に積んだ履歴が残っていればここで消費する
+    const state = window.history.state;
+    if (state && (state.action || state.chat)) {
+      window.history.back(); // popstate側で attachmentModal のクリアも行われる
+      return;
+    }
     setAttachmentModal(null);
   };
 
