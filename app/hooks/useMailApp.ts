@@ -86,6 +86,9 @@ export function useMailApp() {
   const [findBarOpen, setFindBarOpen] = useState(false);
   const [findBarKeyword, setFindBarKeyword] = useState("");
   const [findBarMatchIndex, setFindBarMatchIndex] = useState(-1);
+  // 検索バーの対象フィールド（件名/本文）。両方ONなら両方、片方だけなら片方の中のみを検索・ハイライト対象にする
+  const [findBarSearchSubject, setFindBarSearchSubjectState] = useState(true);
+  const [findBarSearchBody, setFindBarSearchBodyState] = useState(true);
   const skipFindBarAutoCloseRef = useRef(false);
   const hasPushedFindBarRef = useRef(false);
   const [checkInbox, setCheckInbox] = useState<boolean>(() => getSavedBoxSettings()?.inbox ?? true);
@@ -103,6 +106,38 @@ export function useMailApp() {
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("remail_active_chat_tab", activeChatTab);
   }, [activeChatTab]);
+
+  // タブ（個人/グループ）ごとに一覧のスクロール位置を独立して保持する。
+  // 切り替え前に必ず「今表示しているタブ」のスクロール位置を保存してから切り替える
+  // （切り替え後に読み取ると、DOMは既に新タブの中身になっており、スクロール量も
+  //   短い一覧に合わせてブラウザ側でクランプされてしまっていることがあるため）
+  const changeChatTab = (newTab: "individual" | "group") => {
+    if (newTab === activeChatTab) return;
+    if (typeof window !== "undefined") {
+      const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
+      if (asideEl) localStorage.setItem(`remail_scroll_aside_${activeChatTab}`, (asideEl as HTMLElement).scrollTop.toString());
+    }
+    setActiveChatTab(newTab);
+  };
+
+  // 切り替え後、そのタブ自身の保存済みスクロール位置を復元する
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    requestAnimationFrame(() => {
+      const saved = localStorage.getItem(`remail_scroll_aside_${activeChatTab}`);
+      const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
+      if (asideEl) (asideEl as HTMLElement).scrollTop = saved ? parseInt(saved, 10) : 0;
+    });
+  }, [activeChatTab]);
+
+  // 開いているメッセージ画面がグループチャットか個人チャットかに応じて、
+  // チャット一覧のタブも自動的に合わせる（一覧から今開いているチャットが消えないように）
+  useEffect(() => {
+    if (!selectedSender) return;
+    const wantTab: "individual" | "group" = chatConfigs[selectedSender]?.isGroup ? "group" : "individual";
+    if (wantTab !== activeChatTab) changeChatTab(wantTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSender, chatConfigs]);
   const [currentNextPageToken, setCurrentNextPageToken] = useState<string | null>(null);
   
   const [chatNextPageToken, setChatNextPageToken] = useState<string | null>("FIRST_PAGE");
@@ -238,7 +273,7 @@ export function useMailApp() {
     const handleStateSave = () => {
       const asideEl = document.querySelector("aside > div.flex-1");
       const mainEl = document.querySelector("main > div.flex-1");
-      if (asideEl) localStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
+      if (asideEl) localStorage.setItem(`remail_scroll_aside_${activeChatTab}`, asideEl.scrollTop.toString());
       if (mainEl) localStorage.setItem("remail_scroll_main", mainEl.scrollTop.toString());
 
       // 表示中のモーダル・選択中の内容・作成中の返信もリロード/タブを閉じた後に復元できるよう保存する。
@@ -280,7 +315,7 @@ export function useMailApp() {
       window.removeEventListener("pagehide", handleStateSave);
       document.removeEventListener("visibilitychange", handleVisibilityHidden);
     };
-  }, [selectedSender, selectionMode, selectedIds, modal, renameInput, resetOptions, moveDestination, replySubject, replyBody, replyToMessage, emailModal, attachmentModal]);
+  }, [selectedSender, selectionMode, selectedIds, modal, renameInput, resetOptions, moveDestination, replySubject, replyBody, replyToMessage, emailModal, attachmentModal, activeChatTab]);
 
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
@@ -496,14 +531,14 @@ export function useMailApp() {
   useEffect(() => {
     if (!selectedSender && isMobile) {
       setTimeout(() => {
-        const asideScroll = localStorage.getItem("remail_scroll_aside");
+        const asideScroll = localStorage.getItem(`remail_scroll_aside_${activeChatTab}`);
         const asideEl = document.querySelector("aside > div.flex-1");
         if (asideScroll && asideEl) {
           asideEl.scrollTop = parseInt(asideScroll, 10);
         }
       }, 50);
     }
-  }, [selectedSender, isMobile]);
+  }, [selectedSender, isMobile, activeChatTab]);
 
   const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, archive: true, spam: false, trash: false, sent: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emailsRef.current, getIsCancelled = () => false, isInitLoad = false) => {
     // ★修正: flags.sent も判定に含めることで、「送信済みのみ」チェック時にAPIが空振りするのを防ぐ
@@ -666,7 +701,7 @@ export function useMailApp() {
           } catch (e) { console.error(e); }
 
           setTimeout(() => {
-            const asideScroll = localStorage.getItem("remail_scroll_aside");
+            const asideScroll = localStorage.getItem(`remail_scroll_aside_${activeChatTab}`);
             const mainScroll = localStorage.getItem("remail_scroll_main");
             const asideEl = document.querySelector("aside > div.flex-1");
             const mainEl = document.querySelector("main > div.flex-1");
@@ -1182,7 +1217,7 @@ export function useMailApp() {
       localStorage.setItem("remail_selected_sender", sender);
       localStorage.removeItem("remail_scroll_main");
       const asideEl = document.querySelector("aside > div.flex-1");
-      if (asideEl) localStorage.setItem("remail_scroll_aside", asideEl.scrollTop.toString());
+      if (asideEl) localStorage.setItem(`remail_scroll_aside_${activeChatTab}`, asideEl.scrollTop.toString());
     }
     setReplyToMessage(null);
     setMsgStatusMessage(null);
@@ -1917,20 +1952,27 @@ export function useMailApp() {
     // 2フレーム待ってから実行する（1フレームだけだとスクロール位置がずれてボタンを通り過ぎることがあった）
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        document.getElementById(`msg-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        const container = document.getElementById(`msg-${id}`);
+        // 検索バーでハイライト中の場合は、メッセージ全体ではなくハイライト箇所自体が画面中央に来るようにする
+        const markEl = container?.querySelector("mark");
+        (markEl || container)?.scrollIntoView({ behavior: "smooth", block: "center" });
       });
     });
   };
 
   // 検索バー用: 現在開いているチャット内でキーワードに一致するメッセージ一覧
   // （画面表示順＝時系列の古い順。groupedEmails自体は新しい順なので反転させる）
+  // 件名/本文のチェックボックスに応じて、一致判定の対象フィールドを絞り込む
   const findBarMatches = useMemo(() => {
     if (!findBarOpen || !selectedSender) return [];
     const kw = findBarKeyword.trim().toLowerCase();
-    if (!kw) return [];
+    if (!kw || (!findBarSearchSubject && !findBarSearchBody)) return [];
     const msgs = groupedEmails[selectedSender] || [];
-    return [...msgs].reverse().filter((e: any) => (e.subject || "").toLowerCase().includes(kw) || (e.body || "").toLowerCase().includes(kw));
-  }, [findBarOpen, findBarKeyword, selectedSender, groupedEmails]);
+    return [...msgs].reverse().filter((e: any) =>
+      (findBarSearchSubject && (e.subject || "").toLowerCase().includes(kw)) ||
+      (findBarSearchBody && (e.body || "").toLowerCase().includes(kw))
+    );
+  }, [findBarOpen, findBarKeyword, selectedSender, groupedEmails, findBarSearchSubject, findBarSearchBody]);
 
   const goToFindMatch = (index: number) => {
     if (findBarMatches.length === 0) return;
@@ -1954,6 +1996,16 @@ export function useMailApp() {
 
   const updateFindBarKeyword = (val: string) => {
     setFindBarKeyword(val);
+    setFindBarMatchIndex(-1);
+  };
+
+  const setFindBarSearchSubject = (checked: boolean) => {
+    setFindBarSearchSubjectState(checked);
+    setFindBarMatchIndex(-1);
+  };
+
+  const setFindBarSearchBody = (checked: boolean) => {
+    setFindBarSearchBodyState(checked);
     setFindBarMatchIndex(-1);
   };
 
@@ -1987,6 +2039,9 @@ export function useMailApp() {
     // 現在のフィルターでは他の場所（アーカイブ等）に隠れている可能性があるため、reveal 済み扱いにする
     setRevealedCrossPrompts(prev => prev.includes(msgId) ? prev : [...prev, msgId]);
     skipFindBarAutoCloseRef.current = true;
+    // 検索バーは毎回、件名・本文の両方を対象にした状態でフレッシュに開く
+    setFindBarSearchSubjectState(true);
+    setFindBarSearchBodyState(true);
 
     const cameFromModal = typeof window !== "undefined" && window.history.state?.action === "modal";
     // モバイルでは openChat 自身が {chat: sender} を積む。検索モーダルのエントリは
@@ -2131,14 +2186,15 @@ export function useMailApp() {
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
       replyNotFoundToast, draftChats, activeChatTab,
-      findBarOpen, findBarKeyword, findBarMatchIndex,
+      findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody,
     },
     actions: {
-      setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setActiveChatTab,
+      setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, changeChatTab,
       setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleMenuBarClick, handleBackgroundClick, toggleSelection,
       jumpToSearchResult, updateFindBarKeyword, goToNextFindMatch, goToPrevFindMatch, closeFindBar,
+      setFindBarSearchSubject, setFindBarSearchBody,
       handleSend, executePin, executeConfirmedAction,
       openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, exitAfterAction, enterSelectionMode, executeBatchMove,
       setChatCacheLimit,
