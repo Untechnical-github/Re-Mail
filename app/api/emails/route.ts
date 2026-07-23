@@ -167,21 +167,30 @@ function stripLooseCssRules(text: string): string {
   return text.replace(/[^\n{}]{0,80}\{\s*(?:[\w-]+\s*:\s*[^;{}]+;\s*)+\}/g, "");
 }
 
-// 返信メールの末尾に自動付与される「引用元」ブロック（Gmailの
-// 「YYYY年M月D日(曜) H:MM 差出人 <email>:」+「> 本文」形式、および
-// 英語版の「On ... wrote:」形式）を検出して取り除く。
+// 返信メールの末尾に自動付与される「引用元」ブロックを検出して取り除く。
 // チャットUIでは代わりに「どのメッセージへの返信か」を専用のチップで表示するため、
-// 本文側にこの定型引用文が残っていると二重表示・ノイズになる
+// 本文側にこの定型引用文が残っていると二重表示・ノイズになる。
+// メールクライアントごとに「YYYY年M月D日(曜) H:MM 差出人:」「On ... wrote:」
+// 「差出人さんは書きました:」等、引用ヘッダーの文言はまちまちだが、引用本文自体は
+// どのクライアントも共通して各行を "> " で始める（RFC的な慣習）ため、
+// 特定の文言にマッチさせるのではなく、最初に現れる "> " 行を引用ブロックの開始とみなし、
+// その直前の行が引用ヘッダーらしければ一緒に切り落とす、という汎用的な方式にする
 function stripQuotedReply(text: string): string {
   if (!text) return text;
-  let stripped = text.replace(/\n{0,2}\d{4}年\d{1,2}月\d{1,2}日\([日月火水木金土]\)\s*\d{1,2}:\d{2}\s+[^\n]*?:\s*[\s\S]*$/, "");
-  stripped = stripped.replace(/\n{0,2}On\s.{0,150}?wrote:\s*[\s\S]*$/i, "");
-  // 上記の定型文に一致しなくても、末尾に「>」始まりの引用行が続く場合は削る
-  const lines = stripped.split("\n");
-  let cut = lines.length;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const l = lines[i].trim();
-    if (l === "" || l.startsWith(">")) { cut = i; } else { break; }
+  const lines = text.split("\n");
+  let quoteStart = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^>/.test(lines[i].trim())) { quoteStart = i; break; }
+  }
+  if (quoteStart === -1) {
+    // ">" 引用が見当たらなくても、定番の英語ヘッダーだけは保険として除去する
+    return text.replace(/\n{0,2}On\s.{0,150}?wrote:\s*[\s\S]*$/i, "").trim();
+  }
+  let cut = quoteStart;
+  if (cut > 0) {
+    const prevLine = lines[cut - 1].trim();
+    const looksLikeQuoteHeader = /\d{4}年\d{1,2}月\d{1,2}日|さんは書きました|^on\s.+wrote:?$/i.test(prevLine);
+    if (looksLikeQuoteHeader) cut -= 1;
   }
   return lines.slice(0, cut).join("\n").trim();
 }
@@ -229,14 +238,19 @@ function parseMessageDetail(message: any) {
   const messageIdHeader = getHeader(headers, "Message-ID") || undefined;
   const rawBody = getTextBody(payload) || message.snippet || "";
   const rawHtmlForCheck = getHtmlBody(payload);
-  const isForward = looksLikeForward(subject, rawBody) || looksLikeForward(subject, rawHtmlForCheck);
+  // HTML側は引用が "> " ではなく <blockquote>/gmail_quote 等のタグで表現されるため、
+  // 先に引用部分を取り除いた「自分の文章」だけを転送判定に使う。
+  // そうしないと、転送メールへの返信（引用としてFwd内容がHTML側に残る）まで
+  // 転送メール扱いされてしまう
+  const htmlOwnContent = stripHtmlQuote(rawHtmlForCheck);
+  const isForward = looksLikeForward(subject, rawBody) || looksLikeForward(subject, htmlOwnContent);
   // 転送メールはGmail側の都合でIn-Reply-Toが付与されていることがあるが、
   // 会話上の「返信」ではなく別内容の転送なので、re:mail側の返信チップは出さない
   const inReplyTo = isForward ? undefined : (getHeader(headers, "In-Reply-To") || undefined);
   let cleansedBody = cleanseBody(rawBody, isForward);
   // CSSの除去などで本文が空になってしまった場合は、Gmail側で生成されたスニペットに差し替える
   if (!cleansedBody.trim() && message.snippet) cleansedBody = cleanseBody(message.snippet, isForward);
-  const htmlBodyForLinks = isForward ? rawHtmlForCheck.trim() : stripHtmlQuote(rawHtmlForCheck);
+  const htmlBodyForLinks = isForward ? rawHtmlForCheck.trim() : htmlOwnContent;
   const htmlLinks = htmlBodyForLinks ? extractHtmlLinks(htmlBodyForLinks) : [];
 
   const attachments = extractAttachments(payload);
