@@ -830,8 +830,8 @@ export function EmailModal({ app }: { app: any }) {
             />
           )}
           {showText && (
-            <div className="overflow-y-auto h-full p-4">
-              <pre className="text-gray-200 text-sm whitespace-pre-wrap break-words font-sans leading-relaxed select-text">
+            <div className="overflow-y-auto h-full p-4 bg-white">
+              <pre className="text-gray-800 text-sm whitespace-pre-wrap break-words font-sans leading-relaxed select-text">
                 <BodyWithLinks text={email.body || ""} />
               </pre>
             </div>
