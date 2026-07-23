@@ -2,24 +2,66 @@
 
 import React, { useState } from "react";
 
-export const HighlightText = ({ text, highlight }: { text: string, highlight: string }) => {
+// field/matchCountBefore/activeField/activeIndex は、メッセージ画面の検索バーで
+// 「今対象として表示されている一致箇所」だけをオレンジにするための仕組み。
+// matchCountBefore はこの text より前（同じfield内の前のセグメント）に何件既に一致があったかを表し、
+// 各 <mark> のグローバルな出現番号 = matchCountBefore + このtext内でのローカルな出現番号 で判定する
+export const HighlightText = ({ text, highlight, field, matchCountBefore = 0, activeField, activeIndex }: {
+  text: string;
+  highlight: string;
+  field?: "subject" | "body";
+  matchCountBefore?: number;
+  activeField?: "subject" | "body";
+  activeIndex?: number;
+}) => {
   if (!highlight) return <>{text}</>;
   const parts = text.split(new RegExp(`(${highlight})`, 'gi'));
+  let localMatchIdx = 0;
   return (
     <>
-      {parts.map((part, i) =>
-        part.toLowerCase() === highlight.toLowerCase()
-          ? <mark key={i} className="bg-[#FEE75C] text-black font-bold px-0.5 rounded-sm">{part}</mark>
-          : part
-      )}
+      {parts.map((part, i) => {
+        if (part.toLowerCase() !== highlight.toLowerCase()) return part;
+        const globalIdx = matchCountBefore + localMatchIdx;
+        localMatchIdx++;
+        const isActive = field !== undefined && activeField === field && activeIndex === globalIdx;
+        return (
+          <mark
+            key={i}
+            data-field={field}
+            data-match-index={globalIdx}
+            className={isActive ? "bg-[#FFA500] text-black font-bold px-0.5 rounded-sm" : "bg-[#FEE75C] text-black font-bold px-0.5 rounded-sm"}
+          >
+            {part}
+          </mark>
+        );
+      })}
     </>
   );
 };
 
-export function BodyWithLinks({ text, highlight, htmlLinks }: {
+// text内でhighlightが大文字小文字区別なく出現する回数を数える（BodyWithLinksでのセグメントごとの件数集計用）
+function countHighlightOccurrences(text: string, highlight: string): number {
+  if (!highlight) return 0;
+  const lower = text.toLowerCase();
+  const kw = highlight.toLowerCase();
+  let count = 0;
+  let pos = 0;
+  while (true) {
+    const idx = lower.indexOf(kw, pos);
+    if (idx === -1) break;
+    count++;
+    pos = idx + kw.length;
+  }
+  return count;
+}
+
+export function BodyWithLinks({ text, highlight, htmlLinks, field, activeField, activeIndex }: {
   text: string;
   highlight?: string;
   htmlLinks?: Array<{ text: string; href: string }>;
+  field?: "subject" | "body";
+  activeField?: "subject" | "body";
+  activeIndex?: number;
 }) {
   const [preview, setPreview] = useState<{ url: string; x: number; y: number } | null>(null);
 
@@ -66,12 +108,15 @@ export function BodyWithLinks({ text, highlight, htmlLinks }: {
 
   const parts: React.ReactNode[] = [];
   let lastIdx = 0;
+  // 分割された各セグメントより前に既に何件一致したかを追跡する（オレンジ表示位置の判定用）
+  let matchesSoFar = 0;
 
   for (const r of ranges) {
     if (r.start < lastIdx) continue;
     if (r.start > lastIdx) {
       const seg = src.slice(lastIdx, r.start);
-      parts.push(highlight ? <HighlightText key={`t-${lastIdx}`} text={seg} highlight={highlight} /> : seg);
+      parts.push(highlight ? <HighlightText key={`t-${lastIdx}`} text={seg} highlight={highlight} field={field} matchCountBefore={matchesSoFar} activeField={activeField} activeIndex={activeIndex} /> : seg);
+      if (highlight) matchesSoFar += countHighlightOccurrences(seg, highlight);
     }
     if (r.kind === "url") {
       const url = r.url;
@@ -86,9 +131,10 @@ export function BodyWithLinks({ text, highlight, htmlLinks }: {
           }}
           onMouseLeave={() => setPreview(null)}
         >
-          {highlight ? <HighlightText text={url} highlight={highlight} /> : url}
+          {highlight ? <HighlightText text={url} highlight={highlight} field={field} matchCountBefore={matchesSoFar} activeField={activeField} activeIndex={activeIndex} /> : url}
         </a>
       );
+      if (highlight) matchesSoFar += countHighlightOccurrences(url, highlight);
       if (r.trailing) parts.push(r.trailing);
       lastIdx = r.rawEnd;
     } else {
@@ -105,16 +151,17 @@ export function BodyWithLinks({ text, highlight, htmlLinks }: {
           }}
           onMouseLeave={() => setPreview(null)}
         >
-          {highlight ? <HighlightText text={r.linkText} highlight={highlight} /> : r.linkText}
+          {highlight ? <HighlightText text={r.linkText} highlight={highlight} field={field} matchCountBefore={matchesSoFar} activeField={activeField} activeIndex={activeIndex} /> : r.linkText}
         </a>
       );
+      if (highlight) matchesSoFar += countHighlightOccurrences(r.linkText, highlight);
       lastIdx = r.end;
     }
   }
 
   if (lastIdx < src.length) {
     const remaining = src.slice(lastIdx);
-    parts.push(highlight ? <HighlightText key="t-tail" text={remaining} highlight={highlight} /> : remaining);
+    parts.push(highlight ? <HighlightText key="t-tail" text={remaining} highlight={highlight} field={field} matchCountBefore={matchesSoFar} activeField={activeField} activeIndex={activeIndex} /> : remaining);
   }
 
   let domain = "";

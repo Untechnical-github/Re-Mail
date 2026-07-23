@@ -54,6 +54,18 @@ function resolveGroupMemberAddresses(cfg: ChatConfig, roomLookup: Record<string,
   return new Set(addresses.map((a: string) => a.toLowerCase()).filter(Boolean));
 }
 
+type FindBarBoxKey = "inbox" | "archive" | "sent" | "spam" | "trash";
+
+// メッセージがどの場所（受信箱・アーカイブ等）に属するかを判定する（検索バーの場所フィルター用）
+function getFindBarBoxKey(e: any): FindBarBoxKey {
+  const isTrash = e.labelIds?.includes("TRASH");
+  const isSpam = e.labelIds?.includes("SPAM");
+  const isInbox = e.labelIds?.includes("INBOX");
+  const isSent = e.labelIds?.includes("SENT") || e.isMe;
+  const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
+  return isSent ? "sent" : isTrash ? "trash" : isSpam ? "spam" : isInbox ? "inbox" : "archive";
+}
+
 // 大文字小文字を無視して、text内にkwが出現する回数を数える（検索バーの「1件名あたり複数ヒット」対応用）
 function countOccurrences(text: string, kwLower: string): number {
   if (!kwLower) return 0;
@@ -96,14 +108,18 @@ export function useMailApp() {
   });
   
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  // 検索モーダルからメッセージへジャンプした際に、メッセージ画面上部に表示する
-  // Ctrl+F風の検索バー（キーワードのハイライト・上下移動を兼ねる）
+  // メッセージ画面上部に表示するCtrl+F風の検索バー（キーワードのハイライト・上下移動を兼ねる）。
+  // 検索モーダルの結果からジャンプして開く場合と、メッセージ画面の検索ボタンから直接開く場合がある
   const [findBarOpen, setFindBarOpen] = useState(false);
   const [findBarKeyword, setFindBarKeyword] = useState("");
   const [findBarMatchIndex, setFindBarMatchIndex] = useState(-1);
   // 検索バーの対象フィールド（件名/本文）。両方ONなら両方、片方だけなら片方の中のみを検索・ハイライト対象にする
   const [findBarSearchSubject, setFindBarSearchSubjectState] = useState(true);
   const [findBarSearchBody, setFindBarSearchBodyState] = useState(true);
+  // 検索バー独自の場所フィルター（既存のチェックボックスとは非同期＝別管理）。件名/本文の絞り込みとは別枠で表示する
+  const [findBarBoxFilter, setFindBarBoxFilter] = useState<Record<"inbox" | "archive" | "sent" | "spam" | "trash", boolean>>({
+    inbox: true, archive: true, sent: true, spam: true, trash: true,
+  });
   const skipFindBarAutoCloseRef = useRef(false);
   const hasPushedFindBarRef = useRef(false);
   const [checkInbox, setCheckInbox] = useState<boolean>(() => getSavedBoxSettings()?.inbox ?? true);
@@ -1962,16 +1978,20 @@ export function useMailApp() {
     loadingMoreMsgRef.current = false;
   };
 
-  // markIndex: 同じメッセージ内に複数のハイライト箇所がある場合、その何番目にスクロールするか（省略時は先頭）
-  const scrollToMsg = (id: string, markIndex: number = 0) => {
+  // field/fieldIndex: 同じメッセージ内に複数のハイライト箇所がある場合、
+  // どのフィールド（件名/本文）の何番目（0始まり）にスクロールするか指定する（省略時は最初に見つかったmark）
+  const scrollToMsg = (id: string, field?: "subject" | "body", fieldIndex?: number) => {
     // 読み込み直後は要素がまだDOMに反映されていない、あるいはレイアウトが確定していないことがあるため、
     // 2フレーム待ってから実行する（1フレームだけだとスクロール位置がずれてボタンを通り過ぎることがあった）
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         const container = document.getElementById(`msg-${id}`);
-        // 検索バーでハイライト中の場合は、メッセージ全体ではなくハイライト箇所自体が画面中央に来るようにする
-        const marks = container?.querySelectorAll("mark");
-        const target = (marks && marks.length > 0) ? (marks[markIndex] || marks[0]) : container;
+        let target: Element | null | undefined = container;
+        if (field !== undefined && fieldIndex !== undefined) {
+          target = container?.querySelector(`mark[data-field="${field}"][data-match-index="${fieldIndex}"]`) || container?.querySelector("mark") || container;
+        } else {
+          target = container?.querySelector("mark") || container;
+        }
         target?.scrollIntoView({ behavior: "smooth", block: "center" });
       });
     });
@@ -1979,23 +1999,29 @@ export function useMailApp() {
 
   // 検索バー用: 現在開いているチャット内でキーワードに一致する「箇所」の一覧
   // （画面表示順＝時系列の古い順。groupedEmails自体は新しい順なので反転させる）
-  // 同じメッセージ内に複数回キーワードが出現する場合、それぞれを別カウントの一致として扱う
-  // （件名内の出現→本文内の出現、の順＝実際にmarkタグがDOM上に現れる順と一致させる）
-  // 件名/本文のチェックボックスに応じて、一致判定の対象フィールドを絞り込む
+  // 同じメッセージ内に複数回キーワードが出現する場合、それぞれを別カウントの一致として扱う。
+  // fieldIndex はそのフィールド（件名/本文）内での出現番号（0始まり）で、
+  // HighlightText/BodyWithLinksが振るdata-match-indexと対応させる
+  // 件名/本文のチェックボックス、および場所フィルター（受信箱/アーカイブ等）で絞り込む
   const findBarMatches = useMemo(() => {
     if (!findBarOpen || !selectedSender) return [];
     const kw = findBarKeyword.trim().toLowerCase();
     if (!kw || (!findBarSearchSubject && !findBarSearchBody)) return [];
     const msgs = groupedEmails[selectedSender] || [];
-    const result: { id: string; localIndex: number }[] = [];
+    const result: { id: string; field: "subject" | "body"; fieldIndex: number }[] = [];
     [...msgs].reverse().forEach((e: any) => {
-      let count = 0;
-      if (findBarSearchSubject) count += countOccurrences(e.subject || "", kw);
-      if (findBarSearchBody) count += countOccurrences(e.body || "", kw);
-      for (let i = 0; i < count; i++) result.push({ id: e.id, localIndex: i });
+      if (!findBarBoxFilter[getFindBarBoxKey(e)]) return;
+      if (findBarSearchSubject) {
+        const count = countOccurrences(e.subject || "", kw);
+        for (let i = 0; i < count; i++) result.push({ id: e.id, field: "subject", fieldIndex: i });
+      }
+      if (findBarSearchBody) {
+        const count = countOccurrences(e.body || "", kw);
+        for (let i = 0; i < count; i++) result.push({ id: e.id, field: "body", fieldIndex: i });
+      }
     });
     return result;
-  }, [findBarOpen, findBarKeyword, selectedSender, groupedEmails, findBarSearchSubject, findBarSearchBody]);
+  }, [findBarOpen, findBarKeyword, selectedSender, groupedEmails, findBarSearchSubject, findBarSearchBody, findBarBoxFilter]);
 
   const goToFindMatch = (index: number) => {
     if (findBarMatches.length === 0) return;
@@ -2004,7 +2030,7 @@ export function useMailApp() {
     const target = findBarMatches[wrapped];
     // 現在のフィルターでは他の場所に隠れている可能性があるため、reveal 済み扱いにする
     setRevealedCrossPrompts(prev => prev.includes(target.id) ? prev : [...prev, target.id]);
-    scrollToMsg(target.id, target.localIndex);
+    scrollToMsg(target.id, target.field, target.fieldIndex);
   };
 
   const goToNextFindMatch = () => {
@@ -2032,6 +2058,11 @@ export function useMailApp() {
     setFindBarMatchIndex(-1);
   };
 
+  const setFindBarBox = (key: "inbox" | "archive" | "sent" | "spam" | "trash", checked: boolean) => {
+    setFindBarBoxFilter(prev => ({ ...prev, [key]: checked }));
+    setFindBarMatchIndex(-1);
+  };
+
   const closeFindBar = () => {
     setFindBarOpen(false);
     setFindBarKeyword("");
@@ -2041,6 +2072,22 @@ export function useMailApp() {
       if (window.history.state?.action === "findbar") {
         window.history.back();
       }
+    }
+  };
+
+  // メッセージ画面の検索ボタンから、モーダルを介さず直接検索バーを開く
+  const openFindBar = () => {
+    if (!selectedSender) return;
+    setFindBarKeyword("");
+    setFindBarMatchIndex(-1);
+    setFindBarSearchSubjectState(true);
+    setFindBarSearchBodyState(true);
+    // 既存のチェックボックスとは非同期（別管理）だが、開いた時点の状態を初期値として引き継ぐ
+    setFindBarBoxFilter({ inbox: checkInbox, archive: checkArchive, sent: checkSent, spam: checkSpam, trash: checkTrash });
+    setFindBarOpen(true);
+    if (typeof window !== "undefined" && window.history.state?.action !== "findbar") {
+      window.history.pushState({ action: "findbar" }, "", window.location.href);
+      hasPushedFindBarRef.current = true;
     }
   };
 
@@ -2065,6 +2112,9 @@ export function useMailApp() {
     // 検索モーダルで実際にクリックした結果（件名タブ/本文タブ）を検索バーにもそのまま引き継ぐ
     setFindBarSearchSubjectState(field === "subject");
     setFindBarSearchBodyState(field === "body");
+    // 検索バー独自の場所フィルターは、ジャンプ先のメッセージを誤って除外しないよう全てONにリセットする
+    // （検索モーダル側の場所フィルターは既に別に適用済みのため、ここでは絞り込みは引き継がない）
+    setFindBarBoxFilter({ inbox: true, archive: true, sent: true, spam: true, trash: true });
 
     const cameFromModal = typeof window !== "undefined" && window.history.state?.action === "modal";
     // モバイルでは openChat 自身が {chat: sender} を積む。検索モーダルのエントリは
@@ -2078,7 +2128,7 @@ export function useMailApp() {
     }
     // 検索モーダルの結果はメッセージ単位（そのメッセージ内の何番目の出現かは指定されない）なので、
     // 該当メッセージの中では先頭（0番目）の出現位置へスクロールする
-    scrollToMsg(msgId, 0);
+    scrollToMsg(msgId, field, 0);
 
     const kw = keyword.trim().toLowerCase();
     const occurrences: { id: string }[] = [];
@@ -2214,15 +2264,15 @@ export function useMailApp() {
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
       replyNotFoundToast, draftChats, activeChatTab,
-      findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody,
+      findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
     actions: {
       setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, changeChatTab,
       setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleMenuBarClick, handleBackgroundClick, toggleSelection,
-      jumpToSearchResult, updateFindBarKeyword, goToNextFindMatch, goToPrevFindMatch, closeFindBar,
-      setFindBarSearchSubject, setFindBarSearchBody,
+      jumpToSearchResult, updateFindBarKeyword, goToNextFindMatch, goToPrevFindMatch, closeFindBar, openFindBar,
+      setFindBarSearchSubject, setFindBarSearchBody, setFindBarBox,
       handleSend, executePin, executeConfirmedAction,
       openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, exitAfterAction, enterSelectionMode, executeBatchMove,
       setChatCacheLimit,

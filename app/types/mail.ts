@@ -32,6 +32,4 @@ export type ModalState = {
   // forwardMessage を選択した宛先へ転送する（新しいチャットを開いたりグループを作ったりはしない）
   composeMode?: "create" | "forward";
   forwardMessage?: any;
-  // search 用: "all" はチャット画面からの検索（全タブ表示）、"current_chat" はメッセージ画面からの検索（件名/本文タブのみ）
-  searchScope?: "all" | "current_chat";
 } | null;

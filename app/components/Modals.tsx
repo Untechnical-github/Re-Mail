@@ -1722,20 +1722,19 @@ function getSearchBoxInfo(e: any): { key: BoxKey; name: string } {
   return { key, name: SEARCH_BOX_LABELS[key] };
 }
 
-// 検索結果一覧: チャット画面(すべて/宛先名/アドレス/件名/本文)とメッセージ画面(件名/本文のみ)の
-// 両方の検索ボタンから開かれる。既に読み込み済みのデータ(allUniqueEmails/groupedEmails)のみを
-// 対象にしたクライアント側検索で、Gmailへの再取得は行わない。
+// 検索結果一覧: チャット画面の検索ボタンから開かれる（すべて/宛先名/アドレス/件名/本文の5タブ）。
+// メッセージ画面の検索は、このモーダルを経由せずメッセージ画面上部の検索バー（Ctrl+F風）で直接行う。
+// 既に読み込み済みのデータ(allUniqueEmails/groupedEmails)のみを対象にしたクライアント側検索で、
+// Gmailへの再取得は行わない。
 export function SearchModal({ app }: { app: any }) {
   const { modal, chatConfigs, checkInbox, checkArchive, checkSpam, checkTrash, checkSent } = app.state;
   const { setModal, safeBack, openChat, jumpToSearchResult } = app.actions;
   const { allUniqueEmails, groupedEmails, contactDirectory } = app.computed;
 
   const active = modal?.type === "search" ? modal : null;
-  const scope: "all" | "current_chat" = active?.searchScope || "all";
-  const currentChatRoom: string | undefined = scope === "current_chat" ? active?.targets?.[0] : undefined;
 
   const [keyword, setKeyword] = useState("");
-  const [activeTab, setActiveTab] = useState<SearchTab>(scope === "all" ? "all" : "subject");
+  const [activeTab, setActiveTab] = useState<SearchTab>("all");
   const [sortOrder, setSortOrder] = useState<SearchSort>("newest");
   const [boxFilter, setBoxFilter] = useState<Record<BoxKey, boolean>>({
     inbox: checkInbox, archive: checkArchive, sent: checkSent, spam: checkSpam, trash: checkTrash,
@@ -1747,7 +1746,7 @@ export function SearchModal({ app }: { app: any }) {
   useEffect(() => {
     if (!active) return;
     setKeyword("");
-    setActiveTab(scope === "all" ? "all" : "subject");
+    setActiveTab("all");
     setSortOrder("newest");
     const t = setTimeout(() => inputRef.current?.focus(), 50);
     return () => clearTimeout(t);
@@ -1784,11 +1783,6 @@ export function SearchModal({ app }: { app: any }) {
     return map;
   }, [groupedEmails]);
 
-  const scopedEmails = useMemo(() => {
-    if (scope === "current_chat" && currentChatRoom) return groupedEmails[currentChatRoom] || [];
-    return allUniqueEmails;
-  }, [scope, currentChatRoom, groupedEmails, allUniqueEmails]);
-
   const recipientMatches = useMemo(() => {
     if (!kwLower) return [];
     return roomInfos.filter(r => r.label.toLowerCase().includes(kwLower));
@@ -1801,19 +1795,19 @@ export function SearchModal({ app }: { app: any }) {
 
   const subjectMatches = useMemo(() => {
     if (!kwLower) return [];
-    return scopedEmails.filter((e: any) => {
+    return allUniqueEmails.filter((e: any) => {
       if (!(e.subject || "").toLowerCase().includes(kwLower)) return false;
       return boxFilter[getSearchBoxInfo(e).key];
     });
-  }, [scopedEmails, kwLower, boxFilter]);
+  }, [allUniqueEmails, kwLower, boxFilter]);
 
   const bodyMatches = useMemo(() => {
     if (!kwLower) return [];
-    return scopedEmails.filter((e: any) => {
+    return allUniqueEmails.filter((e: any) => {
       if (!(e.body || "").toLowerCase().includes(kwLower)) return false;
       return boxFilter[getSearchBoxInfo(e).key];
     });
-  }, [scopedEmails, kwLower, boxFilter]);
+  }, [allUniqueEmails, kwLower, boxFilter]);
 
   const sortRooms = (list: typeof roomInfos, order: SearchSort) => {
     const arr = [...list];
@@ -1861,9 +1855,7 @@ export function SearchModal({ app }: { app: any }) {
     jumpToSearchResult(room, msgId, keyword, field);
   };
 
-  const TABS: [SearchTab, string][] = scope === "all"
-    ? [["all", "すべて"], ["recipient", "宛先名"], ["address", "アドレス"], ["subject", "件名"], ["body", "本文"]]
-    : [["subject", "件名"], ["body", "本文"]];
+  const TABS: [SearchTab, string][] = [["all", "すべて"], ["recipient", "宛先名"], ["address", "アドレス"], ["subject", "件名"], ["body", "本文"]];
 
   const showKanaSort = activeTab === "recipient" || activeTab === "address";
   const showBoxFilter = activeTab === "subject" || activeTab === "body";
