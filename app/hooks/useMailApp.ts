@@ -1341,7 +1341,9 @@ export function useMailApp() {
       return;
     }
     try {
-      const res = await fetch(`/api/emails?messageId=${email.id}&html=true`);
+      // キャッシュされた古いレスポンス（引用除去ロジック更新前のもの等）を掴まないよう、
+      // 毎回ユニークなURLになるキャッシュバスターを付ける
+      const res = await fetch(`/api/emails?messageId=${email.id}&html=true&_t=${Date.now()}`);
       if (res.ok) {
         const data = await res.json();
         setEmailModal(prev => prev ? { ...prev, htmlBody: data.htmlBody || null, isLoading: false } : null);
@@ -1492,7 +1494,7 @@ export function useMailApp() {
     let originalHtml: string | null = null;
     if (typeof message.id === "string" && !message.id.startsWith("fake-")) {
       try {
-        const htmlRes = await fetch(`/api/emails?messageId=${encodeURIComponent(message.id)}&html=true`);
+        const htmlRes = await fetch(`/api/emails?messageId=${encodeURIComponent(message.id)}&html=true&_t=${Date.now()}`);
         if (htmlRes.ok) {
           const data = await htmlRes.json();
           originalHtml = data.htmlBody || null;
