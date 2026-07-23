@@ -169,6 +169,7 @@ export default function Home() {
   const selectedGroupConfig = state.selectedSender ? state.chatConfigs[state.selectedSender] : undefined;
   const isInboundOnlyGroup = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "inbound_only");
   const isOutboundOnlyGroup = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "outbound_only");
+  const findBarHighlight = state.findBarOpen ? state.findBarKeyword : "";
 
   // メッセージが属する場所（受信箱・送信済み等）に応じた色を返す（返信元チップの色分けにも使う）
   const getMsgColor = (msg: any) => {
@@ -461,6 +462,31 @@ export default function Home() {
                 </button>
               </header>
 
+              {state.findBarOpen && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-[#2B2D31] border-b border-[#1E1F22] flex-shrink-0 cursor-default" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    autoFocus
+                    type="text"
+                    value={state.findBarKeyword}
+                    onChange={(e) => actions.updateFindBarKeyword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (e.shiftKey) actions.goToPrevFindMatch(); else actions.goToNextFindMatch();
+                      }
+                    }}
+                    placeholder="キーワードで検索..."
+                    className="flex-1 min-w-0 bg-[#1E1F22] text-sm text-gray-200 px-3 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
+                  />
+                  <span className="text-xs text-gray-500 flex-shrink-0 min-w-[36px] text-center select-none">
+                    {computed.findBarMatches.length > 0 ? `${state.findBarMatchIndex >= 0 ? state.findBarMatchIndex + 1 : "-"}/${computed.findBarMatches.length}` : "0/0"}
+                  </span>
+                  <button onClick={() => actions.goToPrevFindMatch()} disabled={computed.findBarMatches.length === 0} className="text-gray-400 hover:text-white disabled:opacity-30 disabled:hover:text-gray-400 transition p-1 flex-shrink-0" title="前の一致">▲</button>
+                  <button onClick={() => actions.goToNextFindMatch()} disabled={computed.findBarMatches.length === 0} className="text-gray-400 hover:text-white disabled:opacity-30 disabled:hover:text-gray-400 transition p-1 flex-shrink-0" title="次の一致">▼</button>
+                  <button onClick={() => actions.closeFindBar()} className="text-gray-400 hover:text-white font-bold text-lg px-1 transition flex-shrink-0">×</button>
+                </div>
+              )}
+
               <ActionBar app={app} isChat={false} />
 
               {computed.pinnedMsgsInChat.length > 0 && (
@@ -668,7 +694,7 @@ export default function Home() {
                            >
                               {state.chatConfigs[email.id]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
                               {hasVisibleSubject && (
-                                <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={displaySubject} highlight={state.searchHighlight} /></div>
+                                <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={displaySubject} highlight={findBarHighlight} /></div>
                               )}
                               <div
                                 style={isCollapsed && state.collapseLinesCount ? {
@@ -679,7 +705,7 @@ export default function Home() {
                                 } : undefined}
                               >
                                 {hasVisibleSubject || hasBody ? (
-                                  <BodyWithLinks text={email.body} highlight={state.searchHighlight} htmlLinks={email.htmlLinks} />
+                                  <BodyWithLinks text={email.body} highlight={findBarHighlight} htmlLinks={email.htmlLinks} />
                                 ) : (
                                   <span>(件名なし)</span>
                                 )}

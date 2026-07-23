@@ -81,9 +81,13 @@ export function useMailApp() {
   });
   
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  // 検索モーダルからメッセージへジャンプした際に、そのキーワードをメッセージ画面上でハイライトするための状態
-  const [searchHighlight, setSearchHighlight] = useState("");
-  const skipHighlightClearRef = useRef(false);
+  // 検索モーダルからメッセージへジャンプした際に、メッセージ画面上部に表示する
+  // Ctrl+F風の検索バー（キーワードのハイライト・上下移動を兼ねる）
+  const [findBarOpen, setFindBarOpen] = useState(false);
+  const [findBarKeyword, setFindBarKeyword] = useState("");
+  const [findBarMatchIndex, setFindBarMatchIndex] = useState(-1);
+  const skipFindBarAutoCloseRef = useRef(false);
+  const hasPushedFindBarRef = useRef(false);
   const [checkInbox, setCheckInbox] = useState<boolean>(() => getSavedBoxSettings()?.inbox ?? true);
   const [checkArchive, setCheckArchive] = useState<boolean>(() => getSavedBoxSettings()?.archive ?? true);
   const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
@@ -477,6 +481,9 @@ export function useMailApp() {
       setEmailModal(null);
       setAttachmentModal(null);
       if (!state || state.action !== "select") { setSelectionMode("none"); setSelectedIds([]); hasPushedSelectRef.current = false; } else { hasPushedSelectRef.current = true; }
+      if (!state || state.action !== "findbar") {
+        setFindBarOpen(false); setFindBarKeyword(""); setFindBarMatchIndex(-1); hasPushedFindBarRef.current = false;
+      } else { hasPushedFindBarRef.current = true; }
       if (window.innerWidth < 768 && window.location.hash !== '#chat') {
         setSelectedSender(null);
         localStorage.removeItem("remail_selected_sender");
@@ -809,11 +816,17 @@ export function useMailApp() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, activeChatTab]);
 
-  // チャットを切り替えたら検索ハイライトを消す。ただし検索結果からのジャンプ直後は消さない
-  // （jumpToSearchResult が selectedSender を変えると同時にハイライトを設定するため）
+  // チャットを切り替えたら検索バーを閉じる。ただし検索結果からのジャンプ直後は消さない
+  // （jumpToSearchResult が selectedSender を変えると同時に検索バーを開くため）
+  // ここでは履歴操作はせず状態のリセットのみ行う（履歴側は closeFindBar / 戻る操作で整理される）
   useEffect(() => {
-    if (skipHighlightClearRef.current) { skipHighlightClearRef.current = false; return; }
-    setSearchHighlight("");
+    if (skipFindBarAutoCloseRef.current) { skipFindBarAutoCloseRef.current = false; return; }
+    if (findBarOpen) {
+      setFindBarOpen(false);
+      setFindBarKeyword("");
+      setFindBarMatchIndex(-1);
+      hasPushedFindBarRef.current = false;
+    }
   }, [selectedSender]);
 
   useEffect(() => {
@@ -1902,16 +1915,77 @@ export function useMailApp() {
     });
   };
 
+  // 検索バー用: 現在開いているチャット内でキーワードに一致するメッセージ一覧
+  // （画面表示順＝時系列の古い順。groupedEmails自体は新しい順なので反転させる）
+  const findBarMatches = useMemo(() => {
+    if (!findBarOpen || !selectedSender) return [];
+    const kw = findBarKeyword.trim().toLowerCase();
+    if (!kw) return [];
+    const msgs = groupedEmails[selectedSender] || [];
+    return [...msgs].reverse().filter((e: any) => (e.subject || "").toLowerCase().includes(kw) || (e.body || "").toLowerCase().includes(kw));
+  }, [findBarOpen, findBarKeyword, selectedSender, groupedEmails]);
+
+  const goToFindMatch = (index: number) => {
+    if (findBarMatches.length === 0) return;
+    const wrapped = ((index % findBarMatches.length) + findBarMatches.length) % findBarMatches.length;
+    setFindBarMatchIndex(wrapped);
+    const target = findBarMatches[wrapped];
+    // 現在のフィルターでは他の場所に隠れている可能性があるため、reveal 済み扱いにする
+    setRevealedCrossPrompts(prev => prev.includes(target.id) ? prev : [...prev, target.id]);
+    scrollToMsg(target.id);
+  };
+
+  const goToNextFindMatch = () => {
+    if (findBarMatchIndex === -1) goToFindMatch(0);
+    else goToFindMatch(findBarMatchIndex + 1);
+  };
+
+  const goToPrevFindMatch = () => {
+    if (findBarMatchIndex === -1) goToFindMatch(findBarMatches.length - 1);
+    else goToFindMatch(findBarMatchIndex - 1);
+  };
+
+  const updateFindBarKeyword = (val: string) => {
+    setFindBarKeyword(val);
+    setFindBarMatchIndex(-1);
+  };
+
+  const closeFindBar = () => {
+    setFindBarOpen(false);
+    setFindBarKeyword("");
+    setFindBarMatchIndex(-1);
+    if (hasPushedFindBarRef.current) {
+      hasPushedFindBarRef.current = false;
+      if (window.history.state?.action === "findbar") {
+        window.history.back();
+      }
+    }
+  };
+
   // 検索モーダルの件名/本文タブから結果をクリックしたときのジャンプ処理。
   // 検索結果は既に読み込み済みのデータ（allUniqueEmails）から生成されているため、
-  // jumpToReplyTarget と異なりGmailへの再取得は不要で、チャットを開いてスクロールするだけでよい。
+  // jumpToReplyTarget と異なりGmailへの再取得は不要で、チャットを開いてメッセージ画面上部に
+  // Ctrl+F風の検索バー（ハイライト・次/前の一致への移動）を表示する。
   const jumpToSearchResult = (sender: string, msgId: string, keyword: string) => {
-    skipHighlightClearRef.current = true;
-    setSearchHighlight(keyword);
     // 現在のフィルターでは他の場所（アーカイブ等）に隠れている可能性があるため、reveal 済み扱いにする
     setRevealedCrossPrompts(prev => prev.includes(msgId) ? prev : [...prev, msgId]);
+    skipFindBarAutoCloseRef.current = true;
     openChat(sender);
     scrollToMsg(msgId);
+
+    const kw = keyword.trim().toLowerCase();
+    const chronological = [...(groupedEmails[sender] || [])].reverse()
+      .filter((e: any) => (e.subject || "").toLowerCase().includes(kw) || (e.body || "").toLowerCase().includes(kw));
+    const idx = chronological.findIndex((e: any) => e.id === msgId);
+
+    setFindBarKeyword(keyword);
+    setFindBarOpen(true);
+    setFindBarMatchIndex(idx);
+    // 呼び出し元(SearchModal)の exitAfterAction が検索モーダル自体の履歴を1つ消費済みのため、
+    // ここでは検索バー用のエントリを新たに積む。openChatのpushStateより後に積むことで、
+    // 戻るボタン/×ボタンを押した際に「チャットは開いたまま・検索バーだけ閉じる」の順序になる
+    window.history.pushState({ action: "findbar" }, "", window.location.href);
+    hasPushedFindBarRef.current = true;
   };
 
   const showReplyNotFoundToast = () => {
@@ -2024,14 +2098,15 @@ export function useMailApp() {
       resetOptions, moveDestination, revealedCrossPrompts, boxColors,
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
-      replyNotFoundToast, draftChats, activeChatTab, searchHighlight,
+      replyNotFoundToast, draftChats, activeChatTab,
+      findBarOpen, findBarKeyword, findBarMatchIndex,
     },
     actions: {
       setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setActiveChatTab,
       setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
       setResetOptions, setMoveDestination, setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleMenuBarClick, handleBackgroundClick, toggleSelection,
-      jumpToSearchResult,
+      jumpToSearchResult, updateFindBarKeyword, goToNextFindMatch, goToPrevFindMatch, closeFindBar,
       handleSend, executePin, executeConfirmedAction,
       openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, exitAfterAction, enterSelectionMode, executeBatchMove,
       setChatCacheLimit,
@@ -2039,7 +2114,7 @@ export function useMailApp() {
       openAttachmentModal, closeAttachmentModal,
       jumpToReplyTarget, createOrOpenChat, createGroupChat, deleteChatConfig, forwardMessageTo,
     },
-    computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat, contactDirectory, groupReplyPools },
+    computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches },
     refs: { touchTimer, hasPushedSelectRef, activeLoadRef, searchTimeoutRef }
   };
 }
