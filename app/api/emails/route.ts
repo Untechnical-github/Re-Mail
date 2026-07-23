@@ -183,8 +183,12 @@ function stripQuotedReply(text: string): string {
     if (/^>/.test(lines[i].trim())) { quoteStart = i; break; }
   }
   if (quoteStart === -1) {
-    // ">" 引用が見当たらなくても、定番の英語ヘッダーだけは保険として除去する
-    return text.replace(/\n{0,2}On\s.{0,150}?wrote:\s*[\s\S]*$/i, "").trim();
+    // 引用元の本文が空などの理由で "> " 行自体が残っていない場合でも、
+    // 日付ヘッダー行（「YYYY年M月D日(曜) H:MM 差出人:」）だけが末尾に取り残されることがあるため、
+    // 定番の日英ヘッダー文言は保険として除去する
+    let stripped = text.replace(/\n{0,2}\d{4}年\d{1,2}月\d{1,2}日\([日月火水木金土]\)\s*\d{1,2}:\d{2}\s+[^\n]*?:\s*[\s\S]*$/, "");
+    stripped = stripped.replace(/\n{0,2}On\s.{0,150}?wrote:\s*[\s\S]*$/i, "");
+    return stripped.trim();
   }
   let cut = quoteStart;
   if (cut > 0) {
