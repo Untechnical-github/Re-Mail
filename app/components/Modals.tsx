@@ -504,6 +504,11 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
                 <span className="text-xs text-[#5865F2] animate-pulse">読み込み中...</span>
               </div>
             )}
+            {!app.state.isLoadingMoreChats && app.state.chatStatusMessage && (
+              <div className="flex justify-center py-2">
+                <span className="text-xs text-gray-500">{app.state.chatStatusMessage}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1739,6 +1744,8 @@ export function SearchModal({ app }: { app: any }) {
   const [boxFilter, setBoxFilter] = useState<Record<BoxKey, boolean>>({
     inbox: checkInbox, archive: checkArchive, sent: checkSent, spam: checkSpam, trash: checkTrash,
   });
+  // すべてタブで各カテゴリー6件目以降を折りたたむかどうか（カテゴリーキーごと）
+  const [expandedAllSections, setExpandedAllSections] = useState<Record<string, boolean>>({});
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -1748,6 +1755,7 @@ export function SearchModal({ app }: { app: any }) {
     setKeyword("");
     setActiveTab("all");
     setSortOrder("newest");
+    setExpandedAllSections({});
     const t = setTimeout(() => inputRef.current?.focus(), 50);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1909,12 +1917,30 @@ export function SearchModal({ app }: { app: any }) {
     );
   };
 
-  const renderSection = (title: string, count: number, body: React.ReactNode) => count > 0 && (
-    <div className="mb-4">
-      <div className="text-xs font-bold text-gray-400 px-1 mb-1">{title} ({count}件)</div>
-      <div className="bg-[#232428] rounded">{body}</div>
-    </div>
-  );
+  // すべてタブ用: 各カテゴリー5件までは表示し、6件目以降は「もっと見る」で折りたたむ
+  const ALL_TAB_COLLAPSE_LIMIT = 5;
+  const renderSection = <T,>(key: string, title: string, items: T[], renderItem: (item: T) => React.ReactNode) => {
+    if (items.length === 0) return null;
+    const isExpanded = !!expandedAllSections[key];
+    const visibleItems = isExpanded ? items : items.slice(0, ALL_TAB_COLLAPSE_LIMIT);
+    const hiddenCount = items.length - ALL_TAB_COLLAPSE_LIMIT;
+    return (
+      <div className="mb-4">
+        <div className="text-xs font-bold text-gray-400 px-1 mb-1">{title} ({items.length}件)</div>
+        <div className="bg-[#232428] rounded">
+          {visibleItems.map(renderItem)}
+          {hiddenCount > 0 && (
+            <button
+              onClick={() => setExpandedAllSections(prev => ({ ...prev, [key]: !isExpanded }))}
+              className="w-full text-center py-2 text-xs font-bold text-[#5865F2] hover:bg-[#2B2D31] transition border-t border-[#1E1F22]/50"
+            >
+              {isExpanded ? "折りたたむ" : `もっと見る（他${hiddenCount}件）`}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   if (!active) return null;
 
@@ -1977,7 +2003,17 @@ export function SearchModal({ app }: { app: any }) {
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto p-3 min-h-0">
+        <div
+          className="flex-1 overflow-y-auto p-3 min-h-0"
+          onScroll={(e) => {
+            // 宛先・アドレス・件名・本文いずれも、まだ読み込んでいないチャットが残っていると
+            // 検索対象に含まれないため、下までスクロールしたら追加読み込みする
+            const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
+            if (scrollHeight - Math.abs(scrollTop) - clientHeight < 50 && !app.state.isLoadingMoreChats && !app.state.chatStatusMessage) {
+              app.actions.handleLoadMoreChats();
+            }
+          }}
+        >
           {!kwLower && (
             <div className="text-center text-sm text-gray-500 py-10">キーワードを入力してください</div>
           )}
@@ -1986,10 +2022,10 @@ export function SearchModal({ app }: { app: any }) {
           )}
           {kwLower && activeTab === "all" && (
             <>
-              {renderSection("宛先名", sortedRecipients.length, sortedRecipients.map(r => renderRoomRow(r, "label")))}
-              {renderSection("アドレス", sortedAddresses.length, sortedAddresses.map(r => renderRoomRow(r, "address")))}
-              {renderSection("件名", sortedSubjects.length, sortedSubjects.map(e => renderEmailRow(e, "subject")))}
-              {renderSection("本文", sortedBodies.length, sortedBodies.map(e => renderEmailRow(e, "body")))}
+              {renderSection("recipient", "宛先名", sortedRecipients, (r) => renderRoomRow(r, "label"))}
+              {renderSection("address", "アドレス", sortedAddresses, (r) => renderRoomRow(r, "address"))}
+              {renderSection("subject", "件名", sortedSubjects, (e) => renderEmailRow(e, "subject"))}
+              {renderSection("body", "本文", sortedBodies, (e) => renderEmailRow(e, "body"))}
             </>
           )}
           {kwLower && activeTab === "recipient" && (
@@ -2003,6 +2039,16 @@ export function SearchModal({ app }: { app: any }) {
           )}
           {kwLower && activeTab === "body" && (
             <div className="bg-[#232428] rounded">{sortedBodies.map(e => renderEmailRow(e, "body"))}</div>
+          )}
+          {kwLower && app.state.isLoadingMoreChats && (
+            <div className="flex justify-center py-2">
+              <span className="text-xs text-[#5865F2] animate-pulse">読み込み中...</span>
+            </div>
+          )}
+          {kwLower && !app.state.isLoadingMoreChats && app.state.chatStatusMessage && (
+            <div className="flex justify-center py-2">
+              <span className="text-xs text-gray-500">{app.state.chatStatusMessage}</span>
+            </div>
           )}
         </div>
       </div>
