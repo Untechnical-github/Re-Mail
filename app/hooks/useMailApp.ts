@@ -1156,7 +1156,7 @@ export function useMailApp() {
     window.history.go(-steps);
   };
 
-  const openChat = async (sender: string) => {
+  const openChat = async (sender: string, opts?: { replaceHistory?: boolean }) => {
     // 現在のチャットを LRU キャッシュに保存
     const prevSender = selectedSender;
     if (prevSender && prevSender !== sender && chatCacheLimitRef.current > 0) {
@@ -1186,7 +1186,14 @@ export function useMailApp() {
     }
     setReplyToMessage(null);
     setMsgStatusMessage(null);
-    if (isMobile) window.history.pushState({ chat: sender }, '', `#chat`);
+    if (isMobile) {
+      // 検索結果からのジャンプなど、現在の履歴エントリ(検索モーダル用)を新規に積まず
+      // その場でチャット用エントリに置き換えたい場合に replaceHistory を使う
+      // （go()/back() は非同期のため、直後に別のpushStateを行うと競合してしまう。
+      //   replaceStateは同期的なのでこの問題が起きない）
+      if (opts?.replaceHistory) window.history.replaceState({ chat: sender }, '', `#chat`);
+      else window.history.pushState({ chat: sender }, '', `#chat`);
+    }
 
     // キャッシュがあれば復元、なければ通常フェッチ
     const cached = chatCacheRef.current.get(sender);
@@ -1966,11 +1973,31 @@ export function useMailApp() {
   // 検索結果は既に読み込み済みのデータ（allUniqueEmails）から生成されているため、
   // jumpToReplyTarget と異なりGmailへの再取得は不要で、チャットを開いてメッセージ画面上部に
   // Ctrl+F風の検索バー（ハイライト・次/前の一致への移動）を表示する。
+  //
+  // 注意: モーダルを閉じる際、exitAfterAction()（内部で window.history.go(-N) を使う）は使わない。
+  // go()/back() は非同期に処理されるため、その直後に同期的に pushState を重ねると、
+  // go() が実行される頃には履歴の位置がずれてしまい、意図しないエントリ（検索バー用など）を
+  // 消費してポップされてしまう（＝開いた直後に検索バーが消える不具合の原因だった）。
+  // そのため、検索モーダル用のエントリはここで同期的に replaceState で上書きし、
+  // go()/back() を一切使わずに済ませる。
   const jumpToSearchResult = (sender: string, msgId: string, keyword: string) => {
+    setModal(null);
+    setSelectionMode("none");
+    setSelectedIds([]);
     // 現在のフィルターでは他の場所（アーカイブ等）に隠れている可能性があるため、reveal 済み扱いにする
     setRevealedCrossPrompts(prev => prev.includes(msgId) ? prev : [...prev, msgId]);
     skipFindBarAutoCloseRef.current = true;
-    openChat(sender);
+
+    const cameFromModal = typeof window !== "undefined" && window.history.state?.action === "modal";
+    // モバイルでは openChat 自身が {chat: sender} を積む。検索モーダルのエントリは
+    // そのままそのチャット用エントリへ置き換える（新規に積まない）
+    openChat(sender, { replaceHistory: cameFromModal });
+    // デスクトップは openChat がチャット用の履歴操作をしないため、ここで検索モーダルの
+    // エントリをそのまま検索バー用エントリへ置き換える
+    if (!isMobile && cameFromModal) {
+      window.history.replaceState({ action: "findbar" }, "", window.location.href);
+      hasPushedFindBarRef.current = true;
+    }
     scrollToMsg(msgId);
 
     const kw = keyword.trim().toLowerCase();
@@ -1981,11 +2008,16 @@ export function useMailApp() {
     setFindBarKeyword(keyword);
     setFindBarOpen(true);
     setFindBarMatchIndex(idx);
-    // 呼び出し元(SearchModal)の exitAfterAction が検索モーダル自体の履歴を1つ消費済みのため、
-    // ここでは検索バー用のエントリを新たに積む。openChatのpushStateより後に積むことで、
-    // 戻るボタン/×ボタンを押した際に「チャットは開いたまま・検索バーだけ閉じる」の順序になる
-    window.history.pushState({ action: "findbar" }, "", window.location.href);
-    hasPushedFindBarRef.current = true;
+
+    if (isMobile) {
+      // モバイルは openChat が積んだ {chat: sender} の上に、検索バー用エントリを新たに積む
+      // （戻るボタンを押すと検索バーだけ閉じ、チャットは開いたままになる）
+      window.history.pushState({ action: "findbar" }, "", window.location.href);
+      hasPushedFindBarRef.current = true;
+    } else if (!cameFromModal) {
+      window.history.pushState({ action: "findbar" }, "", window.location.href);
+      hasPushedFindBarRef.current = true;
+    }
   };
 
   const showReplyNotFoundToast = () => {

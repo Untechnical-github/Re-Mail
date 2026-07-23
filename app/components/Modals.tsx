@@ -1727,7 +1727,7 @@ function getSearchBoxInfo(e: any): { key: BoxKey; name: string } {
 // 対象にしたクライアント側検索で、Gmailへの再取得は行わない。
 export function SearchModal({ app }: { app: any }) {
   const { modal, chatConfigs, checkInbox, checkArchive, checkSpam, checkTrash, checkSent } = app.state;
-  const { setModal, safeBack, exitAfterAction, openChat, jumpToSearchResult } = app.actions;
+  const { setModal, safeBack, openChat, jumpToSearchResult } = app.actions;
   const { allUniqueEmails, groupedEmails, contactDirectory } = app.computed;
 
   const active = modal?.type === "search" ? modal : null;
@@ -1846,13 +1846,18 @@ export function SearchModal({ app }: { app: any }) {
 
   const handleClose = () => safeBack();
 
+  // 注意: ここでは exitAfterAction()（内部で history.go(-N) を使う）を使わない。
+  // go()/back() は非同期に処理されるため、直後に openChat 側の pushState が同期的に走ると
+  // 履歴の位置がずれ、意図しないタイミングでポップされてチャットが開いた直後に閉じてしまう。
+  // そのため、検索モーダルの履歴エントリは openChat 側で同期的に replaceState して片付ける
+  // （jumpToSearchResult も同様の仕組みで検索バー用エントリを扱う）
   const handleOpenChat = (room: string) => {
-    exitAfterAction();
-    openChat(room);
+    setModal(null);
+    const cameFromModal = typeof window !== "undefined" && window.history.state?.action === "modal";
+    openChat(room, { replaceHistory: cameFromModal });
   };
 
   const handleJumpToMessage = (room: string, msgId: string) => {
-    exitAfterAction();
     jumpToSearchResult(room, msgId, keyword);
   };
 
