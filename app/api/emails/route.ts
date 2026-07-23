@@ -331,8 +331,12 @@ export async function GET(request: Request) {
       const message = await detailRes.json();
       const rawHtml = getHtmlBody(message.payload);
       const subject = decodeMimeHeader(getHeader(message.payload?.headers || [], "Subject"));
-      // 転送メールの場合、本文が「引用文」ではなく転送された内容そのものなので切り捨てない
-      const htmlBody = looksLikeForward(subject, rawHtml) ? rawHtml.trim() : stripHtmlQuote(rawHtml);
+      // HTML側の引用は "> " ではなく <blockquote>/gmail_quote タグで表現されるため、
+      // 転送判定は先に引用を取り除いた「自分の文章」だけに対して行う。
+      // 生のHTMLのまま判定すると、引用の中に隠れた転送マーカーを拾って
+      // 「転送への返信」まで転送メール扱いされ、引用が丸ごと表示されてしまう
+      const htmlOwnContent = stripHtmlQuote(rawHtml);
+      const htmlBody = looksLikeForward(subject, htmlOwnContent) ? rawHtml.trim() : htmlOwnContent;
       return NextResponse.json({ htmlBody: htmlBody || null, hasHtml: !!htmlBody });
     } catch {
       return NextResponse.json({ htmlBody: null, hasHtml: false });
