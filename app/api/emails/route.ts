@@ -262,7 +262,8 @@ function parseMessageDetail(message: any) {
   const htmlLinks = htmlBodyForLinks ? extractHtmlLinks(htmlBodyForLinks) : [];
 
   const attachments = extractAttachments(payload);
-  return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, inReplyTo };
+  const hasHtml = !!htmlBodyForLinks;
+  return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, inReplyTo, isForward, hasHtml };
 }
 
 export async function GET(request: Request) {

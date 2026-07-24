@@ -6,7 +6,7 @@ import { generateVideoThumbnail } from "./lib/videoThumbnail";
 import { signIn } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
-import { Modals, EmailModal, AttachmentModal, SearchModal } from "./components/Modals";
+import { Modals, EmailModal, AttachmentModal, SearchModal, FilterToolModal } from "./components/Modals";
 import { getFileIcon, formatFileSize } from "./components/ui";
 
 function InlineAttachmentImage({ attachment, messageId, cacheKey, onOpen }: {
@@ -169,6 +169,8 @@ export default function Home() {
   const selectedGroupConfig = state.selectedSender ? state.chatConfigs[state.selectedSender] : undefined;
   const isInboundOnlyGroup = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "inbound_only");
   const isOutboundOnlyGroup = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "outbound_only");
+  const isFilterGroup = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.filterCriteria);
+  const isSendDisabled = isInboundOnlyGroup || isFilterGroup;
   const subjectFindHighlight = state.findBarOpen && state.findBarSearchSubject ? state.findBarKeyword : "";
   const bodyFindHighlight = state.findBarOpen && state.findBarSearchBody ? state.findBarKeyword : "";
 
@@ -186,6 +188,7 @@ export default function Home() {
     <div className="flex h-[100dvh] w-full bg-[#313338] overflow-hidden text-gray-200 relative select-none" onClick={actions.handleBackgroundClick}>
 <Modals app={app} />
 <SearchModal app={app} />
+<FilterToolModal app={app} />
 <EmailModal app={app} />
 <AttachmentModal app={app} />
 {state.replyNotFoundToast && (
@@ -454,7 +457,7 @@ export default function Home() {
                   <h2 className="font-bold text-base truncate text-white">{state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}</h2>
                   {selectedGroupConfig?.isGroup ? (
                     <span className="text-xs text-gray-500 truncate">
-                      グループ・{(selectedGroupConfig.groupMembers || []).length}人
+                      {isFilterGroup ? "フィルターグループ" : `グループ・${(selectedGroupConfig.groupMembers || []).length}人`}
                       {isInboundOnlyGroup ? "・受信専用" : isOutboundOnlyGroup ? "・送信専用" : ""}
                     </span>
                   ) : (() => {
@@ -819,9 +822,9 @@ export default function Home() {
               </div>
 
               <div className="p-4 bg-[#313338] cursor-default" onClick={(e) => e.stopPropagation()}>
-                <div className={`bg-[#383A40] rounded-lg p-3 border border-[#1E1F22] ${isInboundOnlyGroup ? "opacity-40 pointer-events-none grayscale" : ""}`}>
-                  {isInboundOnlyGroup && (
-                    <div className="text-[11px] text-gray-400 mb-2">受信専用のグループチャットのため、送信・返信はできません</div>
+                <div className={`bg-[#383A40] rounded-lg p-3 border border-[#1E1F22] ${isSendDisabled ? "opacity-40 pointer-events-none grayscale" : ""}`}>
+                  {isSendDisabled && (
+                    <div className="text-[11px] text-gray-400 mb-2">{isFilterGroup ? "フィルターグループのため、送信・返信はできません" : "受信専用のグループチャットのため、送信・返信はできません"}</div>
                   )}
                   <div className="flex items-center gap-2 bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">
                     <span className="text-gray-400 flex-shrink-0">返信先:</span>
@@ -829,7 +832,7 @@ export default function Home() {
                       {state.replyToMessage ? (state.replyToMessage.subject || state.replyToMessage.snippet || "(件名なし)") : "未選択"}
                     </span>
                     <button
-                      disabled={isInboundOnlyGroup}
+                      disabled={isSendDisabled}
                       onClick={(e) => {
                         e.stopPropagation();
                         actions.setModal({ type: "select_reply_target", targetMode: "current_chat", targets: [] });
@@ -843,10 +846,10 @@ export default function Home() {
                       <button onClick={(e) => { e.stopPropagation(); actions.setReplyToMessage(null); }} className="font-bold px-1 hover:text-white flex-shrink-0">×</button>
                     )}
                   </div>
-                  <input disabled={isInboundOnlyGroup} type="text" placeholder="件名 (省略可)" value={state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
+                  <input disabled={isSendDisabled} type="text" placeholder="件名 (省略可)" value={state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
                   <div className="flex items-end gap-2">
-                    <textarea disabled={isInboundOnlyGroup} placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}`} rows={state.isMobile ? 1 : 2} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
-                    <button onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={isInboundOnlyGroup || state.isSending || !state.replyBody.trim()} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
+                    <textarea disabled={isSendDisabled} placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}`} rows={state.isMobile ? 1 : 2} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
+                    <button onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={isSendDisabled || state.isSending || !state.replyBody.trim()} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
                       {state.isSending ? "..." : "送信"}
                     </button>
                   </div>

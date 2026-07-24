@@ -358,6 +358,19 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         </button>
       )}
 
+      {/* チャット: フィルター（条件に一致するメールをまとめてグループ化/非表示/ピン留め/移動/削除） */}
+      {isChat && (
+        <button
+          onClick={() => {
+            setModal({ type: "filter_tool", targetMode: "all_chats", targets: [] });
+            window.history.pushState({ action: "modal" }, "", window.location.href);
+          }}
+          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}
+        >
+          フィルター
+        </button>
+      )}
+
       {/* チャット: 名前変更（1件選択時のみ有効） */}
       {isChat && (
         <button

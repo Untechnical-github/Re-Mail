@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
 import { signOut } from "next-auth/react";
 import { BodyWithLinks, getFileIcon, formatFileSize, HighlightText } from "./ui";
+import { FilterCriteria, TextField, TextRule, DateDirection, FindBarBoxKey, messageMatchesFilter, isEmptyFilterCriteria, getFindBarBoxKey, isActionBoxRestricted } from "../lib/filterMatch";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
@@ -1258,7 +1259,7 @@ export function Modals({ app }: { app: any }) {
   const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
 
-  if (!modal || modal.type === "search") return null;
+  if (!modal || modal.type === "search" || modal.type === "filter_tool") return null;
 
   const getActionableEmails = (targets: string[], targetMode: string) => {
     let result: any[] = [];
@@ -2081,6 +2082,512 @@ export function SearchModal({ app }: { app: any }) {
               <span className="text-xs text-gray-500">{app.state.chatStatusMessage}</span>
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type FilterToolAction = "group" | "hide" | "pin" | "move" | "delete";
+type ThreeWay = "any" | "yes" | "no";
+
+const TEXT_FIELD_LABELS: Record<TextField, string> = {
+  recipientName: "相手の名前", recipientAddress: "相手のアドレス", subject: "件名", body: "本文",
+};
+const FILTER_BOX_LABELS: Record<FindBarBoxKey, string> = {
+  inbox: "受信箱", archive: "アーカイブ", sent: "送信済み", spam: "迷惑メール", trash: "ゴミ箱",
+};
+const FILTER_ACTIONS: [FilterToolAction, string][] = [
+  ["group", "グループ化"], ["hide", "非表示"], ["pin", "ピン留め"], ["move", "移動"], ["delete", "削除"],
+];
+const MOVE_DEST_LABELS: Record<string, string> = { INBOX: "受信箱", ARCHIVE: "アーカイブ", SPAM: "迷惑メール", TRASH: "ゴミ箱" };
+const FILTER_KIND_LABELS: Record<string, string> = { group: "グループ", hide: "非表示", pin: "ピン留め", move: "移動", delete: "削除" };
+
+// chatConfigs の1行が「グループフィルター」か「アクションフィルター（継続のみ保存される）」かを判定する
+function filterKindOf(cfg: any): FilterToolAction | null {
+  if (!cfg) return null;
+  if (cfg.isGroup && cfg.filterCriteria) return "group";
+  if (cfg.filterAction) return cfg.filterAction as FilterToolAction;
+  return null;
+}
+
+function ThreeWayToggle({ label, value, onChange, yesLabel, noLabel }: {
+  label: string; value: ThreeWay; onChange: (v: ThreeWay) => void; yesLabel: string; noLabel: string;
+}) {
+  return (
+    <div>
+      <div className="text-xs font-bold text-gray-400 mb-1">{label}</div>
+      <div className="flex gap-1 text-[11px] font-bold">
+        <button onClick={() => onChange("any")} className={`px-2.5 py-1 rounded ${value === "any" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>問わない</button>
+        <button onClick={() => onChange("yes")} className={`px-2.5 py-1 rounded ${value === "yes" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>{yesLabel}</button>
+        <button onClick={() => onChange("no")} className={`px-2.5 py-1 rounded ${value === "no" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>{noLabel}</button>
+      </div>
+    </div>
+  );
+}
+
+// フィルターツール: 条件（宛先名/アドレス/件名/本文のキーワード・期間・保存場所・添付有無・
+// 返信/転送・HTML/テキスト）を組み合わせて一致するメールを検索し、
+// グループ化（常に動的・新着メールにも適用され続ける）、または非表示/ピン留め/移動/削除
+// （1回限り、または継続＝Gmailのフィルターと同様に新着メールにも自動で1回だけ適用され続ける）を行う。
+// クリックすると、まず保存済みフィルター（グループ・継続アクション）の一覧画面が開き、
+// 「作成」または各行の「編集」からビルダー画面に入る。
+export function FilterToolModal({ app }: { app: any }) {
+  const { modal, chatConfigs } = app.state;
+  const active = modal?.type === "filter_tool" ? modal : null;
+
+  const [screen, setScreen] = useState<"list" | "builder">("list");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
+  const [filterName, setFilterName] = useState("");
+  const [action, setAction] = useState<FilterToolAction>("group");
+  const [textRules, setTextRules] = useState<TextRule[]>([]);
+  const [dateEnabled, setDateEnabled] = useState(false);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [dateDirection, setDateDirection] = useState<DateDirection>("received");
+  const [groupBoxEnabled, setGroupBoxEnabled] = useState(false);
+  const [groupBoxes, setGroupBoxes] = useState<FindBarBoxKey[]>([]);
+  const [actionBoxes, setActionBoxes] = useState<FindBarBoxKey[]>([]);
+  const [attachmentChoice, setAttachmentChoice] = useState<ThreeWay>("any");
+  const [replyChoice, setReplyChoice] = useState<ThreeWay>("any");
+  const [forwardChoice, setForwardChoice] = useState<ThreeWay>("any");
+  const [formatChoice, setFormatChoice] = useState<"any" | "html" | "text">("any");
+  const [hideOriginal, setHideOriginal] = useState(false);
+  const [continuous, setContinuous] = useState(false);
+  const [destination, setDestination] = useState<string>("INBOX");
+
+  useEffect(() => {
+    if (!active) return;
+    setScreen("list");
+    setEditingId(null);
+    setDeleteConfirmId(null);
+  }, [!!active]);
+
+  const myEmail = app.auth?.session?.user?.email || "";
+
+  const existingFilters = useMemo(() => {
+    return Object.keys(chatConfigs)
+      .map(id => ({ id, cfg: chatConfigs[id], kind: filterKindOf(chatConfigs[id]) }))
+      .filter(f => f.kind !== null);
+  }, [chatConfigs]);
+
+  const resetBuilderFields = () => {
+    setFilterName(`フィルター${existingFilters.length + 1}`);
+    setAction("group");
+    setTextRules([]);
+    setDateEnabled(false); setDateFrom(""); setDateTo(""); setDateDirection("received");
+    setGroupBoxEnabled(false); setGroupBoxes([]);
+    setActionBoxes([]);
+    setAttachmentChoice("any"); setReplyChoice("any"); setForwardChoice("any"); setFormatChoice("any");
+    setHideOriginal(false); setContinuous(false); setDestination("INBOX");
+  };
+
+  const openCreate = () => {
+    setEditingId(null);
+    resetBuilderFields();
+    setScreen("builder");
+  };
+
+  const openEdit = (id: string) => {
+    const cfg = chatConfigs[id];
+    if (!cfg) return;
+    const kind = filterKindOf(cfg);
+    if (!kind) return;
+    setEditingId(id);
+    setFilterName(cfg.customName || "");
+    setAction(kind);
+    const crit: FilterCriteria = cfg.filterCriteria || {};
+    setTextRules(crit.textRules ? crit.textRules.map((r: TextRule) => ({ ...r })) : []);
+    if (crit.dateRange) {
+      setDateEnabled(true); setDateFrom(crit.dateRange.from || ""); setDateTo(crit.dateRange.to || ""); setDateDirection(crit.dateRange.direction);
+    } else {
+      setDateEnabled(false); setDateFrom(""); setDateTo(""); setDateDirection("received");
+    }
+    if (kind === "group") {
+      setGroupBoxEnabled(!!(crit.boxes && crit.boxes.length > 0));
+      setGroupBoxes(crit.boxes ? [...crit.boxes] : []);
+      setActionBoxes([]);
+    } else {
+      setGroupBoxEnabled(false); setGroupBoxes([]);
+      setActionBoxes(crit.boxes ? [...crit.boxes] : []);
+    }
+    setAttachmentChoice(crit.hasAttachment === undefined ? "any" : crit.hasAttachment ? "yes" : "no");
+    setReplyChoice(crit.isReply === undefined ? "any" : crit.isReply ? "yes" : "no");
+    setForwardChoice(crit.isForward === undefined ? "any" : crit.isForward ? "yes" : "no");
+    setFormatChoice(crit.format || "any");
+    setHideOriginal(!!cfg.filterHideOriginal);
+    setContinuous(!!cfg.filterContinuous);
+    setDestination(cfg.filterDestination || "INBOX");
+    setScreen("builder");
+  };
+
+  const handleSelectAction = (a: FilterToolAction) => {
+    setAction(a);
+    if (a !== "group") {
+      setActionBoxes((Object.keys(FILTER_BOX_LABELS) as FindBarBoxKey[]).filter(b => !isActionBoxRestricted(a, b)));
+    }
+  };
+
+  // テキスト/期間/添付/返信/転送/形式のみ（保存場所は含まない）。非グループアクションの
+  // 保存場所チェックボックスの件数集計に、保存場所以外の条件だけを適用するために使う
+  const baseCriteria: FilterCriteria = useMemo(() => {
+    const c: FilterCriteria = {};
+    const validRules = textRules.filter(r => r.keyword.trim().length > 0);
+    if (validRules.length > 0) c.textRules = validRules;
+    if (dateEnabled && (dateFrom || dateTo)) c.dateRange = { from: dateFrom || undefined, to: dateTo || undefined, direction: dateDirection };
+    if (attachmentChoice !== "any") c.hasAttachment = attachmentChoice === "yes";
+    if (replyChoice !== "any") c.isReply = replyChoice === "yes";
+    if (forwardChoice !== "any") c.isForward = forwardChoice === "yes";
+    if (formatChoice !== "any") c.format = formatChoice;
+    return c;
+  }, [textRules, dateEnabled, dateFrom, dateTo, dateDirection, attachmentChoice, replyChoice, forwardChoice, formatChoice]);
+
+  const boxCounts = useMemo(() => {
+    const counts: Record<string, number> = { inbox: 0, archive: 0, sent: 0, spam: 0, trash: 0 };
+    if (action === "group") return counts;
+    (app.computed.allUniqueEmails as any[]).forEach(e => {
+      if (!messageMatchesFilter(e, baseCriteria, myEmail)) return;
+      const box = getFindBarBoxKey(e);
+      counts[box] = (counts[box] || 0) + 1;
+    });
+    return counts;
+  }, [action, baseCriteria, app.computed.allUniqueEmails, myEmail]);
+
+  const criteria: FilterCriteria = useMemo(() => {
+    const c: FilterCriteria = { ...baseCriteria };
+    if (action === "group") {
+      if (groupBoxEnabled && groupBoxes.length > 0) c.boxes = groupBoxes;
+    } else if (actionBoxes.length > 0) {
+      c.boxes = actionBoxes;
+    }
+    return c;
+  }, [baseCriteria, action, groupBoxEnabled, groupBoxes, actionBoxes]);
+
+  const isNonGroupBoxesEmpty = action !== "group" && actionBoxes.length === 0;
+  const isCriteriaEmpty = isEmptyFilterCriteria(criteria);
+  const canExecute = !!filterName.trim() && !isCriteriaEmpty && !isNonGroupBoxesEmpty;
+
+  const matchCount = useMemo(() => {
+    if (isCriteriaEmpty) return 0;
+    return (app.computed.allUniqueEmails as any[]).filter(e => messageMatchesFilter(e, criteria, myEmail)).length;
+  }, [isCriteriaEmpty, criteria, app.computed.allUniqueEmails, myEmail]);
+
+  const handleClose = () => app.actions.safeBack();
+
+  const updateRule = (index: number, updates: Partial<TextRule>) => {
+    setTextRules(prev => prev.map((r, i) => (i === index ? { ...r, ...updates } : r)));
+  };
+  const removeRule = (index: number) => setTextRules(prev => prev.filter((_, i) => i !== index));
+
+  const applyNonGroupAction = (ids: string[]) => {
+    if (ids.length === 0) return;
+    if (action === "hide") app.actions.applyHideToIds(ids);
+    else if (action === "pin") app.actions.applyPinToIds(ids);
+    else if (action === "move") app.actions.applyMoveToIds([{ ids, destination }]);
+    else if (action === "delete") app.actions.applyDeleteToIds(ids);
+  };
+
+  const handlePrimary = () => {
+    if (!canExecute) return;
+    const name = filterName.trim();
+    const existingKind = editingId ? filterKindOf(chatConfigs[editingId]) : null;
+
+    if (action === "group") {
+      if (editingId && existingKind === "group") {
+        app.actions.updateChatConfig(editingId, { customName: name, filterCriteria: criteria, filterHideOriginal: hideOriginal });
+      } else {
+        if (editingId) app.actions.deleteChatConfig(editingId);
+        app.actions.createFilterGroup(name, criteria, hideOriginal);
+      }
+      app.actions.exitAfterAction();
+      return;
+    }
+
+    const matchedIds = (app.computed.allUniqueEmails as any[]).filter(e => messageMatchesFilter(e, criteria, myEmail)).map(e => e.id);
+
+    if (continuous) {
+      const reuseId = !!editingId && existingKind === action;
+      if (editingId && !reuseId) app.actions.deleteChatConfig(editingId);
+      const id = reuseId ? editingId! : `filter:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const now = new Date().toISOString();
+      const createdAt = reuseId ? (chatConfigs[editingId!]?.filterCreatedAt || now) : now;
+      app.actions.updateChatConfig(id, {
+        customName: name, filterCriteria: criteria, filterAction: action, filterContinuous: true,
+        filterDestination: action === "move" ? destination : undefined,
+        filterCreatedAt: createdAt, filterLastAppliedAt: now,
+      });
+      applyNonGroupAction(matchedIds);
+    } else {
+      if (editingId) app.actions.deleteChatConfig(editingId);
+      applyNonGroupAction(matchedIds);
+    }
+    app.actions.exitAfterAction();
+  };
+
+  if (!active) return null;
+
+  if (screen === "list") {
+    return (
+      <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={handleClose}>
+        <div className="bg-[#313338] rounded-lg shadow-2xl w-full max-w-md flex flex-col border border-[#1E1F22]" style={{ maxHeight: "85dvh" }} onClick={(e) => e.stopPropagation()}>
+          <div className="p-4 border-b border-[#1E1F22] flex items-center justify-between flex-shrink-0">
+            <h2 className="text-lg font-bold text-white">フィルター</h2>
+            <button onClick={handleClose} className="text-gray-400 hover:text-white text-lg font-bold px-1 transition">×</button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            <button
+              onClick={openCreate}
+              className="w-full text-left px-3 py-2.5 rounded bg-[#2B2D31] text-sm text-white hover:bg-[#35373C] transition font-bold"
+            >
+              ＋ 新しいフィルターを作成
+            </button>
+            {existingFilters.length === 0 && (
+              <div className="text-xs text-gray-500 text-center py-6">保存されたフィルターはありません</div>
+            )}
+            {existingFilters.map(({ id, cfg, kind }) => (
+              <div key={id} className="flex items-center justify-between gap-2 bg-[#232428] rounded p-2.5">
+                {deleteConfirmId === id ? (
+                  <>
+                    <span className="text-xs text-gray-300 flex-1">本当に削除しますか？</span>
+                    <button onClick={() => { app.actions.deleteChatConfig(id); setDeleteConfirmId(null); }} className="text-xs font-bold text-red-400 hover:text-red-300 px-2 flex-shrink-0">はい</button>
+                    <button onClick={() => setDeleteConfirmId(null)} className="text-xs font-bold text-gray-400 hover:text-white px-2 flex-shrink-0">いいえ</button>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-bold text-white truncate">{cfg.customName || id}</div>
+                      <div className="text-[11px] text-gray-500">{kind === "group" ? "グループ" : `${FILTER_KIND_LABELS[kind!]}・継続`}</div>
+                    </div>
+                    <button onClick={() => openEdit(id)} className="text-xs font-bold text-[#5865F2] hover:text-white px-2 flex-shrink-0">編集</button>
+                    <button onClick={() => setDeleteConfirmId(id)} className="text-xs font-bold text-red-400 hover:text-red-300 px-2 flex-shrink-0">削除</button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={handleClose}>
+      <div
+        className="bg-[#313338] rounded-lg shadow-2xl w-full max-w-2xl flex flex-col border border-[#1E1F22]"
+        style={{ maxHeight: "85dvh" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-4 border-b border-[#1E1F22] flex items-center gap-3 flex-shrink-0">
+          <button onClick={() => setScreen("list")} className="text-gray-400 hover:text-white font-bold text-lg transition">←</button>
+          <h2 className="text-lg font-bold text-white flex-1">{editingId ? "フィルターを編集" : "フィルターを作成"}</h2>
+          <button onClick={handleClose} className="text-gray-400 hover:text-white text-lg font-bold px-1 transition">×</button>
+        </div>
+
+        <div className="px-4 pt-3 flex-shrink-0">
+          <label className="text-xs font-bold text-gray-400 mb-1 block">名前</label>
+          <input
+            type="text"
+            value={filterName}
+            onChange={(e) => setFilterName(e.target.value)}
+            placeholder="フィルター名を入力"
+            className="w-full bg-[#1E1F22] text-sm text-white px-3 py-2 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
+          />
+        </div>
+
+        <div className="px-4 pt-3 flex-shrink-0">
+          <div className="text-xs font-bold text-gray-400 mb-1.5">実行するアクション</div>
+          <div className="flex flex-wrap gap-1">
+            {FILTER_ACTIONS.map(([a, label]) => (
+              <button
+                key={a}
+                onClick={() => handleSelectAction(a)}
+                className={`px-3 py-1.5 rounded text-xs font-bold transition ${action === a ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* テキスト条件 */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-bold text-gray-400">テキスト条件</label>
+              <button
+                onClick={() => setTextRules(prev => [...prev, { field: "subject", mode: "contains", keyword: "" }])}
+                className="text-xs font-bold text-[#5865F2] hover:text-white transition"
+              >
+                ＋条件を追加
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {textRules.map((rule, i) => (
+                <div key={i} className="flex items-center gap-1.5 bg-[#232428] rounded p-2">
+                  <select
+                    value={rule.field}
+                    onChange={(e) => updateRule(i, { field: e.target.value as TextField })}
+                    className="bg-[#1E1F22] text-xs text-gray-200 rounded px-1.5 py-1.5 flex-shrink-0"
+                  >
+                    {(Object.keys(TEXT_FIELD_LABELS) as TextField[]).map(f => <option key={f} value={f}>{TEXT_FIELD_LABELS[f]}</option>)}
+                  </select>
+                  <select
+                    value={rule.mode}
+                    onChange={(e) => updateRule(i, { mode: e.target.value as TextRule["mode"] })}
+                    className="bg-[#1E1F22] text-xs text-gray-200 rounded px-1.5 py-1.5 flex-shrink-0"
+                  >
+                    <option value="contains">含む</option>
+                    <option value="not_contains">含まない</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={rule.keyword}
+                    onChange={(e) => updateRule(i, { keyword: e.target.value })}
+                    placeholder="キーワード"
+                    className="flex-1 min-w-0 bg-[#1E1F22] text-xs text-gray-200 rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
+                  />
+                  <button onClick={() => removeRule(i)} className="text-gray-500 hover:text-white font-bold px-1 flex-shrink-0">×</button>
+                </div>
+              ))}
+              {textRules.length === 0 && <div className="text-xs text-gray-500 px-1">条件はまだありません</div>}
+            </div>
+          </div>
+
+          {/* 期間 */}
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer mb-1.5">
+              <input type="checkbox" checked={dateEnabled} onChange={(e) => setDateEnabled(e.target.checked)} className="accent-[#5865F2]" />
+              <span className="text-xs font-bold text-gray-400">期間</span>
+            </label>
+            {dateEnabled && (
+              <div className="flex flex-wrap items-center gap-2 pl-6">
+                <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="bg-[#1E1F22] text-xs text-gray-200 rounded px-2 py-1.5" />
+                <span className="text-xs text-gray-500">〜</span>
+                <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="bg-[#1E1F22] text-xs text-gray-200 rounded px-2 py-1.5" />
+                <div className="flex gap-1 text-[11px] font-bold">
+                  <button onClick={() => setDateDirection("received")} className={`px-2.5 py-1 rounded ${dateDirection === "received" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>受信</button>
+                  <button onClick={() => setDateDirection("sent")} className={`px-2.5 py-1 rounded ${dateDirection === "sent" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>送信</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 保存場所: グループ化は任意トグル、非グループアクションは必須（対象外はグレーアウト） */}
+          {action === "group" ? (
+            <div>
+              <label className="flex items-center gap-2 cursor-pointer mb-1.5">
+                <input type="checkbox" checked={groupBoxEnabled} onChange={(e) => setGroupBoxEnabled(e.target.checked)} className="accent-[#5865F2]" />
+                <span className="text-xs font-bold text-gray-400">保存場所</span>
+              </label>
+              {groupBoxEnabled && (
+                <div className="flex flex-wrap gap-1 pl-6">
+                  {(Object.keys(FILTER_BOX_LABELS) as FindBarBoxKey[]).map(key => (
+                    <label key={key} className="flex items-center gap-1 text-[11px] font-bold bg-[#232428] px-2 py-1 rounded cursor-pointer">
+                      <input type="checkbox" checked={groupBoxes.includes(key)} onChange={() => setGroupBoxes(prev => prev.includes(key) ? prev.filter(b => b !== key) : [...prev, key])} className="accent-[#5865F2]" />
+                      {FILTER_BOX_LABELS[key]}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div>
+              <div className="text-xs font-bold text-gray-400 mb-1.5">保存場所（対象）</div>
+              <div className="space-y-1">
+                {(Object.keys(FILTER_BOX_LABELS) as FindBarBoxKey[]).map(box => {
+                  const restricted = isActionBoxRestricted(action, box);
+                  const checked = actionBoxes.includes(box);
+                  const count = boxCounts[box] || 0;
+                  return (
+                    <label
+                      key={box}
+                      className={`flex items-center justify-between gap-2 p-2 rounded border ${restricted ? "opacity-40 border-transparent bg-[#1E1F22] cursor-not-allowed" : checked ? "border-[#5865F2] bg-[#5865F2]/10 cursor-pointer" : "border-[#35373C] bg-[#1E1F22] cursor-pointer"}`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={restricted}
+                          onChange={() => setActionBoxes(prev => prev.includes(box) ? prev.filter(b => b !== box) : [...prev, box])}
+                          className="accent-[#5865F2] w-4 h-4"
+                        />
+                        <span className={`text-xs font-bold ${restricted ? "text-gray-600" : "text-gray-200"}`}>{FILTER_BOX_LABELS[box]}</span>
+                      </span>
+                      <span className={`text-xs font-bold ${restricted ? "text-gray-600" : "text-[#5865F2]"}`}>{restricted ? "対象外" : `${count}件`}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* 添付ファイル・返信・転送・HTML/テキスト */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <ThreeWayToggle label="添付ファイル" value={attachmentChoice} onChange={setAttachmentChoice} yesLabel="あり" noLabel="なし" />
+            <ThreeWayToggle label="返信メール" value={replyChoice} onChange={setReplyChoice} yesLabel="はい" noLabel="いいえ" />
+            <ThreeWayToggle label="転送メール" value={forwardChoice} onChange={setForwardChoice} yesLabel="はい" noLabel="いいえ" />
+            <div>
+              <div className="text-xs font-bold text-gray-400 mb-1">形式</div>
+              <div className="flex gap-1 text-[11px] font-bold">
+                <button onClick={() => setFormatChoice("any")} className={`px-2.5 py-1 rounded ${formatChoice === "any" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>問わない</button>
+                <button onClick={() => setFormatChoice("html")} className={`px-2.5 py-1 rounded ${formatChoice === "html" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>HTML</button>
+                <button onClick={() => setFormatChoice("text")} className={`px-2.5 py-1 rounded ${formatChoice === "text" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>テキスト</button>
+              </div>
+            </div>
+          </div>
+
+          {/* グループ化専用: 元メッセージの非表示 */}
+          {action === "group" && (
+            <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition text-sm text-gray-200">
+              <input type="checkbox" checked={hideOriginal} onChange={(e) => setHideOriginal(e.target.checked)} className="accent-[#5865F2] w-4 h-4" />
+              元のメッセージを個別チャットから非表示にする
+            </label>
+          )}
+
+          {/* 非グループ専用: 移動先・1回限り/継続 */}
+          {action !== "group" && (
+            <>
+              {action === "move" && (
+                <div>
+                  <div className="text-xs font-bold text-gray-400 mb-1.5">移動先</div>
+                  <div className="flex flex-wrap gap-1">
+                    {(["INBOX", "ARCHIVE", "SPAM", "TRASH"] as const).map(dest => (
+                      <button
+                        key={dest}
+                        onClick={() => setDestination(dest)}
+                        className={`px-2.5 py-1 rounded text-xs font-bold ${destination === dest ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}
+                      >
+                        {MOVE_DEST_LABELS[dest]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div>
+                <div className="text-xs font-bold text-gray-400 mb-1.5">実行方法</div>
+                <div className="flex gap-1 text-[11px] font-bold">
+                  <button onClick={() => setContinuous(false)} className={`px-2.5 py-1 rounded ${!continuous ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>1回限り</button>
+                  <button onClick={() => setContinuous(true)} className={`px-2.5 py-1 rounded ${continuous ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>継続</button>
+                </div>
+                {continuous && <div className="text-[11px] text-gray-500 mt-1">フィルターとして保存され、新着メールにも自動的に1回だけ適用されます</div>}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="p-4 border-t border-[#1E1F22] flex items-center justify-between flex-shrink-0">
+          <span className="text-xs text-gray-500">
+            {!filterName.trim() ? "名前を入力してください" : isNonGroupBoxesEmpty ? "保存場所を選択してください" : isCriteriaEmpty ? "条件を追加してください" : `${matchCount}件が一致します`}
+          </span>
+          <button
+            disabled={!canExecute}
+            onClick={handlePrimary}
+            className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-[#3f4147] disabled:text-gray-500 transition"
+          >
+            {action === "group" ? (editingId ? "保存" : "グループを作成") : continuous ? (editingId ? "保存" : "フィルターを保存") : "実行"}
+          </button>
         </div>
       </div>
     </div>
