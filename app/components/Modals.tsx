@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
+import { signOut } from "next-auth/react";
 import { BodyWithLinks, getFileIcon, formatFileSize, HighlightText } from "./ui";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
@@ -1292,6 +1293,35 @@ export function Modals({ app }: { app: any }) {
 
         {modal.type === "compose_new_chat" && (
           <ComposeNewChatModal app={app} modal={modal} />
+        )}
+
+        {modal.type === "account_menu" && (
+          <div className="p-5">
+            <div className="flex items-center gap-3 mb-5">
+              <img
+                src={app.auth?.session?.user?.image || `/api/avatar?name=${encodeURIComponent(app.auth?.session?.user?.name || "U")}`}
+                alt=""
+                referrerPolicy="no-referrer"
+                className="w-12 h-12 rounded-full flex-shrink-0"
+              />
+              <div className="min-w-0">
+                <div className="text-sm font-bold text-white truncate">{app.auth?.session?.user?.name || "ユーザー"}</div>
+                <div className="text-xs text-gray-400 truncate">{app.auth?.session?.user?.email}</div>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              {/* アカウント追加: ボタンのみ設置。複数アカウント切り替えの仕組みは未実装 */}
+              <button className="w-full text-left px-3 py-2.5 rounded bg-[#2B2D31] text-sm text-gray-200 hover:bg-[#35373C] transition font-bold">
+                + アカウントを追加
+              </button>
+              <button
+                onClick={() => signOut({ callbackUrl: "/" })}
+                className="w-full text-left px-3 py-2.5 rounded bg-[#2B2D31] text-sm text-red-400 hover:bg-[#35373C] transition font-bold"
+              >
+                ログアウト
+              </button>
+            </div>
+          </div>
         )}
 
         {modal.type === "confirm_pin" && (() => {
