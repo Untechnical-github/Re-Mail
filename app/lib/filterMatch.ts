@@ -68,6 +68,20 @@ function extractAddress(raw: string): string {
   return ((match ? match[1] : raw) || "").trim();
 }
 
+// <input type="date"> の "YYYY-MM-DD" 文字列を、閲覧者のローカルタイムゾーンでのその日の
+// 開始/終了時刻として解釈する。new Date("YYYY-MM-DD") は日付のみの文字列をUTC 0時として
+// パースする仕様のため、そのまま使うと日本時間などUTCより進んでいるタイムゾーンでは、
+// 同じ「7月24日」のメールでも午前中に送受信されたものだけ前日UTC扱いになって
+// 期間フィルターから漏れてしまう（同じ日の一部のメールだけ対象外になるバグの原因だった）
+function parseLocalDayStart(dateStr: string): Date {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1, 0, 0, 0, 0);
+}
+function parseLocalDayEnd(dateStr: string): Date {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1, 23, 59, 59, 999);
+}
+
 function matchesTextRule(email: any, rule: TextRule, myEmail: string): boolean {
   let target = "";
   if (rule.field === "recipientName") target = extractName(getPartnerRaw(email, myEmail));
@@ -90,12 +104,9 @@ export function messageMatchesFilter(email: any, criteria: FilterCriteria, myEma
     if (direction === "received" && isSent) return false;
     if (direction === "sent" && !isSent) return false;
     const emailDate = new Date(email.date);
-    if (from && emailDate < new Date(from)) return false;
-    if (to) {
-      const toDate = new Date(to);
-      toDate.setHours(23, 59, 59, 999);
-      if (emailDate > toDate) return false;
-    }
+    if (isNaN(emailDate.getTime())) return false; // 日時が壊れている/未解析のメールは期間条件付きでは対象外にする
+    if (from && emailDate < parseLocalDayStart(from)) return false;
+    if (to && emailDate > parseLocalDayEnd(to)) return false;
   }
 
   if (criteria.boxes && criteria.boxes.length > 0) {
