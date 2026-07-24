@@ -2341,7 +2341,7 @@ export function FilterToolModal({ app }: { app: any }) {
         <div className="bg-[#313338] rounded-lg shadow-2xl w-full max-w-md flex flex-col border border-[#1E1F22]" style={{ maxHeight: "85dvh" }} onClick={(e) => e.stopPropagation()}>
           <div className="p-4 border-b border-[#1E1F22] flex items-center justify-between flex-shrink-0">
             <h2 className="text-lg font-bold text-white">フィルター</h2>
-            <button onClick={handleClose} className="text-gray-400 hover:text-white text-lg font-bold px-1 transition">×</button>
+            <button onClick={handleClose} className="text-gray-400 hover:text-white text-sm font-bold hover:underline transition">キャンセル</button>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             <button
@@ -2389,7 +2389,7 @@ export function FilterToolModal({ app }: { app: any }) {
         <div className="p-4 border-b border-[#1E1F22] flex items-center gap-3 flex-shrink-0">
           <button onClick={() => setScreen("list")} className="text-gray-400 hover:text-white font-bold text-lg transition">←</button>
           <h2 className="text-lg font-bold text-white flex-1">{editingId ? "フィルターを編集" : "フィルターを作成"}</h2>
-          <button onClick={handleClose} className="text-gray-400 hover:text-white text-lg font-bold px-1 transition">×</button>
+          <button onClick={handleClose} className="text-gray-400 hover:text-white text-sm font-bold hover:underline transition">キャンセル</button>
         </div>
 
         <div className="px-4 pt-3 flex-shrink-0">
