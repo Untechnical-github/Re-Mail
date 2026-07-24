@@ -26,6 +26,9 @@ export type ChatConfig = {
   // true の場合、フィルター条件に一致したメッセージを他の全ルーム（元の個別チャット等）から
   // 動的に除外する（groupedEmails側で毎回再計算されるため、明示的な復元処理は不要）
   filterHideOriginal?: boolean;
+  // グループフィルター用。false の場合、作成時点（filterCreatedAt）より前の既存メールは
+  // グループに含めず、それ以降に届いた新着メールだけを対象にする。未指定/true は既存メールも含める（デフォルト）
+  filterIncludeExisting?: boolean;
   // フィルターツールの非グループ系アクション（非表示/ピン留め/移動/削除）を「継続」で保存した場合のみ設定される。
   // isGroup とは排他的に使う（filterAction が設定されている行はグループではない）
   filterAction?: "hide" | "pin" | "move" | "delete";

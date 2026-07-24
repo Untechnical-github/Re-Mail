@@ -2157,6 +2157,7 @@ export function FilterToolModal({ app }: { app: any }) {
   const [hideOriginal, setHideOriginal] = useState(false);
   const [continuous, setContinuous] = useState(false);
   const [destination, setDestination] = useState<string>("INBOX");
+  const [includeExisting, setIncludeExisting] = useState(true);
 
   useEffect(() => {
     if (!active) return;
@@ -2181,7 +2182,7 @@ export function FilterToolModal({ app }: { app: any }) {
     setGroupBoxEnabled(false); setGroupBoxes([]);
     setActionBoxes([]);
     setAttachmentChoice("any"); setReplyChoice("any"); setForwardChoice("any"); setFormatChoice("any");
-    setHideOriginal(false); setContinuous(false); setDestination("INBOX");
+    setHideOriginal(false); setContinuous(false); setDestination("INBOX"); setIncludeExisting(true);
   };
 
   const openCreate = () => {
@@ -2220,6 +2221,9 @@ export function FilterToolModal({ app }: { app: any }) {
     setHideOriginal(!!cfg.filterHideOriginal);
     setContinuous(!!cfg.filterContinuous);
     setDestination(cfg.filterDestination || "INBOX");
+    // 非グループ（1回限り/継続の実行時のみ意味を持つ）は保存していないため常にデフォルトへ戻す。
+    // グループは filterIncludeExisting を保存しているのでそれを復元する（未指定なら含める＝デフォルト）
+    setIncludeExisting(kind === "group" ? cfg.filterIncludeExisting !== false : true);
     setScreen("builder");
   };
 
@@ -2266,6 +2270,7 @@ export function FilterToolModal({ app }: { app: any }) {
   }, [baseCriteria, action, groupBoxEnabled, groupBoxes, actionBoxes]);
 
   const isNonGroupBoxesEmpty = action !== "group" && actionBoxes.length === 0;
+  const isIncludeExistingDisabled = action !== "group" && !continuous;
   const isCriteriaEmpty = isEmptyFilterCriteria(criteria);
   const canExecute = !!filterName.trim() && !isCriteriaEmpty && !isNonGroupBoxesEmpty;
 
@@ -2296,10 +2301,10 @@ export function FilterToolModal({ app }: { app: any }) {
 
     if (action === "group") {
       if (editingId && existingKind === "group") {
-        app.actions.updateChatConfig(editingId, { customName: name, filterCriteria: criteria, filterHideOriginal: hideOriginal });
+        app.actions.updateChatConfig(editingId, { customName: name, filterCriteria: criteria, filterHideOriginal: hideOriginal, filterIncludeExisting: includeExisting });
       } else {
         if (editingId) app.actions.deleteChatConfig(editingId);
-        app.actions.createFilterGroup(name, criteria, hideOriginal);
+        app.actions.createFilterGroup(name, criteria, hideOriginal, includeExisting);
       }
       app.actions.exitAfterAction();
       return;
@@ -2318,7 +2323,9 @@ export function FilterToolModal({ app }: { app: any }) {
         filterDestination: action === "move" ? destination : undefined,
         filterCreatedAt: createdAt, filterLastAppliedAt: now,
       });
-      applyNonGroupAction(matchedIds);
+      // 「これまでのメールを含める」がONの時だけ、保存時点で既に一致しているメールに即座に適用する。
+      // OFFなら以降に届く新着メールだけが自動適用エンジン（filterLastAppliedAt=now）の対象になる
+      if (includeExisting) applyNonGroupAction(matchedIds);
     } else {
       if (editingId) app.actions.deleteChatConfig(editingId);
       applyNonGroupAction(matchedIds);
@@ -2575,6 +2582,18 @@ export function FilterToolModal({ app }: { app: any }) {
               </div>
             </>
           )}
+
+          {/* これまでのメールを含めるか。1回限りは常に既存の一致メールが対象のため、その場合はグレーアウトする */}
+          <div className={isIncludeExistingDisabled ? "opacity-40 pointer-events-none" : ""}>
+            <div className="text-xs font-bold text-gray-400 mb-1.5">これまでのメール</div>
+            <div className="flex gap-1 text-[11px] font-bold">
+              <button onClick={() => setIncludeExisting(true)} className={`px-2.5 py-1 rounded ${includeExisting ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>含める</button>
+              <button onClick={() => setIncludeExisting(false)} className={`px-2.5 py-1 rounded ${!includeExisting ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>含めない</button>
+            </div>
+            <div className="text-[11px] text-gray-500 mt-1">
+              {isIncludeExistingDisabled ? "1回限りの実行では常に、今すでに条件に一致しているメールが対象になります" : "「含めない」を選ぶと、これから届く新着メールだけが対象になります"}
+            </div>
+          </div>
         </div>
 
         <div className="p-4 border-t border-[#1E1F22] flex items-center justify-between flex-shrink-0">

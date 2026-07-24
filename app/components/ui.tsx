@@ -209,7 +209,7 @@ export function formatFileSize(bytes: number): string {
 
 export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
-  const { selectionMode, selectedIds } = app.state;
+  const { selectionMode, selectedIds, modal } = app.state;
   const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode, setRenameInput,
           setReplySubject, setReplyBody, setReplyToMessage, safeBack, enterSelectionMode } = app.actions;
 
@@ -217,6 +217,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const isAnySelection = selectionMode === `${modePrefix}_select`;
   const hasItems = selectedIds.length > 0;
+  const isFilterToolOpen = isChat && modal?.type === "filter_tool";
 
   // チャットのピン留め・非表示は制限なし。メッセージは従来通り
   const isActionRestrictedForAll = (action: string): boolean => {
@@ -329,10 +330,10 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         全選択
       </button>
 
-      {/* キャンセル */}
+      {/* キャンセル: 選択モードのキャンセルに加え、フィルターツールが開いている間もこのボタンで閉じられるようにする */}
       <button
-        onClick={() => { if (isAnySelection) safeBack(); }}
-        className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!isAnySelection ? "opacity-30 pointer-events-none grayscale" : ""}`}
+        onClick={() => { if (isAnySelection || isFilterToolOpen) safeBack(); }}
+        className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!isAnySelection && !isFilterToolOpen ? "opacity-30 pointer-events-none grayscale" : ""}`}
       >
         キャンセル
       </button>
@@ -371,17 +372,19 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         </button>
       )}
 
-      {/* チャット: 名前変更（1件選択時のみ有効） */}
+      {/* チャット: 名前変更（チャット選択モードで1件選択時のみ有効。selectedIds はメッセージ選択と
+          共有のstateのため、selectionMode 自体もチェックしないとメッセージを1件選択しただけで
+          このボタンが（メッセージIDを対象に）押せてしまっていた */}
       {isChat && (
         <button
           onClick={() => {
-            if (selectedIds.length !== 1) return;
+            if (!isAnySelection || selectedIds.length !== 1) return;
             const id = selectedIds[0];
             setRenameInput(app.state.chatConfigs[id]?.customName || id);
             setModal({ type: "rename", targetMode: "chat", targets: [id] });
             window.history.pushState({ action: "modal" }, "", window.location.href);
           }}
-          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectedIds.length !== 1 ? "opacity-30 pointer-events-none grayscale" : ""}`}
+          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!isAnySelection || selectedIds.length !== 1 ? "opacity-30 pointer-events-none grayscale" : ""}`}
         >
           名前変更
         </button>

@@ -365,6 +365,7 @@ export function useMailApp() {
           let filterDestinationVal = undefined;
           let filterCreatedAtVal = undefined;
           let filterLastAppliedAtVal = undefined;
+          let filterIncludeExistingVal = undefined;
           if (customNameVal && customNameVal.startsWith('{')) {
             try {
               const parsed = JSON.parse(customNameVal);
@@ -374,6 +375,7 @@ export function useMailApp() {
               filterCriteriaVal = parsed.filterCriteria; filterHideOriginalVal = parsed.filterHideOriginal;
               filterActionVal = parsed.filterAction; filterContinuousVal = parsed.filterContinuous; filterDestinationVal = parsed.filterDestination;
               filterCreatedAtVal = parsed.filterCreatedAt; filterLastAppliedAtVal = parsed.filterLastAppliedAt;
+              filterIncludeExistingVal = parsed.filterIncludeExisting;
               if (pData) {
                 // ★修正: 過去のバグで保存された「送信済みメールのINBOXラベル」をロード時に強制消去する
                 const cleanData = (Array.isArray(pData) ? pData : [pData]).map(e => {
@@ -386,7 +388,7 @@ export function useMailApp() {
               }
             } catch (e) {}
           }
-          formatted[c.chat_id] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, roomId: roomIdVal, isGroup: isGroupVal, groupMembers: groupMembersVal, groupMemberAddresses: groupMemberAddressesVal, groupMode: groupModeVal, groupHiddenMembers: groupHiddenMembersVal, filterCriteria: filterCriteriaVal, filterHideOriginal: filterHideOriginalVal, filterAction: filterActionVal, filterContinuous: filterContinuousVal, filterDestination: filterDestinationVal, filterCreatedAt: filterCreatedAtVal, filterLastAppliedAt: filterLastAppliedAtVal };
+          formatted[c.chat_id] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, roomId: roomIdVal, isGroup: isGroupVal, groupMembers: groupMembersVal, groupMemberAddresses: groupMemberAddressesVal, groupMode: groupModeVal, groupHiddenMembers: groupHiddenMembersVal, filterCriteria: filterCriteriaVal, filterHideOriginal: filterHideOriginalVal, filterAction: filterActionVal, filterContinuous: filterContinuousVal, filterDestination: filterDestinationVal, filterCreatedAt: filterCreatedAtVal, filterLastAppliedAt: filterLastAppliedAtVal, filterIncludeExisting: filterIncludeExistingVal };
         });
         setChatConfigs(formatted); setPersistedEmails(pMsgs);
       }
@@ -412,6 +414,7 @@ export function useMailApp() {
         filterCriteria: nextConfig.filterCriteria, filterHideOriginal: nextConfig.filterHideOriginal,
         filterAction: nextConfig.filterAction, filterContinuous: nextConfig.filterContinuous, filterDestination: nextConfig.filterDestination,
         filterCreatedAt: nextConfig.filterCreatedAt, filterLastAppliedAt: nextConfig.filterLastAppliedAt,
+        filterIncludeExisting: nextConfig.filterIncludeExisting,
       });
     }
     try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
@@ -995,7 +998,17 @@ export function useMailApp() {
       // フィルターツールで作成したグループ: 宛先の集合ではなく条件でメッセージを動的に集約する
       if (cfg.filterCriteria) {
         const myEmail = session?.user?.email || "";
-        groups[room] = allUniqueEmails.filter((e: any) => messageMatchesFilter(e, cfg.filterCriteria!, myEmail));
+        // filterIncludeExisting が false の場合、作成時点より前の既存メールは含めず、
+        // それ以降に届いた新着メールだけを対象にする
+        const createdAtMs = cfg.filterCreatedAt ? new Date(cfg.filterCreatedAt).getTime() : 0;
+        groups[room] = allUniqueEmails.filter((e: any) => {
+          if (!messageMatchesFilter(e, cfg.filterCriteria!, myEmail)) return false;
+          if (cfg.filterIncludeExisting === false) {
+            const t = new Date(e.date).getTime();
+            if (!(t > createdAtMs)) return false;
+          }
+          return true;
+        });
         return;
       }
       const mode = cfg.groupMode || "normal";
@@ -1356,9 +1369,12 @@ export function useMailApp() {
 
   // フィルターツールで作成するグループ。宛先の集合ではなく条件（FilterCriteria）でメッセージを
   // 動的に集約する。新着メールも条件に合えば自動的に含まれ続ける
-  const createFilterGroup = async (name: string, filterCriteria: FilterCriteria, hideOriginal: boolean) => {
+  const createFilterGroup = async (name: string, filterCriteria: FilterCriteria, hideOriginal: boolean, includeExisting: boolean = true) => {
     const groupRoom = `group:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await updateChatConfig(groupRoom, { customName: name, isGroup: true, filterCriteria, filterHideOriginal: hideOriginal });
+    await updateChatConfig(groupRoom, {
+      customName: name, isGroup: true, filterCriteria, filterHideOriginal: hideOriginal,
+      filterIncludeExisting: includeExisting, filterCreatedAt: new Date().toISOString(),
+    });
     setSelectedSender(groupRoom);
     if (typeof window !== "undefined") {
       localStorage.setItem("remail_selected_sender", groupRoom);
