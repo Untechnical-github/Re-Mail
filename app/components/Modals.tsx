@@ -1304,10 +1304,11 @@ export function Modals({ app }: { app: any }) {
                 referrerPolicy="no-referrer"
                 className="w-12 h-12 rounded-full flex-shrink-0"
               />
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="text-sm font-bold text-white truncate">{app.auth?.session?.user?.name || "ユーザー"}</div>
                 <div className="text-xs text-gray-400 truncate">{app.auth?.session?.user?.email}</div>
               </div>
+              <button onClick={() => safeBack()} className="text-gray-400 hover:text-white font-bold text-lg px-1 transition flex-shrink-0">×</button>
             </div>
             <div className="flex flex-col gap-2">
               {/* アカウント追加: ボタンのみ設置。複数アカウント切り替えの仕組みは未実装 */}
