@@ -1070,6 +1070,38 @@ export function useMailApp() {
     try { return decodeRoomKey(room).localKey; } catch { return room; }
   };
 
+  // UI表示用: 複合キーが属するアカウントのメールアドレスを取り出す（アカウントバッジ表示用）
+  const roomAccountEmail = (room: string): string => {
+    try { return decodeRoomKey(room).accountEmail; } catch { return session?.user?.email || ""; }
+  };
+
+  // アカウント連携の解除。D1のlinked_accounts行だけを消す（chat_configsは再連携時に復元できるようあえて残す。
+  // /api/accounts のDELETEハンドラ自体の方針と同じ）。ローカル側はそのアカウント分のメールを一覧から
+  // 即座に取り除き、開いていたチャットがそのアカウントのものだった場合は閉じる
+  const unlinkAccount = async (accountEmail: string) => {
+    const myEmail = session?.user?.email || "";
+    setLinkedAccounts(prev => prev.filter(a => a !== accountEmail));
+    linkedAccountsRef.current = linkedAccountsRef.current.filter(a => a !== accountEmail);
+    setEmails(prev => prev.filter((e: any) => (e.accountId || myEmail) !== accountEmail));
+    setCurrentNextPageTokens(prev => {
+      const next = { ...prev };
+      delete next[accountEmail];
+      return next;
+    });
+    if (selectedSender) {
+      try {
+        if (decodeRoomKey(selectedSender).accountEmail === accountEmail) {
+          setSelectedSender(null);
+          if (typeof window !== "undefined") {
+            localStorage.removeItem("remail_selected_sender");
+            localStorage.removeItem("remail_scroll_main");
+          }
+        }
+      } catch { /* 複合キーでない古いデータは無視 */ }
+    }
+    try { await fetch(`/api/accounts?account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" }); } catch (e) { console.error(e); }
+  };
+
   // メッセージID → 所属ルームキーの逆引き。フィルターツールで複数ルームにまたがる
   // メッセージを一括非表示/ピン留めする際、各メッセージ自身の本来のルームを正しく特定するために使う
   const emailRoomMap = useMemo(() => {
@@ -2518,7 +2550,8 @@ export function useMailApp() {
       openEmailModal, closeEmailModal, toggleMsgExpand,
       openAttachmentModal, closeAttachmentModal,
       jumpToReplyTarget, createOrOpenChat, createGroupChat, createFilterGroup, deleteChatConfig, forwardMessageTo,
-      updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey,
+      updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail,
+      unlinkAccount,
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
     refs: { touchTimer, hasPushedSelectRef, activeLoadRef, searchTimeoutRef }

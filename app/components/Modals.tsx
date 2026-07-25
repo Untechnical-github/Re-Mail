@@ -1338,9 +1338,31 @@ export function Modals({ app }: { app: any }) {
               </div>
               <button onClick={() => safeBack()} className="text-gray-400 hover:text-white font-bold text-lg px-1 transition flex-shrink-0">×</button>
             </div>
+
+            {(app.state.linkedAccounts as string[] || []).length > 0 && (
+              <div className="mb-4">
+                <div className="text-xs font-bold text-gray-400 mb-1.5 px-1">連携中のアカウント</div>
+                <div className="flex flex-col gap-1">
+                  {(app.state.linkedAccounts as string[]).map((a) => (
+                    <div key={a} className="flex items-center justify-between gap-2 bg-[#2B2D31] rounded px-3 py-2">
+                      <span className="text-sm text-gray-200 truncate">{a}</span>
+                      <button
+                        onClick={() => app.actions.unlinkAccount(a)}
+                        className="text-xs font-bold text-red-400 hover:text-red-300 px-2 flex-shrink-0"
+                      >
+                        解除
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-col gap-2">
-              {/* アカウント追加: ボタンのみ設置。複数アカウント切り替えの仕組みは未実装 */}
-              <button className="w-full text-left px-3 py-2.5 rounded bg-[#2B2D31] text-sm text-gray-200 hover:bg-[#35373C] transition font-bold">
+              <button
+                onClick={() => { window.location.href = "/api/accounts/connect"; }}
+                className="w-full text-left px-3 py-2.5 rounded bg-[#2B2D31] text-sm text-gray-200 hover:bg-[#35373C] transition font-bold"
+              >
                 + アカウントを追加
               </button>
               <button

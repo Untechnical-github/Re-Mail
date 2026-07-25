@@ -432,6 +432,18 @@ export default function Home() {
                         <div className="flex items-center gap-1 truncate pr-2">
                           {config?.isPinned && <span className="text-[#FEE75C] text-[10px]">📌</span>}
                           <span className="font-bold text-sm truncate">{config?.customName || actions.roomLocalKey(sender)}</span>
+                          {state.linkedAccounts.length > 0 && (() => {
+                            const acct = actions.roomAccountEmail(sender);
+                            if (acct === (auth.session?.user?.email || "")) return null;
+                            return (
+                              <span
+                                title={acct}
+                                className="text-[9px] font-bold px-1 py-0.5 rounded bg-[#5865F2]/25 text-[#5865F2] flex-shrink-0 leading-none"
+                              >
+                                {acct[0]?.toUpperCase() || "?"}
+                              </span>
+                            );
+                          })()}
                         </div>
                         <span className="text-[10px] text-gray-500 flex-shrink-0">{latestDate}</span>
                       </div>
@@ -469,6 +481,11 @@ export default function Home() {
                 )}
                 <div className="flex-1 min-w-0 flex items-baseline gap-2">
                   <h2 className="font-bold text-base truncate text-white">{state.chatConfigs[state.selectedSender!]?.customName || actions.roomLocalKey(state.selectedSender!)}</h2>
+                  {state.linkedAccounts.length > 0 && (() => {
+                    const acct = actions.roomAccountEmail(state.selectedSender!);
+                    if (acct === (auth.session?.user?.email || "")) return null;
+                    return <span title={acct} className="text-[9px] font-bold px-1 py-0.5 rounded bg-[#5865F2]/25 text-[#5865F2] flex-shrink-0 leading-none">{acct[0]?.toUpperCase() || "?"}</span>;
+                  })()}
                   {selectedGroupConfig?.isGroup ? (
                     <span className="text-xs text-gray-500 truncate">
                       {isFilterGroup ? "フィルターグループ" : `グループ・${(selectedGroupConfig.groupMembers || []).length}人`}
