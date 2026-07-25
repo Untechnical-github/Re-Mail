@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import localforage from "localforage";
 import { ChatConfig, SelectionMode, ModalState, GroupMode } from "../types/mail";
 import { getCachedAttachment, setCachedAttachment } from "../lib/attachmentCache";
-import { isMineEmail, getFindBarBoxKey, FindBarBoxKey, FilterCriteria, messageMatchesFilter } from "../lib/filterMatch";
+import { isMineEmail, getFindBarBoxKey, FindBarBoxKey, FilterCriteria, messageMatchesFilter, ChatListTab, chatConfigTab } from "../lib/filterMatch";
 
 function getSavedBoxSettings(): { inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; sent?: boolean } | null {
   if (typeof window === "undefined") return null;
@@ -108,22 +108,23 @@ export function useMailApp() {
   const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
   const [checkTrash, setCheckTrash] = useState<boolean>(() => getSavedBoxSettings()?.trash ?? false);
   const [checkSent, setCheckSent] = useState<boolean>(() => getSavedBoxSettings()?.sent ?? false);
-  // チャット画面のタブ（個人チャット / グループチャット）。フィルターのチェックボックスと同様、
+  // チャット画面のタブ（個人チャット / グループチャット / フィルター）。フィルターのチェックボックスと同様、
   // この端末のブラウザにだけ保存する（D1には保存しない＝他の端末には同期されない）ので、
   // リロード・タブを閉じる・ログアウトをまたいでも維持されるが、別端末には影響しない
-  const [activeChatTab, setActiveChatTab] = useState<"individual" | "group">(() => {
+  const [activeChatTab, setActiveChatTab] = useState<ChatListTab>(() => {
     if (typeof window === "undefined") return "individual";
-    return localStorage.getItem("remail_active_chat_tab") === "group" ? "group" : "individual";
+    const saved = localStorage.getItem("remail_active_chat_tab");
+    return saved === "group" || saved === "filter" ? saved : "individual";
   });
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("remail_active_chat_tab", activeChatTab);
   }, [activeChatTab]);
 
-  // タブ（個人/グループ）ごとに一覧のスクロール位置を独立して保持する。
+  // タブ（個人/グループ/フィルター）ごとに一覧のスクロール位置を独立して保持する。
   // 切り替え前に必ず「今表示しているタブ」のスクロール位置を保存してから切り替える
   // （切り替え後に読み取ると、DOMは既に新タブの中身になっており、スクロール量も
   //   短い一覧に合わせてブラウザ側でクランプされてしまっていることがあるため）
-  const changeChatTab = (newTab: "individual" | "group") => {
+  const changeChatTab = (newTab: ChatListTab) => {
     if (newTab === activeChatTab) return;
     if (typeof window !== "undefined") {
       const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
@@ -142,11 +143,11 @@ export function useMailApp() {
     });
   }, [activeChatTab]);
 
-  // 開いているメッセージ画面がグループチャットか個人チャットかに応じて、
+  // 開いているメッセージ画面が個人/グループ/フィルターのどれかに応じて、
   // チャット一覧のタブも自動的に合わせる（一覧から今開いているチャットが消えないように）
   useEffect(() => {
     if (!selectedSender) return;
-    const wantTab: "individual" | "group" = chatConfigs[selectedSender]?.isGroup ? "group" : "individual";
+    const wantTab = chatConfigTab(chatConfigs[selectedSender]);
     if (wantTab !== activeChatTab) changeChatTab(wantTab);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSender, chatConfigs]);
@@ -1001,17 +1002,14 @@ export function useMailApp() {
         // filterIncludeExisting が false の場合、作成時点より前の既存メールは含めず、
         // それ以降に届いた新着メールだけを対象にする
         const createdAtMs = cfg.filterCreatedAt ? new Date(cfg.filterCreatedAt).getTime() : 0;
-        const filterGroupMode = cfg.groupMode || "normal";
         groups[room] = allUniqueEmails.filter((e: any) => {
           if (!messageMatchesFilter(e, cfg.filterCriteria!, myEmail)) return false;
           if (cfg.filterIncludeExisting === false) {
             const t = new Date(e.date).getTime();
             if (!(t > createdAtMs)) return false;
           }
-          // 表示モード: 受信専用/送信専用のときは、条件に一致していてもその方向のメールだけに絞る
-          const isSent = isMineEmail(e, myEmail);
-          if (filterGroupMode === "inbound_only" && isSent) return false;
-          if (filterGroupMode === "outbound_only" && !isSent) return false;
+          // フィルターグループは常に受信専用チャットとして扱う（送信済みメールは含めない）
+          if (isMineEmail(e, myEmail)) return false;
           return true;
         });
         return;
@@ -1373,11 +1371,11 @@ export function useMailApp() {
   };
 
   // フィルターツールで作成するグループ。宛先の集合ではなく条件（FilterCriteria）でメッセージを
-  // 動的に集約する。新着メールも条件に合えば自動的に含まれ続ける
-  const createFilterGroup = async (name: string, filterCriteria: FilterCriteria, hideOriginal: boolean, includeExisting: boolean = true, mode: GroupMode = "normal") => {
+  // 動的に集約する。新着メールも条件に合えば自動的に含まれ続ける。常に受信専用チャットとして扱う
+  const createFilterGroup = async (name: string, filterCriteria: FilterCriteria, hideOriginal: boolean, includeExisting: boolean = true) => {
     const groupRoom = `group:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     await updateChatConfig(groupRoom, {
-      customName: name, isGroup: true, filterCriteria, filterHideOriginal: hideOriginal, groupMode: mode,
+      customName: name, isGroup: true, filterCriteria, filterHideOriginal: hideOriginal, groupMode: "inbound_only",
       filterIncludeExisting: includeExisting, filterCreatedAt: new Date().toISOString(),
     });
     setSelectedSender(groupRoom);

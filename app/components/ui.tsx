@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { chatConfigTab } from "../lib/filterMatch";
 
 // field/matchCountBefore/activeField/activeIndex は、メッセージ画面の検索バーで
 // 「今対象として表示されている一致箇所」だけをオレンジにするための仕組み。
@@ -282,9 +283,9 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const handleSelectAll = () => {
     if (isChat) {
-      // 現在表示中のタブ（個人 / グループ）に含まれるチャットだけを対象にする
+      // 現在表示中のタブ（個人 / グループ / フィルター）に含まれるチャットだけを対象にする
       const allIds = (app.computed.senderList as string[]).filter(
-        (id: string) => !!app.state.chatConfigs[id]?.isGroup === (app.state.activeChatTab === "group")
+        (id: string) => chatConfigTab(app.state.chatConfigs[id]) === app.state.activeChatTab
       );
       if (!isAnySelection) enterSelectionMode("chat", allIds[0]);
       setSelectedIds(allIds);

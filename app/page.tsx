@@ -8,6 +8,7 @@ import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
 import { Modals, EmailModal, AttachmentModal, SearchModal, FilterToolModal } from "./components/Modals";
 import { getFileIcon, formatFileSize } from "./components/ui";
+import { chatConfigTab } from "./lib/filterMatch";
 
 function InlineAttachmentImage({ attachment, messageId, cacheKey, onOpen }: {
   attachment: { filename: string; mimeType: string; size: number; attachmentId: string };
@@ -167,9 +168,10 @@ export default function Home() {
   const showTalk = !state.isMobile || state.selectedSender;
 
   const selectedGroupConfig = state.selectedSender ? state.chatConfigs[state.selectedSender] : undefined;
-  const isInboundOnlyGroup = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "inbound_only");
-  const isOutboundOnlyGroup = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "outbound_only");
   const isFilterGroup = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.filterCriteria);
+  // フィルターグループは常に受信専用チャットとして扱う（保存されているgroupModeの値によらない）
+  const isInboundOnlyGroup = !!(selectedGroupConfig?.isGroup && (selectedGroupConfig.groupMode === "inbound_only" || isFilterGroup));
+  const isOutboundOnlyGroup = !!(selectedGroupConfig?.isGroup && !isFilterGroup && selectedGroupConfig.groupMode === "outbound_only");
   const isSendDisabled = isInboundOnlyGroup || isFilterGroup;
   // メッセージ画面のフィルターボタン用: 現在開いている個別チャット(グループでない)の相手アドレス
   const selectedPartnerAddress = (state.selectedSender && !selectedGroupConfig?.isGroup) ? (() => {
@@ -178,6 +180,19 @@ export default function Home() {
     const addrMatch = firstPartner.from.match(/<([^>]+)>/);
     return (addrMatch ? addrMatch[1] : firstPartner.from).trim();
   })() : null;
+  // メッセージ画面のフィルターボタン用: 現在開いている通常（アドレスベース）グループのメンバー全員のアドレス
+  const selectedGroupMemberAddresses = (selectedGroupConfig?.isGroup && !selectedGroupConfig.filterCriteria) ? (() => {
+    const members = selectedGroupConfig.groupMembers || [];
+    if (selectedGroupConfig.groupMemberAddresses && selectedGroupConfig.groupMemberAddresses.length === members.length) {
+      return selectedGroupConfig.groupMemberAddresses;
+    }
+    return members.map((m: string) => {
+      const partner = (computed.groupedEmails[m] || []).find((e: any) => !e.isMe && !e.from.includes(auth.session?.user?.email || ""));
+      if (!partner) return null;
+      const addrMatch = partner.from.match(/<([^>]+)>/);
+      return (addrMatch ? addrMatch[1] : partner.from).trim();
+    }).filter((a: string | null): a is string => !!a);
+  })() : [];
   const subjectFindHighlight = state.findBarOpen && state.findBarSearchSubject ? state.findBarKeyword : "";
   const bodyFindHighlight = state.findBarOpen && state.findBarSearchBody ? state.findBarKeyword : "";
 
@@ -245,7 +260,7 @@ export default function Home() {
           </div>
 
           <div className="flex gap-1 px-3 pt-2 bg-[#232428] border-b border-[#1E1F22] cursor-default" onClick={(e) => e.stopPropagation()}>
-            {([["individual", "個人チャット"], ["group", "グループチャット"]] as const).map(([tab, label]) => (
+            {([["individual", "個人チャット"], ["group", "グループチャット"], ["filter", "フィルター"]] as const).map(([tab, label]) => (
               <button
                 key={tab}
                 onClick={() => actions.changeChatTab(tab)}
@@ -268,7 +283,7 @@ export default function Home() {
             }}
           >
              {state.isLoading && <div className="text-xs text-[#5865F2] font-bold p-2 text-center animate-pulse">読み込み中...</div>}
-             {computed.senderList.filter((sender: string) => !!state.chatConfigs[sender]?.isGroup === (state.activeChatTab === "group")).map((sender) => {
+             {computed.senderList.filter((sender: string) => chatConfigTab(state.chatConfigs[sender]) === state.activeChatTab).map((sender) => {
               const allEmails = computed.groupedEmails[sender] || [];
               const config = state.chatConfigs[sender];
 
@@ -478,7 +493,7 @@ export default function Home() {
                     return <span className="text-xs text-gray-500 truncate">{addr}</span>;
                   })()}
                 </div>
-                <button onClick={(e) => { e.stopPropagation(); const prefill = isFilterGroup ? { ...selectedGroupConfig!.filterCriteria } : selectedPartnerAddress ? { textRules: [{ field: "recipientAddress" as const, mode: "contains" as const, keyword: selectedPartnerAddress }] } : undefined; actions.setModal({ type: "filter_tool", targetMode: "current_chat", targets: [], filterPrefillCriteria: prefill }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="text-gray-400 hover:text-white transition flex-shrink-0" title="フィルター">
+                <button onClick={(e) => { e.stopPropagation(); const prefill = isFilterGroup ? { ...selectedGroupConfig!.filterCriteria } : selectedPartnerAddress ? { textRules: [{ field: "recipientAddress" as const, mode: "contains" as const, keyword: selectedPartnerAddress }] } : selectedGroupMemberAddresses.length > 0 ? { recipientAddressAnyOf: selectedGroupMemberAddresses } : undefined; actions.setModal({ type: "filter_tool", targetMode: "current_chat", targets: [], filterPrefillCriteria: prefill }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="text-gray-400 hover:text-white transition flex-shrink-0" title="フィルター">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M2.628 1.601C5.028 1.206 7.49 1 10 1s4.973.206 7.372.601a.75.75 0 01.628.74v2.288a2.25 2.25 0 01-.659 1.59l-4.682 4.683a2.25 2.25 0 00-.659 1.59v3.037c0 .684-.31 1.33-.844 1.757l-1.937 1.55A.75.75 0 018 18.25v-5.757a2.25 2.25 0 00-.659-1.591L2.659 6.22A2.25 2.25 0 012 4.629V2.34a.75.75 0 01.628-.74z" clipRule="evenodd" /></svg>
                 </button>
                 <button onClick={(e) => { e.stopPropagation(); actions.openFindBar(); }} className="text-gray-400 hover:text-white transition flex-shrink-0" title="検索">

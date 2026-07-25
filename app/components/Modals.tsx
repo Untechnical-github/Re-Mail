@@ -2103,11 +2103,6 @@ const FILTER_ACTIONS: [FilterToolAction, string][] = [
 const MOVE_DEST_LABELS: Record<string, string> = { INBOX: "受信箱", ARCHIVE: "アーカイブ", SPAM: "迷惑メール", TRASH: "ゴミ箱" };
 const FILTER_KIND_LABELS: Record<string, string> = { group: "グループ", hide: "非表示", pin: "ピン留め", move: "移動", delete: "削除" };
 const FILTER_ACTION_VERB: Record<string, string> = { hide: "非表示にする", pin: "ピン留めする", move: "移動する", delete: "削除する" };
-const GROUP_MODE_OPTIONS: { value: "normal" | "inbound_only" | "outbound_only"; label: string; desc: string }[] = [
-  { value: "normal", label: "通常", desc: "条件に一致する受信・送信両方のメールを表示します" },
-  { value: "inbound_only", label: "受信専用", desc: "条件に一致する受信メールのみ表示します" },
-  { value: "outbound_only", label: "送信専用", desc: "条件に一致する送信メールのみ表示します" },
-];
 
 // chatConfigs の1行が「グループフィルター」か「アクションフィルター（継続のみ保存される）」かを判定する
 function filterKindOf(cfg: any): FilterToolAction | null {
@@ -2149,6 +2144,8 @@ export function FilterToolModal({ app }: { app: any }) {
   const [filterName, setFilterName] = useState("");
   const [action, setAction] = useState<FilterToolAction>("group");
   const [textRules, setTextRules] = useState<TextRule[]>([]);
+  const [addressAnyOf, setAddressAnyOf] = useState<string[]>([]);
+  const [addressInput, setAddressInput] = useState("");
   const [dateEnabled, setDateEnabled] = useState(false);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -2164,7 +2161,6 @@ export function FilterToolModal({ app }: { app: any }) {
   const [continuous, setContinuous] = useState(false);
   const [destination, setDestination] = useState<string>("INBOX");
   const [includeExisting, setIncludeExisting] = useState(true);
-  const [groupModeChoice, setGroupModeChoice] = useState<"normal" | "inbound_only" | "outbound_only">("normal");
 
   const myEmail = app.auth?.session?.user?.email || "";
 
@@ -2178,12 +2174,12 @@ export function FilterToolModal({ app }: { app: any }) {
     setFilterName(`フィルター${existingFilters.length + 1}`);
     setAction("group");
     setTextRules([]);
+    setAddressAnyOf([]); setAddressInput("");
     setDateEnabled(false); setDateFrom(""); setDateTo(""); setDateDirection("received");
     setGroupBoxEnabled(false); setGroupBoxes([]);
     setActionBoxes([]);
     setAttachmentChoice("any"); setReplyChoice("any"); setForwardChoice("any"); setFormatChoice("any");
     setHideOriginal(false); setContinuous(false); setDestination("INBOX"); setIncludeExisting(true);
-    setGroupModeChoice("normal");
   };
 
   // 条件オブジェクトをビルダーの各stateへ反映する共通処理（既存フィルターの編集読み込みと、
@@ -2191,6 +2187,8 @@ export function FilterToolModal({ app }: { app: any }) {
   // state（groupBoxes / actionBoxes）へ同時に反映し、後からアクションを切り替えても情報が失われないようにする
   const loadCriteriaIntoFields = (crit: FilterCriteria) => {
     setTextRules(crit.textRules ? crit.textRules.map((r: TextRule) => ({ ...r })) : []);
+    setAddressAnyOf(crit.recipientAddressAnyOf ? [...crit.recipientAddressAnyOf] : []);
+    setAddressInput("");
     if (crit.dateRange) {
       setDateEnabled(true); setDateFrom(crit.dateRange.from || ""); setDateTo(crit.dateRange.to || ""); setDateDirection(crit.dateRange.direction);
     } else {
@@ -2244,7 +2242,6 @@ export function FilterToolModal({ app }: { app: any }) {
     // 非グループ（1回限り/継続の実行時のみ意味を持つ）は保存していないため常にデフォルトへ戻す。
     // グループは filterIncludeExisting を保存しているのでそれを復元する（未指定なら含める＝デフォルト）
     setIncludeExisting(kind === "group" ? cfg.filterIncludeExisting !== false : true);
-    setGroupModeChoice((cfg.groupMode as any) || "normal");
     setScreen("builder");
   };
 
@@ -2261,13 +2258,14 @@ export function FilterToolModal({ app }: { app: any }) {
     const c: FilterCriteria = {};
     const validRules = textRules.filter(r => r.keyword.trim().length > 0);
     if (validRules.length > 0) c.textRules = validRules;
+    if (addressAnyOf.length > 0) c.recipientAddressAnyOf = addressAnyOf;
     if (dateEnabled && (dateFrom || dateTo)) c.dateRange = { from: dateFrom || undefined, to: dateTo || undefined, direction: dateDirection };
     if (attachmentChoice !== "any") c.hasAttachment = attachmentChoice === "yes";
     if (replyChoice !== "any") c.isReply = replyChoice === "yes";
     if (forwardChoice !== "any") c.isForward = forwardChoice === "yes";
     if (formatChoice !== "any") c.format = formatChoice;
     return c;
-  }, [textRules, dateEnabled, dateFrom, dateTo, dateDirection, attachmentChoice, replyChoice, forwardChoice, formatChoice]);
+  }, [textRules, addressAnyOf, dateEnabled, dateFrom, dateTo, dateDirection, attachmentChoice, replyChoice, forwardChoice, formatChoice]);
 
   const boxCounts = useMemo(() => {
     const counts: Record<string, number> = { inbox: 0, archive: 0, sent: 0, spam: 0, trash: 0 };
@@ -2307,6 +2305,14 @@ export function FilterToolModal({ app }: { app: any }) {
   };
   const removeRule = (index: number) => setTextRules(prev => prev.filter((_, i) => i !== index));
 
+  const addAddress = () => {
+    const addr = addressInput.trim().toLowerCase();
+    if (!addr) return;
+    setAddressAnyOf(prev => (prev.includes(addr) ? prev : [...prev, addr]));
+    setAddressInput("");
+  };
+  const removeAddress = (index: number) => setAddressAnyOf(prev => prev.filter((_, i) => i !== index));
+
   const applyNonGroupAction = (ids: string[]) => {
     if (ids.length === 0) return;
     if (action === "hide") app.actions.applyHideToIds(ids);
@@ -2327,10 +2333,10 @@ export function FilterToolModal({ app }: { app: any }) {
 
     if (action === "group") {
       if (editingId && existingKind === "group") {
-        app.actions.updateChatConfig(editingId, { customName: name, filterCriteria: criteria, filterHideOriginal: hideOriginal, filterIncludeExisting: includeExisting, groupMode: groupModeChoice });
+        app.actions.updateChatConfig(editingId, { customName: name, filterCriteria: criteria, filterHideOriginal: hideOriginal, filterIncludeExisting: includeExisting, groupMode: "inbound_only" });
       } else {
         if (editingId) app.actions.deleteChatConfig(editingId);
-        app.actions.createFilterGroup(name, criteria, hideOriginal, includeExisting, groupModeChoice);
+        app.actions.createFilterGroup(name, criteria, hideOriginal, includeExisting);
       }
       app.actions.exitAfterAction();
       return;
@@ -2422,26 +2428,6 @@ export function FilterToolModal({ app }: { app: any }) {
           <div className="flex-1 overflow-y-auto p-4 space-y-5">
             {action === "group" && (
               <>
-                <div>
-                  <label className="text-xs font-bold text-gray-400 mb-1.5 block">表示モード</label>
-                  <div className="flex flex-col gap-1.5">
-                    {GROUP_MODE_OPTIONS.map(opt => (
-                      <label key={opt.value} className="flex items-start gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition">
-                        <input
-                          type="radio"
-                          name="filterGroupMode"
-                          checked={groupModeChoice === opt.value}
-                          onChange={() => setGroupModeChoice(opt.value)}
-                          className="accent-[#5865F2] w-4 h-4 mt-0.5 flex-shrink-0"
-                        />
-                        <span>
-                          <span className="block text-sm font-bold text-gray-200">{opt.label}</span>
-                          <span className="block text-xs text-gray-500">{opt.desc}</span>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
                 <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition text-sm text-gray-200">
                   <input type="checkbox" checked={hideOriginal} onChange={(e) => setHideOriginal(e.target.checked)} className="accent-[#5865F2] w-4 h-4" />
                   元のメッセージを個別チャットから非表示にする
@@ -2576,6 +2562,31 @@ export function FilterToolModal({ app }: { app: any }) {
                 </div>
               ))}
               {textRules.length === 0 && <div className="text-xs text-gray-500 px-1">条件はまだありません</div>}
+            </div>
+          </div>
+
+          {/* 宛先（いずれかに一致） */}
+          <div>
+            <label className="text-xs font-bold text-gray-400 mb-1.5 block">宛先（いずれかに一致）</label>
+            <div className="flex flex-wrap gap-1.5 mb-1.5">
+              {addressAnyOf.map((addr, i) => (
+                <span key={i} className="flex items-center gap-1 bg-[#232428] rounded px-2 py-1 text-xs text-gray-200">
+                  {addr}
+                  <button onClick={() => removeAddress(i)} className="text-gray-500 hover:text-white font-bold">×</button>
+                </span>
+              ))}
+              {addressAnyOf.length === 0 && <div className="text-xs text-gray-500 px-1">条件はまだありません</div>}
+            </div>
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                value={addressInput}
+                onChange={(e) => setAddressInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addAddress(); } }}
+                placeholder="アドレスを入力してEnter"
+                className="flex-1 min-w-0 bg-[#1E1F22] text-xs text-gray-200 rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
+              />
+              <button onClick={addAddress} className="text-xs font-bold text-[#5865F2] hover:text-white transition px-2 flex-shrink-0">追加</button>
             </div>
           </div>
 

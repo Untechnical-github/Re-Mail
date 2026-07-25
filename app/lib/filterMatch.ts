@@ -46,6 +46,10 @@ export type DateDirection = "received" | "sent";
 
 export type FilterCriteria = {
   textRules?: TextRule[];
+  // 宛先（相手）のアドレスが、このリストのいずれかと完全一致するメールだけを対象にする（OR結合）。
+  // textRules はAND結合のみのため、通常グループ（複数メンバー）のフィルターボタンから
+  // 「メンバーの誰か宛/誰かから」を条件化するには、この専用フィールドが必要
+  recipientAddressAnyOf?: string[];
   dateRange?: { from?: string; to?: string; direction: DateDirection };
   boxes?: FindBarBoxKey[];
   hasAttachment?: boolean;
@@ -98,6 +102,11 @@ export function messageMatchesFilter(email: any, criteria: FilterCriteria, myEma
     if (!criteria.textRules.every(rule => matchesTextRule(email, rule, myEmail))) return false;
   }
 
+  if (criteria.recipientAddressAnyOf && criteria.recipientAddressAnyOf.length > 0) {
+    const partnerAddr = extractAddress(getPartnerRaw(email, myEmail)).toLowerCase();
+    if (!criteria.recipientAddressAnyOf.some(a => a.toLowerCase() === partnerAddr)) return false;
+  }
+
   if (criteria.dateRange) {
     const { from, to, direction } = criteria.dateRange;
     const isSent = isMineEmail(email, myEmail);
@@ -136,10 +145,19 @@ export function messageMatchesFilter(email: any, criteria: FilterCriteria, myEma
   return true;
 }
 
+// チャット一覧のタブ種別。フィルターツールで作成したグループ（isGroup && filterCriteria）は
+// アドレスベースの通常グループとは別の「フィルター」タブに分類する
+export type ChatListTab = "individual" | "group" | "filter";
+export function chatConfigTab(cfg: any): ChatListTab {
+  if (!cfg?.isGroup) return "individual";
+  return cfg.filterCriteria ? "filter" : "group";
+}
+
 // FilterCriteria が実質的に何も条件を持っていないか（誤って全件マッチするのを防ぐガード用）
 export function isEmptyFilterCriteria(criteria: FilterCriteria): boolean {
   return (
     !(criteria.textRules && criteria.textRules.length > 0) &&
+    !(criteria.recipientAddressAnyOf && criteria.recipientAddressAnyOf.length > 0) &&
     !criteria.dateRange &&
     !(criteria.boxes && criteria.boxes.length > 0) &&
     criteria.hasAttachment === undefined &&
