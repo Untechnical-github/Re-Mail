@@ -1001,12 +1001,17 @@ export function useMailApp() {
         // filterIncludeExisting が false の場合、作成時点より前の既存メールは含めず、
         // それ以降に届いた新着メールだけを対象にする
         const createdAtMs = cfg.filterCreatedAt ? new Date(cfg.filterCreatedAt).getTime() : 0;
+        const filterGroupMode = cfg.groupMode || "normal";
         groups[room] = allUniqueEmails.filter((e: any) => {
           if (!messageMatchesFilter(e, cfg.filterCriteria!, myEmail)) return false;
           if (cfg.filterIncludeExisting === false) {
             const t = new Date(e.date).getTime();
             if (!(t > createdAtMs)) return false;
           }
+          // 表示モード: 受信専用/送信専用のときは、条件に一致していてもその方向のメールだけに絞る
+          const isSent = isMineEmail(e, myEmail);
+          if (filterGroupMode === "inbound_only" && isSent) return false;
+          if (filterGroupMode === "outbound_only" && !isSent) return false;
           return true;
         });
         return;
@@ -1369,10 +1374,10 @@ export function useMailApp() {
 
   // フィルターツールで作成するグループ。宛先の集合ではなく条件（FilterCriteria）でメッセージを
   // 動的に集約する。新着メールも条件に合えば自動的に含まれ続ける
-  const createFilterGroup = async (name: string, filterCriteria: FilterCriteria, hideOriginal: boolean, includeExisting: boolean = true) => {
+  const createFilterGroup = async (name: string, filterCriteria: FilterCriteria, hideOriginal: boolean, includeExisting: boolean = true, mode: GroupMode = "normal") => {
     const groupRoom = `group:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     await updateChatConfig(groupRoom, {
-      customName: name, isGroup: true, filterCriteria, filterHideOriginal: hideOriginal,
+      customName: name, isGroup: true, filterCriteria, filterHideOriginal: hideOriginal, groupMode: mode,
       filterIncludeExisting: includeExisting, filterCreatedAt: new Date().toISOString(),
     });
     setSelectedSender(groupRoom);

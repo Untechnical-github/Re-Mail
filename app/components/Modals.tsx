@@ -243,7 +243,7 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
           disabled={!canProceed}
           className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-[#3f4147] disabled:text-gray-500 transition"
         >
-          {action === "move" ? `実行 (${totalCheckedCount}件)` : `次へ (${totalCheckedCount}件)`}
+          {action === "move" ? `移動する (${totalCheckedCount}件)` : `次へ (${totalCheckedCount}件)`}
         </button>
       </div>
     </div>
@@ -417,7 +417,7 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
             onClick={handleCreateGroup}
             className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-gray-600 disabled:text-gray-400"
           >
-            チャットを作成
+            チャットを作成する
           </button>
         </div>
       </div>
@@ -522,7 +522,7 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
           onClick={handleNext}
           className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-gray-600 disabled:text-gray-400"
         >
-          {isForward ? "転送" : (selected.length > 1 ? "次へ (グループ設定)" : "チャットを作成")}
+          {isForward ? "転送" : (selected.length > 1 ? "次へ (グループ設定)" : "チャットを作成する")}
         </button>
       </div>
     </div>
@@ -2098,10 +2098,16 @@ const FILTER_BOX_LABELS: Record<FindBarBoxKey, string> = {
   inbox: "受信箱", archive: "アーカイブ", sent: "送信済み", spam: "迷惑メール", trash: "ゴミ箱",
 };
 const FILTER_ACTIONS: [FilterToolAction, string][] = [
-  ["group", "グループ化"], ["hide", "非表示"], ["pin", "ピン留め"], ["move", "移動"], ["delete", "削除"],
+  ["group", "作成"], ["hide", "非表示"], ["pin", "ピン留め"], ["move", "移動"], ["delete", "削除"],
 ];
 const MOVE_DEST_LABELS: Record<string, string> = { INBOX: "受信箱", ARCHIVE: "アーカイブ", SPAM: "迷惑メール", TRASH: "ゴミ箱" };
 const FILTER_KIND_LABELS: Record<string, string> = { group: "グループ", hide: "非表示", pin: "ピン留め", move: "移動", delete: "削除" };
+const FILTER_ACTION_VERB: Record<string, string> = { hide: "非表示にする", pin: "ピン留めする", move: "移動する", delete: "削除する" };
+const GROUP_MODE_OPTIONS: { value: "normal" | "inbound_only" | "outbound_only"; label: string; desc: string }[] = [
+  { value: "normal", label: "通常", desc: "条件に一致する受信・送信両方のメールを表示します" },
+  { value: "inbound_only", label: "受信専用", desc: "条件に一致する受信メールのみ表示します" },
+  { value: "outbound_only", label: "送信専用", desc: "条件に一致する送信メールのみ表示します" },
+];
 
 // chatConfigs の1行が「グループフィルター」か「アクションフィルター（継続のみ保存される）」かを判定する
 function filterKindOf(cfg: any): FilterToolAction | null {
@@ -2136,7 +2142,7 @@ export function FilterToolModal({ app }: { app: any }) {
   const { modal, chatConfigs } = app.state;
   const active = modal?.type === "filter_tool" ? modal : null;
 
-  const [screen, setScreen] = useState<"list" | "builder">("list");
+  const [screen, setScreen] = useState<"list" | "builder" | "settings">("list");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
@@ -2158,6 +2164,7 @@ export function FilterToolModal({ app }: { app: any }) {
   const [continuous, setContinuous] = useState(false);
   const [destination, setDestination] = useState<string>("INBOX");
   const [includeExisting, setIncludeExisting] = useState(true);
+  const [groupModeChoice, setGroupModeChoice] = useState<"normal" | "inbound_only" | "outbound_only">("normal");
 
   useEffect(() => {
     if (!active) return;
@@ -2183,6 +2190,7 @@ export function FilterToolModal({ app }: { app: any }) {
     setActionBoxes([]);
     setAttachmentChoice("any"); setReplyChoice("any"); setForwardChoice("any"); setFormatChoice("any");
     setHideOriginal(false); setContinuous(false); setDestination("INBOX"); setIncludeExisting(true);
+    setGroupModeChoice("normal");
   };
 
   const openCreate = () => {
@@ -2224,6 +2232,7 @@ export function FilterToolModal({ app }: { app: any }) {
     // 非グループ（1回限り/継続の実行時のみ意味を持つ）は保存していないため常にデフォルトへ戻す。
     // グループは filterIncludeExisting を保存しているのでそれを復元する（未指定なら含める＝デフォルト）
     setIncludeExisting(kind === "group" ? cfg.filterIncludeExisting !== false : true);
+    setGroupModeChoice((cfg.groupMode as any) || "normal");
     setScreen("builder");
   };
 
@@ -2294,6 +2303,11 @@ export function FilterToolModal({ app }: { app: any }) {
     else if (action === "delete") app.actions.applyDeleteToIds(ids);
   };
 
+  const handleNext = () => {
+    if (!canExecute) return;
+    setScreen("settings");
+  };
+
   const handlePrimary = () => {
     if (!canExecute) return;
     const name = filterName.trim();
@@ -2301,10 +2315,10 @@ export function FilterToolModal({ app }: { app: any }) {
 
     if (action === "group") {
       if (editingId && existingKind === "group") {
-        app.actions.updateChatConfig(editingId, { customName: name, filterCriteria: criteria, filterHideOriginal: hideOriginal, filterIncludeExisting: includeExisting });
+        app.actions.updateChatConfig(editingId, { customName: name, filterCriteria: criteria, filterHideOriginal: hideOriginal, filterIncludeExisting: includeExisting, groupMode: groupModeChoice });
       } else {
         if (editingId) app.actions.deleteChatConfig(editingId);
-        app.actions.createFilterGroup(name, criteria, hideOriginal, includeExisting);
+        app.actions.createFilterGroup(name, criteria, hideOriginal, includeExisting, groupModeChoice);
       }
       app.actions.exitAfterAction();
       return;
@@ -2375,6 +2389,96 @@ export function FilterToolModal({ app }: { app: any }) {
           </div>
           <div className="p-4 border-t border-[#1E1F22] flex justify-end flex-shrink-0">
             <button onClick={handleClose} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (screen === "settings") {
+    const primaryLabel = action === "group" ? (editingId ? "保存" : "チャットを作成する") : FILTER_ACTION_VERB[action];
+    return (
+      <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={handleClose}>
+        <div className="bg-[#313338] rounded-lg shadow-2xl w-full max-w-md flex flex-col border border-[#1E1F22]" style={{ maxHeight: "85dvh" }} onClick={(e) => e.stopPropagation()}>
+          <div className="p-4 border-b border-[#1E1F22] flex items-center gap-3 flex-shrink-0">
+            <button onClick={() => setScreen("builder")} className="text-gray-400 hover:text-white font-bold text-lg transition">←</button>
+            <h2 className="text-lg font-bold text-white flex-1">
+              {action === "group" ? "表示モードの設定" : action === "move" ? "移動先の設定" : "確認"}
+            </h2>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-5">
+            {action === "group" && (
+              <>
+                <div>
+                  <label className="text-xs font-bold text-gray-400 mb-1.5 block">表示モード</label>
+                  <div className="flex flex-col gap-1.5">
+                    {GROUP_MODE_OPTIONS.map(opt => (
+                      <label key={opt.value} className="flex items-start gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition">
+                        <input
+                          type="radio"
+                          name="filterGroupMode"
+                          checked={groupModeChoice === opt.value}
+                          onChange={() => setGroupModeChoice(opt.value)}
+                          className="accent-[#5865F2] w-4 h-4 mt-0.5 flex-shrink-0"
+                        />
+                        <span>
+                          <span className="block text-sm font-bold text-gray-200">{opt.label}</span>
+                          <span className="block text-xs text-gray-500">{opt.desc}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition text-sm text-gray-200">
+                  <input type="checkbox" checked={hideOriginal} onChange={(e) => setHideOriginal(e.target.checked)} className="accent-[#5865F2] w-4 h-4" />
+                  元のメッセージを個別チャットから非表示にする
+                </label>
+                <div className="text-xs text-gray-500">現時点で{matchCount}件のメールがこのグループに含まれます</div>
+              </>
+            )}
+
+            {action === "move" && (
+              <>
+                <div>
+                  <label className="text-xs font-bold text-gray-400 mb-1.5 block">移動先</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(["INBOX", "ARCHIVE", "SPAM", "TRASH"] as const).map(dest => (
+                      <button
+                        key={dest}
+                        onClick={() => setDestination(dest)}
+                        className={`px-3 py-1.5 rounded text-sm font-bold ${destination === dest ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}
+                      >
+                        {MOVE_DEST_LABELS[dest]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="text-xs text-gray-500">{matchCount}件のメールを「{MOVE_DEST_LABELS[destination]}」へ移動します</div>
+              </>
+            )}
+
+            {(action === "hide" || action === "pin" || action === "delete") && (
+              <div className="space-y-1.5">
+                {actionBoxes.map(box => (
+                  <div key={box} className="flex items-center justify-between p-2.5 rounded bg-[#232428]">
+                    <span className="text-sm font-bold text-gray-200">{FILTER_BOX_LABELS[box]}</span>
+                    <span className="text-sm font-bold text-[#5865F2]">{boxCounts[box] || 0}件</span>
+                  </div>
+                ))}
+                <div className="text-xs text-gray-500 pt-1">合計{matchCount}件を{FILTER_ACTION_VERB[action]}</div>
+              </div>
+            )}
+          </div>
+
+          <div className="p-4 border-t border-[#1E1F22] flex justify-end gap-3 flex-shrink-0">
+            <button onClick={handleClose} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+            <button
+              onClick={handlePrimary}
+              className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] transition"
+            >
+              {primaryLabel}
+            </button>
           </div>
         </div>
       </div>
@@ -2546,42 +2650,16 @@ export function FilterToolModal({ app }: { app: any }) {
             </div>
           </div>
 
-          {/* グループ化専用: 元メッセージの非表示 */}
-          {action === "group" && (
-            <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition text-sm text-gray-200">
-              <input type="checkbox" checked={hideOriginal} onChange={(e) => setHideOriginal(e.target.checked)} className="accent-[#5865F2] w-4 h-4" />
-              元のメッセージを個別チャットから非表示にする
-            </label>
-          )}
-
-          {/* 非グループ専用: 移動先・1回限り/継続 */}
+          {/* 非グループ専用: 1回限り/継続 */}
           {action !== "group" && (
-            <>
-              {action === "move" && (
-                <div>
-                  <div className="text-xs font-bold text-gray-400 mb-1.5">移動先</div>
-                  <div className="flex flex-wrap gap-1">
-                    {(["INBOX", "ARCHIVE", "SPAM", "TRASH"] as const).map(dest => (
-                      <button
-                        key={dest}
-                        onClick={() => setDestination(dest)}
-                        className={`px-2.5 py-1 rounded text-xs font-bold ${destination === dest ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}
-                      >
-                        {MOVE_DEST_LABELS[dest]}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <div>
-                <div className="text-xs font-bold text-gray-400 mb-1.5">実行方法</div>
-                <div className="flex gap-1 text-[11px] font-bold">
-                  <button onClick={() => setContinuous(false)} className={`px-2.5 py-1 rounded ${!continuous ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>1回限り</button>
-                  <button onClick={() => setContinuous(true)} className={`px-2.5 py-1 rounded ${continuous ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>継続</button>
-                </div>
-                {continuous && <div className="text-[11px] text-gray-500 mt-1">フィルターとして保存され、新着メールにも自動的に1回だけ適用されます</div>}
+            <div>
+              <div className="text-xs font-bold text-gray-400 mb-1.5">実行方法</div>
+              <div className="flex gap-1 text-[11px] font-bold">
+                <button onClick={() => setContinuous(false)} className={`px-2.5 py-1 rounded ${!continuous ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>1回限り</button>
+                <button onClick={() => setContinuous(true)} className={`px-2.5 py-1 rounded ${continuous ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>継続</button>
               </div>
-            </>
+              {continuous && <div className="text-[11px] text-gray-500 mt-1">フィルターとして保存され、新着メールにも自動的に1回だけ適用されます</div>}
+            </div>
           )}
 
           {/* これまでのメールを含めるか。1回限りは常に既存の一致メールが対象のため、その場合はグレーアウトする */}
@@ -2605,10 +2683,10 @@ export function FilterToolModal({ app }: { app: any }) {
             <button onClick={handleClose} className="px-2 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
             <button
               disabled={!canExecute}
-              onClick={handlePrimary}
+              onClick={handleNext}
               className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-[#3f4147] disabled:text-gray-500 transition"
             >
-              {action === "group" ? (editingId ? "保存" : "グループを作成") : continuous ? (editingId ? "保存" : "フィルターを保存") : "実行"}
+              次へ
             </button>
           </div>
         </div>
