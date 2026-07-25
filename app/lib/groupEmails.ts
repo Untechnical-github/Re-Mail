@@ -181,10 +181,11 @@ export function mergeAccountGroups(
   return merged;
 }
 
-// フィルターツールで作成したグループ（filterCriteria持ち）専用の集約。常に受信専用チャットとして
-// 扱われるため、通常のグループ（宛先ベース。1つのアカウントから送信する必要があるため
-// そのアカウント自身のメールだけに閉じている）と異なり、複数アカウント分のメールをまたいで
-// 対象にできる。criteria.accountEmail が指定されていればそのアカウントのメールだけに絞り込む。
+// フィルターツールで作成したグループ（filterCriteria持ち）専用の集約。条件に一致すれば
+// 送信済みメールも含まれる（通常のグループのような宛先セット一致は必要ない）ため、
+// 通常のグループ（宛先ベース。1つのアカウントから送信する必要があるためそのアカウント
+// 自身のメールだけに閉じている）と異なり、複数アカウント分のメールをまたいで対象にできる。
+// criteria.accountEmail が指定されていればそのアカウントのメールだけに絞り込む。
 // mergeAccountGroups 済みの複合キー空間に対して、chatConfigs・allEmails も複合キー/全アカウント分の
 // ものをそのまま渡して呼ぶ（groupEmailsByRoom内では意図的にfilterCriteria持ちのroomを扱わない）
 export function applyFilterGroups(
@@ -207,8 +208,6 @@ export function applyFilterGroups(
         const t = new Date(e.date).getTime();
         if (!(t > createdAtMs)) return false;
       }
-      // フィルターグループは常に受信専用チャットとして扱う（送信済みメールは含めない）
-      if (isMineEmail(e, emailAccount)) return false;
       return true;
     }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   });

@@ -1814,8 +1814,8 @@ function getSearchBoxInfo(e: any): { key: BoxKey; name: string } {
 // 既に読み込み済みのデータ(allUniqueEmails/groupedEmails)のみを対象にしたクライアント側検索で、
 // Gmailへの再取得は行わない。
 export function SearchModal({ app }: { app: any }) {
-  const { modal, chatConfigs, checkInbox, checkArchive, checkSpam, checkTrash, checkSent } = app.state;
-  const { setModal, safeBack, openChat, jumpToSearchResult } = app.actions;
+  const { modal, chatConfigs, messageConfigs, checkInbox, checkArchive, checkSpam, checkTrash, checkSent } = app.state;
+  const { setModal, safeBack, openChat, jumpToSearchResult, messageConfigKey } = app.actions;
   const { allUniqueEmails, groupedEmails, contactDirectory } = app.computed;
 
   const active = modal?.type === "search" ? modal : null;
@@ -1848,11 +1848,12 @@ export function SearchModal({ app }: { app: any }) {
   const roomInfos = useMemo(() => {
     const infos: { room: string; label: string; address: string | null; isGroup: boolean; latestDate: number }[] = [];
     (contactDirectory as any[]).forEach(c => {
+      if (chatConfigs[c.room]?.isHidden) return;
       infos.push({ room: c.room, label: c.label, address: c.address || null, isGroup: false, latestDate: c.latestDate });
     });
     Object.keys(chatConfigs).forEach(room => {
       const cfg = chatConfigs[room];
-      if (cfg?.isGroup && (groupedEmails[room] || []).length > 0) {
+      if (cfg?.isGroup && !cfg.isHidden && (groupedEmails[room] || []).length > 0) {
         infos.push({
           room,
           label: cfg.customName || app.actions.roomLocalKey(room),
@@ -1873,6 +1874,19 @@ export function SearchModal({ app }: { app: any }) {
     return map;
   }, [groupedEmails]);
 
+  // 非表示にしたチャット・メッセージは検索結果にも出さない（useMailApp.ts の senderList と同じ判定基準）
+  const isEmailHiddenFromSearch = (e: any): boolean => {
+    const isTrash = e.labelIds?.includes("TRASH");
+    const isSpam = e.labelIds?.includes("SPAM");
+    const isInbox = e.labelIds?.includes("INBOX");
+    const isSent = e.labelIds?.includes("SENT") || e.isMe;
+    const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
+    if (!(isInbox || isArchive || isSent)) return false;
+    const room = emailRoomMap.get(e.id);
+    if (room && chatConfigs[room]?.isHidden) return true;
+    return !!messageConfigs[messageConfigKey(e.id)]?.isHidden;
+  };
+
   const recipientMatches = useMemo(() => {
     if (!kwLower) return [];
     return roomInfos.filter(r => r.label.toLowerCase().includes(kwLower));
@@ -1887,17 +1901,21 @@ export function SearchModal({ app }: { app: any }) {
     if (!kwLower) return [];
     return allUniqueEmails.filter((e: any) => {
       if (!(e.subject || "").toLowerCase().includes(kwLower)) return false;
+      if (isEmailHiddenFromSearch(e)) return false;
       return boxFilter[getSearchBoxInfo(e).key];
     });
-  }, [allUniqueEmails, kwLower, boxFilter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allUniqueEmails, kwLower, boxFilter, emailRoomMap, chatConfigs, messageConfigs]);
 
   const bodyMatches = useMemo(() => {
     if (!kwLower) return [];
     return allUniqueEmails.filter((e: any) => {
       if (!(e.body || "").toLowerCase().includes(kwLower)) return false;
+      if (isEmailHiddenFromSearch(e)) return false;
       return boxFilter[getSearchBoxInfo(e).key];
     });
-  }, [allUniqueEmails, kwLower, boxFilter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allUniqueEmails, kwLower, boxFilter, emailRoomMap, chatConfigs, messageConfigs]);
 
   const sortRooms = (list: typeof roomInfos, order: SearchSort) => {
     const arr = [...list];
@@ -2544,7 +2562,8 @@ export function FilterToolModal({ app }: { app: any }) {
             />
           </div>
 
-          {linkedAccounts.length > 0 && (
+          {/* 対象アカウントは新規作成では「条件」の最初の画面で聞くため、ここは既存フィルターの編集時のみ表示する */}
+          {!!editingId && linkedAccounts.length > 0 && (
             <div className="px-4 pt-3 flex-shrink-0">
               <label className="text-xs font-bold text-gray-400 mb-1 block">対象アカウント</label>
               <div className="flex flex-wrap gap-1.5">
@@ -2565,7 +2584,7 @@ export function FilterToolModal({ app }: { app: any }) {
                 ))}
               </div>
               {action === "group" && (
-                <div className="text-[11px] text-gray-500 mt-1">グループ化は受信専用のため、複数アカウントをまたいで集約できます</div>
+                <div className="text-[11px] text-gray-500 mt-1">グループは複数アカウントのメールをまたいで集約できます（条件に一致すれば送信済みメールも含まれます）</div>
               )}
             </div>
           )}
@@ -2783,6 +2802,30 @@ export function FilterToolModal({ app }: { app: any }) {
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* 対象アカウントは新規作成時、一番最初の画面であるここで聞く（編集時はorList画面で調整する） */}
+          {!editingId && linkedAccounts.length > 0 && (
+            <div>
+              <label className="text-xs font-bold text-gray-400 mb-1.5 block">対象アカウント</label>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  onClick={() => setFilterAccountEmail("")}
+                  className={`px-2.5 py-1 rounded-full text-xs font-bold transition ${!filterAccountEmail ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}
+                >
+                  問わない
+                </button>
+                {[myEmail, ...linkedAccounts].map(a => (
+                  <button
+                    key={a}
+                    onClick={() => setFilterAccountEmail(a)}
+                    className={`px-2.5 py-1 rounded-full text-xs font-bold transition truncate max-w-[200px] ${filterAccountEmail === a ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}
+                  >
+                    {a}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* 方向: このセット全体を受信/送信メールに絞り込む（テキスト条件・期間などすべてに共通で適用される） */}
           <div>
             <label className="text-xs font-bold text-gray-400 mb-1.5 block">方向</label>

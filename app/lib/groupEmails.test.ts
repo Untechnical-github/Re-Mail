@@ -87,7 +87,7 @@ describe("groupEmailsByRoom", () => {
 });
 
 describe("applyFilterGroups", () => {
-  it("条件に一致する受信メールのみを集約する（送信済みは常に除外）", () => {
+  it("条件に一致すれば送信済みメールも集約する", () => {
     const room = encodeRoomKey(ME, asLocalKey("filter:1"));
     const chatConfigs: Record<RoomKeyStr, ChatConfig> = {
       [room]: {
@@ -101,10 +101,28 @@ describe("applyFilterGroups", () => {
       mkEmail({ id: "3", subject: "無関係な件名", from: "田中太郎 <tanaka@example.com>", to: ME, accountId: ME }),
     ];
     const result = applyFilterGroups({} as Record<RoomKeyStr, Email[]>, chatConfigs, emails, ME);
-    expect(result[room].map(e => e.id)).toEqual(["1"]);
+    expect(result[room].map(e => e.id)).toEqual(["1", "2"]);
   });
 
-  it("受信専用のため、複数アカウント分のメールをまたいで集約できる", () => {
+  it("元のメッセージを非表示にするがONの場合、集約された送信済みメールも元のルームから除外される", () => {
+    const room = encodeRoomKey(ME, asLocalKey("filter:1"));
+    const chatConfigs: Record<RoomKeyStr, ChatConfig> = {
+      [room]: {
+        isGroup: true,
+        filterCriteria: { conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
+        filterHideOriginal: true,
+      },
+    } as Record<RoomKeyStr, ChatConfig>;
+    const sentEmail = mkEmail({ id: "2", subject: "報告に関する送信", isMe: true, from: ME, to: "tanaka@example.com", labelIds: ["SENT"], accountId: ME });
+    const originalRoom = asLocalKey("田中太郎") as unknown as RoomKeyStr;
+    const merged: Record<RoomKeyStr, Email[]> = { [originalRoom]: [sentEmail] };
+    const emails = [sentEmail];
+    const result = applyFilterGroups(merged, chatConfigs, emails, ME);
+    expect(result[room].map(e => e.id)).toEqual(["2"]);
+    expect(result[originalRoom]).toEqual([]);
+  });
+
+  it("複数アカウント分のメールをまたいで集約できる", () => {
     const room = encodeRoomKey(ME, asLocalKey("filter:1"));
     const chatConfigs: Record<RoomKeyStr, ChatConfig> = {
       [room]: {
