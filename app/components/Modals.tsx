@@ -2255,7 +2255,14 @@ export function FilterToolModal({ app }: { app: any }) {
       setGroupBoxEnabled(!!(boxes && boxes.length > 0));
       setGroupBoxes(boxes ? [...boxes] : []);
       setActionBoxes(boxes ? [...boxes] : []);
-      setScreen(sets.length > 0 ? "orList" : "conditions");
+      if (sets.length === 1) {
+        // 条件が1つだけの場合は、一覧画面を挟まずその条件の編集画面を直接開く
+        loadDraftFromSet(sets[0]);
+        setEditingSetIndex(0);
+        setScreen("conditions");
+      } else {
+        setScreen(sets.length > 1 ? "orList" : "conditions");
+      }
     } else {
       setScreen("list");
       setEditingId(null);

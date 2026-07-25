@@ -527,16 +527,18 @@ export function useMailApp() {
     return () => { mediaQuery.removeEventListener('change', handler); window.removeEventListener('resize', resizeHandler); };
   }, []);
 
-  // リロード/タブ復元で selectedSender が localStorage から直接セットされた場合、
-  // openChat() を経由していないため history に "#chat" が積まれていない。
+  // リロード/タブ復元で selectedSender が localStorage から直接セットされた場合や、
+  // PC表示（両ペイン表示、履歴を積まない）でチャットを開いた後に画面幅が縮んでスマホ表示に
+  // 切り替わった場合、openChat() の pushState を経由していないため history に "#chat" が積まれていない。
   // その状態のままモバイルの戻るボタン(safeBack)を押すと history.state に
   // 何も入っていないため「チャット画面を閉じる」が発火せず、画面が固定されてしまう。
-  // isMobile が確定した時点で history 側もチャットが開いている状態に揃えておく
+  // isMobile・selectedSender のどちらが変化しても、その都度 history 側をチャットが開いている
+  // 状態に揃え直す（safeBack 側のフォールバックと二重の保険にする）
   useEffect(() => {
     if (isMobile && selectedSender && window.location.hash !== '#chat') {
       window.history.pushState({ chat: selectedSender }, '', '#chat');
     }
-  }, [isMobile]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isMobile, selectedSender]);
 
   useEffect(() => {
     const handlePopState = (e: PopStateEvent) => {
@@ -1245,6 +1247,13 @@ export function useMailApp() {
     const state = window.history.state;
     if (state && (state.action || state.chat)) {
       window.history.back();
+    } else if (isMobile && selectedSender) {
+      // スマホ表示でメッセージ画面が開いているのに、履歴側に「チャットを開いた」記録が無いケース
+      // （PC表示で開いた後に画面幅が縮んでスマホ表示に切り替わった場合など）へのフォールバック。
+      // history.back() 任せだと戻れずメッセージ画面に固定されてしまうため、直接チャット一覧に戻す
+      setSelectedSender(null);
+      localStorage.removeItem("remail_selected_sender");
+      setModal(null); setSelectionMode("none"); setSelectedIds([]);
     } else {
       setModal(null); setSelectionMode("none"); setSelectedIds([]);
     }
