@@ -67,6 +67,9 @@ export type FilterCriteria = {
   // OR結合される条件セットの配列。空/未指定は「内容条件なし＝保存場所条件だけで絞り込む」を意味する
   conditionSets?: ConditionSet[];
   boxes?: FindBarBoxKey[];
+  // 対象アカウント（連携アカウントのメールアドレス）。未指定/空文字列＝アカウントを問わない。
+  // グループ化のフィルターは受信専用のため、複数アカウントのメールをまたいで集約できる
+  accountEmail?: string;
   // 後方互換用: conditionSets 導入前の旧バージョンで保存されたフラットな単一条件データ。
   // conditionSets が無いときだけ getConditionSets() 経由で読み込まれる
   textRules?: TextRule[];
@@ -182,6 +185,9 @@ function matchesConditionSet(email: any, set: ConditionSet, myEmail: string): bo
 }
 
 export function messageMatchesFilter(email: any, criteria: FilterCriteria, myEmail: string): boolean {
+  // email.accountId が無い（accountId導入前のデータ・ローカルfake等）場合は myEmail 名義として扱う
+  if (criteria.accountEmail && (email.accountId || myEmail) !== criteria.accountEmail) return false;
+
   if (criteria.boxes && criteria.boxes.length > 0) {
     if (!criteria.boxes.includes(getBoxKey(email))) return false;
   }
@@ -204,5 +210,5 @@ export function chatConfigTab(cfg: any): ChatListTab {
 
 // FilterCriteria が実質的に何も条件を持っていないか（誤って全件マッチするのを防ぐガード用）
 export function isEmptyFilterCriteria(criteria: FilterCriteria): boolean {
-  return getConditionSets(criteria).length === 0 && !(criteria.boxes && criteria.boxes.length > 0);
+  return getConditionSets(criteria).length === 0 && !(criteria.boxes && criteria.boxes.length > 0) && !criteria.accountEmail;
 }

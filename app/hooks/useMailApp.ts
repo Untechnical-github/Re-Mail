@@ -5,7 +5,7 @@ import { ChatConfig, MessageConfig, SelectionMode, ModalState, GroupMode } from 
 import { Email } from "../types/email";
 import { getCachedAttachment, setCachedAttachment } from "../lib/attachmentCache";
 import { isMineEmail, getFindBarBoxKey, FindBarBoxKey, FilterCriteria, messageMatchesFilter, ChatListTab, chatConfigTab } from "../lib/filterMatch";
-import { groupEmailsByRoom, mergeAccountGroups } from "../lib/groupEmails";
+import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 
 function getSavedBoxSettings(): { inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; sent?: boolean } | null {
@@ -1051,7 +1051,11 @@ export function useMailApp() {
       const accountEmails = allUniqueEmails.filter(e => (e.accountId || myEmail) === accountEmail);
       return { accountEmail, groups: groupEmailsByRoom(accountEmails, accountEmail, localChatConfigs) };
     });
-    return mergeAccountGroups(perAccountGroups);
+    const merged = mergeAccountGroups(perAccountGroups);
+    // フィルターグループ（filterCriteria持ち）は受信専用のため、上のアカウント単位の集約を
+    // 対象外にしてある（groupEmailsByRoom側）。ここで全アカウント分のメールをまたいで
+    // 別途集約する（criteria.accountEmailで対象アカウントを絞り込める）
+    return applyFilterGroups(merged, chatConfigs, allUniqueEmails, myEmail);
   }, [allUniqueEmails, session, chatConfigs, linkedAccounts]);
 
   const groupedEmailsRef = useRef(groupedEmails);
@@ -1125,12 +1129,16 @@ export function useMailApp() {
   const contactDirectory = useMemo(() => {
     return keysOf(groupedEmails)
       .filter(room => (groupedEmails[room] || []).length > 0 && !chatConfigs[room]?.isGroup)
-      .map(room => ({
-        room,
-        label: chatConfigs[room]?.customName || decodeRoomKey(room).localKey,
-        address: getRoomAddress(room),
-        latestDate: groupedEmails[room][0]?.date ? new Date(groupedEmails[room][0].date).getTime() : 0,
-      }))
+      .map(room => {
+        const decoded = decodeRoomKey(room);
+        return {
+          room,
+          label: chatConfigs[room]?.customName || decoded.localKey,
+          address: getRoomAddress(room),
+          accountEmail: decoded.accountEmail,
+          latestDate: groupedEmails[room][0]?.date ? new Date(groupedEmails[room][0].date).getTime() : 0,
+        };
+      })
       .sort((a, b) => b.latestDate - a.latestDate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupedEmails, chatConfigs, session]);

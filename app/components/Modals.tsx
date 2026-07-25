@@ -278,7 +278,8 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
     return contact ? contact.label : id;
   };
 
-  const availableContacts = (contactDirectory as any[]).filter(c => !selected.includes(c.room));
+  // 候補は選択中のアカウントのものだけを表示する（アカウント選択を切り替えると候補も切り替わる）
+  const availableContacts = (contactDirectory as any[]).filter(c => !selected.includes(c.room) && c.accountEmail === account);
   const trimmedSearch = search.trim();
   const query = trimmedSearch.toLowerCase();
   const filteredContacts = query
@@ -2235,8 +2236,11 @@ export function FilterToolModal({ app }: { app: any }) {
   const [continuous, setContinuous] = useState(false);
   const [destination, setDestination] = useState<string>("INBOX");
   const [includeExisting, setIncludeExisting] = useState(true);
+  // 対象アカウント。空文字列＝アカウントを問わない
+  const [filterAccountEmail, setFilterAccountEmail] = useState("");
 
   const myEmail = app.auth?.session?.user?.email || "";
+  const linkedAccounts: string[] = app.state.linkedAccounts || [];
 
   const existingFilters = useMemo(() => {
     return Object.keys(chatConfigs)
@@ -2291,6 +2295,7 @@ export function FilterToolModal({ app }: { app: any }) {
     setGroupBoxEnabled(false); setGroupBoxes([]);
     setActionBoxes([]);
     setHideOriginal(false); setContinuous(false); setDestination("INBOX"); setIncludeExisting(true);
+    setFilterAccountEmail("");
   };
 
   useEffect(() => {
@@ -2325,6 +2330,7 @@ export function FilterToolModal({ app }: { app: any }) {
     setHideOriginal(!!cfg.filterHideOriginal);
     setContinuous(!!cfg.filterContinuous);
     setDestination(cfg.filterDestination || "INBOX");
+    setFilterAccountEmail(crit.accountEmail || "");
     // 非グループ（1回限り/継続の実行時のみ意味を持つ）は保存していないため常にデフォルトへ戻す。
     // グループは filterIncludeExisting を保存しているのでそれを復元する（未指定なら含める＝デフォルト）
     setIncludeExisting(kind === "group" ? cfg.filterIncludeExisting !== false : true);
@@ -2375,9 +2381,12 @@ export function FilterToolModal({ app }: { app: any }) {
   };
   const removeRule = (index: number) => setTextRules(prev => prev.filter((_, i) => i !== index));
 
-  // 保存場所を含まない、内容条件（OR結合された条件セット）のみのFilterCriteria。
+  // 保存場所を含まない、内容条件（OR結合された条件セット）＋対象アカウントのみのFilterCriteria。
   // 非グループアクションの保存場所チェックボックスの件数集計に、保存場所以外の条件だけを適用するために使う
-  const criteriaWithoutBoxes: FilterCriteria = useMemo(() => ({ conditionSets }), [conditionSets]);
+  const criteriaWithoutBoxes: FilterCriteria = useMemo(
+    () => ({ conditionSets, accountEmail: filterAccountEmail || undefined }),
+    [conditionSets, filterAccountEmail]
+  );
 
   const boxCounts = useMemo(() => {
     const counts: Record<string, number> = { inbox: 0, archive: 0, sent: 0, spam: 0, trash: 0 };
@@ -2392,13 +2401,14 @@ export function FilterToolModal({ app }: { app: any }) {
 
   const criteria: FilterCriteria = useMemo(() => {
     const c: FilterCriteria = { conditionSets };
+    if (filterAccountEmail) c.accountEmail = filterAccountEmail;
     if (action === "group") {
       if (groupBoxEnabled && groupBoxes.length > 0) c.boxes = groupBoxes;
     } else if (actionBoxes.length > 0) {
       c.boxes = actionBoxes;
     }
     return c;
-  }, [conditionSets, action, groupBoxEnabled, groupBoxes, actionBoxes]);
+  }, [conditionSets, action, groupBoxEnabled, groupBoxes, actionBoxes, filterAccountEmail]);
 
   const isNonGroupBoxesEmpty = action !== "group" && actionBoxes.length === 0;
   const isIncludeExistingDisabled = action !== "group" && !continuous;
@@ -2533,6 +2543,32 @@ export function FilterToolModal({ app }: { app: any }) {
               className="w-full bg-[#1E1F22] text-sm text-white px-3 py-2 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
             />
           </div>
+
+          {linkedAccounts.length > 0 && (
+            <div className="px-4 pt-3 flex-shrink-0">
+              <label className="text-xs font-bold text-gray-400 mb-1 block">対象アカウント</label>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  onClick={() => setFilterAccountEmail("")}
+                  className={`px-2.5 py-1 rounded-full text-xs font-bold transition ${!filterAccountEmail ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}
+                >
+                  問わない
+                </button>
+                {[myEmail, ...linkedAccounts].map(a => (
+                  <button
+                    key={a}
+                    onClick={() => setFilterAccountEmail(a)}
+                    className={`px-2.5 py-1 rounded-full text-xs font-bold transition truncate max-w-[200px] ${filterAccountEmail === a ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}
+                  >
+                    {a}
+                  </button>
+                ))}
+              </div>
+              {action === "group" && (
+                <div className="text-[11px] text-gray-500 mt-1">グループ化は受信専用のため、複数アカウントをまたいで集約できます</div>
+              )}
+            </div>
+          )}
 
           <div className="flex-1 overflow-y-auto p-4 space-y-2">
             <div className="text-xs font-bold text-gray-400 mb-1">いずれか1つに一致すれば対象になります（OR）</div>

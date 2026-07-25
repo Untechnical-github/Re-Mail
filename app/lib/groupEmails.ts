@@ -119,21 +119,10 @@ export function groupEmailsByRoom(
   keysOf(chatConfigs).forEach(room => {
     const cfg = chatConfigs[room];
     if (!cfg?.isGroup) return;
-    // フィルターツールで作成したグループ: 宛先の集合ではなく条件でメッセージを動的に集約する
-    if (cfg.filterCriteria) {
-      const createdAtMs = cfg.filterCreatedAt ? new Date(cfg.filterCreatedAt).getTime() : 0;
-      groups[room] = emails.filter((e: Email) => {
-        if (!messageMatchesFilter(e, cfg.filterCriteria!, myAddress)) return false;
-        if (cfg.filterIncludeExisting === false) {
-          const t = new Date(e.date).getTime();
-          if (!(t > createdAtMs)) return false;
-        }
-        // フィルターグループは常に受信専用チャットとして扱う（送信済みメールは含めない）
-        if (isMineEmail(e, myAddress)) return false;
-        return true;
-      });
-      return;
-    }
+    // フィルターツールで作成したグループは受信専用のため、このアカウント1件分の中だけで完結させず、
+    // 全アカウント分のメールをまたいで集約できるようにする（applyFilterGroups の責務）。
+    // ここでは何もしない（groups[room] を作らない）
+    if (cfg.filterCriteria) return;
     const mode = cfg.groupMode || "normal";
     const members = cfg.groupMembers || [];
     const memberAddresses = resolveGroupMemberAddresses(cfg, groups, myAddress);
@@ -171,20 +160,6 @@ export function groupEmailsByRoom(
     }
   });
 
-  // フィルターグループで「元のメッセージを非表示にする」がONの場合、一致したメッセージを
-  // 他の全ルーム（元の個別チャット等）から動的に除外する。chatConfigsやメールが変わるたびに
-  // 毎回再計算されるため、OFFにすれば次の再計算で自動的に元のルームへ復元される
-  keysOf(chatConfigs).forEach(room => {
-    const cfg = chatConfigs[room];
-    if (!cfg?.isGroup || !cfg.filterCriteria || !cfg.filterHideOriginal) return;
-    const matchedIds = new Set((groups[room] || []).map((e: Email) => e.id));
-    if (matchedIds.size === 0) return;
-    Object.keys(groups).forEach(otherRoom => {
-      if (otherRoom === room) return;
-      groups[otherRoom] = groups[otherRoom].filter((e: Email) => !matchedIds.has(e.id));
-    });
-  });
-
   Object.keys(groups).forEach(sender => groups[sender].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
   // groups の内部実装は素の文字列キーのまま（Phase3のロジックを一切変更しないため）。
   // 「このRecordのキーはこの関数のローカルroom空間に閉じている」という保証だけ、公開シグネチャで型として表す
@@ -204,4 +179,54 @@ export function mergeAccountGroups(
     });
   });
   return merged;
+}
+
+// フィルターツールで作成したグループ（filterCriteria持ち）専用の集約。常に受信専用チャットとして
+// 扱われるため、通常のグループ（宛先ベース。1つのアカウントから送信する必要があるため
+// そのアカウント自身のメールだけに閉じている）と異なり、複数アカウント分のメールをまたいで
+// 対象にできる。criteria.accountEmail が指定されていればそのアカウントのメールだけに絞り込む。
+// mergeAccountGroups 済みの複合キー空間に対して、chatConfigs・allEmails も複合キー/全アカウント分の
+// ものをそのまま渡して呼ぶ（groupEmailsByRoom内では意図的にfilterCriteria持ちのroomを扱わない）
+export function applyFilterGroups(
+  merged: Record<RoomKeyStr, Email[]>,
+  chatConfigs: Record<RoomKeyStr, ChatConfig>,
+  allEmails: Email[],
+  myEmail: string,
+): Record<RoomKeyStr, Email[]> {
+  const next: Record<RoomKeyStr, Email[]> = { ...merged };
+
+  keysOf(chatConfigs).forEach(room => {
+    const cfg = chatConfigs[room];
+    if (!cfg?.isGroup || !cfg.filterCriteria) return;
+    const createdAtMs = cfg.filterCreatedAt ? new Date(cfg.filterCreatedAt).getTime() : 0;
+    next[room] = allEmails.filter((e: Email) => {
+      // このメール自身が属するアカウント（未設定＝accountId導入前のデータ等はmyEmail名義とみなす）
+      const emailAccount = e.accountId || myEmail;
+      if (!messageMatchesFilter(e, cfg.filterCriteria!, emailAccount)) return false;
+      if (cfg.filterIncludeExisting === false) {
+        const t = new Date(e.date).getTime();
+        if (!(t > createdAtMs)) return false;
+      }
+      // フィルターグループは常に受信専用チャットとして扱う（送信済みメールは含めない）
+      if (isMineEmail(e, emailAccount)) return false;
+      return true;
+    }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  });
+
+  // フィルターグループで「元のメッセージを非表示にする」がONの場合、一致したメッセージを
+  // 他の全ルーム（元の個別チャット等、アカウントをまたいでも）から動的に除外する。
+  // chatConfigsやメールが変わるたびに毎回再計算されるため、OFFにすれば次の再計算で自動的に
+  // 元のルームへ復元される
+  keysOf(chatConfigs).forEach(room => {
+    const cfg = chatConfigs[room];
+    if (!cfg?.isGroup || !cfg.filterCriteria || !cfg.filterHideOriginal) return;
+    const matchedIds = new Set((next[room] || []).map((e: Email) => e.id));
+    if (matchedIds.size === 0) return;
+    keysOf(next).forEach(otherRoom => {
+      if (otherRoom === room) return;
+      next[otherRoom] = next[otherRoom].filter((e: Email) => !matchedIds.has(e.id));
+    });
+  });
+
+  return next;
 }

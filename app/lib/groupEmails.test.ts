@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { groupEmailsByRoom, mergeAccountGroups } from "./groupEmails";
+import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "./groupEmails";
 import { Email } from "../types/email";
 import { ChatConfig } from "../types/mail";
-import { LocalKey, asLocalKey, decodeRoomKey } from "./roomKey";
+import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey } from "./roomKey";
 
 const ME = "me@example.com";
 
@@ -73,20 +73,89 @@ describe("groupEmailsByRoom", () => {
     expect(groups[asLocalKey("田中太郎")].map(e => e.id)).toContain("2");
   });
 
-  it("フィルターグループが条件に一致する受信メールのみを集約する（送信済みは常に除外）", () => {
+  it("フィルターグループ（filterCriteria持ち）はアカウント単位の集約対象外にする（applyFilterGroupsの責務のため）", () => {
     const chatConfigs: Record<LocalKey, ChatConfig> = {
       [asLocalKey("filter:1")]: {
         isGroup: true,
         filterCriteria: { conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
       },
     } as Record<LocalKey, ChatConfig>;
-    const emails = [
-      mkEmail({ id: "1", subject: "月次報告", from: "田中太郎 <tanaka@example.com>", to: ME }),
-      mkEmail({ id: "2", subject: "報告に関する送信", isMe: true, from: ME, to: "tanaka@example.com", labelIds: ["SENT"] }),
-      mkEmail({ id: "3", subject: "無関係な件名", from: "田中太郎 <tanaka@example.com>", to: ME }),
-    ];
+    const emails = [mkEmail({ id: "1", subject: "月次報告", from: "田中太郎 <tanaka@example.com>", to: ME })];
     const groups = groupEmailsByRoom(emails, ME, chatConfigs);
-    expect(groups[asLocalKey("filter:1")].map(e => e.id)).toEqual(["1"]);
+    expect(groups[asLocalKey("filter:1")]).toBeUndefined();
+  });
+});
+
+describe("applyFilterGroups", () => {
+  it("条件に一致する受信メールのみを集約する（送信済みは常に除外）", () => {
+    const room = encodeRoomKey(ME, asLocalKey("filter:1"));
+    const chatConfigs: Record<RoomKeyStr, ChatConfig> = {
+      [room]: {
+        isGroup: true,
+        filterCriteria: { conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
+      },
+    } as Record<RoomKeyStr, ChatConfig>;
+    const emails = [
+      mkEmail({ id: "1", subject: "月次報告", from: "田中太郎 <tanaka@example.com>", to: ME, accountId: ME }),
+      mkEmail({ id: "2", subject: "報告に関する送信", isMe: true, from: ME, to: "tanaka@example.com", labelIds: ["SENT"], accountId: ME }),
+      mkEmail({ id: "3", subject: "無関係な件名", from: "田中太郎 <tanaka@example.com>", to: ME, accountId: ME }),
+    ];
+    const result = applyFilterGroups({} as Record<RoomKeyStr, Email[]>, chatConfigs, emails, ME);
+    expect(result[room].map(e => e.id)).toEqual(["1"]);
+  });
+
+  it("受信専用のため、複数アカウント分のメールをまたいで集約できる", () => {
+    const room = encodeRoomKey(ME, asLocalKey("filter:1"));
+    const chatConfigs: Record<RoomKeyStr, ChatConfig> = {
+      [room]: {
+        isGroup: true,
+        filterCriteria: { conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
+      },
+    } as Record<RoomKeyStr, ChatConfig>;
+    const otherAccount = "me2@example.com";
+    const emails = [
+      mkEmail({ id: "1", subject: "月次報告", from: "田中太郎 <tanaka@example.com>", to: ME, accountId: ME }),
+      mkEmail({ id: "2", subject: "週次報告", from: "鈴木花子 <suzuki@example.com>", to: otherAccount, accountId: otherAccount }),
+    ];
+    const result = applyFilterGroups({} as Record<RoomKeyStr, Email[]>, chatConfigs, emails, ME);
+    expect(result[room].map(e => e.id).sort()).toEqual(["1", "2"]);
+  });
+
+  it("criteria.accountEmail を指定すると、そのアカウントのメールだけに絞り込まれる", () => {
+    const room = encodeRoomKey(ME, asLocalKey("filter:1"));
+    const otherAccount = "me2@example.com";
+    const chatConfigs: Record<RoomKeyStr, ChatConfig> = {
+      [room]: {
+        isGroup: true,
+        filterCriteria: {
+          conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }],
+          accountEmail: otherAccount,
+        },
+      },
+    } as Record<RoomKeyStr, ChatConfig>;
+    const emails = [
+      mkEmail({ id: "1", subject: "月次報告", from: "田中太郎 <tanaka@example.com>", to: ME, accountId: ME }),
+      mkEmail({ id: "2", subject: "週次報告", from: "鈴木花子 <suzuki@example.com>", to: otherAccount, accountId: otherAccount }),
+    ];
+    const result = applyFilterGroups({} as Record<RoomKeyStr, Email[]>, chatConfigs, emails, ME);
+    expect(result[room].map(e => e.id)).toEqual(["2"]);
+  });
+
+  it("filterHideOriginalがONの場合、一致したメッセージを他のルーム（複合キー・他アカウント含む）から除外する", () => {
+    const room = encodeRoomKey(ME, asLocalKey("filter:1"));
+    const otherRoom = encodeRoomKey(ME, asLocalKey("田中太郎"));
+    const chatConfigs: Record<RoomKeyStr, ChatConfig> = {
+      [room]: {
+        isGroup: true,
+        filterCriteria: { conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
+        filterHideOriginal: true,
+      },
+    } as Record<RoomKeyStr, ChatConfig>;
+    const email = mkEmail({ id: "1", subject: "月次報告", from: "田中太郎 <tanaka@example.com>", to: ME, accountId: ME });
+    const merged: Record<RoomKeyStr, Email[]> = { [otherRoom]: [email] } as Record<RoomKeyStr, Email[]>;
+    const result = applyFilterGroups(merged, chatConfigs, [email], ME);
+    expect(result[room].map(e => e.id)).toEqual(["1"]);
+    expect(result[otherRoom]).toEqual([]);
   });
 });
 
