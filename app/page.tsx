@@ -492,7 +492,7 @@ export default function Home() {
                       {isInboundOnlyGroup ? "・受信専用" : isOutboundOnlyGroup ? "・送信専用" : ""}
                     </span>
                   ) : (() => {
-                    const firstPartner = (computed.groupedEmails[state.selectedSender!] || []).find((e: any) => !e.isMe && !e.from.includes(auth.session?.user?.email || ""));
+                    const firstPartner = (computed.groupedEmails[state.selectedSender!] || []).find((e: any) => !e.isMe && !e.from.includes(actions.roomAccountEmail(state.selectedSender!)));
                     if (!firstPartner) return null;
                     const addrMatch = firstPartner.from.match(/<([^>]+)>/);
                     const addr = addrMatch ? addrMatch[1].trim() : firstPartner.from.trim();
@@ -603,7 +603,11 @@ export default function Home() {
 
                     if ((isInbox || isArchive || isSent) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.messageConfigs[actions.messageConfigKey(email.id)]?.isHidden)) return null;
 
-                    const isMe = email.isMe || email.from.includes(auth.session?.user?.email || "");
+                    // ★修正: 連携アカウントのチャットでは「自分」がメインアカウントとは限らないため、
+                    // このルーム自身が属するアカウントのメールアドレスで判定する
+                    // （メインアカウントのメールアドレスで判定すると、連携アカウント側の受信メールが
+                    // 差出人＝メインアカウントの場合に誤って「自分が送った」扱いになってしまう）
+                    const isMe = email.isMe || email.from.includes(actions.roomAccountEmail(state.selectedSender!));
                     const isSelected = state.selectedIds.includes(email.id);
                     
                     // ★修正: 送信済みチェックを「絶対優先」に書き換え

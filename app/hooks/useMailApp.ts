@@ -1133,10 +1133,14 @@ export function useMailApp() {
   // 衝突しても互いの非表示/ピン留め状態が混ざらない
   const messageConfigKey = (messageId: string): RoomKeyStr => encodeRoomKey(resolveMessageAccountEmail(messageId), messageId as LocalKey);
 
-  // ルーム内の相手メールアドレスを推定する（「作成」機能での重複チャット判定・検索に使用）
+  // ルーム内の相手メールアドレスを推定する（「作成」機能での重複チャット判定・検索に使用）。
+  // 連携アカウントのルームでは「自分」がメインアカウントとは限らないため、そのルーム自身が
+  // 属するアカウントで判定する（メインアカウント固定だと、連携アカウント宛にメインアカウントから
+  // 送ったメールを「相手からの受信」と誤認識してしまう）
   const getRoomAddress = (room: RoomKeyStr): string => {
     const msgs = groupedEmails[room] || [];
-    const partner = msgs.find((e: any) => !isMineEmail(e, session?.user?.email || ""));
+    const { accountEmail: roomOwnerEmail } = decodeRoomKey(room);
+    const partner = msgs.find((e: any) => !isMineEmail(e, roomOwnerEmail));
     const raw = partner ? partner.from : (msgs.find((e: any) => e.to)?.to || "");
     const match = (raw || "").match(/<([^>]+)>/);
     return ((match ? match[1] : raw) || "").trim().toLowerCase();
@@ -1170,16 +1174,18 @@ export function useMailApp() {
     keysOf(chatConfigs).forEach(room => {
       const cfg = chatConfigs[room];
       if (!cfg?.isGroup) return;
-      const myEmail = session?.user?.email || "";
       const { accountEmail } = decodeRoomKey(room);
+      // グループは1つのアカウントから送信する前提のため、「自分」はこのグループ自身が属する
+      // アカウント（連携アカウントの場合はそちら）で判定する（メインアカウント固定だと、
+      // 連携アカウントのグループで送受信の判定が逆転してしまう）
       // groupMembers はローカルキーで保存されているため、groupedEmails（複合キー）を引く前に
       // このグループ自身のアカウントで複合化した、ローカルキーだけの部分集合を作る
       const localMemberLookup: Record<string, any[]> = {};
       (cfg.groupMembers || []).forEach(m => { localMemberLookup[m] = groupedEmails[encodeRoomKey(accountEmail, m as LocalKey)] || []; });
-      const memberAddresses = resolveGroupMemberAddresses(cfg, localMemberLookup, myEmail);
-      const sentViaGroup = allUniqueEmails.filter((e: any) => isMineEmail(e, myEmail) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
+      const memberAddresses = resolveGroupMemberAddresses(cfg, localMemberLookup, accountEmail);
+      const sentViaGroup = allUniqueEmails.filter((e: any) => isMineEmail(e, accountEmail) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
       const received = allUniqueEmails.filter((e: any) => {
-        if (isMineEmail(e, myEmail)) return false;
+        if (isMineEmail(e, accountEmail)) return false;
         const addrMatch = (e.from || "").match(/<([^>]+)>/);
         const addr = (addrMatch ? addrMatch[1] : e.from || "").trim().toLowerCase();
         return memberAddresses.has(addr);

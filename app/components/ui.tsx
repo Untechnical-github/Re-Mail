@@ -306,6 +306,11 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const showBanner = isAnySelection && hasItems;
 
+  // グループは1つのアカウントから送信する前提のため、複数アカウントのチャットを
+  // またいで選択している場合は「作成」（選択チャットをメンバーにしたグループ作成）を無効化する
+  const selectedSpansMultipleAccounts = isChat && isAnySelection && hasItems &&
+    new Set(selectedIds.map((id: string) => app.actions.roomAccountEmail(id))).size > 1;
+
   // グループチャットの表示モードによるアクションバー制限
   const selectedGroupConfig = !isChat ? app.state.chatConfigs[app.state.selectedSender] : undefined;
   const isInboundOnlyGroupBar = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "inbound_only");
@@ -342,6 +347,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
       {isChat && (
         <button
           onClick={() => {
+            if (selectedSpansMultipleAccounts) return;
             const preSelected = isAnySelection && hasItems
               ? selectedIds.filter((id: string) => !app.state.chatConfigs[id]?.isGroup)
               : [];
@@ -353,7 +359,8 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
             setModal({ type: "compose_new_chat", targetMode: "current_chat", targets: preSelected });
             window.history.pushState({ action: "modal" }, "", window.location.href);
           }}
-          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}
+          title={selectedSpansMultipleAccounts ? "複数のアカウントにまたがるチャットからはグループを作成できません" : undefined}
+          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectedSpansMultipleAccounts ? "opacity-30 pointer-events-none grayscale" : ""}`}
         >
           作成
         </button>
