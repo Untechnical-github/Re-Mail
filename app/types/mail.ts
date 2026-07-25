@@ -8,9 +8,9 @@ export type ChatConfig = {
   isHidden?: boolean;
   hiddenAtDate?: string;
   unhideOnNew?: boolean;
+  // チャット全体をピン留めしたときに、そのチャットの全メッセージを強制的に永続読み込みするかどうか
   forceFetch?: boolean;
   persistedData?: any;
-  roomId?: string;
   isGroup?: boolean;
   groupMembers?: string[];
   // groupMembers と同じ並び順でのメンバーの実メールアドレス。作成時に一度だけ確定させて保存する
@@ -40,6 +40,21 @@ export type ChatConfig = {
   filterCreatedAt?: string;
   // 継続フィルターが新着メールを最後に自動適用した時刻（ISO）。この時刻より新しい日時のメールだけが次回の自動走査対象になる
   filterLastAppliedAt?: string;
+};
+
+// 個別メッセージ単位の設定（ピン留め・非表示）。chatConfigs（room単位）とは別のキー空間・別のマップで持つ
+// （以前は同じ chatConfigs マップに roomId の有無で混在させていたが、roomKey導入にあたって
+// 「roomではないメッセージID」が同じ名前空間に紛れ込むのを避けるため分離した）
+export type MessageConfig = {
+  isPinned?: boolean;
+  isHidden?: boolean;
+  hiddenAtDate?: string;
+  unhideOnNew?: boolean;
+  // このメッセージ自身の永続コピーを保持するか（ピン留め等で、通常の取得ページングの外にあっても表示し続けるため）
+  forceFetch?: boolean;
+  persistedData?: any;
+  // このメッセージがどのroomに属するか（room単位のchatConfigsのキーと同じ空間）
+  roomId?: string;
 };
 
 export type SelectionMode = "none" | "chat_select" | "msg_select" | "chat_hide" | "chat_delete" | "msg_hide" | "msg_delete" | "chat_pin" | "msg_pin" | "chat_reset" | "msg_reset" | "chat_move" | "msg_move";

@@ -1,6 +1,7 @@
 // auth.ts
 import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
+import { getValidAccessToken } from "./app/lib/googleToken";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   trustHost: true,
@@ -45,29 +46,22 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         return token;
       }
 
-      // ③ 有効期限が切れていた場合：裏側でGoogleにアクセスし、新しい鍵をもらう（ユーザーには見えない）
+      // ③ 有効期限が切れていた場合：裏側でGoogleにアクセスし、新しい鍵をもらう（ユーザーには見えない）。
+      // 追加連携アカウント（フェーズ4）と同じリフレッシュロジック・同時実行対策を共有する
       try {
-        const response = await fetch("https://oauth2.googleapis.com/token", {
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            client_id: process.env.GOOGLE_CLIENT_ID!,
-            client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-            grant_type: "refresh_token",
-            refresh_token: token.refreshToken as string,
-          }),
-          method: "POST",
-        });
-
-        const tokens = await response.json();
-
-        if (!response.ok) throw tokens;
+        const result = await getValidAccessToken(
+          token.email as string,
+          null, // 期限切れと判定済みなので必ずリフレッシュさせる
+          null,
+          token.refreshToken as string,
+        );
 
         return {
           ...token,
-          accessToken: tokens.access_token,
-          expiresAt: Date.now() + tokens.expires_in * 1000,
+          accessToken: result.accessToken,
+          expiresAt: result.expiresAt,
           // Googleは新しいリフレッシュトークンを返さない場合があるため、その場合は古いものを使い回す
-          refreshToken: tokens.refresh_token ?? token.refreshToken,
+          refreshToken: result.refreshToken ?? token.refreshToken,
         };
       } catch (error: any) {
         console.error("Error refreshing access token", error);

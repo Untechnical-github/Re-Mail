@@ -1,7 +1,38 @@
 import { NextResponse } from "next/server";
-import { auth } from "../../../auth"; 
+import { getRequestContext } from "@cloudflare/next-on-pages";
+import { auth } from "../../../auth";
+import { getValidAccessToken } from "../../lib/googleToken";
 
 export const runtime = 'edge';
+
+// accountEmail が未指定、またはメインアカウント自身の場合はNextAuthのセッションが持つ
+// トークンをそのまま使う。追加連携アカウントの場合は linked_accounts からリフレッシュトークンを引き、
+// フェーズ2の getValidAccessToken で有効なアクセストークンを得る（必要ならD1に書き戻す）
+async function resolveAccessToken(session: any, accountEmail: string | null): Promise<string | null> {
+  if (!accountEmail || accountEmail === session.user?.email) {
+    return session.accessToken || null;
+  }
+
+  const db = getRequestContext().env.DB;
+  const { results } = await db.prepare(
+    "SELECT refresh_token, access_token, expires_at FROM linked_accounts WHERE user_email = ? AND account_email = ?"
+  ).bind(session.user.email, accountEmail).all();
+  const row = results?.[0] as any;
+  if (!row?.refresh_token) return null;
+
+  try {
+    const result = await getValidAccessToken(accountEmail, row.access_token ?? null, row.expires_at ?? null, row.refresh_token);
+    if (result.accessToken !== row.access_token || result.expiresAt !== row.expires_at) {
+      await db.prepare(
+        "UPDATE linked_accounts SET access_token = ?, expires_at = ? WHERE user_email = ? AND account_email = ?"
+      ).bind(result.accessToken, result.expiresAt, session.user.email, accountEmail).run();
+    }
+    return result.accessToken;
+  } catch (error) {
+    console.error(`Failed to refresh access token for linked account ${accountEmail}:`, error);
+    return null;
+  }
+}
 
 function getHeader(headers: any[], name: string): string {
   const header = headers.find((h) => h.name.toLowerCase() === name.toLowerCase());
@@ -268,11 +299,13 @@ function parseMessageDetail(message: any) {
 
 export async function GET(request: Request) {
   const session = await auth() as any;
-  if (!session || !session.accessToken || session.error === "RefreshAccessTokenError") {
+  if (!session || !session.user?.email || session.error === "RefreshAccessTokenError") {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const { searchParams } = new URL(request.url);
+  const accessToken = await resolveAccessToken(session, searchParams.get("accountEmail"));
+  if (!accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const messageId = searchParams.get("messageId");
 
@@ -283,7 +316,7 @@ export async function GET(request: Request) {
     try {
       const res = await fetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
-        { headers: { Authorization: `Bearer ${session.accessToken}` } }
+        { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       if (!res.ok) return NextResponse.json({ data: null });
       const json = await res.json();
@@ -301,7 +334,7 @@ export async function GET(request: Request) {
     try {
       const searchRes = await fetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=1&includeSpamTrash=true&q=${encodeURIComponent(`rfc822msgid:${lookupByMessageId}`)}`,
-        { headers: { Authorization: `Bearer ${session.accessToken}` } }
+        { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       if (!searchRes.ok) return NextResponse.json({ found: false });
       const searchData = await searchRes.json();
@@ -310,7 +343,7 @@ export async function GET(request: Request) {
 
       const detailRes = await fetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${hit.id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`,
-        { headers: { Authorization: `Bearer ${session.accessToken}` } }
+        { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       if (!detailRes.ok) return NextResponse.json({ found: false });
       const message = await detailRes.json();
@@ -326,7 +359,7 @@ export async function GET(request: Request) {
     try {
       const detailRes = await fetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?fields=payload`,
-        { headers: { Authorization: `Bearer ${session.accessToken}` } }
+        { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       if (!detailRes.ok) return NextResponse.json({ htmlBody: null, hasHtml: false });
       const message = await detailRes.json();
@@ -357,7 +390,7 @@ export async function GET(request: Request) {
     if (includeTrash) apiUrl += `&includeSpamTrash=true`;
     if (pageToken) apiUrl += `&pageToken=${pageToken}`;
 
-    const listRes = await fetch(apiUrl, { headers: { Authorization: `Bearer ${session.accessToken}` } });
+    const listRes = await fetch(apiUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (listRes.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (!listRes.ok) throw new Error("Failed to fetch messages list");
     
@@ -377,7 +410,7 @@ export async function GET(request: Request) {
       const chunkResults = await Promise.all(
         chunk.map(async (msg: { id: string }) => {
           const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`, {
-            headers: { Authorization: `Bearer ${session.accessToken}` },
+            headers: { Authorization: `Bearer ${accessToken}` },
           });
           return detailRes.json();
         })
@@ -395,13 +428,15 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   const session = await auth() as any;
-  if (!session || !session.accessToken || session.error === "RefreshAccessTokenError") {
+  if (!session || !session.user?.email || session.error === "RefreshAccessTokenError") {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  
+
   try {
     const bodyData = await request.json();
     const { action } = bodyData;
+    const accessToken = await resolveAccessToken(session, bodyData.accountEmail || null);
+    if (!accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     // ① メールの送信
     if (action === "send" || !action) {
@@ -446,7 +481,7 @@ export async function POST(request: Request) {
       if (threadId) requestBody.threadId = threadId;
 
       const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-        method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
+        method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
       });
       
@@ -476,7 +511,7 @@ export async function POST(request: Request) {
         if (realPermanentIds.length > 0) {
           const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
             method: "POST", 
-            headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
+            headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
             body: JSON.stringify({ ids: realPermanentIds }),
           });
           if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -486,7 +521,7 @@ export async function POST(request: Request) {
         const realTrashIds = trashIds.filter((id: string) => !id.startsWith("fake-"));
         if (realTrashIds.length > 0) {
           const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
-            method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
+            method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
             body: JSON.stringify({ ids: realTrashIds, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX", "SPAM"] }),
           });
           if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -505,7 +540,7 @@ export async function POST(request: Request) {
       else if (destination === "SPAM") { addLabelIds = ["SPAM"]; removeLabelIds = ["INBOX", "TRASH"]; }
 
       const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
-        method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
+        method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({ ids, addLabelIds, removeLabelIds }),
       });
 
@@ -518,14 +553,14 @@ export async function POST(request: Request) {
       const { permanentIds, trashIds } = bodyData;
       if (permanentIds && permanentIds.length > 0) {
         const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
-          method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
+          method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
           body: JSON.stringify({ ids: permanentIds }),
         });
         if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       }
       if (trashIds && trashIds.length > 0) {
         const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
-          method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
+          method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
           body: JSON.stringify({ ids: trashIds, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX", "SPAM"] }),
         });
         if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

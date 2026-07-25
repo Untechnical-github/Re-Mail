@@ -277,7 +277,7 @@ export default function Home() {
                  const isSent = e.labelIds?.includes("SENT") || e.isMe; 
                  const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
                  
-                 if ((isInbox || isArchive || isSent) && (config?.isHidden || state.chatConfigs[e.id]?.isHidden)) return false;
+                 if ((isInbox || isArchive || isSent) && (config?.isHidden || state.messageConfigs[e.id]?.isHidden)) return false;
 
                  // ★修正: 送信済みチェックを「絶対優先」に書き換え
                  let isCurrentBox = false;
@@ -578,7 +578,7 @@ export default function Home() {
                     const isSent = email.labelIds?.includes("SENT") || email.isMe; 
                     const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
 
-                    if ((isInbox || isArchive || isSent) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.chatConfigs[email.id]?.isHidden)) return null;
+                    if ((isInbox || isArchive || isSent) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.messageConfigs[email.id]?.isHidden)) return null;
 
                     const isMe = email.isMe || email.from.includes(auth.session?.user?.email || "");
                     const isSelected = state.selectedIds.includes(email.id);
@@ -753,7 +753,7 @@ export default function Home() {
                                 if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                               }}
                            >
-                              {state.chatConfigs[email.id]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
+                              {state.messageConfigs[email.id]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
                               {hasVisibleSubject && (
                                 <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={displaySubject} highlight={subjectFindHighlight} field="subject" activeField={activeFindField} activeIndex={activeFindIndex} /></div>
                               )}

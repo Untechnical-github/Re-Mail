@@ -1,9 +1,11 @@
 import { useSession, signOut } from "next-auth/react";
 import { useState, useEffect, useMemo, useRef } from "react";
 import localforage from "localforage";
-import { ChatConfig, SelectionMode, ModalState, GroupMode } from "../types/mail";
+import { ChatConfig, MessageConfig, SelectionMode, ModalState, GroupMode } from "../types/mail";
+import { Email } from "../types/email";
 import { getCachedAttachment, setCachedAttachment } from "../lib/attachmentCache";
 import { isMineEmail, getFindBarBoxKey, FindBarBoxKey, FilterCriteria, messageMatchesFilter, ChatListTab, chatConfigTab } from "../lib/filterMatch";
+import { groupEmailsByRoom } from "../lib/groupEmails";
 
 function getSavedBoxSettings(): { inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; sent?: boolean } | null {
   if (typeof window === "undefined") return null;
@@ -64,8 +66,8 @@ function countOccurrences(text: string, kwLower: string): number {
 
 export function useMailApp() {
   const { data: session, status } = useSession();
-  const [emails, setEmails] = useState<any[]>([]);
-  const [persistedEmails, setPersistedEmails] = useState<any[]>([]);
+  const [emails, setEmails] = useState<Email[]>([]);
+  const [persistedEmails, setPersistedEmails] = useState<Email[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedSender, setSelectedSender] = useState<string | null>(() => {
     if (typeof window !== "undefined") {
@@ -75,6 +77,9 @@ export function useMailApp() {
     return null;
   });
   const [chatConfigs, setChatConfigs] = useState<Record<string, ChatConfig>>({});
+  // 個別メッセージ単位の設定（ピン留め・非表示）。room単位のchatConfigsとはキー空間が異なる
+  // （chatConfigsのキーは相手名/group:xxxxのようなroom、こちらはGmailメッセージIDそのもの）
+  const [messageConfigs, setMessageConfigs] = useState<Record<string, MessageConfig>>({});
 
   // 「作成」機能で作った、まだ1通も送信していない下書きチャット（未送信のまま離脱すると破棄する）
   // リロード/タブ復元では維持したいので localStorage に保存する
@@ -218,6 +223,8 @@ export function useMailApp() {
   const isInitialFilterRun = useRef(true); 
   const chatConfigsRef = useRef(chatConfigs);
   useEffect(() => { chatConfigsRef.current = chatConfigs; }, [chatConfigs]);
+  const messageConfigsRef = useRef(messageConfigs);
+  useEffect(() => { messageConfigsRef.current = messageConfigs; }, [messageConfigs]);
 
   const emailsRef = useRef(emails);
   useEffect(() => { emailsRef.current = emails; }, [emails]);
@@ -267,12 +274,12 @@ export function useMailApp() {
     const sorted = [...cache.entries()].sort(([, a], [, b]) => a.lruTime - b.lruTime);
     while (cache.size > v) cache.delete(sorted.shift()![0]);
   };
-  const chatCacheRef = useRef<Map<string, { emails: any[]; chatNextPageToken: string | null; lruTime: number }>>(new Map());
+  const chatCacheRef = useRef<Map<string, { emails: Email[]; chatNextPageToken: string | null; lruTime: number }>>(new Map());
   const chatNextPageTokenRef = useRef<string | null>("FIRST_PAGE");
   useEffect(() => { chatNextPageTokenRef.current = chatNextPageToken; }, [chatNextPageToken]);
 
   // フィルター単位のキャッシュ（フィルター切り替え時に復元）
-  const filterCacheRef = useRef<Map<string, { emails: any[]; currentNextPageToken: string | null }>>(new Map());
+  const filterCacheRef = useRef<Map<string, { emails: Email[]; currentNextPageToken: string | null }>>(new Map());
   const filterKeyRef = useRef<string>("true-true-false-false-false");
   // emails state が実際にどのフィルターの取得結果を反映しているかを示す。
   // フィルターを連続で切り替えると、直前の取得がキャンセルされ emails が更新されないまま
@@ -340,6 +347,7 @@ export function useMailApp() {
   const loadD1Configs = async (): Promise<{ globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean } | null; formatted: Record<string, ChatConfig> }> => {
     let globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean } | null = null;
     const formatted: Record<string, ChatConfig> = {};
+    const formattedMessages: Record<string, MessageConfig> = {};
     try {
       const res = await fetch("/api/config");
       if (res.ok) {
@@ -385,13 +393,20 @@ export function useMailApp() {
                   }
                   return e;
                 });
-                pMsgs.push(...cleanData); 
+                pMsgs.push(...cleanData);
               }
             } catch (e) {}
           }
-          formatted[c.chat_id] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, roomId: roomIdVal, isGroup: isGroupVal, groupMembers: groupMembersVal, groupMemberAddresses: groupMemberAddressesVal, groupMode: groupModeVal, groupHiddenMembers: groupHiddenMembersVal, filterCriteria: filterCriteriaVal, filterHideOriginal: filterHideOriginalVal, filterAction: filterActionVal, filterContinuous: filterContinuousVal, filterDestination: filterDestinationVal, filterCreatedAt: filterCreatedAtVal, filterLastAppliedAt: filterLastAppliedAtVal, filterIncludeExisting: filterIncludeExistingVal };
+          // roomIdの有無で、room単位の設定かメッセージ単位の設定かを振り分ける
+          // （メッセージ単位はGmailメッセージIDそのものがchat_idに入っており、roomIdフィールドで
+          // どのroomに属するかを示す。room単位の行にはroomIdは存在しない）
+          if (roomIdVal !== undefined) {
+            formattedMessages[c.chat_id] = { isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, roomId: roomIdVal };
+          } else {
+            formatted[c.chat_id] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, isGroup: isGroupVal, groupMembers: groupMembersVal, groupMemberAddresses: groupMemberAddressesVal, groupMode: groupModeVal, groupHiddenMembers: groupHiddenMembersVal, filterCriteria: filterCriteriaVal, filterHideOriginal: filterHideOriginalVal, filterAction: filterActionVal, filterContinuous: filterContinuousVal, filterDestination: filterDestinationVal, filterCreatedAt: filterCreatedAtVal, filterLastAppliedAt: filterLastAppliedAtVal, filterIncludeExisting: filterIncludeExistingVal };
+          }
         });
-        setChatConfigs(formatted); setPersistedEmails(pMsgs);
+        setChatConfigs(formatted); setMessageConfigs(formattedMessages); setPersistedEmails(pMsgs);
       }
     } catch (e) { console.error(e); }
     return { globalSettings, formatted };
@@ -403,13 +418,16 @@ export function useMailApp() {
     }
   };
 
-  const updateChatConfig = async (targetId: string, updates: Partial<ChatConfig>) => {
+  // accountEmail: この設定行がどの連携アカウントのチャットに属するかをD1へ明示的に渡す。
+  // フェーズ2〜4で実際の複数アカウントが導入されるまでは、呼び出し側は常に自分自身の
+  // アカウント（session.user.email）を渡す
+  const updateChatConfig = async (targetId: string, updates: Partial<ChatConfig>, accountEmail: string) => {
     const nextConfig = { ...chatConfigsRef.current[targetId], ...updates };
     setChatConfigs(prev => ({ ...prev, [targetId]: nextConfig }));
     let nameToSave = nextConfig.customName || "";
-    if (nextConfig.forceFetch || nextConfig.roomId || nextConfig.isGroup || nextConfig.filterAction) {
+    if (nextConfig.forceFetch || nextConfig.isGroup || nextConfig.filterAction) {
       nameToSave = JSON.stringify({
-        name: nextConfig.customName, forceFetch: nextConfig.forceFetch, data: nextConfig.persistedData, roomId: nextConfig.roomId,
+        name: nextConfig.customName, forceFetch: nextConfig.forceFetch, data: nextConfig.persistedData,
         isGroup: nextConfig.isGroup, groupMembers: nextConfig.groupMembers, groupMemberAddresses: nextConfig.groupMemberAddresses, groupMode: nextConfig.groupMode,
         groupHiddenMembers: nextConfig.groupHiddenMembers,
         filterCriteria: nextConfig.filterCriteria, filterHideOriginal: nextConfig.filterHideOriginal,
@@ -418,16 +436,29 @@ export function useMailApp() {
         filterIncludeExisting: nextConfig.filterIncludeExisting,
       });
     }
-    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
+    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
+  };
+
+  // メッセージ単位の設定（ピン留め・非表示）。room単位のupdateChatConfigとはstate/キー空間が別
+  // （どちらもD1の chat_configs テーブル自体は共有しており、chat_id列に room名 か メッセージID かの
+  // どちらが入るかだけが違う。custom_name列にroomId等をJSONで詰める形式もroom側と共通）
+  const updateMessageConfig = async (targetId: string, updates: Partial<MessageConfig>, accountEmail: string) => {
+    const nextConfig = { ...messageConfigsRef.current[targetId], ...updates };
+    setMessageConfigs(prev => ({ ...prev, [targetId]: nextConfig }));
+    let nameToSave = "";
+    if (nextConfig.forceFetch || nextConfig.roomId) {
+      nameToSave = JSON.stringify({ forceFetch: nextConfig.forceFetch, data: nextConfig.persistedData, roomId: nextConfig.roomId });
+    }
+    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
   };
 
   // グループチャットの削除: 設定行そのものを消すだけで、メンバーの個別チャットや実際のメールには一切触れない
-  const deleteChatConfig = async (targetId: string) => {
+  const deleteChatConfig = async (targetId: string, accountEmail: string) => {
     // グループを削除する場合、そのグループの作成によって非表示にした個別チャットは表示に戻す
     const cfg = chatConfigsRef.current[targetId];
     if (cfg?.isGroup && cfg.groupHiddenMembers?.length) {
       cfg.groupHiddenMembers.forEach(member => {
-        updateChatConfig(member, { isHidden: false });
+        updateChatConfig(member, { isHidden: false }, accountEmail);
       });
     }
 
@@ -446,73 +477,80 @@ export function useMailApp() {
         localStorage.removeItem("remail_scroll_main");
       }
     }
-    try { await fetch(`/api/config?chat_id=${encodeURIComponent(targetId)}`, { method: "DELETE" }); } catch (e) { console.error(e); }
+    try { await fetch(`/api/config?chat_id=${encodeURIComponent(targetId)}&account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" }); } catch (e) { console.error(e); }
   };
 
-  const syncConfigs = (latestEmails: any[], currentConfigs: Record<string, ChatConfig>) => {
+  const syncConfigs = (latestEmails: any[], currentChatConfigs: Record<string, ChatConfig>, currentMessageConfigs: Record<string, MessageConfig>) => {
     const pMsgs: any[] = [];
-    const updatesToD1: {id: string, updates: any}[] = [];
+    const chatUpdatesToD1: { id: string, updates: Partial<ChatConfig> }[] = [];
+    const msgUpdatesToD1: { id: string, updates: Partial<MessageConfig> }[] = [];
 
-    Object.keys(currentConfigs).forEach(targetId => {
-      const config = currentConfigs[targetId];
+    // room単位: ピン留め（全メッセージの永続表示を最新化）・非表示（unhideOnNewでの自動解除）
+    Object.keys(currentChatConfigs).forEach(targetId => {
+      const config = currentChatConfigs[targetId];
       let hasUpdate = false;
-      let newConfig = { ...config };
+      let newConfig: Partial<ChatConfig> = { ...config };
+
+      if (config?.isPinned && config.forceFetch) {
+        const chatEmails = latestEmails.filter(e => {
+           const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
+           return room === targetId && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
+        }).map(e => ({...e, senderRoom: targetId}));
+
+        const oldIds = (config.persistedData || []).map((e:any)=>e.id).join(",");
+        const newIds = chatEmails.map((e:any)=>e.id).join(",");
+        if (oldIds !== newIds) {
+           newConfig.persistedData = chatEmails.length > 0 ? chatEmails : null; hasUpdate = true;
+        }
+        pMsgs.push(...chatEmails);
+      }
+
+      // unhideOnNew が有効な場合のみ、非表示日時より新しいメールがあれば自動解除
+      if (config?.isHidden && config.unhideOnNew) {
+        const hiddenDate = config.hiddenAtDate ? new Date(config.hiddenAtDate) : new Date(0);
+        const hasNewEmail = latestEmails.some(e => {
+          const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
+          return room === targetId &&
+                 !e.labelIds?.includes("TRASH") &&
+                 !e.labelIds?.includes("SPAM") &&
+                 new Date(e.date) > hiddenDate;
+        });
+        if (hasNewEmail) {
+          newConfig.isHidden = false; newConfig.hiddenAtDate = undefined; newConfig.unhideOnNew = false; hasUpdate = true;
+        }
+      }
+
+      if (hasUpdate) chatUpdatesToD1.push({ id: targetId, updates: newConfig });
+    });
+
+    // メッセージ単位: ピン留めしたメッセージがゴミ箱/迷惑メールへ移動されたら自動解除、
+    // forceFetchがONならそのメッセージ自身を永続表示の対象に含める
+    Object.keys(currentMessageConfigs).forEach(targetId => {
+      const config = currentMessageConfigs[targetId];
+      let hasUpdate = false;
+      let newConfig: Partial<MessageConfig> = { ...config };
 
       if (config?.isPinned) {
-        const isMsgPin = config.roomId !== undefined;
-        if (isMsgPin) {
-          const msg = latestEmails.find(e => e.id === targetId);
-          if (!msg || msg.labelIds?.includes("TRASH") || msg.labelIds?.includes("SPAM")) {
-            newConfig.isPinned = false; newConfig.forceFetch = false; newConfig.persistedData = null; hasUpdate = true;
-          } else if (config.forceFetch) {
-            pMsgs.push({ ...msg, senderRoom: config.roomId });
-          }
-        } else {
-          if (config.forceFetch) {
-            const chatEmails = latestEmails.filter(e => {
-               const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
-               return room === targetId && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
-            }).map(e => ({...e, senderRoom: targetId}));
-            
-            const oldIds = (config.persistedData || []).map((e:any)=>e.id).join(",");
-            const newIds = chatEmails.map((e:any)=>e.id).join(",");
-            if (oldIds !== newIds) {
-               newConfig.persistedData = chatEmails.length > 0 ? chatEmails : null; hasUpdate = true;
-            }
-            pMsgs.push(...chatEmails);
-          }
+        const msg = latestEmails.find(e => e.id === targetId);
+        if (!msg || msg.labelIds?.includes("TRASH") || msg.labelIds?.includes("SPAM")) {
+          newConfig.isPinned = false; newConfig.forceFetch = false; newConfig.persistedData = null; hasUpdate = true;
+        } else if (config.forceFetch) {
+          pMsgs.push({ ...msg, senderRoom: config.roomId });
         }
       }
 
       if (config?.isHidden) {
-        const isMsgHide = config.roomId !== undefined;
-        if (isMsgHide) {
-          const msg = latestEmails.find(e => e.id === targetId);
-          if (!msg || msg.labelIds?.includes("TRASH") || msg.labelIds?.includes("SPAM")) {
-            newConfig.isHidden = false; newConfig.hiddenAtDate = undefined; newConfig.roomId = undefined; hasUpdate = true;
-          }
-        } else {
-          // unhideOnNew が有効な場合のみ、非表示日時より新しいメールがあれば自動解除
-          if (config.unhideOnNew) {
-            const hiddenDate = config.hiddenAtDate ? new Date(config.hiddenAtDate) : new Date(0);
-            const hasNewEmail = latestEmails.some(e => {
-              const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
-              return room === targetId &&
-                     !e.labelIds?.includes("TRASH") &&
-                     !e.labelIds?.includes("SPAM") &&
-                     new Date(e.date) > hiddenDate;
-            });
-            if (hasNewEmail) {
-              newConfig.isHidden = false; newConfig.hiddenAtDate = undefined; newConfig.unhideOnNew = false; hasUpdate = true;
-            }
-          }
+        const msg = latestEmails.find(e => e.id === targetId);
+        if (!msg || msg.labelIds?.includes("TRASH") || msg.labelIds?.includes("SPAM")) {
+          newConfig.isHidden = false; newConfig.hiddenAtDate = undefined; newConfig.roomId = undefined; hasUpdate = true;
         }
       }
 
-      if (hasUpdate) updatesToD1.push({ id: targetId, updates: newConfig });
+      if (hasUpdate) msgUpdatesToD1.push({ id: targetId, updates: newConfig });
     });
 
-    updatesToD1.forEach(u => updateChatConfig(u.id, u.updates));
+    chatUpdatesToD1.forEach(u => updateChatConfig(u.id, u.updates, session?.user?.email || ""));
+    msgUpdatesToD1.forEach(u => updateMessageConfig(u.id, u.updates, session?.user?.email || ""));
     return pMsgs;
   };
 
@@ -645,7 +683,7 @@ export function useMailApp() {
           updatedEmails = Array.from(emailMap.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
         }
         
-        const nextPMsgs = syncConfigs(updatedEmails, chatConfigsRef.current);
+        const nextPMsgs = syncConfigs(updatedEmails, chatConfigsRef.current, messageConfigsRef.current);
         setPersistedEmails(nextPMsgs);
         setEmails(updatedEmails);
 
@@ -926,150 +964,12 @@ export function useMailApp() {
     };
   }, [session, checkInbox, checkArchive, checkSpam, checkTrash, checkSent]);
 
+  // 実際のグルーピングロジックは app/lib/groupEmails.ts の純粋関数に切り出してある
+  // （副作用のない形でユニットテストできるようにするため）。フェーズ4で複数アカウントの
+  // メールが実際に流れてくるまでは、単一アカウント分をそのまま渡す（ローカルなroomキーのまま、
+  // 複合キー化はまだ行わない）
   const groupedEmails = useMemo(() => {
-    const groups: Record<string, any[]> = {};
-    const tempSentEmails: any[] = [];
-    allUniqueEmails.forEach((email) => {
-      if (email.senderRoom) { if (!groups[email.senderRoom]) groups[email.senderRoom] = []; groups[email.senderRoom].push(email); return; }
-      const isMe = email.isMe || email.from.includes(session?.user?.email || "");
-      if (!isMe) {
-        const roomName = email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown";
-        if (!groups[roomName]) groups[roomName] = []; groups[roomName].push(email);
-      } else { tempSentEmails.push(email); }
-    });
-
-    tempSentEmails.forEach((email) => {
-      // ★修正: 実行中メモリ上でも送信済みメールからINBOXを強制剥奪する
-      if (email.labelIds?.includes("INBOX")) {
-         email.labelIds = email.labelIds.filter((l: string) => l !== "INBOX");
-      }
-      const toClean = email.to ? email.to.toLowerCase() : "";
-      let matchedRoom: string | null = null;
-      for (const roomName of Object.keys(groups)) {
-        const roomNameLower = roomName.toLowerCase();
-        const partnerEmail = groups[roomName].find(e => !e.isMe && !e.from.includes(session?.user?.email || ""))?.from.toLowerCase() || "";
-        const partnerAddr = (partnerEmail.match(/<([^>]+)>/) || [null, partnerEmail])[1]?.trim() || partnerEmail.trim();
-        if ((roomNameLower && toClean.includes(roomNameLower)) || (partnerAddr && toClean.includes(partnerAddr))) { matchedRoom = roomName; break; }
-      }
-      if (matchedRoom) { groups[matchedRoom].push({ ...email, isMe: true }); } 
-      else {
-        let newRoomName = "Unknown";
-        if (email.to) {
-          const toMatch = email.to.split(",")[0]; 
-          newRoomName = toMatch.split("<")[0].replace(/"/g, "").trim() || toMatch.replace(/[<>]/g, "").trim();
-          if (!newRoomName) newRoomName = "Unknown";
-        }
-        if (!groups[newRoomName]) groups[newRoomName] = []; groups[newRoomName].push({ ...email, isMe: true });
-      }
-    });
-
-    // まだ返信がなく表示名が分からないうちは「アドレスそのもの」がルームキーになるが、
-    // 後から返信が来ると差出人の表示名で別のルームが作られてしまい、同じ相手なのに
-    // チャットが2つに分裂する（過去に送信しただけのやり取りが宛先アドレス名義のまま
-    // 取り残される）。表示名ルームが実在する場合は、アドレス名義のルームをそちらへ
-    // 統合する（グループのルームキーは対象外）
-    const emailLikeRoom = (room: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(room.trim());
-    const resolveRoomPartnerAddr = (room: string): string => {
-      const msgs = groups[room];
-      if (!msgs || msgs.length === 0) return "";
-      const partner = msgs.find((e: any) => !isMineEmail(e, session?.user?.email || ""));
-      const raw = partner ? partner.from : (msgs.find((e: any) => e.to)?.to || "");
-      const match = (raw || "").match(/<([^>]+)>/);
-      return ((match ? match[1] : raw) || "").trim().toLowerCase();
-    };
-    Object.keys(groups).forEach(room => {
-      if (!emailLikeRoom(room)) return;
-      const addr = room.trim().toLowerCase();
-      const displayRoom = Object.keys(groups).find(other =>
-        other !== room && !emailLikeRoom(other) && !chatConfigs[other]?.isGroup && resolveRoomPartnerAddr(other) === addr
-      );
-      if (displayRoom) {
-        const existingIds = new Set(groups[displayRoom].map((e: any) => e.id));
-        groups[room].forEach((e: any) => { if (!existingIds.has(e.id)) { groups[displayRoom].push(e); existingIds.add(e.id); } });
-        delete groups[room];
-      }
-    });
-
-    // グループチャット: メンバーからの受信メールと、グループから送信したメールを集約する。
-    // 送信メールの判定はDBに何も永続化せず、その都度「宛先セットがメンバー全員と完全一致するか」
-    // だけで判定する（Gmail自身が持つToヘッダーの情報だけで完結するため、送信履歴が増えても
-    // D1の容量やロード時間を圧迫しない）。一斉送信は1通のメールなので、各メンバー個別チャットにも
-    // 同じメールを反映する。
-    Object.keys(chatConfigs).forEach(room => {
-      const cfg = chatConfigs[room];
-      if (!cfg?.isGroup) return;
-      // フィルターツールで作成したグループ: 宛先の集合ではなく条件でメッセージを動的に集約する
-      if (cfg.filterCriteria) {
-        const myEmail = session?.user?.email || "";
-        // filterIncludeExisting が false の場合、作成時点より前の既存メールは含めず、
-        // それ以降に届いた新着メールだけを対象にする
-        const createdAtMs = cfg.filterCreatedAt ? new Date(cfg.filterCreatedAt).getTime() : 0;
-        groups[room] = allUniqueEmails.filter((e: any) => {
-          if (!messageMatchesFilter(e, cfg.filterCriteria!, myEmail)) return false;
-          if (cfg.filterIncludeExisting === false) {
-            const t = new Date(e.date).getTime();
-            if (!(t > createdAtMs)) return false;
-          }
-          // フィルターグループは常に受信専用チャットとして扱う（送信済みメールは含めない）
-          if (isMineEmail(e, myEmail)) return false;
-          return true;
-        });
-        return;
-      }
-      const mode = cfg.groupMode || "normal";
-      const members = cfg.groupMembers || [];
-      const myEmail = session?.user?.email || "";
-      const memberAddresses = resolveGroupMemberAddresses(cfg, groups, myEmail);
-
-      // このグループから送信されたメール = 宛先セットがメンバー全員と完全一致する送信済みメール
-      const sentViaGroup = allUniqueEmails.filter((e: any) => isMineEmail(e, myEmail) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
-
-      // 一斉送信したメールを各メンバーの個別チャットにも反映する
-      sentViaGroup.forEach((sentMsg: any) => {
-        members.forEach((member: string) => {
-          if (!groups[member]) groups[member] = [];
-          if (!groups[member].some((e: any) => e.id === sentMsg.id)) groups[member].push(sentMsg);
-        });
-      });
-
-      if (mode === "outbound_only") {
-        groups[room] = sentViaGroup;
-        return;
-      }
-
-      const received = allUniqueEmails.filter((e: any) => {
-        if (isMineEmail(e, myEmail)) return false;
-        const addrMatch = (e.from || "").match(/<([^>]+)>/);
-        const addr = (addrMatch ? addrMatch[1] : e.from || "").trim().toLowerCase();
-        return memberAddresses.has(addr);
-      });
-
-      if (mode === "inbound_only") {
-        groups[room] = received;
-      } else {
-        const merged = [...received];
-        const mergedIds = new Set(merged.map((e: any) => e.id));
-        sentViaGroup.forEach((e: any) => { if (!mergedIds.has(e.id)) { merged.push(e); mergedIds.add(e.id); } });
-        groups[room] = merged;
-      }
-    });
-
-    // フィルターグループで「元のメッセージを非表示にする」がONの場合、一致したメッセージを
-    // 他の全ルーム（元の個別チャット等）から動的に除外する。chatConfigsやメールが変わるたびに
-    // 毎回再計算されるため、OFFにすれば次の再計算で自動的に元のルームへ復元される
-    Object.keys(chatConfigs).forEach(room => {
-      const cfg = chatConfigs[room];
-      if (!cfg?.isGroup || !cfg.filterCriteria || !cfg.filterHideOriginal) return;
-      const matchedIds = new Set((groups[room] || []).map((e: any) => e.id));
-      if (matchedIds.size === 0) return;
-      Object.keys(groups).forEach(otherRoom => {
-        if (otherRoom === room) return;
-        groups[otherRoom] = groups[otherRoom].filter((e: any) => !matchedIds.has(e.id));
-      });
-    });
-
-    Object.keys(groups).forEach(sender => groups[sender].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-    return groups;
+    return groupEmailsByRoom(allUniqueEmails, session?.user?.email || "", chatConfigs);
   }, [allUniqueEmails, session, chatConfigs]);
 
   const groupedEmailsRef = useRef(groupedEmails);
@@ -1156,7 +1056,7 @@ export function useMailApp() {
         const isSent = e.labelIds?.includes("SENT") || e.isMe; 
         const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
 
-        if ((isInbox || isArchive || isSent) && (config?.isHidden || chatConfigs[e.id]?.isHidden)) return false;
+        if ((isInbox || isArchive || isSent) && (config?.isHidden || messageConfigs[e.id]?.isHidden)) return false;
 
         // ★修正: 送信済みの「絶対権限（他のラベルを無視）」を適用
         let isCurrentBox = false;
@@ -1188,7 +1088,7 @@ export function useMailApp() {
         const isSent = e.labelIds?.includes("SENT") || e.isMe; 
         const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
 
-        if ((isInbox || isArchive || isSent) && (config?.isHidden || chatConfigs[e.id]?.isHidden)) return false;
+        if ((isInbox || isArchive || isSent) && (config?.isHidden || messageConfigs[e.id]?.isHidden)) return false;
 
         if (revealedCrossPrompts.includes(e.id)) return true;
         
@@ -1217,10 +1117,10 @@ export function useMailApp() {
       const timeB = getLatestValidDate(b);
       return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
-  }, [groupedEmails, chatConfigs, checkSent, checkInbox, checkArchive, checkSpam, checkTrash, revealedCrossPrompts, draftChats]);
+  }, [groupedEmails, chatConfigs, messageConfigs, checkSent, checkInbox, checkArchive, checkSpam, checkTrash, revealedCrossPrompts, draftChats]);
 
-  const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId === undefined);
-  const hiddenMsgs = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden && chatConfigs[k]?.roomId !== undefined).map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ", date: new Date().toISOString() });
+  const hiddenChats = Object.keys(chatConfigs).filter(k => chatConfigs[k]?.isHidden);
+  const hiddenMsgs = Object.keys(messageConfigs).filter(k => messageConfigs[k]?.isHidden).map(id => allUniqueEmails.find(e => e.id === id) || { id, subject: "過去のメッセージ", date: new Date().toISOString() });
 
   // senderList からチャットが消えたら（フィルター変更・非表示化など）メッセージ画面を自動クローズ
   // ただし初回のメール取得が終わるまでは senderList が「まだ空なだけ」なので判定しない。
@@ -1360,11 +1260,11 @@ export function useMailApp() {
     await updateChatConfig(groupRoom, {
       customName: name, isGroup: true, groupMembers: members, groupMemberAddresses: memberAddresses, groupMode: mode,
       groupHiddenMembers,
-    });
+    }, session?.user?.email || "");
 
     groupHiddenMembers.forEach(member => {
       // unhideOnNew は明示的に false にする（新着があっても自動で表示に戻らないようにするため）
-      updateChatConfig(member, { isHidden: true, hiddenAtDate: new Date().toISOString(), unhideOnNew: false });
+      updateChatConfig(member, { isHidden: true, hiddenAtDate: new Date().toISOString(), unhideOnNew: false }, session?.user?.email || "");
     });
 
     setSelectedSender(groupRoom);
@@ -1386,7 +1286,7 @@ export function useMailApp() {
     await updateChatConfig(groupRoom, {
       customName: name, isGroup: true, filterCriteria, filterHideOriginal: hideOriginal, groupMode: "inbound_only",
       filterIncludeExisting: includeExisting, filterCreatedAt: new Date().toISOString(),
-    });
+    }, session?.user?.email || "");
     setSelectedSender(groupRoom);
     if (typeof window !== "undefined") {
       localStorage.setItem("remail_selected_sender", groupRoom);
@@ -1715,14 +1615,14 @@ export function useMailApp() {
   // メッセージ単位の非表示のコア処理。modal状態に依存しないため、確認モーダル経由の実行と
   // 継続フィルターの自動適用エンジンの両方から呼べる
   const applyHideToIds = (ids: string[]) => {
-    ids.forEach(id => updateChatConfig(id, { isHidden: true, hiddenAtDate: new Date().toISOString(), roomId: emailRoomMap.get(id) }));
+    ids.forEach(id => updateMessageConfig(id, { isHidden: true, hiddenAtDate: new Date().toISOString(), roomId: emailRoomMap.get(id) }, session?.user?.email || ""));
   };
 
   // メッセージ単位のピン留めのコア処理。modal状態に依存しないため、確認モーダル経由の実行と
   // 継続フィルターの自動適用エンジンの両方から呼べる（合計上限100件、TRASH/SPAMは対象外）
   const applyPinToIds = (ids: string[]) => {
-    const existingPinnedMsgCount = Object.keys(chatConfigsRef.current).filter(k =>
-      chatConfigsRef.current[k]?.roomId && chatConfigsRef.current[k]?.isPinned && chatConfigsRef.current[k]?.forceFetch
+    const existingPinnedMsgCount = Object.keys(messageConfigsRef.current).filter(k =>
+      messageConfigsRef.current[k]?.isPinned && messageConfigsRef.current[k]?.forceFetch
     ).length;
     const capped = ids.slice(0, Math.max(0, 100 - existingPinnedMsgCount));
     const pMsgs: any[] = [];
@@ -1734,7 +1634,7 @@ export function useMailApp() {
         const room = emailRoomMap.get(targetId) || selectedSender;
         const pData = { ...found, senderRoom: room };
         pMsgs.push(pData);
-        updateChatConfig(targetId, { isPinned: true, forceFetch: true, persistedData: pData, roomId: room! });
+        updateMessageConfig(targetId, { isPinned: true, forceFetch: true, persistedData: pData, roomId: room! }, session?.user?.email || "");
       }
     });
     if (pMsgs.length > 0) setPersistedEmails(prev => [...prev, ...pMsgs]);
@@ -1748,7 +1648,7 @@ export function useMailApp() {
       // チャットピン留め: 常に永続読み込み、上限10件
       const pMsgs = [...persistedEmails];
       const existingForcePinned = Object.keys(chatConfigs).filter(k =>
-        !chatConfigs[k]?.roomId && chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch
+        chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch
       );
       const newToPin = modal.targets.filter((t: string) => !existingForcePinned.includes(t));
       if (existingForcePinned.length + newToPin.length > 10) return;
@@ -1756,7 +1656,7 @@ export function useMailApp() {
       modal.targets.forEach((targetId: string) => {
         const pData = (groupedEmails[targetId] || []).map((e: any) => ({ ...e, senderRoom: targetId }));
         pMsgs.push(...pData);
-        updateChatConfig(targetId, { isPinned: true, forceFetch: true, persistedData: pData });
+        updateChatConfig(targetId, { isPinned: true, forceFetch: true, persistedData: pData }, session?.user?.email || "");
       });
       setPersistedEmails(pMsgs);
     } else {
@@ -1818,7 +1718,7 @@ export function useMailApp() {
       nextPersisted.forEach(e => combined.set(e.id, e));
       nextEmails.forEach(e => combined.set(e.id, e));
 
-      const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current);
+      const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current, messageConfigsRef.current);
 
       setEmails(nextEmails);
       setPersistedEmails(nextPMsgs);
@@ -1866,7 +1766,7 @@ export function useMailApp() {
           nextPersisted.forEach(e => combined.set(e.id, e));
           nextEmails.forEach(e => combined.set(e.id, e));
           
-          const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current);
+          const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current, messageConfigsRef.current);
           
           setEmails(nextEmails); 
           setPersistedEmails(nextPMsgs);
@@ -1882,38 +1782,56 @@ export function useMailApp() {
       if (targetMode === "msg") {
         applyHideToIds(targets);
       } else {
-        targets.forEach(target => updateChatConfig(target, { isHidden: true, hiddenAtDate: new Date().toISOString(), roomId: undefined }));
+        targets.forEach(target => updateChatConfig(target, { isHidden: true, hiddenAtDate: new Date().toISOString() }, session?.user?.email || ""));
         if (targets.includes(selectedSender)) setSelectedSender(null);
       }
     }
     else if (type === "confirm_reset") {
-      const { pin, hide, name, crossBox } = resetOptions; let keysToProcess = Object.keys(chatConfigs);
-      // roomIdが未設定の古いメッセージ設定を救済するため、実メールデータから所属チャットを逆引きする
-      const getKeyRoom = (k: string) => {
-        const cfg = chatConfigs[k];
+      const { pin, hide, name, crossBox } = resetOptions;
+      // メッセージ単位の設定がどのroomに属するか。roomIdが未設定の古いデータを救済するため、
+      // 実メールデータから所属チャットを逆引きするフォールバックも残す
+      const getMsgRoom = (msgId: string): string | undefined => {
+        const cfg = messageConfigs[msgId];
         if (cfg?.roomId !== undefined) return cfg.roomId;
-        const email = allUniqueEmails.find((e: any) => e.id === k);
+        const email = allUniqueEmails.find((e: any) => e.id === msgId);
         return email ? (email.senderRoom || (email.from?.split("<")[0].replace(/"/g, "").trim() || "Unknown")) : undefined;
       };
-      if (targetMode === "current_chat") keysToProcess = keysToProcess.filter(k => k === targets[0] || getKeyRoom(k) === targets[0]);
-      else if (targetMode === "specific_chat") keysToProcess = keysToProcess.filter(k => targets.includes(k) || targets.some((t: string) => getKeyRoom(k) === t));
-      keysToProcess.forEach(target => {
-        const currentConfig = chatConfigs[target]; const updates: Partial<ChatConfig> = {};
+
+      let roomKeysToProcess = Object.keys(chatConfigs);
+      let msgKeysToProcess = Object.keys(messageConfigs);
+      if (targetMode === "current_chat") {
+        roomKeysToProcess = roomKeysToProcess.filter(k => k === targets[0]);
+        msgKeysToProcess = msgKeysToProcess.filter(k => getMsgRoom(k) === targets[0]);
+      } else if (targetMode === "specific_chat") {
+        roomKeysToProcess = roomKeysToProcess.filter(k => targets.includes(k));
+        msgKeysToProcess = msgKeysToProcess.filter(k => targets.some((t: string) => getMsgRoom(k) === t));
+      }
+
+      roomKeysToProcess.forEach(target => {
+        const updates: Partial<ChatConfig> = {};
+        if (pin) { updates.isPinned = false; updates.forceFetch = false; updates.persistedData = null; }
+        if (hide) { updates.isHidden = false; updates.hiddenAtDate = undefined; updates.unhideOnNew = false; }
+        if (name) updates.customName = undefined;
+        if (Object.keys(updates).length > 0) updateChatConfig(target, updates, session?.user?.email || "");
+      });
+      msgKeysToProcess.forEach(target => {
+        const currentConfig = messageConfigs[target]; const updates: Partial<MessageConfig> = {};
         // roomId欠落を検知したらここで書き戻し、次回以降のリセットで漏れないよう自己修復する
         if (currentConfig?.roomId === undefined) {
-          const resolvedRoom = getKeyRoom(target);
+          const resolvedRoom = getMsgRoom(target);
           if (resolvedRoom !== undefined) updates.roomId = resolvedRoom;
         }
         if (pin) { updates.isPinned = false; updates.forceFetch = false; updates.persistedData = null; }
         if (hide) { updates.isHidden = false; updates.hiddenAtDate = undefined; updates.unhideOnNew = false; }
-        if (name && currentConfig?.roomId === undefined) updates.customName = undefined;
-        if (Object.keys(updates).length > 0) updateChatConfig(target, updates);
+        if (Object.keys(updates).length > 0) updateMessageConfig(target, updates, session?.user?.email || "");
       });
-      if (pin) setPersistedEmails(prev => prev.filter(e => !keysToProcess.includes(e.id) && !keysToProcess.includes(e.senderRoom)));
+
+      const keysToProcess = [...roomKeysToProcess, ...msgKeysToProcess];
+      if (pin) setPersistedEmails(prev => prev.filter(e => !keysToProcess.includes(e.id) && !(e.senderRoom && keysToProcess.includes(e.senderRoom))));
 
       // 他の場所の読み込みリセット: メールを消さずに revealedCrossPrompts を消してボタンに戻す
       if (crossBox) {
-        const affectedSenders = new Set(keysToProcess.filter(k => !chatConfigs[k]?.roomId));
+        const affectedSenders = new Set(roomKeysToProcess);
         setRevealedCrossPrompts((prev: string[]) => prev.filter(id => {
           const email = emailsRef.current.find((e: any) => e.id === id);
           if (!email) return false;
@@ -1930,7 +1848,8 @@ export function useMailApp() {
     }
     else if (type === "confirm_unpin") {
       targets.forEach((targetId: string) => {
-        updateChatConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null });
+        if (targetMode === "chat") updateChatConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null }, session?.user?.email || "");
+        else updateMessageConfig(targetId, { isPinned: false, forceFetch: false, persistedData: null }, session?.user?.email || "");
       });
       if (targetMode === "chat") {
         setPersistedEmails(prev => prev.filter(e => !targets.includes(e.senderRoom)));
@@ -1938,7 +1857,12 @@ export function useMailApp() {
         setPersistedEmails(prev => prev.filter(e => !targets.includes(e.id)));
       }
     }
-    else if (type === "confirm_unhide") { targets.forEach(target => updateChatConfig(target, { isHidden: false })); }
+    else if (type === "confirm_unhide") {
+      targets.forEach(target => {
+        if (targetMode === "chat") updateChatConfig(target, { isHidden: false }, session?.user?.email || "");
+        else updateMessageConfig(target, { isHidden: false }, session?.user?.email || "");
+      });
+    }
 
     exitAfterAction();
   };
@@ -1965,7 +1889,7 @@ export function useMailApp() {
     const combined = new Map();
     nextPersisted.forEach((e: any) => combined.set(e.id, e));
     nextEmails.forEach((e: any) => combined.set(e.id, e));
-    const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current);
+    const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current, messageConfigsRef.current);
 
     setEmails(nextEmails);
     setPersistedEmails(nextPMsgs);
@@ -2010,7 +1934,7 @@ export function useMailApp() {
       } else if (cfg.filterAction === "delete") {
         applyDeleteToIds(ids);
       }
-      updateChatConfig(id, { filterLastAppliedAt: new Date().toISOString() });
+      updateChatConfig(id, { filterLastAppliedAt: new Date().toISOString() }, myEmail);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allUniqueEmails]);
@@ -2371,12 +2295,12 @@ export function useMailApp() {
     }
   }, [chatNextPageToken, msgStatusMessage, currentChatLength, selectedSender]);
 
-  const pinnedMsgsInChat = (checkInbox || checkArchive || checkSent) ? (groupedEmails[selectedSender!] || []).filter(e => chatConfigs[e.id]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) : [];
+  const pinnedMsgsInChat = (checkInbox || checkArchive || checkSent) ? (groupedEmails[selectedSender!] || []).filter(e => messageConfigs[e.id]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) : [];
 
   return {
     auth: { session, status },
     state: {
-      emails, persistedEmails, isLoading, selectedSender, chatConfigs,
+      emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
       isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent,
       currentNextPageToken, chatStatusMessage, msgStatusMessage, isLoadingMoreChats,
       replySubject, replyBody, isSending, replyToMessage,

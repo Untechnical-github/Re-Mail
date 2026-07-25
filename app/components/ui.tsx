@@ -301,7 +301,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     : null;
 
   const allPinned = isAnySelection && hasItems && selectedIds.every((id: string) =>
-    app.state.chatConfigs[id]?.isPinned
+    isChat ? app.state.chatConfigs[id]?.isPinned : app.state.messageConfigs[id]?.isPinned
   );
 
   const showBanner = isAnySelection && hasItems;
