@@ -2339,9 +2339,8 @@ export function FilterToolModal({ app }: { app: any }) {
     return (
       <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={handleClose}>
         <div className="bg-[#313338] rounded-lg shadow-2xl w-full max-w-md flex flex-col border border-[#1E1F22]" style={{ maxHeight: "85dvh" }} onClick={(e) => e.stopPropagation()}>
-          <div className="p-4 border-b border-[#1E1F22] flex items-center justify-between flex-shrink-0">
+          <div className="p-4 border-b border-[#1E1F22] flex-shrink-0">
             <h2 className="text-lg font-bold text-white">フィルター</h2>
-            <button onClick={handleClose} className="text-gray-400 hover:text-white text-sm font-bold hover:underline transition">キャンセル</button>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             <button
@@ -2374,6 +2373,9 @@ export function FilterToolModal({ app }: { app: any }) {
               </div>
             ))}
           </div>
+          <div className="p-4 border-t border-[#1E1F22] flex justify-end flex-shrink-0">
+            <button onClick={handleClose} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+          </div>
         </div>
       </div>
     );
@@ -2389,7 +2391,6 @@ export function FilterToolModal({ app }: { app: any }) {
         <div className="p-4 border-b border-[#1E1F22] flex items-center gap-3 flex-shrink-0">
           <button onClick={() => setScreen("list")} className="text-gray-400 hover:text-white font-bold text-lg transition">←</button>
           <h2 className="text-lg font-bold text-white flex-1">{editingId ? "フィルターを編集" : "フィルターを作成"}</h2>
-          <button onClick={handleClose} className="text-gray-400 hover:text-white text-sm font-bold hover:underline transition">キャンセル</button>
         </div>
 
         <div className="px-4 pt-3 flex-shrink-0">
@@ -2600,13 +2601,16 @@ export function FilterToolModal({ app }: { app: any }) {
           <span className="text-xs text-gray-500">
             {!filterName.trim() ? "名前を入力してください" : isNonGroupBoxesEmpty ? "保存場所を選択してください" : isCriteriaEmpty ? "条件を追加してください" : `${matchCount}件が一致します`}
           </span>
-          <button
-            disabled={!canExecute}
-            onClick={handlePrimary}
-            className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-[#3f4147] disabled:text-gray-500 transition"
-          >
-            {action === "group" ? (editingId ? "保存" : "グループを作成") : continuous ? (editingId ? "保存" : "フィルターを保存") : "実行"}
-          </button>
+          <div className="flex items-center gap-3">
+            <button onClick={handleClose} className="px-2 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+            <button
+              disabled={!canExecute}
+              onClick={handlePrimary}
+              className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-[#3f4147] disabled:text-gray-500 transition"
+            >
+              {action === "group" ? (editingId ? "保存" : "グループを作成") : continuous ? (editingId ? "保存" : "フィルターを保存") : "実行"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
