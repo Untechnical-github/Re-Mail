@@ -1061,11 +1061,6 @@ export function useMailApp() {
   const groupedEmailsRef = useRef(groupedEmails);
   useEffect(() => { groupedEmailsRef.current = groupedEmails; }, [groupedEmails]);
 
-  // メッセージ単位の設定（messageConfigs）を引くための複合キーを作る。今のところメッセージは
-  // 常にメインアカウント（session.user.email）のものとして扱う（フェーズ4Bで複数アカウント分の
-  // メールが実際に流れてくるようになったら、email.accountId を見て正しいアカウントを使うよう拡張する）
-  const messageConfigKey = (messageId: string): RoomKeyStr => encodeRoomKey(session?.user?.email || "", messageId as LocalKey);
-
   // UI表示用: 複合キーからアカウント内のローカルな識別子（表示名など）だけを取り出す。
   // customNameが無いチャットのフォールバック表示など、Modals.tsx側で複合キーをそのまま
   // 画面に出してしまわないようにするために使う（roomKeyの直接パースを一元化するルールのため、
@@ -1113,6 +1108,30 @@ export function useMailApp() {
     keysOf(groupedEmails).forEach(room => (groupedEmails[room] || []).forEach((e: any) => map.set(e.id, room)));
     return map;
   }, [groupedEmails]);
+
+  // メッセージが実際にどのアカウントに属するかを解決する。
+  // 1) 既にそのメッセージの設定行が存在すればそのアカウントを最優先で再利用する
+  //    （非表示化した後にメールデータがローカルから消えても、unhide時に同じキーへ確実に書き戻すため）
+  // 2) groupedEmailsのroomキー（既に正しいアカウントで複合化済み）
+  // 3) メール自身のaccountId
+  // 4) どれも無ければメインアカウントにフォールバック
+  const resolveMessageAccountEmail = (messageId: string): string => {
+    const existingKey = keysOf(messageConfigsRef.current).find(k => decodeRoomKey(k).localKey === (messageId as LocalKey));
+    if (existingKey) {
+      try { return decodeRoomKey(existingKey).accountEmail; } catch { /* 複合キーでない古いデータは無視 */ }
+    }
+    const room = emailRoomMap.get(messageId);
+    if (room) {
+      try { return decodeRoomKey(room).accountEmail; } catch { /* 複合キーでない古いデータは無視 */ }
+    }
+    const found = allUniqueEmails.find((e: any) => e.id === messageId);
+    return found?.accountId || session?.user?.email || "";
+  };
+
+  // メッセージ単位の設定（messageConfigs）を引くための複合キーを作る。そのメッセージが
+  // 実際に属するアカウントで複合化するため、連携アカウントをまたいでメッセージIDが
+  // 衝突しても互いの非表示/ピン留め状態が混ざらない
+  const messageConfigKey = (messageId: string): RoomKeyStr => encodeRoomKey(resolveMessageAccountEmail(messageId), messageId as LocalKey);
 
   // ルーム内の相手メールアドレスを推定する（「作成」機能での重複チャット判定・検索に使用）
   const getRoomAddress = (room: RoomKeyStr): string => {
@@ -1813,14 +1832,12 @@ export function useMailApp() {
   // メッセージ単位の非表示のコア処理。modal状態に依存しないため、確認モーダル経由の実行と
   // 継続フィルターの自動適用エンジンの両方から呼べる
   const applyHideToIds = (ids: string[]) => {
-    const myEmail = session?.user?.email || "";
-    ids.forEach(id => updateMessageConfig(asLocalKey(id), { isHidden: true, hiddenAtDate: new Date().toISOString(), roomId: emailRoomMap.get(id) }, myEmail));
+    ids.forEach(id => updateMessageConfig(asLocalKey(id), { isHidden: true, hiddenAtDate: new Date().toISOString(), roomId: emailRoomMap.get(id) }, resolveMessageAccountEmail(id)));
   };
 
   // メッセージ単位のピン留めのコア処理。modal状態に依存しないため、確認モーダル経由の実行と
   // 継続フィルターの自動適用エンジンの両方から呼べる（合計上限100件、TRASH/SPAMは対象外）
   const applyPinToIds = (ids: string[]) => {
-    const myEmail = session?.user?.email || "";
     const existingPinnedMsgCount = keysOf(messageConfigsRef.current).filter(k =>
       messageConfigsRef.current[k]?.isPinned && messageConfigsRef.current[k]?.forceFetch
     ).length;
@@ -1834,7 +1851,7 @@ export function useMailApp() {
         const room = emailRoomMap.get(targetId) || selectedSender || undefined;
         const pData = { ...found, senderRoom: room ? decodeRoomKey(room).localKey : undefined };
         pMsgs.push(pData);
-        updateMessageConfig(asLocalKey(targetId), { isPinned: true, forceFetch: true, persistedData: pData, roomId: room }, myEmail);
+        updateMessageConfig(asLocalKey(targetId), { isPinned: true, forceFetch: true, persistedData: pData, roomId: room }, resolveMessageAccountEmail(targetId));
       }
     });
     if (pMsgs.length > 0) setPersistedEmails(prev => [...prev, ...pMsgs]);
@@ -2065,7 +2082,7 @@ export function useMailApp() {
         const localTargets = chatTargets.map(t => decodeRoomKey(t).localKey);
         setPersistedEmails(prev => prev.filter(e => !(e.senderRoom && localTargets.includes(e.senderRoom as LocalKey))));
       } else {
-        (targets as string[]).forEach(targetId => updateMessageConfig(asLocalKey(targetId), { isPinned: false, forceFetch: false, persistedData: null }, session?.user?.email || ""));
+        (targets as string[]).forEach(targetId => updateMessageConfig(asLocalKey(targetId), { isPinned: false, forceFetch: false, persistedData: null }, resolveMessageAccountEmail(targetId)));
         setPersistedEmails(prev => prev.filter(e => !targets.includes(e.id)));
       }
     }
@@ -2073,7 +2090,7 @@ export function useMailApp() {
       if (targetMode === "chat") {
         (targets as RoomKeyStr[]).forEach(target => updateChatConfigByRoomKey(target, { isHidden: false }));
       } else {
-        (targets as string[]).forEach(target => updateMessageConfig(asLocalKey(target), { isHidden: false }, session?.user?.email || ""));
+        (targets as string[]).forEach(target => updateMessageConfig(asLocalKey(target), { isHidden: false }, resolveMessageAccountEmail(target)));
       }
     }
 
