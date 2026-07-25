@@ -2116,15 +2116,15 @@ function filterKindOf(cfg: any): FilterToolAction | null {
 // OR一覧画面で、各条件セットの中身を短い日本語で要約する
 function summarizeConditionSet(set: ConditionSet): string {
   const parts: string[] = [];
+  if (set.direction) parts.push(set.direction === "sent" ? "送信メールのみ" : "受信メールのみ");
   (set.textRules || []).forEach(r => {
     if (!r.keyword.trim()) return;
-    const dir = r.direction === "sent" ? "送信・" : r.direction === "received" ? "受信・" : "";
     const modeLabel = r.mode === "contains" ? "含む" : "含まない";
-    parts.push(`${dir}${TEXT_FIELD_LABELS[r.field]}が「${r.keyword}」を${modeLabel}`);
+    parts.push(`${TEXT_FIELD_LABELS[r.field]}が「${r.keyword}」を${modeLabel}`);
   });
   if (set.dateRange) {
-    const { from, to, direction } = set.dateRange;
-    parts.push(`期間(${direction === "sent" ? "送信" : "受信"}): ${from || "…"}〜${to || "…"}`);
+    const { from, to } = set.dateRange;
+    parts.push(`期間: ${from || "…"}〜${to || "…"}`);
   }
   if (set.hasAttachment !== undefined) parts.push(`添付${set.hasAttachment ? "あり" : "なし"}`);
   if (set.isReply !== undefined) parts.push(`返信メール${set.isReply ? "" : "でない"}`);
@@ -2169,11 +2169,11 @@ export function FilterToolModal({ app }: { app: any }) {
   // OR結合される条件セット一覧（確定済み）と、今まさに編集中の1セット分のドラフト
   const [conditionSets, setConditionSets] = useState<ConditionSet[]>([]);
   const [editingSetIndex, setEditingSetIndex] = useState<number | null>(null);
+  const [draftDirection, setDraftDirection] = useState<"any" | DateDirection>("any");
   const [textRules, setTextRules] = useState<TextRule[]>([]);
   const [dateEnabled, setDateEnabled] = useState(false);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
-  const [dateDirection, setDateDirection] = useState<DateDirection>("received");
   const [attachmentChoice, setAttachmentChoice] = useState<ThreeWay>("any");
   const [replyChoice, setReplyChoice] = useState<ThreeWay>("any");
   const [forwardChoice, setForwardChoice] = useState<ThreeWay>("any");
@@ -2196,17 +2196,19 @@ export function FilterToolModal({ app }: { app: any }) {
   }, [chatConfigs]);
 
   const clearDraft = () => {
+    setDraftDirection("any");
     setTextRules([]);
-    setDateEnabled(false); setDateFrom(""); setDateTo(""); setDateDirection("received");
+    setDateEnabled(false); setDateFrom(""); setDateTo("");
     setAttachmentChoice("any"); setReplyChoice("any"); setForwardChoice("any"); setFormatChoice("any");
   };
 
   const loadDraftFromSet = (set: ConditionSet) => {
+    setDraftDirection(set.direction || "any");
     setTextRules(set.textRules ? set.textRules.map(r => ({ ...r })) : []);
     if (set.dateRange) {
-      setDateEnabled(true); setDateFrom(set.dateRange.from || ""); setDateTo(set.dateRange.to || ""); setDateDirection(set.dateRange.direction);
+      setDateEnabled(true); setDateFrom(set.dateRange.from || ""); setDateTo(set.dateRange.to || "");
     } else {
-      setDateEnabled(false); setDateFrom(""); setDateTo(""); setDateDirection("received");
+      setDateEnabled(false); setDateFrom(""); setDateTo("");
     }
     setAttachmentChoice(set.hasAttachment === undefined ? "any" : set.hasAttachment ? "yes" : "no");
     setReplyChoice(set.isReply === undefined ? "any" : set.isReply ? "yes" : "no");
@@ -2216,9 +2218,10 @@ export function FilterToolModal({ app }: { app: any }) {
 
   const draftToConditionSet = (): ConditionSet => {
     const s: ConditionSet = {};
+    if (draftDirection !== "any") s.direction = draftDirection;
     const validRules = textRules.filter(r => r.keyword.trim().length > 0);
     if (validRules.length > 0) s.textRules = validRules;
-    if (dateEnabled && (dateFrom || dateTo)) s.dateRange = { from: dateFrom || undefined, to: dateTo || undefined, direction: dateDirection };
+    if (dateEnabled && (dateFrom || dateTo)) s.dateRange = { from: dateFrom || undefined, to: dateTo || undefined };
     if (attachmentChoice !== "any") s.hasAttachment = attachmentChoice === "yes";
     if (replyChoice !== "any") s.isReply = replyChoice === "yes";
     if (forwardChoice !== "any") s.isForward = forwardChoice === "yes";
@@ -2227,7 +2230,7 @@ export function FilterToolModal({ app }: { app: any }) {
   };
   const isDraftEmpty = () => {
     const s = draftToConditionSet();
-    return !s.textRules && !s.dateRange && s.hasAttachment === undefined && s.isReply === undefined && s.isForward === undefined && s.format === undefined;
+    return !s.direction && !s.textRules && !s.dateRange && s.hasAttachment === undefined && s.isReply === undefined && s.isForward === undefined && s.format === undefined;
   };
 
   const resetBuilderFields = () => {
@@ -2700,12 +2703,23 @@ export function FilterToolModal({ app }: { app: any }) {
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* 方向: このセット全体を受信/送信メールに絞り込む（テキスト条件・期間などすべてに共通で適用される） */}
+          <div>
+            <label className="text-xs font-bold text-gray-400 mb-1.5 block">方向</label>
+            <div className="flex gap-1 text-[11px] font-bold">
+              <button onClick={() => setDraftDirection("any")} className={`px-2.5 py-1 rounded ${draftDirection === "any" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>問わない</button>
+              <button onClick={() => setDraftDirection("received")} className={`px-2.5 py-1 rounded ${draftDirection === "received" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>受信</button>
+              <button onClick={() => setDraftDirection("sent")} className={`px-2.5 py-1 rounded ${draftDirection === "sent" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>送信</button>
+            </div>
+            <div className="text-[11px] text-gray-500 mt-1">受信/送信を選ぶと、下のテキスト条件・期間などすべてがそのメールだけに適用されます</div>
+          </div>
+
           {/* テキスト条件 */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-bold text-gray-400">テキスト条件</label>
               <button
-                onClick={() => setTextRules(prev => [...prev, { field: "subject", mode: "contains", keyword: "", direction: "received" }])}
+                onClick={() => setTextRules(prev => [...prev, { field: "subject", mode: "contains", keyword: "" }])}
                 className="text-xs font-bold text-[#5865F2] hover:text-white transition"
               >
                 ＋条件を追加
@@ -2714,10 +2728,6 @@ export function FilterToolModal({ app }: { app: any }) {
             <div className="space-y-1.5">
               {textRules.map((rule, i) => (
                 <div key={i} className="flex items-center gap-1.5 bg-[#232428] rounded p-2 flex-wrap">
-                  <div className="flex gap-1 text-[11px] font-bold flex-shrink-0">
-                    <button onClick={() => updateRule(i, { direction: "received" })} className={`px-2 py-1 rounded ${(rule.direction || "received") === "received" ? "bg-[#5865F2] text-white" : "bg-[#1E1F22] text-gray-400 hover:bg-[#2f3136]"}`}>受信</button>
-                    <button onClick={() => updateRule(i, { direction: "sent" })} className={`px-2 py-1 rounded ${rule.direction === "sent" ? "bg-[#5865F2] text-white" : "bg-[#1E1F22] text-gray-400 hover:bg-[#2f3136]"}`}>送信</button>
-                  </div>
                   <select
                     value={rule.field}
                     onChange={(e) => updateRule(i, { field: e.target.value as TextField })}
@@ -2758,10 +2768,6 @@ export function FilterToolModal({ app }: { app: any }) {
                 <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="bg-[#1E1F22] text-xs text-gray-200 rounded px-2 py-1.5" />
                 <span className="text-xs text-gray-500">〜</span>
                 <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="bg-[#1E1F22] text-xs text-gray-200 rounded px-2 py-1.5" />
-                <div className="flex gap-1 text-[11px] font-bold">
-                  <button onClick={() => setDateDirection("received")} className={`px-2.5 py-1 rounded ${dateDirection === "received" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>受信</button>
-                  <button onClick={() => setDateDirection("sent")} className={`px-2.5 py-1 rounded ${dateDirection === "sent" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}>送信</button>
-                </div>
               </div>
             )}
           </div>

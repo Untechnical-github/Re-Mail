@@ -46,18 +46,17 @@ export type TextRule = {
   field: TextField;
   mode: "contains" | "not_contains";
   keyword: string;
-  // このテキスト条件が受信メール/送信メールどちらに適用されるか（新規作成時は常に設定される）。
-  // メール自体もその方向のものだけに絞り込む（期間条件の受信/送信と同じ考え方）。
-  // recipientName/recipientAddress のときは、受信なら差出人ヘッダー、送信なら宛先ヘッダーを見る。
-  // 未指定（古いデータ）は方向を問わない従来の挙動にフォールバックする
-  direction?: DateDirection;
 };
 
-// AND結合された1つの条件セット（テキスト条件・期間・添付・返信・転送・形式）。
+// AND結合された1つの条件セット（方向・テキスト条件・期間・添付・返信・転送・形式）。
 // FilterCriteria.conditionSets はこれの配列で、いずれか1つのセットに一致すればOK（OR結合）
 export type ConditionSet = {
+  // このセット全体を受信メールのみ/送信メールのみに絞り込む（未指定=問わない）。
+  // テキスト条件のうち相手の名前/アドレスは、この値に応じてどちらのヘッダーを見るか決まる
+  // （受信なら差出人、送信なら宛先。未指定＝問わないのときは相手＝自分でない方を見る）
+  direction?: DateDirection;
   textRules?: TextRule[];
-  dateRange?: { from?: string; to?: string; direction: DateDirection };
+  dateRange?: { from?: string; to?: string };
   hasAttachment?: boolean;
   isReply?: boolean;
   isForward?: boolean;
@@ -71,7 +70,7 @@ export type FilterCriteria = {
   // 後方互換用: conditionSets 導入前の旧バージョンで保存されたフラットな単一条件データ。
   // conditionSets が無いときだけ getConditionSets() 経由で読み込まれる
   textRules?: TextRule[];
-  dateRange?: { from?: string; to?: string; direction: DateDirection };
+  dateRange?: { from?: string; to?: string };
   hasAttachment?: boolean;
   isReply?: boolean;
   isForward?: boolean;
@@ -128,16 +127,10 @@ function parseLocalDayEnd(dateStr: string): Date {
   return new Date(y, (m || 1) - 1, d || 1, 23, 59, 59, 999);
 }
 
-function matchesTextRule(email: any, rule: TextRule, myEmail: string): boolean {
-  if (rule.direction) {
-    const isSent = isMineEmail(email, myEmail);
-    if (rule.direction === "received" && isSent) return false;
-    if (rule.direction === "sent" && !isSent) return false;
-  }
-
+function matchesTextRule(email: any, rule: TextRule, myEmail: string, direction: DateDirection | undefined): boolean {
   let target = "";
   if (rule.field === "recipientName" || rule.field === "recipientAddress") {
-    const raw = rule.direction ? (rule.direction === "sent" ? (email.to || "") : (email.from || "")) : getPartnerRaw(email, myEmail);
+    const raw = direction ? (direction === "sent" ? (email.to || "") : (email.from || "")) : getPartnerRaw(email, myEmail);
     target = rule.field === "recipientName" ? extractName(raw) : extractAddress(raw);
   } else if (rule.field === "subject") target = email.subject || "";
   else target = email.body || "";
@@ -147,15 +140,18 @@ function matchesTextRule(email: any, rule: TextRule, myEmail: string): boolean {
 }
 
 function matchesConditionSet(email: any, set: ConditionSet, myEmail: string): boolean {
+  if (set.direction) {
+    const isSent = isMineEmail(email, myEmail);
+    if (set.direction === "received" && isSent) return false;
+    if (set.direction === "sent" && !isSent) return false;
+  }
+
   if (set.textRules && set.textRules.length > 0) {
-    if (!set.textRules.every(rule => matchesTextRule(email, rule, myEmail))) return false;
+    if (!set.textRules.every(rule => matchesTextRule(email, rule, myEmail, set.direction))) return false;
   }
 
   if (set.dateRange) {
-    const { from, to, direction } = set.dateRange;
-    const isSent = isMineEmail(email, myEmail);
-    if (direction === "received" && isSent) return false;
-    if (direction === "sent" && !isSent) return false;
+    const { from, to } = set.dateRange;
     const emailDate = new Date(email.date);
     if (isNaN(emailDate.getTime())) return false; // 日時が壊れている/未解析のメールは期間条件付きでは対象外にする
     if (from && emailDate < parseLocalDayStart(from)) return false;
