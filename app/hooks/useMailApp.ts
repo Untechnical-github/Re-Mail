@@ -2088,7 +2088,17 @@ export function useMailApp() {
     }
     else if (type === "confirm_unhide") {
       if (targetMode === "chat") {
-        (targets as RoomKeyStr[]).forEach(target => updateChatConfigByRoomKey(target, { isHidden: false }));
+        // targetMode "chat" の unhide_select 画面は「非表示のチャット」と「非表示のメッセージ（すべてのチャットから）」
+        // を同じ選択リストにまとめて表示するため、targets には room key とメッセージID が混在しうる。
+        // 各要素が実際に非表示中のチャットかどうかで振り分ける（そうしないとメッセージIDを
+        // room keyとしてdecodeRoomKeyしようとして例外になり、ボタンが無反応になる）
+        (targets as string[]).forEach(target => {
+          if (chatConfigsRef.current[target as RoomKeyStr]?.isHidden) {
+            updateChatConfigByRoomKey(target as RoomKeyStr, { isHidden: false });
+          } else {
+            updateMessageConfig(asLocalKey(target), { isHidden: false }, resolveMessageAccountEmail(target));
+          }
+        });
       } else {
         (targets as string[]).forEach(target => updateMessageConfig(asLocalKey(target), { isHidden: false }, resolveMessageAccountEmail(target)));
       }
