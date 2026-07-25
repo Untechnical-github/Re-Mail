@@ -301,7 +301,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     : null;
 
   const allPinned = isAnySelection && hasItems && selectedIds.every((id: string) =>
-    isChat ? app.state.chatConfigs[id]?.isPinned : app.state.messageConfigs[id]?.isPinned
+    isChat ? app.state.chatConfigs[id]?.isPinned : app.state.messageConfigs[app.actions.messageConfigKey(id)]?.isPinned
   );
 
   const showBanner = isAnySelection && hasItems;
@@ -367,7 +367,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
           onClick={() => {
             if (!isAnySelection || selectedIds.length !== 1) return;
             const id = selectedIds[0];
-            setRenameInput(app.state.chatConfigs[id]?.customName || id);
+            setRenameInput(app.state.chatConfigs[id]?.customName || app.actions.roomLocalKey(id));
             setModal({ type: "rename", targetMode: "chat", targets: [id] });
             window.history.pushState({ action: "modal" }, "", window.location.href);
           }}

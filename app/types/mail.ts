@@ -1,4 +1,5 @@
 import type { FilterCriteria } from "../lib/filterMatch";
+import type { LocalKey, RoomKeyStr } from "../lib/roomKey";
 
 export type GroupMode = "normal" | "inbound_only" | "outbound_only";
 
@@ -12,14 +13,17 @@ export type ChatConfig = {
   forceFetch?: boolean;
   persistedData?: any;
   isGroup?: boolean;
-  groupMembers?: string[];
+  // メンバーはアカウント内のローカルキー（相手の表示名やアドレス）で保存する。groupEmailsByRoomが
+  // アカウントごとのローカルroom空間で照合するため、複合キー（RoomKeyStr）を混ぜてはいけない
+  groupMembers?: LocalKey[];
   // groupMembers と同じ並び順でのメンバーの実メールアドレス。作成時に一度だけ確定させて保存する
   // （メンバー数分だけの固定サイズなので、送信のたびに増え続けるデータにはならない）
   groupMemberAddresses?: string[];
   groupMode?: GroupMode;
   // このグループの作成時に、まだ非表示になっていなかったのを新たに非表示にしたメンバーの一覧。
-  // グループ削除時に、この一覧の分だけ非表示を解除する（グループ作成前から非表示だったものは触らない）
-  groupHiddenMembers?: string[];
+  // グループ削除時に、この一覧の分だけ非表示を解除する（グループ作成前から非表示だったものは触らない）。
+  // groupMembers と同じくローカルキー
+  groupHiddenMembers?: LocalKey[];
   // フィルターツールで作成したグループ用。存在する場合、このグループはアドレス集合ベースではなく
   // フィルター条件ベース（動的に再評価される）であることを示す
   filterCriteria?: FilterCriteria;
@@ -53,8 +57,8 @@ export type MessageConfig = {
   // このメッセージ自身の永続コピーを保持するか（ピン留め等で、通常の取得ページングの外にあっても表示し続けるため）
   forceFetch?: boolean;
   persistedData?: any;
-  // このメッセージがどのroomに属するか（room単位のchatConfigsのキーと同じ空間）
-  roomId?: string;
+  // このメッセージがどのroomに属するか（room単位のchatConfigsのキーと同じ空間＝複合キー）
+  roomId?: RoomKeyStr;
 };
 
 export type SelectionMode = "none" | "chat_select" | "msg_select" | "chat_hide" | "chat_delete" | "msg_hide" | "msg_delete" | "chat_pin" | "msg_pin" | "chat_reset" | "msg_reset" | "chat_move" | "msg_move";

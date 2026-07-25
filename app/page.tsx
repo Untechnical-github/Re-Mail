@@ -266,7 +266,7 @@ export default function Home() {
             }}
           >
              {state.isLoading && <div className="text-xs text-[#5865F2] font-bold p-2 text-center animate-pulse">読み込み中...</div>}
-             {computed.senderList.filter((sender: string) => chatConfigTab(state.chatConfigs[sender]) === state.activeChatTab).map((sender) => {
+             {computed.senderList.filter((sender) => chatConfigTab(state.chatConfigs[sender]) === state.activeChatTab).map((sender) => {
               const allEmails = computed.groupedEmails[sender] || [];
               const config = state.chatConfigs[sender];
 
@@ -277,7 +277,7 @@ export default function Home() {
                  const isSent = e.labelIds?.includes("SENT") || e.isMe; 
                  const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
                  
-                 if ((isInbox || isArchive || isSent) && (config?.isHidden || state.messageConfigs[e.id]?.isHidden)) return false;
+                 if ((isInbox || isArchive || isSent) && (config?.isHidden || state.messageConfigs[actions.messageConfigKey(e.id)]?.isHidden)) return false;
 
                  // ★修正: 送信済みチェックを「絶対優先」に書き換え
                  let isCurrentBox = false;
@@ -425,7 +425,7 @@ export default function Home() {
                       <div className="flex justify-between items-baseline">
                         <div className="flex items-center gap-1 truncate pr-2">
                           {config?.isPinned && <span className="text-[#FEE75C] text-[10px]">📌</span>}
-                          <span className="font-bold text-sm truncate">{config?.customName || sender}</span>
+                          <span className="font-bold text-sm truncate">{config?.customName || actions.roomLocalKey(sender)}</span>
                         </div>
                         <span className="text-[10px] text-gray-500 flex-shrink-0">{latestDate}</span>
                       </div>
@@ -462,7 +462,7 @@ export default function Home() {
                   <button onClick={(e) => { e.stopPropagation(); actions.safeBack(); }} className="text-gray-400 hover:text-white font-bold p-1 text-lg transition active:scale-90">←</button>
                 )}
                 <div className="flex-1 min-w-0 flex items-baseline gap-2">
-                  <h2 className="font-bold text-base truncate text-white">{state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}</h2>
+                  <h2 className="font-bold text-base truncate text-white">{state.chatConfigs[state.selectedSender!]?.customName || actions.roomLocalKey(state.selectedSender!)}</h2>
                   {selectedGroupConfig?.isGroup ? (
                     <span className="text-xs text-gray-500 truncate">
                       {isFilterGroup ? "フィルターグループ" : `グループ・${(selectedGroupConfig.groupMembers || []).length}人`}
@@ -578,7 +578,7 @@ export default function Home() {
                     const isSent = email.labelIds?.includes("SENT") || email.isMe; 
                     const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
 
-                    if ((isInbox || isArchive || isSent) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.messageConfigs[email.id]?.isHidden)) return null;
+                    if ((isInbox || isArchive || isSent) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.messageConfigs[actions.messageConfigKey(email.id)]?.isHidden)) return null;
 
                     const isMe = email.isMe || email.from.includes(auth.session?.user?.email || "");
                     const isSelected = state.selectedIds.includes(email.id);
@@ -753,7 +753,7 @@ export default function Home() {
                                 if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                               }}
                            >
-                              {state.messageConfigs[email.id]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
+                              {state.messageConfigs[actions.messageConfigKey(email.id)]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
                               {hasVisibleSubject && (
                                 <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={displaySubject} highlight={subjectFindHighlight} field="subject" activeField={activeFindField} activeIndex={activeFindIndex} /></div>
                               )}
@@ -866,7 +866,7 @@ export default function Home() {
                   </div>
                   <input disabled={isSendDisabled} type="text" placeholder="件名 (省略可)" value={state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
                   <div className="flex items-end gap-2">
-                    <textarea disabled={isSendDisabled} placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || state.selectedSender}`} rows={state.isMobile ? 1 : 2} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
+                    <textarea disabled={isSendDisabled} placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || actions.roomLocalKey(state.selectedSender!)}`} rows={state.isMobile ? 1 : 2} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
                     <button onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={isSendDisabled || state.isSending || !state.replyBody.trim()} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
                       {state.isSending ? "..." : "送信"}
                     </button>
@@ -883,7 +883,7 @@ export default function Home() {
                   <button onClick={(e) => { e.stopPropagation(); actions.safeBack(); }} className="text-gray-400 hover:text-white font-bold p-1 text-lg transition active:scale-90">←</button>
                 )}
                 <div className="flex-1 min-w-0">
-                  <h2 className="font-bold text-base truncate text-white">{state.chatConfigs[state.selectedSender]?.customName || state.selectedSender}</h2>
+                  <h2 className="font-bold text-base truncate text-white">{state.chatConfigs[state.selectedSender]?.customName || actions.roomLocalKey(state.selectedSender!)}</h2>
                 </div>
               </header>
               <div className="flex flex-1 items-center justify-center text-gray-500 text-sm cursor-default">

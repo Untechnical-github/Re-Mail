@@ -531,12 +531,12 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
 
 function ChatHideConfirm({ app, modal }: { app: any; modal: NonNullable<any> }) {
   const [unhideOnNew, setUnhideOnNew] = useState(false);
-  const { safeBack, exitAfterAction, updateChatConfig, setSelectedSender } = app.actions;
+  const { safeBack, exitAfterAction, updateChatConfigByRoomKey, setSelectedSender } = app.actions;
   const { selectedSender } = app.state;
 
   const handleExecute = () => {
     modal.targets.forEach((target: string) => {
-      updateChatConfig(target, { isHidden: true, hiddenAtDate: new Date().toISOString(), unhideOnNew });
+      updateChatConfigByRoomKey(target, { isHidden: true, hiddenAtDate: new Date().toISOString(), unhideOnNew });
     });
     if (modal.targets.includes(selectedSender)) setSelectedSender(null);
     exitAfterAction();
@@ -1256,7 +1256,7 @@ export function AttachmentModal({ app }: { app: any }) {
 
 export function Modals({ app }: { app: any }) {
   const { modal, renameInput, moveDestination, resetOptions, chatConfigs, messageConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
-  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfig, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
+  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfigByRoomKey, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
 
   if (!modal || modal.type === "search" || modal.type === "filter_tool") return null;
@@ -1431,7 +1431,7 @@ export function Modals({ app }: { app: any }) {
               <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
               <button
                 onClick={() => {
-                  modal.targets.forEach((room: string) => app.actions.deleteChatConfig(room, app.auth?.session?.user?.email || ""));
+                  modal.targets.forEach((room: string) => app.actions.deleteChatConfigByRoomKey(room));
                   exitAfterAction();
                 }}
                 className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c]"
@@ -1490,7 +1490,7 @@ export function Modals({ app }: { app: any }) {
                     {hiddenChats.map((c: string) => (
                       <label key={c} className="flex items-center gap-3 p-2 hover:bg-[#2B2D31] rounded cursor-pointer">
                         <input type="checkbox" checked={selectedIds.includes(c)} onChange={() => app.actions.toggleSelection(c)} className="accent-[#5865F2]" />
-                        <span className="text-sm truncate">{chatConfigs[c]?.customName || c}</span>
+                        <span className="text-sm truncate">{chatConfigs[c]?.customName || app.actions.roomLocalKey(c)}</span>
                       </label>
                     ))}
                     {hiddenChats.length === 0 && <div className="text-gray-500 text-xs p-2 px-4">非表示のチャットはありません</div>}
@@ -1499,7 +1499,7 @@ export function Modals({ app }: { app: any }) {
                   <div className="border-t border-[#1E1F22]/50 pt-2">
                     <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">非表示のメッセージ（すべてのチャットから）</div>
                     {hiddenMsgs.map((m: any) => {
-                      const roomId = messageConfigs[m.id]?.roomId; const chatName = roomId ? (chatConfigs[roomId]?.customName || roomId) : "不明なチャット";
+                      const roomId = messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId; const chatName = roomId ? (chatConfigs[roomId]?.customName || app.actions.roomLocalKey(roomId)) : "不明なチャット";
                       return (
                         <label key={m.id} className="flex items-center gap-3 p-2 hover:bg-[#2B2D31] rounded cursor-pointer">
                           <input type="checkbox" checked={selectedIds.includes(m.id)} onChange={() => app.actions.toggleSelection(m.id)} className="accent-[#5865F2]" />
@@ -1519,7 +1519,7 @@ export function Modals({ app }: { app: any }) {
               ) : (
                 <div>
                   <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">このチャット内の非表示メッセージ</div>
-                  {hiddenMsgs.filter((m: any) => messageConfigs[m.id]?.roomId === selectedSender).map((m: any) => (
+                  {hiddenMsgs.filter((m: any) => messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId === selectedSender).map((m: any) => (
                     <label key={m.id} className="flex items-center gap-3 p-2 hover:bg-[#2B2D31] rounded cursor-pointer">
                       <input type="checkbox" checked={selectedIds.includes(m.id)} onChange={() => app.actions.toggleSelection(m.id)} className="accent-[#5865F2]" />
                       <div className="text-sm truncate flex-1 flex flex-col gap-0.5">
@@ -1530,7 +1530,7 @@ export function Modals({ app }: { app: any }) {
                       </div>
                     </label>
                   ))}
-                  {hiddenMsgs.filter((m: any) => messageConfigs[m.id]?.roomId === selectedSender).length === 0 && (
+                  {hiddenMsgs.filter((m: any) => messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId === selectedSender).length === 0 && (
                     <div className="text-gray-500 text-sm p-4 text-center">このチャット内に非表示のメッセージはありません</div>
                   )}
                 </div>
@@ -1595,7 +1595,7 @@ export function Modals({ app }: { app: any }) {
               onChange={(e) => setRenameInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
-                  updateChatConfig(modal.targets[0], { customName: renameInput.trim() || undefined });
+                  updateChatConfigByRoomKey(modal.targets[0], { customName: renameInput.trim() || undefined });
                   safeBack();
                 }
               }}
@@ -1607,7 +1607,7 @@ export function Modals({ app }: { app: any }) {
               <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
               <button
                 onClick={() => {
-                  updateChatConfig(modal.targets[0], { customName: renameInput.trim() || undefined });
+                  updateChatConfigByRoomKey(modal.targets[0], { customName: renameInput.trim() || undefined });
                   safeBack();
                 }}
                 className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]"
@@ -1805,7 +1805,7 @@ export function SearchModal({ app }: { app: any }) {
       if (cfg?.isGroup && (groupedEmails[room] || []).length > 0) {
         infos.push({
           room,
-          label: cfg.customName || room,
+          label: cfg.customName || app.actions.roomLocalKey(room),
           address: null,
           isGroup: true,
           latestDate: groupedEmails[room][0]?.date ? new Date(groupedEmails[room][0].date).getTime() : 0,
@@ -1940,7 +1940,7 @@ export function SearchModal({ app }: { app: any }) {
           </div>
         )}
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px] text-gray-500">
-          <span className="truncate max-w-[150px]">{info?.label || room}</span>
+          <span className="truncate max-w-[150px]">{info?.label || app.actions.roomLocalKey(room)}</span>
           {info?.address && <span className="truncate max-w-[150px]">{info.address}</span>}
           <span>{dateStr}</span>
           <span>{boxName}</span>
@@ -2378,9 +2378,9 @@ export function FilterToolModal({ app }: { app: any }) {
 
     if (action === "group") {
       if (editingId && existingKind === "group") {
-        app.actions.updateChatConfig(editingId, { customName: name, filterCriteria: criteria, filterHideOriginal: hideOriginal, filterIncludeExisting: includeExisting, groupMode: "inbound_only" }, myEmail);
+        app.actions.updateChatConfigByRoomKey(editingId, { customName: name, filterCriteria: criteria, filterHideOriginal: hideOriginal, filterIncludeExisting: includeExisting, groupMode: "inbound_only" });
       } else {
-        if (editingId) app.actions.deleteChatConfig(editingId, myEmail);
+        if (editingId) app.actions.deleteChatConfigByRoomKey(editingId);
         app.actions.createFilterGroup(name, criteria, hideOriginal, includeExisting);
       }
       app.actions.exitAfterAction();
@@ -2391,20 +2391,27 @@ export function FilterToolModal({ app }: { app: any }) {
 
     if (continuous) {
       const reuseId = !!editingId && existingKind === action;
-      if (editingId && !reuseId) app.actions.deleteChatConfig(editingId, myEmail);
-      const id = reuseId ? editingId! : `filter:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      if (editingId && !reuseId) app.actions.deleteChatConfigByRoomKey(editingId);
       const now = new Date().toISOString();
       const createdAt = reuseId ? (chatConfigs[editingId!]?.filterCreatedAt || now) : now;
-      app.actions.updateChatConfig(id, {
+      const updates = {
         customName: name, filterCriteria: criteria, filterAction: action, filterContinuous: true,
         filterDestination: action === "move" ? destination : undefined,
         filterCreatedAt: createdAt, filterLastAppliedAt: now,
-      }, myEmail);
+      };
+      if (reuseId) {
+        // 既存フィルターの編集: chatConfigs のキーと同じ複合キー（editingId）をそのまま使う
+        app.actions.updateChatConfigByRoomKey(editingId!, updates);
+      } else {
+        // 新規のローカルキーを自分のアカウント名義で作成する（既存の複合キーではないため直接updateChatConfigを使う）
+        const localId = `filter:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        app.actions.updateChatConfig(localId, updates, myEmail);
+      }
       // 「これまでのメールを含める」がONの時だけ、保存時点で既に一致しているメールに即座に適用する。
       // OFFなら以降に届く新着メールだけが自動適用エンジン（filterLastAppliedAt=now）の対象になる
       if (includeExisting) applyNonGroupAction(matchedIds);
     } else {
-      if (editingId) app.actions.deleteChatConfig(editingId, myEmail);
+      if (editingId) app.actions.deleteChatConfigByRoomKey(editingId);
       applyNonGroupAction(matchedIds);
     }
     app.actions.exitAfterAction();
@@ -2434,13 +2441,13 @@ export function FilterToolModal({ app }: { app: any }) {
                 {deleteConfirmId === id ? (
                   <>
                     <span className="text-xs text-gray-300 flex-1">本当に削除しますか？</span>
-                    <button onClick={() => { app.actions.deleteChatConfig(id, myEmail); setDeleteConfirmId(null); }} className="text-xs font-bold text-red-400 hover:text-red-300 px-2 flex-shrink-0">はい</button>
+                    <button onClick={() => { app.actions.deleteChatConfigByRoomKey(id); setDeleteConfirmId(null); }} className="text-xs font-bold text-red-400 hover:text-red-300 px-2 flex-shrink-0">はい</button>
                     <button onClick={() => setDeleteConfirmId(null)} className="text-xs font-bold text-gray-400 hover:text-white px-2 flex-shrink-0">いいえ</button>
                   </>
                 ) : (
                   <>
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-bold text-white truncate">{cfg.customName || id}</div>
+                      <div className="text-sm font-bold text-white truncate">{cfg.customName || app.actions.roomLocalKey(id)}</div>
                       <div className="text-[11px] text-gray-500">{kind === "group" ? "グループ" : `${FILTER_KIND_LABELS[kind!]}・継続`}</div>
                     </div>
                     <button onClick={() => openEdit(id)} className="text-xs font-bold text-[#5865F2] hover:text-white px-2 flex-shrink-0">編集</button>

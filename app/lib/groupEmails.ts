@@ -7,7 +7,7 @@
 import { ChatConfig } from "../types/mail";
 import { Email } from "../types/email";
 import { isMineEmail, messageMatchesFilter } from "./filterMatch";
-import { encodeRoomKey } from "./roomKey";
+import { LocalKey, RoomKeyStr, encodeRoomKey, keysOf } from "./roomKey";
 
 function parseAddressSet(toHeader: string): Set<string> {
   const set = new Set<string>();
@@ -46,8 +46,8 @@ function resolveGroupMemberAddresses(cfg: ChatConfig, roomLookup: Record<string,
 export function groupEmailsByRoom(
   emails: Email[],
   myAddress: string,
-  chatConfigs: Record<string, ChatConfig>,
-): Record<string, Email[]> {
+  chatConfigs: Record<LocalKey, ChatConfig>,
+): Record<LocalKey, Email[]> {
   const groups: Record<string, Email[]> = {};
   const tempSentEmails: Email[] = [];
   emails.forEach((email) => {
@@ -102,7 +102,7 @@ export function groupEmailsByRoom(
     if (!emailLikeRoom(room)) return;
     const addr = room.trim().toLowerCase();
     const displayRoom = Object.keys(groups).find(other =>
-      other !== room && !emailLikeRoom(other) && !chatConfigs[other]?.isGroup && resolveRoomPartnerAddr(other) === addr
+      other !== room && !emailLikeRoom(other) && !chatConfigs[other as LocalKey]?.isGroup && resolveRoomPartnerAddr(other) === addr
     );
     if (displayRoom) {
       const existingIds = new Set(groups[displayRoom].map((e: Email) => e.id));
@@ -116,7 +116,7 @@ export function groupEmailsByRoom(
   // だけで判定する（Gmail自身が持つToヘッダーの情報だけで完結するため、送信履歴が増えても
   // D1の容量やロード時間を圧迫しない）。一斉送信は1通のメールなので、各メンバー個別チャットにも
   // 同じメールを反映する。
-  Object.keys(chatConfigs).forEach(room => {
+  keysOf(chatConfigs).forEach(room => {
     const cfg = chatConfigs[room];
     if (!cfg?.isGroup) return;
     // フィルターツールで作成したグループ: 宛先の集合ではなく条件でメッセージを動的に集約する
@@ -174,7 +174,7 @@ export function groupEmailsByRoom(
   // フィルターグループで「元のメッセージを非表示にする」がONの場合、一致したメッセージを
   // 他の全ルーム（元の個別チャット等）から動的に除外する。chatConfigsやメールが変わるたびに
   // 毎回再計算されるため、OFFにすれば次の再計算で自動的に元のルームへ復元される
-  Object.keys(chatConfigs).forEach(room => {
+  keysOf(chatConfigs).forEach(room => {
     const cfg = chatConfigs[room];
     if (!cfg?.isGroup || !cfg.filterCriteria || !cfg.filterHideOriginal) return;
     const matchedIds = new Set((groups[room] || []).map((e: Email) => e.id));
@@ -186,18 +186,20 @@ export function groupEmailsByRoom(
   });
 
   Object.keys(groups).forEach(sender => groups[sender].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-  return groups;
+  // groups の内部実装は素の文字列キーのまま（Phase3のロジックを一切変更しないため）。
+  // 「このRecordのキーはこの関数のローカルroom空間に閉じている」という保証だけ、公開シグネチャで型として表す
+  return groups as Record<LocalKey, Email[]>;
 }
 
 // 複数アカウント分の groupEmailsByRoom の結果を、1つのroomKey空間へマージする。
 // 各アカウントの結果をそのアカウントの encodeRoomKey で複合キー化してから合体するため、
 // 別アカウントに同姓同名の相手がいてもキーが異なり、衝突・混在しない
 export function mergeAccountGroups(
-  perAccountGroups: { accountEmail: string; groups: Record<string, Email[]> }[],
-): Record<string, Email[]> {
-  const merged: Record<string, Email[]> = {};
+  perAccountGroups: { accountEmail: string; groups: Record<LocalKey, Email[]> }[],
+): Record<RoomKeyStr, Email[]> {
+  const merged: Record<RoomKeyStr, Email[]> = {};
   perAccountGroups.forEach(({ accountEmail, groups }) => {
-    Object.keys(groups).forEach(localKey => {
+    (Object.keys(groups) as LocalKey[]).forEach(localKey => {
       merged[encodeRoomKey(accountEmail, localKey)] = groups[localKey];
     });
   });
