@@ -1332,18 +1332,22 @@ export function useMailApp() {
 
   // 「作成」モーダルの確定操作: 既にやり取りのある宛先ならそのチャットを開き、
   // 初めての宛先なら未送信の下書きチャットとして新規に開く
-  const createOrOpenChat = async (identifier: string) => {
+  // accountEmail は新規アドレスを複合化する際にだけ使う（「作成」モーダルのアカウント選択UIから渡される。
+  // 未指定時はメインアカウント）。既存の宛先（contactDirectory由来の複合キー）を選んだ場合は
+  // そのままそのアカウントで開くため、accountEmailは無視される
+  const createOrOpenChat = async (identifier: string, accountEmail?: string) => {
     const trimmed = identifier.trim();
     if (!trimmed) return;
     const myEmail = session?.user?.email || "";
+    const targetAccountEmail = accountEmail || myEmail;
     // contactDirectory の候補選択は既に複合キー（room）そのものが渡ってくる。
-    // 新規入力のメールアドレス/表示名は区切り文字を含まないので、現在のアカウント名義で複合化する
+    // 新規入力のメールアドレス/表示名は区切り文字を含まないので、選択されたアカウント名義で複合化する
     let directKey: RoomKeyStr;
     try {
       decodeRoomKey(trimmed);
       directKey = trimmed as RoomKeyStr;
     } catch {
-      directKey = encodeRoomKey(myEmail, asLocalKey(trimmed));
+      directKey = encodeRoomKey(targetAccountEmail, asLocalKey(trimmed));
     }
 
     let existingRoom: RoomKeyStr | null = null;
@@ -1363,9 +1367,11 @@ export function useMailApp() {
   };
 
   // 「作成」モーダルで複数の宛先を選んだ場合のグループチャット作成。
-  // members/hideMemberIndividualChats は contactDirectory 由来の複合キーと、新規入力の生アドレスが混在する
-  const createGroupChat = async (name: string, members: string[], memberAddresses: string[], mode: GroupMode, hideMemberIndividualChats: string[]) => {
-    const myEmail = session?.user?.email || "";
+  // members/hideMemberIndividualChats は contactDirectory 由来の複合キーと、新規入力の生アドレスが混在する。
+  // accountEmail はこのグループ自身をどのアカウント名義で作るか（「作成」モーダルのアカウント選択UIから
+  // 渡される。未指定時はメインアカウント）
+  const createGroupChat = async (name: string, members: string[], memberAddresses: string[], mode: GroupMode, hideMemberIndividualChats: string[], accountEmail?: string) => {
+    const myEmail = accountEmail || session?.user?.email || "";
     const groupRoomLocal = asLocalKey(`group:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
     const groupRoom = encodeRoomKey(myEmail, groupRoomLocal);
 
@@ -1546,7 +1552,7 @@ export function useMailApp() {
   };
 
   const openAttachmentModal = async (
-    attachment: { filename: string; mimeType: string; size: number; attachmentId: string; messageId: string; cacheKey?: string },
+    attachment: { filename: string; mimeType: string; size: number; attachmentId: string; messageId: string; accountId?: string; cacheKey?: string },
     prefetchedBase64?: string
   ) => {
     const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
@@ -1564,7 +1570,9 @@ export function useMailApp() {
       return;
     }
     try {
-      const res = await fetch(`/api/emails?messageId=${encodeURIComponent(attachment.messageId)}&attachmentId=${encodeURIComponent(attachment.attachmentId)}`);
+      const attParams = new URLSearchParams({ messageId: attachment.messageId, attachmentId: attachment.attachmentId });
+      if (attachment.accountId) attParams.append("accountEmail", attachment.accountId);
+      const res = await fetch(`/api/emails?${attParams.toString()}`);
       if (res.ok) {
         const { data } = await res.json();
         if (data) {

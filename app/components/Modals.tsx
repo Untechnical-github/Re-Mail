@@ -256,6 +256,12 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
   const { safeBack, createOrOpenChat, createGroupChat, forwardMessageTo, exitAfterAction } = app.actions;
   const isForward = modal?.composeMode === "forward";
 
+  const mainEmail: string = app.auth?.session?.user?.email || "";
+  const linkedAccounts: string[] = app.state.linkedAccounts || [];
+  // 新規の宛先・グループをどのアカウント名義で作るか（既存の宛先を選んだ場合はそのアカウントのまま開く
+  // ため無視される）。連携アカウントが無ければ選択肢を出す意味がないので常にメインアカウントになる
+  const [account, setAccount] = useState(mainEmail);
+
   const [step, setStep] = useState<"select" | "group_setup">("select");
   const [search, setSearch] = useState("");
   // アクションバーでチャットを選択した状態から開いた場合、それらを選択済みの状態にしておく
@@ -306,7 +312,7 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
       // アクションバーの選択状態から開いた場合はその選択も一緒に終了させる必要があるため、
       // safeBack（モーダルの履歴だけ1つ戻す）ではなく exitAfterAction を使う
       exitAfterAction();
-      createOrOpenChat(target);
+      createOrOpenChat(target, account);
       return;
     }
     setMemberVisible(Object.fromEntries(selected.map(id => [id, true])));
@@ -330,8 +336,27 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
     // （リロード直後などデータが揃っていないタイミングで送信済みメールとの照合に失敗しないようにするため）
     const memberAddresses = selected.map(resolveAddress);
     exitAfterAction();
-    createGroupChat(name, selected, memberAddresses, groupMode, hideMembers);
+    createGroupChat(name, selected, memberAddresses, groupMode, hideMembers, account);
   };
+
+  // 連携アカウントがある場合のみ表示する、新規の宛先/グループをどのアカウント名義で作るかの選択UI。
+  // 転送は転送元メッセージ自身のアカウントから送るため、ここでの選択は関係なく出さない
+  const accountPicker = linkedAccounts.length > 0 && !isForward ? (
+    <div className="px-3 pt-2 pb-2 border-b border-[#1E1F22]">
+      <div className="text-[11px] font-bold text-gray-500 mb-1.5">新規の宛先・グループを作成するアカウント</div>
+      <div className="flex flex-wrap gap-1.5">
+        {[mainEmail, ...linkedAccounts].map(a => (
+          <button
+            key={a}
+            onClick={() => setAccount(a)}
+            className={`text-xs font-bold px-2.5 py-1 rounded-full border transition truncate max-w-[220px] ${account === a ? "bg-[#2B2D31] border-[#4752C4] text-[#5865F2]" : "bg-[#1E1F22] border-[#1E1F22] text-gray-500 hover:text-gray-300"}`}
+          >
+            {a}
+          </button>
+        ))}
+      </div>
+    </div>
+  ) : null;
 
   if (step === "group_setup") {
     const MODE_OPTIONS: { value: "normal" | "inbound_only" | "outbound_only"; label: string; desc: string }[] = [
@@ -345,6 +370,7 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
           <button onClick={() => setStep("select")} className="text-gray-400 hover:text-white font-bold text-lg transition">←</button>
           <h2 className="text-lg font-bold text-white">グループチャットの設定</h2>
         </div>
+        {accountPicker}
 
         <div className="overflow-y-auto flex-1 p-4 space-y-5">
           <div>
@@ -445,6 +471,7 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
           autoFocus
         />
       </div>
+      {accountPicker}
 
       <div
         className="overflow-y-auto flex-1 p-2 space-y-4"

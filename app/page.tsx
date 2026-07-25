@@ -10,9 +10,10 @@ import { Modals, EmailModal, AttachmentModal, SearchModal, FilterToolModal } fro
 import { getFileIcon, formatFileSize } from "./components/ui";
 import { chatConfigTab } from "./lib/filterMatch";
 
-function InlineAttachmentImage({ attachment, messageId, cacheKey, onOpen }: {
+function InlineAttachmentImage({ attachment, messageId, accountId, cacheKey, onOpen }: {
   attachment: { filename: string; mimeType: string; size: number; attachmentId: string };
   messageId: string;
+  accountId?: string;
   cacheKey: string;
   onOpen: (base64: string) => void;
 }) {
@@ -30,7 +31,9 @@ function InlineAttachmentImage({ attachment, messageId, cacheKey, onOpen }: {
       if (cached) { setBase64(cached); setLoading(false); return; }
       // L3: fetch from API
       try {
-        const res = await fetch(`/api/emails?messageId=${encodeURIComponent(messageId)}&attachmentId=${encodeURIComponent(attachment.attachmentId)}`);
+        const attParams = new URLSearchParams({ messageId, attachmentId: attachment.attachmentId });
+        if (accountId) attParams.append("accountEmail", accountId);
+        const res = await fetch(`/api/emails?${attParams.toString()}`);
         if (cancelled) return;
         if (res.ok) {
           const { data } = await res.json();
@@ -74,9 +77,10 @@ function fitBox(ratio: number, maxW: number, maxH: number) {
   return { w: Math.round(w), h: Math.round(h) };
 }
 
-function VideoAttachmentChip({ attachment, messageId, cacheKey, onOpen }: {
+function VideoAttachmentChip({ attachment, messageId, accountId, cacheKey, onOpen }: {
   attachment: { filename: string; mimeType: string; size: number; attachmentId: string };
   messageId: string;
+  accountId?: string;
   cacheKey: string;
   onOpen: () => void;
 }) {
@@ -95,7 +99,9 @@ function VideoAttachmentChip({ attachment, messageId, cacheKey, onOpen }: {
       let base64 = await getCachedAttachment(cacheKey);
       if (!base64) {
         try {
-          const res = await fetch(`/api/emails?messageId=${encodeURIComponent(messageId)}&attachmentId=${encodeURIComponent(attachment.attachmentId)}`);
+          const attParams = new URLSearchParams({ messageId, attachmentId: attachment.attachmentId });
+          if (accountId) attParams.append("accountEmail", accountId);
+          const res = await fetch(`/api/emails?${attParams.toString()}`);
           if (res.ok) {
             const { data } = await res.json();
             if (data) {
@@ -787,8 +793,9 @@ export default function Home() {
                                        key={cacheKey}
                                        attachment={att}
                                        messageId={email.id}
+                                       accountId={email.accountId}
                                        cacheKey={cacheKey}
-                                       onOpen={(base64) => actions.openAttachmentModal({ ...att, messageId: email.id, cacheKey }, base64)}
+                                       onOpen={(base64) => actions.openAttachmentModal({ ...att, messageId: email.id, accountId: email.accountId, cacheKey }, base64)}
                                      />
                                    );
                                  }
@@ -798,15 +805,16 @@ export default function Home() {
                                        key={cacheKey}
                                        attachment={att}
                                        messageId={email.id}
+                                       accountId={email.accountId}
                                        cacheKey={cacheKey}
-                                       onOpen={() => actions.openAttachmentModal({ ...att, messageId: email.id, cacheKey })}
+                                       onOpen={() => actions.openAttachmentModal({ ...att, messageId: email.id, accountId: email.accountId, cacheKey })}
                                      />
                                    );
                                  }
                                  return (
                                    <button
                                      key={cacheKey}
-                                     onClick={(e) => { e.stopPropagation(); actions.openAttachmentModal({ ...att, messageId: email.id, cacheKey }); }}
+                                     onClick={(e) => { e.stopPropagation(); actions.openAttachmentModal({ ...att, messageId: email.id, accountId: email.accountId, cacheKey }); }}
                                      className="flex items-center gap-2 px-3 py-2 rounded-xl bg-black/20 border border-white/10 hover:bg-black/30 transition text-left max-w-[200px]"
                                    >
                                      <span className="text-xl flex-shrink-0">{getFileIcon(att.mimeType)}</span>
