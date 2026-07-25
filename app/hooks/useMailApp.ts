@@ -164,17 +164,24 @@ export function useMailApp() {
     if (wantTab !== activeChatTab) changeChatTab(wantTab);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSender, chatConfigs]);
-  const [currentNextPageToken, setCurrentNextPageToken] = useState<string | null>(null);
-  
+  // アカウントごとのGmail一覧取得ページトークン。キーはaccountEmail、値がnullならそのアカウントは
+  // 読み込み終わり（トークン未取得＝まだ読み込んでいないアカウントとは区別する）
+  const [currentNextPageTokens, setCurrentNextPageTokens] = useState<Record<string, string | null>>({});
+
   const [chatNextPageToken, setChatNextPageToken] = useState<string | null>("FIRST_PAGE");
-  
+
   const [chatStatusMessage, setChatStatusMessage] = useState<string | null>(null);
   const [msgStatusMessage, setMsgStatusMessage] = useState<string | null>(null);
   const [isLoadingMoreChats, setIsLoadingMoreChats] = useState(false);
 
   const loadingMoreChatsRef = useRef(false);
   const loadingMoreMsgRef = useRef(false);
-  const currentNextPageTokenRef = useRef<string | null>(null);
+  const currentNextPageTokensRef = useRef<Record<string, string | null>>({});
+
+  // 連携済みアカウントのメールアドレス一覧（メインアカウント自身は含まない）
+  const [linkedAccounts, setLinkedAccounts] = useState<string[]>([]);
+  const linkedAccountsRef = useRef<string[]>([]);
+  useEffect(() => { linkedAccountsRef.current = linkedAccounts; }, [linkedAccounts]);
 
   const [replySubject, setReplySubject] = useState("");
   const [replyBody, setReplyBody] = useState("");
@@ -264,7 +271,7 @@ export function useMailApp() {
 
   // チャットを閉じたら展開状態をリセット
   useEffect(() => { setExpandedMsgIds([]); }, [selectedSender]);
-  useEffect(() => { currentNextPageTokenRef.current = currentNextPageToken; }, [currentNextPageToken]);
+  useEffect(() => { currentNextPageTokensRef.current = currentNextPageTokens; }, [currentNextPageTokens]);
 
   // チャット単位の LRU キャッシュ（チャット切り替え時に復元）
   const [chatCacheLimit, _setChatCacheLimit] = useState<number>(() => {
@@ -287,7 +294,7 @@ export function useMailApp() {
   useEffect(() => { chatNextPageTokenRef.current = chatNextPageToken; }, [chatNextPageToken]);
 
   // フィルター単位のキャッシュ（フィルター切り替え時に復元）
-  const filterCacheRef = useRef<Map<string, { emails: Email[]; currentNextPageToken: string | null }>>(new Map());
+  const filterCacheRef = useRef<Map<string, { emails: Email[]; currentNextPageTokens: Record<string, string | null> }>>(new Map());
   const filterKeyRef = useRef<string>("true-true-false-false-false");
   // emails state が実際にどのフィルターの取得結果を反映しているかを示す。
   // フィルターを連続で切り替えると、直前の取得がキャンセルされ emails が更新されないまま
@@ -639,18 +646,21 @@ export function useMailApp() {
     }
   }, [selectedSender, isMobile, activeChatTab]);
 
+  // メイン+連携済みの全アカウント分を並行して取得し、1つの配列にマージする。
+  // pageToken は常にnull（先頭ページ取得専用。追加読み込みはhandleLoadMoreChatsが個別に担う）のため
+  // 実質未使用。limitはアカウント数で按分し、合算でおおよそtargetLimit件になるようにする
   const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, archive: true, spam: false, trash: false, sent: false }, pageToken: string | null = null, isLoadMore = false, isSilent = false, currentEmailsState = emailsRef.current, getIsCancelled = () => false, isInitLoad = false) => {
     // ★修正: flags.sent も判定に含めることで、「送信済みのみ」チェック時にAPIが空振りするのを防ぐ
-    if (!flags.inbox && !flags.archive && !flags.spam && !flags.trash && !flags.sent) { 
-      setEmails([]); if (!isSilent) setIsLoading(false); return { success: false, emails: [] }; 
+    if (!flags.inbox && !flags.archive && !flags.spam && !flags.trash && !flags.sent) {
+      setEmails([]); if (!isSilent) setIsLoading(false); return { success: false, emails: [] };
     }
     if (!isSilent) setIsLoading(true);
     const targetLimit = limit;
 
     try {
-      let qParts = []; 
+      let qParts = [];
       let useIncludeTrash = "false";
-      
+
       if (flags.trash || flags.spam) {
         useIncludeTrash = "true";
       }
@@ -669,16 +679,30 @@ export function useMailApp() {
         if (flags.trash) orLabels.push("in:trash");
         if (orLabels.length > 0) qParts.push(`(${orLabels.join(" OR ")})`);
       }
-      
+
       if (query) qParts.push(query);
+      const q = qParts.join(" ").trim();
 
-      const params = new URLSearchParams({ maxResults: targetLimit.toString(), q: qParts.join(" ").trim(), includeTrash: useIncludeTrash });
-      if (pageToken) params.append("pageToken", pageToken);
-      
-      params.append("_t", Date.now().toString());
+      const myEmail = session?.user?.email || "";
+      const accounts = [myEmail, ...linkedAccountsRef.current];
+      const perAccountLimit = Math.max(1, Math.ceil(targetLimit / accounts.length));
 
-      const res = await fetch(`/api/emails?${params.toString()}`);
-      if (res.status === 401 || res.status === 403) {
+      const results = await Promise.all(accounts.map(async (accountEmail) => {
+        const params = new URLSearchParams({ maxResults: perAccountLimit.toString(), q, includeTrash: useIncludeTrash });
+        if (accountEmail !== myEmail) params.append("accountEmail", accountEmail);
+        params.append("_t", Date.now().toString());
+        try {
+          const res = await fetch(`/api/emails?${params.toString()}`);
+          return { accountEmail, res };
+        } catch {
+          return { accountEmail, res: null as Response | null };
+        }
+      }));
+
+      // 認証切れの強制サインアウトはメインアカウントの失効時のみ行う。連携アカウントのトークン
+      // 失効はそのアカウント分だけ黙って読み込めない扱いにし、メインアカウントの利用は継続させる
+      const mainResult = results.find(r => r.accountEmail === myEmail);
+      if (mainResult?.res && (mainResult.res.status === 401 || mainResult.res.status === 403)) {
         if (!signingOutRef.current) {
           signingOutRef.current = true;
           await localforage.clear();
@@ -690,41 +714,37 @@ export function useMailApp() {
         return { success: false, emails: currentEmailsState };
       }
 
-      if (res.ok) {
-        if (getIsCancelled()) return { success: false, emails: currentEmailsState };
+      if (getIsCancelled()) return { success: false, emails: currentEmailsState };
+
+      const newMessages: any[] = [];
+      const nextTokens: Record<string, string | null> = {};
+      let anyOk = false;
+      for (const { accountEmail, res } of results) {
+        if (!res || !res.ok) continue;
         const data = await res.json();
         // res.json() 待機中に新しいフィルターへ切り替えられている可能性があるため再チェック。
         // ここで弾かないと、古いフィルターの結果が新しいフィルターの結果を上書きしてしまう
         if (getIsCancelled()) return { success: false, emails: currentEmailsState };
-        const newMessages = data.messages || [];
-        let updatedEmails;
-
-        if (isInitLoad || currentEmailsState.length === 0) {
-          const map = new Map(currentEmailsState.map(e => [e.id, e]));
-          newMessages.forEach((m: any) => map.set(m.id, m));
-          updatedEmails = Array.from(map.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-        } else if (isLoadMore) {
-          updatedEmails = [...currentEmailsState, ...newMessages];
-          const map = new Map(updatedEmails.map(e => [e.id, e]));
-          updatedEmails = Array.from(map.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-        } else {
-          const emailMap = new Map(currentEmailsState.map(e => [e.id, e]));
-          newMessages.forEach((m: any) => emailMap.set(m.id, m));
-          updatedEmails = Array.from(emailMap.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-        }
-        
-        const nextPMsgs = syncConfigs(updatedEmails, chatConfigsRef.current, messageConfigsRef.current);
-        setPersistedEmails(nextPMsgs);
-        setEmails(updatedEmails);
-
-        if (!isSilent || updatedEmails.length <= targetLimit) setCurrentNextPageToken(data.nextPageToken || null);
-        return { success: true, emails: updatedEmails };
+        anyOk = true;
+        (data.messages || []).forEach((m: any) => newMessages.push({ ...m, accountId: accountEmail }));
+        nextTokens[accountEmail] = data.nextPageToken || null;
       }
+      if (!anyOk) return { success: false, emails: currentEmailsState };
+
+      const map = new Map(currentEmailsState.map((e: any) => [e.id, e]));
+      newMessages.forEach((m: any) => map.set(m.id, m));
+      const updatedEmails = Array.from(map.values()).sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+      const nextPMsgs = syncConfigs(updatedEmails, chatConfigsRef.current, messageConfigsRef.current);
+      setPersistedEmails(nextPMsgs);
+      setEmails(updatedEmails);
+
+      if (!isSilent || updatedEmails.length <= targetLimit) setCurrentNextPageTokens(nextTokens);
+      return { success: true, emails: updatedEmails };
+    } catch (error) {
       return { success: false, emails: currentEmailsState };
-    } catch (error) { 
-      return { success: false, emails: currentEmailsState }; 
-    } finally { 
-      if (!isSilent && !getIsCancelled()) setIsLoading(false); 
+    } finally {
+      if (!isSilent && !getIsCancelled()) setIsLoading(false);
     }
   };
 
@@ -739,7 +759,14 @@ export function useMailApp() {
       const initLoad = async () => {
         try {
           setIsLoading(true);
-          const { formatted: loadedConfigs } = await loadD1Configs();
+          const [{ formatted: loadedConfigs }, linkedAccountsRes] = await Promise.all([
+            loadD1Configs(),
+            fetch("/api/accounts").then(r => r.ok ? r.json() : { accounts: [] }).catch(() => ({ accounts: [] })),
+          ]);
+          // fetchEmails等が読む前に、ref側は同期的に確定させておく（state更新の再レンダリングを待たない）
+          const linkedEmails: string[] = ((linkedAccountsRes.accounts || []) as any[]).map((a: any) => a.account_email).filter(Boolean);
+          linkedAccountsRef.current = linkedEmails;
+          setLinkedAccounts(linkedEmails);
 
           // チェックボックスの状態はマウント時点で localStorage から同期的に復元済みなので、
           // ここでは読み直さず現在の state をそのまま使う（読み込み中に見た目が切り替わるのを防ぐ）
@@ -769,11 +796,12 @@ export function useMailApp() {
             // 誤判定されて selectedSender がクリアされてしまう（＝復元直後に一瞬だけ
             // 「チャットを選択してください」画面に戻ってしまう不具合の原因だった）
             const restoredConfig = loadedConfigs[selectedSender];
+            const { accountEmail: restoredAccountEmail, localKey: restoredLocalKey } = decodeRoomKey(selectedSender);
             if (restoredConfig?.isGroup) {
               // グループのルームキーはGmail検索語にならないため、メンバーごとに個別取得する
-              await Promise.all((restoredConfig.groupMembers || []).map(m => fetchChatCrossbox(asLocalKey(m), false, res.emails).catch(() => {})));
+              await Promise.all((restoredConfig.groupMembers || []).map(m => fetchChatCrossbox(asLocalKey(m), restoredAccountEmail, false, res.emails).catch(() => {})));
             } else {
-              await fetchChatCrossbox(decodeRoomKey(selectedSender).localKey, false, res.emails);
+              await fetchChatCrossbox(restoredLocalKey, restoredAccountEmail, false, res.emails);
             }
           }
 
@@ -815,8 +843,10 @@ export function useMailApp() {
   }, [session]);
 
   // sender は必ず生のローカルキー（相手の表示名/アドレス）。Gmail検索クエリに直接埋め込むため、
-  // 複合roomKeyを渡すと壊れる（"from:\"account name\"" のような無意味な検索になる）
-  const fetchChatCrossbox = async (sender: LocalKey, isLoadMore = false, knownEmails = emailsRef.current, skipToken = false) => {
+  // 複合roomKeyを渡すと壊れる（"from:\"account name\"" のような無意味な検索になる）。
+  // accountEmail はこの相手が所属するアカウント（roomKeyのアカウント部分）で、どの連携アカウントの
+  // Gmailから取得するかを決める
+  const fetchChatCrossbox = async (sender: LocalKey, accountEmail: string, isLoadMore = false, knownEmails = emailsRef.current, skipToken = false) => {
     try {
       // ref を使う: state(chatNextPageToken)は連続でループ呼び出しした場合に
       // 再レンダリング前の古い値を参照し続けてしまう（同じページを取得し続ける）ことがあるため
@@ -840,6 +870,7 @@ export function useMailApp() {
       }
 
       const params = new URLSearchParams({ maxResults: "100", q, includeTrash: "true" });
+      if (accountEmail && accountEmail !== (session?.user?.email || "")) params.append("accountEmail", accountEmail);
       const tokenToUse = isLoadMore ? (chatNextPageTokenRef.current === "FIRST_PAGE" ? null : chatNextPageTokenRef.current) : null;
       if (tokenToUse) params.append("pageToken", tokenToUse);
       params.append("_t", Date.now().toString());
@@ -847,7 +878,7 @@ export function useMailApp() {
       const res = await fetch(`/api/emails?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        const validMessages = data.messages || [];
+        const validMessages = (data.messages || []).map((m: any) => ({ ...m, accountId: accountEmail }));
         let nextToken = data.nextPageToken || "END_ALL";
         if (!skipToken) { setChatNextPageToken(nextToken); chatNextPageTokenRef.current = nextToken; }
 
@@ -869,10 +900,11 @@ export function useMailApp() {
   // メンバーそれぞれのアドレスで個別に取得する
   const fetchCrossboxForRoom = async (room: RoomKeyStr, knownEmails = emailsRef.current) => {
     const cfg = chatConfigsRef.current[room];
+    const { accountEmail, localKey } = decodeRoomKey(room);
     if (cfg?.isGroup) {
-      await Promise.all((cfg.groupMembers || []).map(m => fetchChatCrossbox(asLocalKey(m), false, knownEmails).catch(() => {})));
+      await Promise.all((cfg.groupMembers || []).map(m => fetchChatCrossbox(asLocalKey(m), accountEmail, false, knownEmails).catch(() => {})));
     } else {
-      await fetchChatCrossbox(decodeRoomKey(room).localKey, false, knownEmails);
+      await fetchChatCrossbox(localKey, accountEmail, false, knownEmails);
     }
   };
 
@@ -894,7 +926,7 @@ export function useMailApp() {
       if (emailsFilterKeyRef.current === filterKeyRef.current) {
         filterCacheRef.current.set(filterKeyRef.current, {
           emails: emailsRef.current,
-          currentNextPageToken: currentNextPageTokenRef.current,
+          currentNextPageTokens: currentNextPageTokensRef.current,
         });
       }
       filterKeyRef.current = newFilterKey;
@@ -915,8 +947,8 @@ export function useMailApp() {
         if (cached) {
           if (!isCancelled) {
             setEmails(cached.emails);
-            setCurrentNextPageToken(cached.currentNextPageToken);
-            currentNextPageTokenRef.current = cached.currentNextPageToken;
+            setCurrentNextPageTokens(cached.currentNextPageTokens);
+            currentNextPageTokensRef.current = cached.currentNextPageTokens;
             setChatStatusMessage(null);
             setIsLoading(false);
             emailsFilterKeyRef.current = newFilterKey;
@@ -1001,11 +1033,13 @@ export function useMailApp() {
   // selectedSender は常に encodeRoomKey 済みの複合roomKey（RoomKeyStr）をキーとする。
   // chatConfigsは既に複合キーなので、groupEmailsByRoom（1アカウント分・ローカルキー前提の
   // 純粋関数）に渡す前に対象アカウント分だけローカルキーへ戻し、結果をmergeAccountGroupsで
-  // 複合キーへ戻す。連携アカウントを実際に取得ループへ組み込むまでは、対象アカウントは
-  // 常にメインアカウント1件のみ
+  // 複合キーへ戻す。allUniqueEmailsも同様に、そのアカウント自身のメール（e.accountId一致）だけに
+  // 絞り込んでから渡す（絞り込まないと、他アカウント宛のメールまでこのアカウントの相手名で
+  // 誤ってグルーピングされてしまう）。accountId未設定（導入前のデータ・送信直後のローカルfake等）は
+  // メインアカウント名義として扱う
   const groupedEmails = useMemo(() => {
     const myEmail = session?.user?.email || "";
-    const accounts = [myEmail];
+    const accounts = [myEmail, ...linkedAccounts];
     const perAccountGroups = accounts.map(accountEmail => {
       const localChatConfigs: Record<LocalKey, ChatConfig> = {} as Record<LocalKey, ChatConfig>;
       keysOf(chatConfigs).forEach(key => {
@@ -1014,10 +1048,11 @@ export function useMailApp() {
           if (decoded.accountEmail === accountEmail) localChatConfigs[decoded.localKey] = chatConfigs[key];
         } catch { /* 複合roomKeyでない古いデータ（移行前の残り等）は無視する */ }
       });
-      return { accountEmail, groups: groupEmailsByRoom(allUniqueEmails, accountEmail, localChatConfigs) };
+      const accountEmails = allUniqueEmails.filter(e => (e.accountId || myEmail) === accountEmail);
+      return { accountEmail, groups: groupEmailsByRoom(accountEmails, accountEmail, localChatConfigs) };
     });
     return mergeAccountGroups(perAccountGroups);
-  }, [allUniqueEmails, session, chatConfigs]);
+  }, [allUniqueEmails, session, chatConfigs, linkedAccounts]);
 
   const groupedEmailsRef = useRef(groupedEmails);
   useEffect(() => { groupedEmailsRef.current = groupedEmails; }, [groupedEmails]);
@@ -1365,7 +1400,7 @@ export function useMailApp() {
     if (isMobile) window.history.pushState({ chat: groupRoom }, '', '#chat');
 
     // 各メンバーの過去のやり取りを読み込んでおく（作成直後からグループの内容が見えるように）
-    await Promise.all(localMembers.map(m => fetchChatCrossbox(m, false).catch(() => {})));
+    await Promise.all(localMembers.map(m => fetchChatCrossbox(m, myEmail, false).catch(() => {})));
   };
 
   // フィルターツールで作成するグループ。宛先の集合ではなく条件（FilterCriteria）でメッセージを
@@ -1391,7 +1426,10 @@ export function useMailApp() {
     const mode: SelectionMode = type === "chat" ? "chat_select" : "msg_select";
     setSelectionMode(mode);
     setSelectedIds([id]);
-    if (type === "chat") fetchChatCrossbox(decodeRoomKey(id).localKey, false, emailsRef.current, true);
+    if (type === "chat") {
+      const { accountEmail, localKey } = decodeRoomKey(id);
+      fetchChatCrossbox(localKey, accountEmail, false, emailsRef.current, true);
+    }
     // 重複して積まない（既にselect履歴エントリがある場合はスキップ）
     if (!hasPushedSelectRef.current && window.history.state?.action !== "select") {
       window.history.pushState({ action: "select" }, "", window.location.href);
@@ -1451,7 +1489,10 @@ export function useMailApp() {
     const isAdding = !selectedIds.includes(id);
     const next = isAdding ? [...selectedIds, id] : selectedIds.filter(i => i !== id);
     setSelectedIds(next);
-    if (isAdding && selectionMode.startsWith("chat_")) fetchChatCrossbox(decodeRoomKey(id).localKey, false, emailsRef.current, true);
+    if (isAdding && selectionMode.startsWith("chat_")) {
+      const { accountEmail, localKey } = decodeRoomKey(id);
+      fetchChatCrossbox(localKey, accountEmail, false, emailsRef.current, true);
+    }
     if (next.length === 0) {
       setSelectionMode("none");
       if (hasPushedSelectRef.current) {
@@ -1477,7 +1518,10 @@ export function useMailApp() {
     try {
       // キャッシュされた古いレスポンス（引用除去ロジック更新前のもの等）を掴まないよう、
       // 毎回ユニークなURLになるキャッシュバスターを付ける
-      const res = await fetch(`/api/emails?messageId=${email.id}&html=true&_t=${Date.now()}`);
+      const htmlParams = new URLSearchParams({ messageId: email.id, html: "true", _t: Date.now().toString() });
+      const emailAccountEmail = email.accountId || session?.user?.email || "";
+      if (emailAccountEmail !== (session?.user?.email || "")) htmlParams.append("accountEmail", emailAccountEmail);
+      const res = await fetch(`/api/emails?${htmlParams.toString()}`);
       if (res.ok) {
         const data = await res.json();
         setEmailModal(prev => prev ? { ...prev, htmlBody: data.htmlBody || null, isLoading: false } : null);
@@ -1558,14 +1602,17 @@ export function useMailApp() {
     if (groupCfg?.isGroup && (groupCfg.groupMode === "inbound_only" || groupCfg.filterCriteria)) return; // 受信専用・フィルターグループは送信不可
     setIsSending(true);
     try {
+      // 送信元アカウントはチャット自身の複合キーから決める（開いているチャットがどの連携アカウント
+      // 宛のやり取りかによって、送信に使うGmailアカウントを切り替えるため）
+      const { accountEmail: sendAccountEmail, localKey: sendLocalKey } = decodeRoomKey(selectedSender);
       let actualTo: string;
       if (groupCfg?.isGroup) {
         // グループチャット: メンバー全員へ1通のメールとして一斉送信する
-        actualTo = Array.from(resolveGroupMemberAddresses(groupCfg, groupedEmails, session?.user?.email || "")).join(", ");
+        actualTo = Array.from(resolveGroupMemberAddresses(groupCfg, groupedEmails, sendAccountEmail)).join(", ");
       } else {
         const targetEmails = groupedEmails[selectedSender] || [];
-        const partnerEmail = targetEmails.find((e: any) => !e.isMe && !e.from.includes(session?.user?.email || ""));
-        actualTo = partnerEmail ? partnerEmail.from : (targetEmails[0]?.to || selectedSender);
+        const partnerEmail = targetEmails.find((e: any) => !e.isMe && !e.from.includes(sendAccountEmail));
+        actualTo = partnerEmail ? partnerEmail.from : (targetEmails[0]?.to || sendLocalKey);
       }
       
       // ★修正: re:mail上の表示はDiscordのように「どのメッセージへの返信か」をチップで
@@ -1588,7 +1635,7 @@ export function useMailApp() {
 
       const res = await fetch("/api/emails", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "send", to: actualTo, subject: finalSubject, body: bodyToSend, threadId, inReplyTo })
+        body: JSON.stringify({ action: "send", to: actualTo, subject: finalSubject, body: bodyToSend, threadId, inReplyTo, accountEmail: sendAccountEmail })
       });
 
       if (res.ok) {
@@ -1600,16 +1647,17 @@ export function useMailApp() {
           id: sentId,
           threadId: sentData.threadId || threadId || "",
           subject: finalSubject || "(件名なし)",
-          from: session?.user?.email || "自分",
+          from: sendAccountEmail || "自分",
           to: actualTo,
           date: new Date().toUTCString(),
           body: finalBody,
           snippet: finalBody.slice(0, 60),
-          senderRoom: selectedSender,
+          senderRoom: sendLocalKey,
           isMe: true,
           labelIds: ["SENT"],
           inReplyTo: replyToMessage?.messageIdHeader,
           replyToId: replyToMessage?.id,
+          accountId: sendAccountEmail,
         };
         setEmails([sentFake, ...emails]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null);
         // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）
@@ -1627,6 +1675,8 @@ export function useMailApp() {
   const forwardMessageTo = async (message: any, recipientIds: string[]) => {
     if (!message || recipientIds.length === 0) return;
     const myEmail = session?.user?.email || "";
+    // 転送は元メッセージを受信したのと同じアカウントから送る（reply同様、相手から見て自然な送信元にするため）
+    const sendAccountEmail = message.accountId || myEmail;
     // recipientIds は contactDirectory 由来の複合キーと、新規入力の生アドレスが混在する
     const toRoomKey = (id: string): RoomKeyStr => {
       try { decodeRoomKey(id); return id as RoomKeyStr; } catch { return encodeRoomKey(myEmail, asLocalKey(id)); }
@@ -1648,7 +1698,9 @@ export function useMailApp() {
     let originalHtml: string | null = null;
     if (typeof message.id === "string" && !message.id.startsWith("fake-")) {
       try {
-        const htmlRes = await fetch(`/api/emails?messageId=${encodeURIComponent(message.id)}&html=true&_t=${Date.now()}`);
+        const htmlParams = new URLSearchParams({ messageId: message.id, html: "true", _t: Date.now().toString() });
+        if (sendAccountEmail !== myEmail) htmlParams.append("accountEmail", sendAccountEmail);
+        const htmlRes = await fetch(`/api/emails?${htmlParams.toString()}`);
         if (htmlRes.ok) {
           const data = await htmlRes.json();
           originalHtml = data.htmlBody || null;
@@ -1680,7 +1732,7 @@ export function useMailApp() {
     try {
       const res = await fetch("/api/emails", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "send", to, subject, body: bodyText, bodyHtml }),
+        body: JSON.stringify({ action: "send", to, subject, body: bodyText, bodyHtml, accountEmail: sendAccountEmail }),
       });
 
       if (!res.ok) {
@@ -1697,9 +1749,10 @@ export function useMailApp() {
         const sentFake = {
           id: sentData.id || `fake-${Date.now()}`,
           threadId: sentData.threadId || "",
-          subject, from: session?.user?.email || "自分", to,
+          subject, from: sendAccountEmail || "自分", to,
           date: new Date().toUTCString(), body: bodyText, snippet: bodyText.slice(0, 60),
           senderRoom: decodeRoomKey(room).localKey, isMe: true, labelIds: ["SENT"],
+          accountId: sendAccountEmail,
         };
         setEmails(prev => [sentFake, ...prev]);
       }
@@ -2052,9 +2105,11 @@ export function useMailApp() {
   }, [allUniqueEmails]);
 
   const handleLoadMoreChats = async () => {
-    const liveToken = currentNextPageTokenRef.current;
-    if (loadingMoreChatsRef.current || !liveToken) {
-        if (!liveToken && !chatStatusMessage) setChatStatusMessage("すべてのメールを読み込みました");
+    const liveTokens = currentNextPageTokensRef.current;
+    const myEmail = session?.user?.email || "";
+    const accountsToLoad = Object.keys(liveTokens).filter(a => liveTokens[a]);
+    if (loadingMoreChatsRef.current || accountsToLoad.length === 0) {
+        if (accountsToLoad.length === 0 && !chatStatusMessage) setChatStatusMessage("すべてのメールを読み込みました");
         return;
     }
     loadingMoreChatsRef.current = true;
@@ -2079,19 +2134,30 @@ export function useMailApp() {
       }
       const baseQuery = qParts.join(" ").trim();
 
-      // 右パネルと同じ: 1回のAPIコールで1ページ取得し、tokenを更新してuseEffectに次を委ねる
-      const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: useIncludeTrash, pageToken: liveToken });
-      params.append("_t", Date.now().toString());
+      // アカウントごとに独立したページトークンで、まだ続きがあるアカウント分だけ並行して1ページ取得する
+      const results = await Promise.all(accountsToLoad.map(async (accountEmail) => {
+        const params = new URLSearchParams({ maxResults: "100", q: baseQuery, includeTrash: useIncludeTrash, pageToken: liveTokens[accountEmail]! });
+        if (accountEmail !== myEmail) params.append("accountEmail", accountEmail);
+        params.append("_t", Date.now().toString());
+        try {
+          const res: Response = await fetch(`/api/emails?${params.toString()}`);
+          if (!res.ok) return { accountEmail, ok: false, messages: [] as any[], nextToken: liveTokens[accountEmail] };
+          const data: any = await res.json();
+          return { accountEmail, ok: true, messages: (data.messages || []).map((m: any) => ({ ...m, accountId: accountEmail })), nextToken: data.nextPageToken || null };
+        } catch {
+          return { accountEmail, ok: false, messages: [] as any[], nextToken: liveTokens[accountEmail] };
+        }
+      }));
 
-      const res: Response = await fetch(`/api/emails?${params.toString()}`);
-      if (!res.ok) {
+      const rawMessages = results.flatMap(r => r.messages);
+      const nextTokens: Record<string, string | null> = { ...liveTokens };
+      let anyOk = false;
+      results.forEach(r => { if (r.ok) { anyOk = true; nextTokens[r.accountEmail] = r.nextToken; } });
+
+      if (!anyOk) {
         setChatStatusMessage("メールが読み込めませんでした。");
         return;
       }
-
-      const data: any = await res.json();
-      const rawMessages = data.messages || [];
-      const nextToken: string | null = data.nextPageToken || null;
 
       if (rawMessages.length > 0) {
         setEmails(prev => {
@@ -2101,9 +2167,9 @@ export function useMailApp() {
         });
       }
 
-      // tokenを更新→currentNextPageToken変化→useEffectが次ページを判断
-      setCurrentNextPageToken(nextToken);
-      if (!nextToken) setChatStatusMessage("すべてのメールを読み込みました");
+      // tokenを更新→currentNextPageTokens変化→useEffectが次ページを判断
+      setCurrentNextPageTokens(nextTokens);
+      if (!Object.values(nextTokens).some(t => t)) setChatStatusMessage("すべてのメールを読み込みました");
 
     } catch (error) {
       setChatStatusMessage("エラーが発生しました。");
@@ -2123,7 +2189,8 @@ export function useMailApp() {
     setIsLoadingMore(true); 
     setMsgStatusMessage(null);
     
-    const result = await fetchChatCrossbox(decodeRoomKey(selectedSender!).localKey, true);
+    const { accountEmail: loadMoreAccountEmail, localKey: loadMoreLocalKey } = decodeRoomKey(selectedSender!);
+    const result = await fetchChatCrossbox(loadMoreLocalKey, loadMoreAccountEmail, true);
     
     if (result.nextToken === "END_LIMIT") {
         setMsgStatusMessage("re:mailの読み込み上限に達しました");
@@ -2328,6 +2395,10 @@ export function useMailApp() {
     if (!targetId && !targetHeader) return;
 
     const matches = (m: any) => (!!targetId && m.id === targetId) || (!!targetHeader && !!m.messageIdHeader && m.messageIdHeader === targetHeader);
+    // 返信元は同じスレッド上のメッセージなので、返信メール自身と同じアカウントに属する
+    const lookupAccountEmail = email.accountId || session?.user?.email || "";
+    const lookupParams = new URLSearchParams({ lookupByMessageId: targetHeader || "" });
+    if (lookupAccountEmail !== (session?.user?.email || "")) lookupParams.append("accountEmail", lookupAccountEmail);
 
     const already = emailsRef.current.find(matches);
     // 移動などの楽観的更新がこのメッセージに正しく反映されていない場合に備え、
@@ -2341,15 +2412,16 @@ export function useMailApp() {
 
     if (already && !isJumpingToReplyRef.current) {
       // 既存表示は崩さず、裏で静かに最新情報へ更新するだけ（見つからなくてもトーストは出さない）
-      fetch(`/api/emails?lookupByMessageId=${encodeURIComponent(targetHeader)}`)
+      fetch(`/api/emails?${lookupParams.toString()}`)
         .then(res => (res.ok ? res.json() : null))
         .then(data => {
           if (data?.found && data.email) {
+            const taggedEmail = { ...data.email, accountId: lookupAccountEmail };
             setEmails(prev => {
-              const idx = prev.findIndex(e => e.id === data.email.id);
+              const idx = prev.findIndex(e => e.id === taggedEmail.id);
               if (idx === -1) return prev;
               const next = [...prev];
-              next[idx] = data.email;
+              next[idx] = taggedEmail;
               return next;
             });
           }
@@ -2360,17 +2432,18 @@ export function useMailApp() {
 
     isJumpingToReplyRef.current = true;
     try {
-      const res = await fetch(`/api/emails?lookupByMessageId=${encodeURIComponent(targetHeader)}`);
+      const res = await fetch(`/api/emails?${lookupParams.toString()}`);
       const data = res.ok ? await res.json() : { found: false };
       if (data.found && data.email) {
+        const taggedEmail = { ...data.email, accountId: lookupAccountEmail };
         setEmails(prev => {
-          const idx = prev.findIndex(e => e.id === data.email.id);
-          if (idx === -1) return [...prev, data.email];
+          const idx = prev.findIndex(e => e.id === taggedEmail.id);
+          if (idx === -1) return [...prev, taggedEmail];
           const next = [...prev];
-          next[idx] = data.email; // ローカルに古い情報が残っていた場合に備え、最新の内容で上書きする
+          next[idx] = taggedEmail; // ローカルに古い情報が残っていた場合に備え、最新の内容で上書きする
           return next;
         });
-        scrollToMsg(data.email.id);
+        scrollToMsg(taggedEmail.id);
       } else {
         showReplyNotFoundToast();
       }
@@ -2381,18 +2454,19 @@ export function useMailApp() {
     }
   };
 
-  // サイドバー: senderList や currentNextPageToken が変化するたびに即座にチェック
+  // サイドバー: senderList や currentNextPageTokens が変化するたびに即座にチェック
   // → スクロールバーが出るまで（または全件読み込みまで）自動でチャットを追加読み込みする
+  const hasMoreChatsToLoad = Object.values(currentNextPageTokens).some(t => t);
   useEffect(() => {
     if (isLoading || loadingMoreChatsRef.current || chatStatusMessage) return;
-    if (!currentNextPageToken && senderList.length === 0) return;
+    if (!hasMoreChatsToLoad && senderList.length === 0) return;
     const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
     if (!asideEl) return;
     const { scrollHeight, clientHeight, scrollTop } = asideEl as HTMLElement;
     if (scrollHeight - Math.abs(scrollTop) - clientHeight < 100) {
       handleLoadMoreChats();
     }
-  }, [isLoading, senderList, chatStatusMessage, currentNextPageToken, checkInbox, checkArchive, checkSpam, checkTrash, checkSent]);
+  }, [isLoading, senderList, chatStatusMessage, hasMoreChatsToLoad, checkInbox, checkArchive, checkSpam, checkTrash, checkSent]);
 
   // メッセージスレッド: chatNextPageToken やメッセージ件数が変化するたびに即座にチェック
   // → スクロールバーが出るまで（または全件読み込みまで）自動でメッセージを追加読み込みする
@@ -2414,7 +2488,7 @@ export function useMailApp() {
     state: {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
       isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent,
-      currentNextPageToken, chatStatusMessage, msgStatusMessage, isLoadingMoreChats,
+      currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts,
       replySubject, replyBody, isSending, replyToMessage,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
       resetOptions, moveDestination, revealedCrossPrompts, boxColors,
