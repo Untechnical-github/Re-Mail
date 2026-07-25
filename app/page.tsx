@@ -173,26 +173,6 @@ export default function Home() {
   const isInboundOnlyGroup = !!(selectedGroupConfig?.isGroup && (selectedGroupConfig.groupMode === "inbound_only" || isFilterGroup));
   const isOutboundOnlyGroup = !!(selectedGroupConfig?.isGroup && !isFilterGroup && selectedGroupConfig.groupMode === "outbound_only");
   const isSendDisabled = isInboundOnlyGroup || isFilterGroup;
-  // メッセージ画面のフィルターボタン用: 現在開いている個別チャット(グループでない)の相手アドレス
-  const selectedPartnerAddress = (state.selectedSender && !selectedGroupConfig?.isGroup) ? (() => {
-    const firstPartner = (computed.groupedEmails[state.selectedSender!] || []).find((e: any) => !e.isMe && !e.from.includes(auth.session?.user?.email || ""));
-    if (!firstPartner) return null;
-    const addrMatch = firstPartner.from.match(/<([^>]+)>/);
-    return (addrMatch ? addrMatch[1] : firstPartner.from).trim();
-  })() : null;
-  // メッセージ画面のフィルターボタン用: 現在開いている通常（アドレスベース）グループのメンバー全員のアドレス
-  const selectedGroupMemberAddresses = (selectedGroupConfig?.isGroup && !selectedGroupConfig.filterCriteria) ? (() => {
-    const members = selectedGroupConfig.groupMembers || [];
-    if (selectedGroupConfig.groupMemberAddresses && selectedGroupConfig.groupMemberAddresses.length === members.length) {
-      return selectedGroupConfig.groupMemberAddresses;
-    }
-    return members.map((m: string) => {
-      const partner = (computed.groupedEmails[m] || []).find((e: any) => !e.isMe && !e.from.includes(auth.session?.user?.email || ""));
-      if (!partner) return null;
-      const addrMatch = partner.from.match(/<([^>]+)>/);
-      return (addrMatch ? addrMatch[1] : partner.from).trim();
-    }).filter((a: string | null): a is string => !!a);
-  })() : [];
   const subjectFindHighlight = state.findBarOpen && state.findBarSearchSubject ? state.findBarKeyword : "";
   const bodyFindHighlight = state.findBarOpen && state.findBarSearchBody ? state.findBarKeyword : "";
 
@@ -236,6 +216,9 @@ export default function Home() {
               </button>
               <button onClick={(e) => { e.stopPropagation(); actions.setModal({ type: "search", targetMode: "all_chats", targets: [] }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="text-gray-400 hover:text-white transition" title="検索">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" /></svg>
+              </button>
+              <button onClick={(e) => e.stopPropagation()} className="text-gray-400 hover:text-white transition" title="設定">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567L9.05 4.889c-.02.12-.115.26-.297.348a7.493 7.493 0 00-.986.57c-.166.115-.334.126-.45.083L6.3 5.508a1.875 1.875 0 00-2.282.819l-.922 1.597a1.875 1.875 0 00.432 2.385l.84.692c.095.078.17.229.154.43a7.598 7.598 0 000 1.139c.015.2-.059.352-.153.43l-.841.692a1.875 1.875 0 00-.432 2.385l.922 1.597a1.875 1.875 0 002.282.818l1.019-.382c.115-.043.283-.031.45.082.312.214.641.405.985.57.182.088.277.228.297.35l.178 1.071c.151.904.933 1.567 1.85 1.567h1.844c.916 0 1.699-.663 1.85-1.567l.178-1.072c.02-.12.114-.26.297-.349.344-.165.673-.356.985-.57.167-.114.335-.125.45-.082l1.02.382a1.875 1.875 0 002.28-.819l.923-1.597a1.875 1.875 0 00-.432-2.385l-.84-.692c-.095-.078-.17-.229-.154-.43a7.614 7.614 0 000-1.139c-.016-.2.059-.352.153-.43l.84-.692c.708-.582.891-1.59.433-2.385l-.922-1.597a1.875 1.875 0 00-2.282-.818l-1.02.382c-.114.043-.282.031-.449-.083a7.49 7.49 0 00-.985-.57c-.183-.087-.277-.227-.297-.348l-.179-1.072a1.875 1.875 0 00-1.85-1.567h-1.843ZM12 15.75a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5Z" clipRule="evenodd" /></svg>
               </button>
               <button onClick={(e) => { e.stopPropagation(); actions.setModal({ type: "account_menu", targetMode: "all_chats", targets: [] }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="flex-shrink-0" title="アカウント">
                 <img
@@ -493,21 +476,28 @@ export default function Home() {
                     return <span className="text-xs text-gray-500 truncate">{addr}</span>;
                   })()}
                 </div>
-                <button onClick={(e) => { e.stopPropagation(); const addr = selectedPartnerAddress || (selectedGroupMemberAddresses.length === 1 ? selectedGroupMemberAddresses[0] : null); const prefill = isFilterGroup ? { ...selectedGroupConfig!.filterCriteria } : addr ? { conditionSets: [{ textRules: [{ field: "recipientAddress" as const, mode: "contains" as const, keyword: addr }] }] } : undefined; actions.setModal({ type: "filter_tool", targetMode: "current_chat", targets: [], filterPrefillCriteria: prefill }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="text-gray-400 hover:text-white transition flex-shrink-0" title="フィルター">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M2.628 1.601C5.028 1.206 7.49 1 10 1s4.973.206 7.372.601a.75.75 0 01.628.74v2.288a2.25 2.25 0 01-.659 1.59l-4.682 4.683a2.25 2.25 0 00-.659 1.59v3.037c0 .684-.31 1.33-.844 1.757l-1.937 1.55A.75.75 0 018 18.25v-5.757a2.25 2.25 0 00-.659-1.591L2.659 6.22A2.25 2.25 0 012 4.629V2.34a.75.75 0 01.628-.74z" clipRule="evenodd" /></svg>
-                </button>
+                {state.isMobile && (
+                  <button onClick={(e) => { e.stopPropagation(); actions.setModal({ type: "filter_tool", targetMode: "all_chats", targets: [] }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="text-gray-400 hover:text-white transition flex-shrink-0" title="フィルター">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M2.628 1.601C5.028 1.206 7.49 1 10 1s4.973.206 7.372.601a.75.75 0 01.628.74v2.288a2.25 2.25 0 01-.659 1.59l-4.682 4.683a2.25 2.25 0 00-.659 1.59v3.037c0 .684-.31 1.33-.844 1.757l-1.937 1.55A.75.75 0 018 18.25v-5.757a2.25 2.25 0 00-.659-1.591L2.659 6.22A2.25 2.25 0 012 4.629V2.34a.75.75 0 01.628-.74z" clipRule="evenodd" /></svg>
+                  </button>
+                )}
                 <button onClick={(e) => { e.stopPropagation(); actions.openFindBar(); }} className="text-gray-400 hover:text-white transition flex-shrink-0" title="検索">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" /></svg>
                 </button>
                 {state.isMobile && (
-                  <button onClick={(e) => { e.stopPropagation(); actions.setModal({ type: "account_menu", targetMode: "all_chats", targets: [] }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="flex-shrink-0" title="アカウント">
-                    <img
-                      src={auth.session?.user?.image || `/api/avatar?name=${encodeURIComponent(auth.session?.user?.name || "U")}`}
-                      alt=""
-                      referrerPolicy="no-referrer"
-                      className="w-7 h-7 rounded-full"
-                    />
-                  </button>
+                  <>
+                    <button onClick={(e) => e.stopPropagation()} className="text-gray-400 hover:text-white transition flex-shrink-0" title="設定">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path fillRule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567L9.05 4.889c-.02.12-.115.26-.297.348a7.493 7.493 0 00-.986.57c-.166.115-.334.126-.45.083L6.3 5.508a1.875 1.875 0 00-2.282.819l-.922 1.597a1.875 1.875 0 00.432 2.385l.84.692c.095.078.17.229.154.43a7.598 7.598 0 000 1.139c.015.2-.059.352-.153.43l-.841.692a1.875 1.875 0 00-.432 2.385l.922 1.597a1.875 1.875 0 002.282.818l1.019-.382c.115-.043.283-.031.45.082.312.214.641.405.985.57.182.088.277.228.297.35l.178 1.071c.151.904.933 1.567 1.85 1.567h1.844c.916 0 1.699-.663 1.85-1.567l.178-1.072c.02-.12.114-.26.297-.349.344-.165.673-.356.985-.57.167-.114.335-.125.45-.082l1.02.382a1.875 1.875 0 002.28-.819l.923-1.597a1.875 1.875 0 00-.432-2.385l-.84-.692c-.095-.078-.17-.229-.154-.43a7.614 7.614 0 000-1.139c-.016-.2.059-.352.153-.43l.84-.692c.708-.582.891-1.59.433-2.385l-.922-1.597a1.875 1.875 0 00-2.282-.818l-1.02.382c-.114.043-.282.031-.449-.083a7.49 7.49 0 00-.985-.57c-.183-.087-.277-.227-.297-.348l-.179-1.072a1.875 1.875 0 00-1.85-1.567h-1.843ZM12 15.75a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5Z" clipRule="evenodd" /></svg>
+                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); actions.setModal({ type: "account_menu", targetMode: "all_chats", targets: [] }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="flex-shrink-0" title="アカウント">
+                      <img
+                        src={auth.session?.user?.image || `/api/avatar?name=${encodeURIComponent(auth.session?.user?.name || "U")}`}
+                        alt=""
+                        referrerPolicy="no-referrer"
+                        className="w-7 h-7 rounded-full"
+                      />
+                    </button>
+                  </>
                 )}
               </header>
 
