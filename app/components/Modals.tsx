@@ -2166,13 +2166,6 @@ export function FilterToolModal({ app }: { app: any }) {
   const [includeExisting, setIncludeExisting] = useState(true);
   const [groupModeChoice, setGroupModeChoice] = useState<"normal" | "inbound_only" | "outbound_only">("normal");
 
-  useEffect(() => {
-    if (!active) return;
-    setScreen("list");
-    setEditingId(null);
-    setDeleteConfirmId(null);
-  }, [!!active]);
-
   const myEmail = app.auth?.session?.user?.email || "";
 
   const existingFilters = useMemo(() => {
@@ -2193,6 +2186,39 @@ export function FilterToolModal({ app }: { app: any }) {
     setGroupModeChoice("normal");
   };
 
+  // 条件オブジェクトをビルダーの各stateへ反映する共通処理（既存フィルターの編集読み込みと、
+  // メッセージ画面等からのプリフィル読み込みの両方から使う）。boxesは group/action 両方の
+  // state（groupBoxes / actionBoxes）へ同時に反映し、後からアクションを切り替えても情報が失われないようにする
+  const loadCriteriaIntoFields = (crit: FilterCriteria) => {
+    setTextRules(crit.textRules ? crit.textRules.map((r: TextRule) => ({ ...r })) : []);
+    if (crit.dateRange) {
+      setDateEnabled(true); setDateFrom(crit.dateRange.from || ""); setDateTo(crit.dateRange.to || ""); setDateDirection(crit.dateRange.direction);
+    } else {
+      setDateEnabled(false); setDateFrom(""); setDateTo(""); setDateDirection("received");
+    }
+    setGroupBoxEnabled(!!(crit.boxes && crit.boxes.length > 0));
+    setGroupBoxes(crit.boxes ? [...crit.boxes] : []);
+    setActionBoxes(crit.boxes ? [...crit.boxes] : []);
+    setAttachmentChoice(crit.hasAttachment === undefined ? "any" : crit.hasAttachment ? "yes" : "no");
+    setReplyChoice(crit.isReply === undefined ? "any" : crit.isReply ? "yes" : "no");
+    setForwardChoice(crit.isForward === undefined ? "any" : crit.isForward ? "yes" : "no");
+    setFormatChoice(crit.format || "any");
+  };
+
+  useEffect(() => {
+    if (!active) return;
+    if (active.filterPrefillCriteria) {
+      setEditingId(null);
+      resetBuilderFields();
+      loadCriteriaIntoFields(active.filterPrefillCriteria);
+      setScreen("builder");
+    } else {
+      setScreen("list");
+      setEditingId(null);
+      setDeleteConfirmId(null);
+    }
+  }, [!!active]);
+
   const openCreate = () => {
     setEditingId(null);
     resetBuilderFields();
@@ -2208,24 +2234,10 @@ export function FilterToolModal({ app }: { app: any }) {
     setFilterName(cfg.customName || "");
     setAction(kind);
     const crit: FilterCriteria = cfg.filterCriteria || {};
-    setTextRules(crit.textRules ? crit.textRules.map((r: TextRule) => ({ ...r })) : []);
-    if (crit.dateRange) {
-      setDateEnabled(true); setDateFrom(crit.dateRange.from || ""); setDateTo(crit.dateRange.to || ""); setDateDirection(crit.dateRange.direction);
-    } else {
-      setDateEnabled(false); setDateFrom(""); setDateTo(""); setDateDirection("received");
-    }
-    if (kind === "group") {
-      setGroupBoxEnabled(!!(crit.boxes && crit.boxes.length > 0));
-      setGroupBoxes(crit.boxes ? [...crit.boxes] : []);
-      setActionBoxes([]);
-    } else {
+    loadCriteriaIntoFields(crit);
+    if (kind !== "group") {
       setGroupBoxEnabled(false); setGroupBoxes([]);
-      setActionBoxes(crit.boxes ? [...crit.boxes] : []);
     }
-    setAttachmentChoice(crit.hasAttachment === undefined ? "any" : crit.hasAttachment ? "yes" : "no");
-    setReplyChoice(crit.isReply === undefined ? "any" : crit.isReply ? "yes" : "no");
-    setForwardChoice(crit.isForward === undefined ? "any" : crit.isForward ? "yes" : "no");
-    setFormatChoice(crit.format || "any");
     setHideOriginal(!!cfg.filterHideOriginal);
     setContinuous(!!cfg.filterContinuous);
     setDestination(cfg.filterDestination || "INBOX");

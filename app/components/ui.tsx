@@ -209,7 +209,7 @@ export function formatFileSize(bytes: number): string {
 
 export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
-  const { selectionMode, selectedIds, modal } = app.state;
+  const { selectionMode, selectedIds } = app.state;
   const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode, setRenameInput,
           setReplySubject, setReplyBody, setReplyToMessage, safeBack, enterSelectionMode } = app.actions;
 
@@ -217,7 +217,6 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const isAnySelection = selectionMode === `${modePrefix}_select`;
   const hasItems = selectedIds.length > 0;
-  const isFilterToolOpen = isChat && modal?.type === "filter_tool";
 
   // チャットのピン留め・非表示は制限なし。メッセージは従来通り
   const isActionRestrictedForAll = (action: string): boolean => {
@@ -330,10 +329,10 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         全選択
       </button>
 
-      {/* キャンセル: 選択モードのキャンセルに加え、フィルターツールが開いている間もこのボタンで閉じられるようにする */}
+      {/* キャンセル */}
       <button
-        onClick={() => { if (isAnySelection || isFilterToolOpen) safeBack(); }}
-        className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!isAnySelection && !isFilterToolOpen ? "opacity-30 pointer-events-none grayscale" : ""}`}
+        onClick={() => { if (isAnySelection) safeBack(); }}
+        className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!isAnySelection ? "opacity-30 pointer-events-none grayscale" : ""}`}
       >
         キャンセル
       </button>
@@ -356,19 +355,6 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
           className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}
         >
           作成
-        </button>
-      )}
-
-      {/* チャット: フィルター（条件に一致するメールをまとめてグループ化/非表示/ピン留め/移動/削除） */}
-      {isChat && (
-        <button
-          onClick={() => {
-            setModal({ type: "filter_tool", targetMode: "all_chats", targets: [] });
-            window.history.pushState({ action: "modal" }, "", window.location.href);
-          }}
-          className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}
-        >
-          フィルター
         </button>
       )}
 

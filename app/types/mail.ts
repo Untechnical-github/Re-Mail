@@ -54,4 +54,7 @@ export type ModalState = {
   // forwardMessage を選択した宛先へ転送する（新しいチャットを開いたりグループを作ったりはしない）
   composeMode?: "create" | "forward";
   forwardMessage?: any;
+  // filter_tool 用: 指定された場合、一覧画面をスキップして条件ビルダー画面をこの条件で初期化した状態で開く
+  // （既存のフィルター/グループを編集するわけではなく、あくまで新規作成の初期値として使う）
+  filterPrefillCriteria?: FilterCriteria;
 } | null;

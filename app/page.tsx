@@ -171,6 +171,13 @@ export default function Home() {
   const isOutboundOnlyGroup = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "outbound_only");
   const isFilterGroup = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.filterCriteria);
   const isSendDisabled = isInboundOnlyGroup || isFilterGroup;
+  // メッセージ画面のフィルターボタン用: 現在開いている個別チャット(グループでない)の相手アドレス
+  const selectedPartnerAddress = (state.selectedSender && !selectedGroupConfig?.isGroup) ? (() => {
+    const firstPartner = (computed.groupedEmails[state.selectedSender!] || []).find((e: any) => !e.isMe && !e.from.includes(auth.session?.user?.email || ""));
+    if (!firstPartner) return null;
+    const addrMatch = firstPartner.from.match(/<([^>]+)>/);
+    return (addrMatch ? addrMatch[1] : firstPartner.from).trim();
+  })() : null;
   const subjectFindHighlight = state.findBarOpen && state.findBarSearchSubject ? state.findBarKeyword : "";
   const bodyFindHighlight = state.findBarOpen && state.findBarSearchBody ? state.findBarKeyword : "";
 
@@ -209,6 +216,9 @@ export default function Home() {
               <h1 className="text-xl font-extrabold text-white tracking-wide">Re:Mail</h1>
             </div>
             <div className="flex items-center gap-3">
+              <button onClick={(e) => { e.stopPropagation(); actions.setModal({ type: "filter_tool", targetMode: "all_chats", targets: [] }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="text-gray-400 hover:text-white transition" title="フィルター">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M2.628 1.601C5.028 1.206 7.49 1 10 1s4.973.206 7.372.601a.75.75 0 01.628.74v2.288a2.25 2.25 0 01-.659 1.59l-4.682 4.683a2.25 2.25 0 00-.659 1.59v3.037c0 .684-.31 1.33-.844 1.757l-1.937 1.55A.75.75 0 018 18.25v-5.757a2.25 2.25 0 00-.659-1.591L2.659 6.22A2.25 2.25 0 012 4.629V2.34a.75.75 0 01.628-.74z" clipRule="evenodd" /></svg>
+              </button>
               <button onClick={(e) => { e.stopPropagation(); actions.setModal({ type: "search", targetMode: "all_chats", targets: [] }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="text-gray-400 hover:text-white transition" title="検索">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" /></svg>
               </button>
@@ -468,6 +478,9 @@ export default function Home() {
                     return <span className="text-xs text-gray-500 truncate">{addr}</span>;
                   })()}
                 </div>
+                <button onClick={(e) => { e.stopPropagation(); const prefill = isFilterGroup ? { ...selectedGroupConfig!.filterCriteria } : selectedPartnerAddress ? { textRules: [{ field: "recipientAddress" as const, mode: "contains" as const, keyword: selectedPartnerAddress }] } : undefined; actions.setModal({ type: "filter_tool", targetMode: "current_chat", targets: [], filterPrefillCriteria: prefill }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="text-gray-400 hover:text-white transition flex-shrink-0" title="フィルター">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M2.628 1.601C5.028 1.206 7.49 1 10 1s4.973.206 7.372.601a.75.75 0 01.628.74v2.288a2.25 2.25 0 01-.659 1.59l-4.682 4.683a2.25 2.25 0 00-.659 1.59v3.037c0 .684-.31 1.33-.844 1.757l-1.937 1.55A.75.75 0 018 18.25v-5.757a2.25 2.25 0 00-.659-1.591L2.659 6.22A2.25 2.25 0 012 4.629V2.34a.75.75 0 01.628-.74z" clipRule="evenodd" /></svg>
+                </button>
                 <button onClick={(e) => { e.stopPropagation(); actions.openFindBar(); }} className="text-gray-400 hover:text-white transition flex-shrink-0" title="検索">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" /></svg>
                 </button>
