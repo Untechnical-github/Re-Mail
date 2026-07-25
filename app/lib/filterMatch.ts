@@ -41,24 +41,66 @@ export function isActionBoxRestricted(action: FilterAction, box: FindBarBoxKey):
 }
 
 export type TextField = "recipientName" | "recipientAddress" | "subject" | "body";
-export type TextRule = { field: TextField; mode: "contains" | "not_contains"; keyword: string };
 export type DateDirection = "received" | "sent";
+export type TextRule = {
+  field: TextField;
+  mode: "contains" | "not_contains";
+  keyword: string;
+  // このテキスト条件が受信メール/送信メールどちらに適用されるか（新規作成時は常に設定される）。
+  // メール自体もその方向のものだけに絞り込む（期間条件の受信/送信と同じ考え方）。
+  // recipientName/recipientAddress のときは、受信なら差出人ヘッダー、送信なら宛先ヘッダーを見る。
+  // 未指定（古いデータ）は方向を問わない従来の挙動にフォールバックする
+  direction?: DateDirection;
+};
 
-export type FilterCriteria = {
+// AND結合された1つの条件セット（テキスト条件・期間・添付・返信・転送・形式）。
+// FilterCriteria.conditionSets はこれの配列で、いずれか1つのセットに一致すればOK（OR結合）
+export type ConditionSet = {
   textRules?: TextRule[];
-  // 宛先（相手）のアドレスが、このリストのいずれかと完全一致するメールだけを対象にする（OR結合）。
-  // textRules はAND結合のみのため、通常グループ（複数メンバー）のフィルターボタンから
-  // 「メンバーの誰か宛/誰かから」を条件化するには、この専用フィールドが必要
-  recipientAddressAnyOf?: string[];
   dateRange?: { from?: string; to?: string; direction: DateDirection };
-  boxes?: FindBarBoxKey[];
   hasAttachment?: boolean;
   isReply?: boolean;
   isForward?: boolean;
   format?: "html" | "text";
 };
 
-// メッセージの「相手」（自分が送信したなら宛先、受信したなら差出人）の生ヘッダー文字列を返す
+export type FilterCriteria = {
+  // OR結合される条件セットの配列。空/未指定は「内容条件なし＝保存場所条件だけで絞り込む」を意味する
+  conditionSets?: ConditionSet[];
+  boxes?: FindBarBoxKey[];
+  // 後方互換用: conditionSets 導入前の旧バージョンで保存されたフラットな単一条件データ。
+  // conditionSets が無いときだけ getConditionSets() 経由で読み込まれる
+  textRules?: TextRule[];
+  dateRange?: { from?: string; to?: string; direction: DateDirection };
+  hasAttachment?: boolean;
+  isReply?: boolean;
+  isForward?: boolean;
+  format?: "html" | "text";
+};
+
+function isConditionSetEmpty(set: ConditionSet): boolean {
+  return (
+    !(set.textRules && set.textRules.length > 0) &&
+    !set.dateRange &&
+    set.hasAttachment === undefined &&
+    set.isReply === undefined &&
+    set.isForward === undefined &&
+    set.format === undefined
+  );
+}
+
+// FilterCriteria から、実際にOR評価すべき条件セットの配列を取り出す（新旧データ形式を吸収する）
+export function getConditionSets(criteria: FilterCriteria): ConditionSet[] {
+  if (criteria.conditionSets) return criteria.conditionSets;
+  const legacy: ConditionSet = {
+    textRules: criteria.textRules, dateRange: criteria.dateRange,
+    hasAttachment: criteria.hasAttachment, isReply: criteria.isReply, isForward: criteria.isForward, format: criteria.format,
+  };
+  return isConditionSetEmpty(legacy) ? [] : [legacy];
+}
+
+// メッセージの「相手」（自分が送信したなら宛先、受信したなら差出人）の生ヘッダー文字列を返す。
+// TextRule.direction が未指定の古いデータ向けの後方互換フォールバックにのみ使う
 function getPartnerRaw(email: any, myEmail: string): string {
   return isMineEmail(email, myEmail) ? (email.to || "") : (email.from || "");
 }
@@ -87,28 +129,30 @@ function parseLocalDayEnd(dateStr: string): Date {
 }
 
 function matchesTextRule(email: any, rule: TextRule, myEmail: string): boolean {
+  if (rule.direction) {
+    const isSent = isMineEmail(email, myEmail);
+    if (rule.direction === "received" && isSent) return false;
+    if (rule.direction === "sent" && !isSent) return false;
+  }
+
   let target = "";
-  if (rule.field === "recipientName") target = extractName(getPartnerRaw(email, myEmail));
-  else if (rule.field === "recipientAddress") target = extractAddress(getPartnerRaw(email, myEmail));
-  else if (rule.field === "subject") target = email.subject || "";
+  if (rule.field === "recipientName" || rule.field === "recipientAddress") {
+    const raw = rule.direction ? (rule.direction === "sent" ? (email.to || "") : (email.from || "")) : getPartnerRaw(email, myEmail);
+    target = rule.field === "recipientName" ? extractName(raw) : extractAddress(raw);
+  } else if (rule.field === "subject") target = email.subject || "";
   else target = email.body || "";
 
   const contains = target.toLowerCase().includes(rule.keyword.toLowerCase());
   return rule.mode === "contains" ? contains : !contains;
 }
 
-export function messageMatchesFilter(email: any, criteria: FilterCriteria, myEmail: string): boolean {
-  if (criteria.textRules && criteria.textRules.length > 0) {
-    if (!criteria.textRules.every(rule => matchesTextRule(email, rule, myEmail))) return false;
+function matchesConditionSet(email: any, set: ConditionSet, myEmail: string): boolean {
+  if (set.textRules && set.textRules.length > 0) {
+    if (!set.textRules.every(rule => matchesTextRule(email, rule, myEmail))) return false;
   }
 
-  if (criteria.recipientAddressAnyOf && criteria.recipientAddressAnyOf.length > 0) {
-    const partnerAddr = extractAddress(getPartnerRaw(email, myEmail)).toLowerCase();
-    if (!criteria.recipientAddressAnyOf.some(a => a.toLowerCase() === partnerAddr)) return false;
-  }
-
-  if (criteria.dateRange) {
-    const { from, to, direction } = criteria.dateRange;
+  if (set.dateRange) {
+    const { from, to, direction } = set.dateRange;
     const isSent = isMineEmail(email, myEmail);
     if (direction === "received" && isSent) return false;
     if (direction === "sent" && !isSent) return false;
@@ -118,28 +162,37 @@ export function messageMatchesFilter(email: any, criteria: FilterCriteria, myEma
     if (to && emailDate > parseLocalDayEnd(to)) return false;
   }
 
+  if (set.hasAttachment !== undefined) {
+    const has = !!(email.attachments && email.attachments.length > 0);
+    if (has !== set.hasAttachment) return false;
+  }
+
+  if (set.isReply !== undefined) {
+    const isReply = !!(email.replyToId || email.inReplyTo);
+    if (isReply !== set.isReply) return false;
+  }
+
+  if (set.isForward !== undefined) {
+    if (!!email.isForward !== set.isForward) return false;
+  }
+
+  if (set.format !== undefined) {
+    const isHtml = !!email.hasHtml;
+    if (set.format === "html" && !isHtml) return false;
+    if (set.format === "text" && isHtml) return false;
+  }
+
+  return true;
+}
+
+export function messageMatchesFilter(email: any, criteria: FilterCriteria, myEmail: string): boolean {
   if (criteria.boxes && criteria.boxes.length > 0) {
     if (!criteria.boxes.includes(getBoxKey(email))) return false;
   }
 
-  if (criteria.hasAttachment !== undefined) {
-    const has = !!(email.attachments && email.attachments.length > 0);
-    if (has !== criteria.hasAttachment) return false;
-  }
-
-  if (criteria.isReply !== undefined) {
-    const isReply = !!(email.replyToId || email.inReplyTo);
-    if (isReply !== criteria.isReply) return false;
-  }
-
-  if (criteria.isForward !== undefined) {
-    if (!!email.isForward !== criteria.isForward) return false;
-  }
-
-  if (criteria.format !== undefined) {
-    const isHtml = !!email.hasHtml;
-    if (criteria.format === "html" && !isHtml) return false;
-    if (criteria.format === "text" && isHtml) return false;
+  const sets = getConditionSets(criteria);
+  if (sets.length > 0) {
+    if (!sets.some(set => matchesConditionSet(email, set, myEmail))) return false;
   }
 
   return true;
@@ -155,14 +208,5 @@ export function chatConfigTab(cfg: any): ChatListTab {
 
 // FilterCriteria が実質的に何も条件を持っていないか（誤って全件マッチするのを防ぐガード用）
 export function isEmptyFilterCriteria(criteria: FilterCriteria): boolean {
-  return (
-    !(criteria.textRules && criteria.textRules.length > 0) &&
-    !(criteria.recipientAddressAnyOf && criteria.recipientAddressAnyOf.length > 0) &&
-    !criteria.dateRange &&
-    !(criteria.boxes && criteria.boxes.length > 0) &&
-    criteria.hasAttachment === undefined &&
-    criteria.isReply === undefined &&
-    criteria.isForward === undefined &&
-    criteria.format === undefined
-  );
+  return getConditionSets(criteria).length === 0 && !(criteria.boxes && criteria.boxes.length > 0);
 }
