@@ -277,6 +277,10 @@ export function useMailApp() {
   // トークンリフレッシュに失敗しても連携アカウントのフェッチは黙ってスキップされるだけなので、
   // ここに載っているアカウントはUI側で警告バッジ等を出し、再連携（/api/accounts/connect）へ誘導する
   const [reauthNeededAccounts, setReauthNeededAccounts] = useState<string[]>([]);
+  // 連携アカウントの表示専用プロフィール（名前・アバター画像）。認証・照合ロジックには一切使わず、
+  // アカウントメニューやアイコン表示設定でのアバター表示だけに使う。連携済みでも古いデータや
+  // 未再連携のアカウントはキーが無い場合があり、その時はメールアドレスから生成したアバターにフォールバックする
+  const [linkedAccountProfiles, setLinkedAccountProfiles] = useState<Record<string, { name?: string; picture?: string }>>({});
 
   const [replySubject, setReplySubject] = useState("");
   const [replyBody, setReplyBody] = useState("");
@@ -922,6 +926,11 @@ export function useMailApp() {
           linkedAccountsRef.current = linkedEmails;
           setLinkedAccounts(linkedEmails);
           setReauthNeededAccounts(linkedAccountRows.filter((a: any) => a.needs_reauth === 1).map((a: any) => a.account_email).filter(Boolean));
+          const profiles: Record<string, { name?: string; picture?: string }> = {};
+          linkedAccountRows.forEach((a: any) => {
+            if (a.account_email) profiles[a.account_email] = { name: a.name || undefined, picture: a.picture || undefined };
+          });
+          setLinkedAccountProfiles(profiles);
 
           // チェックボックスの状態はマウント時点で localStorage から同期的に復元済みなので、
           // ここでは読み直さず現在の state をそのまま使う（読み込み中に見た目が切り替わるのを防ぐ）
@@ -1299,6 +1308,11 @@ export function useMailApp() {
     setLinkedAccounts(prev => prev.filter(a => a !== accountEmail));
     linkedAccountsRef.current = linkedAccountsRef.current.filter(a => a !== accountEmail);
     setReauthNeededAccounts(prev => prev.filter(a => a !== accountEmail));
+    setLinkedAccountProfiles(prev => {
+      const next = { ...prev };
+      delete next[accountEmail];
+      return next;
+    });
     setEmails(prev => prev.filter((e: any) => (e.accountId || myEmail) !== accountEmail));
     setCurrentNextPageTokens(prev => {
       const next = { ...prev };
@@ -2826,7 +2840,7 @@ export function useMailApp() {
     state: {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
       isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, useIconLabels,
-      currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts,
+      currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts, linkedAccountProfiles,
       replySubject, replyBody, isSending, replyToMessage, replyAttachments, attachError,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
       moveDestination, revealedCrossPrompts, boxColors,

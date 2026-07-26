@@ -10,7 +10,7 @@ export async function GET(request: Request) {
 
   try {
     const db = getRequestContext().env.DB;
-    const { results } = await db.prepare("SELECT account_email, needs_reauth FROM linked_accounts WHERE user_email = ?").bind(session.user.email).all();
+    const { results } = await db.prepare("SELECT account_email, needs_reauth, name, picture FROM linked_accounts WHERE user_email = ?").bind(session.user.email).all();
     return NextResponse.json({ accounts: results });
   } catch (error: any) {
     console.error("DB GET Error:", error);

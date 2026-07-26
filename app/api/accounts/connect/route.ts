@@ -79,14 +79,17 @@ export async function GET(request: NextRequest) {
     ]);
 
     const db = getRequestContext().env.DB;
+    // name/pictureは表示専用（アイコン設定でアバターを出すため）で、認証・照合には一切使わない
     await db.prepare(
-      `INSERT INTO linked_accounts (user_email, account_email, refresh_token, access_token, expires_at, created_at, needs_reauth)
-       VALUES (?, ?, ?, ?, ?, ?, 0)
+      `INSERT INTO linked_accounts (user_email, account_email, refresh_token, access_token, expires_at, created_at, needs_reauth, name, picture)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
        ON CONFLICT(user_email, account_email) DO UPDATE SET
        refresh_token=excluded.refresh_token,
        access_token=excluded.access_token,
        expires_at=excluded.expires_at,
-       needs_reauth=0`
+       needs_reauth=0,
+       name=excluded.name,
+       picture=excluded.picture`
     ).bind(
       session.user.email,
       accountEmail,
@@ -94,6 +97,8 @@ export async function GET(request: NextRequest) {
       encryptedAccessToken,
       tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null,
       new Date().toISOString(),
+      userInfo.name || null,
+      userInfo.picture || null,
     ).run();
 
     const res = NextResponse.redirect(new URL(`/?accountLinked=${encodeURIComponent(accountEmail)}`, request.url));

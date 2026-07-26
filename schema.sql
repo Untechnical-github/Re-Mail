@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS linked_accounts (
   expires_at INTEGER,            -- access_token の有効期限（ミリ秒epoch）
   created_at TEXT,
   needs_reauth INTEGER DEFAULT 0, -- リフレッシュトークンが失効し再連携が必要か (0: false, 1: true)
+  name TEXT,                     -- 表示用（設定のアイコン表示切替でアバター横に出す名前）。認証には使わない
+  picture TEXT,                  -- 表示用のGoogleアカウントのプロフィール画像URL。認証には使わない
   PRIMARY KEY (user_email, account_email)
 );
 
@@ -36,3 +38,5 @@ CREATE TABLE IF NOT EXISTS linked_accounts (
 -- 新しい列を追加してくれないため、既に linked_accounts が存在する環境ではこちらを
 -- 1回だけ手動実行する（列が既に存在する場合はエラーになるので、その場合は無視して良い）
 -- ALTER TABLE linked_accounts ADD COLUMN needs_reauth INTEGER DEFAULT 0;
+-- ALTER TABLE linked_accounts ADD COLUMN name TEXT;
+-- ALTER TABLE linked_accounts ADD COLUMN picture TEXT;

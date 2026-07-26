@@ -256,12 +256,20 @@ export default function Home() {
           {state.linkedAccounts.length > 0 && (
             <div className="p-3 border-b border-[#1E1F22] bg-[#232428] cursor-default">
                <div className="flex flex-wrap gap-1 text-[11px] font-bold">
-                  {[auth.session?.user?.email || "", ...state.linkedAccounts].map((acct) => (
-                    <label key={acct} onClick={(e) => e.stopPropagation()} title={acct} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]">
-                      <input type="checkbox" checked={state.checkAccounts[acct] !== false} onChange={(e) => actions.setCheckAccounts((prev) => ({ ...prev, [acct]: e.target.checked }))} className="accent-[#5865F2]" />
-                      {acct.split("@")[0]}
-                    </label>
-                  ))}
+                  {[auth.session?.user?.email || "", ...state.linkedAccounts].map((acct) => {
+                    const isMain = acct === (auth.session?.user?.email || "");
+                    const profile = isMain ? undefined : state.linkedAccountProfiles[acct];
+                    const pictureSrc = isMain ? auth.session?.user?.image : profile?.picture;
+                    const displayName = isMain ? (auth.session?.user?.name || acct) : (profile?.name || acct);
+                    return (
+                      <label key={acct} onClick={(e) => e.stopPropagation()} title={acct} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]">
+                        <input type="checkbox" checked={state.checkAccounts[acct] !== false} onChange={(e) => actions.setCheckAccounts((prev) => ({ ...prev, [acct]: e.target.checked }))} className="accent-[#5865F2]" />
+                        {state.useIconLabels ? (
+                          <img src={pictureSrc || `/api/avatar?name=${encodeURIComponent(displayName)}`} alt="" referrerPolicy="no-referrer" className="w-4 h-4 rounded-full flex-shrink-0" />
+                        ) : acct.split("@")[0]}
+                      </label>
+                    );
+                  })}
                </div>
             </div>
           )}

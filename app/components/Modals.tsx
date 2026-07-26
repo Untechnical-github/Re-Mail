@@ -1382,10 +1382,22 @@ export function Modals({ app }: { app: any }) {
                 <div className="flex flex-col gap-1">
                   {(app.state.linkedAccounts as string[]).map((a) => {
                     const needsReauth = (app.state.reauthNeededAccounts as string[] || []).includes(a);
+                    const profile = (app.state.linkedAccountProfiles as Record<string, { name?: string; picture?: string }>)[a];
                     return (
                       <div key={a} className="bg-[#2B2D31] rounded px-3 py-2">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm text-gray-200 truncate">{a}</span>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <img
+                              src={profile?.picture || `/api/avatar?name=${encodeURIComponent(profile?.name || a)}`}
+                              alt=""
+                              referrerPolicy="no-referrer"
+                              className="w-7 h-7 rounded-full flex-shrink-0"
+                            />
+                            <div className="min-w-0">
+                              {profile?.name && <div className="text-sm font-bold text-gray-200 truncate">{profile.name}</div>}
+                              <div className={`truncate ${profile?.name ? "text-[11px] text-gray-400" : "text-sm text-gray-200"}`}>{a}</div>
+                            </div>
+                          </div>
                           <div className="flex items-center gap-2 flex-shrink-0">
                             {needsReauth && (
                               <button
@@ -1892,7 +1904,7 @@ function getSearchBoxInfo(e: any): { key: BoxKey; name: string } {
 // 既に読み込み済みのデータ(allUniqueEmails/groupedEmails)のみを対象にしたクライアント側検索で、
 // Gmailへの再取得は行わない。
 export function SearchModal({ app }: { app: any }) {
-  const { modal, chatConfigs, messageConfigs, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, linkedAccounts } = app.state;
+  const { modal, chatConfigs, messageConfigs, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, linkedAccounts, linkedAccountProfiles, useIconLabels } = app.state;
   const { setModal, safeBack, openChat, jumpToSearchResult, messageConfigKey } = app.actions;
   const { allUniqueEmails, groupedEmails, contactDirectory } = app.computed;
   const { session } = app.auth;
@@ -2259,12 +2271,20 @@ export function SearchModal({ app }: { app: any }) {
           )}
           {searchAccountList.length > 1 && (
             <div className="flex flex-wrap gap-1 text-[11px] font-bold">
-              {searchAccountList.map(acct => (
-                <label key={acct} title={acct} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1 rounded hover:bg-[#3f4147]">
-                  <input type="checkbox" checked={accountFilter[acct] !== false} onChange={(e) => setAccountFilter(prev => ({ ...prev, [acct]: e.target.checked }))} className="accent-[#5865F2]" />
-                  {acct.split("@")[0]}
-                </label>
-              ))}
+              {searchAccountList.map(acct => {
+                const isMain = acct === mainEmail;
+                const profile = isMain ? undefined : (linkedAccountProfiles as Record<string, { name?: string; picture?: string }>)[acct];
+                const pictureSrc = isMain ? session?.user?.image : profile?.picture;
+                const displayName = isMain ? (session?.user?.name || acct) : (profile?.name || acct);
+                return (
+                  <label key={acct} title={acct} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1 rounded hover:bg-[#3f4147]">
+                    <input type="checkbox" checked={accountFilter[acct] !== false} onChange={(e) => setAccountFilter(prev => ({ ...prev, [acct]: e.target.checked }))} className="accent-[#5865F2]" />
+                    {useIconLabels ? (
+                      <img src={pictureSrc || `/api/avatar?name=${encodeURIComponent(displayName)}`} alt="" referrerPolicy="no-referrer" className="w-4 h-4 rounded-full flex-shrink-0" />
+                    ) : acct.split("@")[0]}
+                  </label>
+                );
+              })}
             </div>
           )}
         </div>
