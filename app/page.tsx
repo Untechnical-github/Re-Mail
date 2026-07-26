@@ -253,6 +253,19 @@ export default function Home() {
              </div>
           </div>
 
+          {state.linkedAccounts.length > 0 && (
+            <div className="p-3 border-b border-[#1E1F22] bg-[#232428] cursor-default">
+               <div className="flex flex-wrap gap-1 text-[11px] font-bold">
+                  {[auth.session?.user?.email || "", ...state.linkedAccounts].map((acct) => (
+                    <label key={acct} onClick={(e) => e.stopPropagation()} title={acct} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]">
+                      <input type="checkbox" checked={state.checkAccounts[acct] !== false} onChange={(e) => actions.setCheckAccounts((prev) => ({ ...prev, [acct]: e.target.checked }))} className="accent-[#5865F2]" />
+                      {acct.split("@")[0]}
+                    </label>
+                  ))}
+               </div>
+            </div>
+          )}
+
           <div className="flex gap-1 px-3 pt-2 bg-[#232428] border-b border-[#1E1F22] cursor-default" onClick={(e) => e.stopPropagation()}>
             {([["individual", "個人チャット"], ["group", "グループチャット"], ["filter", "フィルター"]] as const).map(([tab, label]) => (
               <button
@@ -289,6 +302,7 @@ export default function Home() {
                  const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
                  
                  if ((isInbox || isArchive || isSent) && (config?.isHidden || state.messageConfigs[actions.messageConfigKey(e.id)]?.isHidden)) return false;
+                 if (!actions.isAccountVisible(e.accountId)) return false;
 
                  // ★修正: 送信済みチェックを「絶対優先」に書き換え
                  let isCurrentBox = false;
@@ -338,6 +352,7 @@ export default function Home() {
               // グラデーション色を計算（SENTを最優先：ゴミ箱内の送信済みも緑扱い）
               const colorsSet = new Set<string>();
               allEmails.forEach((e: any) => {
+                if (!actions.isAccountVisible(e.accountId)) return;
                 const isSentE = e.labelIds?.includes("SENT") || e.isMe;
                 const isTrashE = !isSentE && e.labelIds?.includes("TRASH");
                 const isSpamE  = !isSentE && e.labelIds?.includes("SPAM");
@@ -616,6 +631,7 @@ export default function Home() {
                     const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
 
                     if ((isInbox || isArchive || isSent) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.messageConfigs[actions.messageConfigKey(email.id)]?.isHidden)) return null;
+                    if (!actions.isAccountVisible(email.accountId)) return null;
 
                     // ★修正: 連携アカウントのチャットでは「自分」がメインアカウントとは限らないため、
                     // このルーム自身が属するアカウントのメールアドレスで判定する

@@ -80,6 +80,17 @@ function getSavedBoxSettings(): { inbox?: boolean; archive?: boolean; spam?: boo
   }
 }
 
+// アカウント別の表示チェックボックス（受信箱/アーカイブ...とは別枠）。未設定のアカウントはデフォルトで表示扱いにする
+function getSavedAccountSettings(): Record<string, boolean> | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const saved = localStorage.getItem("remail_account_settings");
+    return saved ? JSON.parse(saved) : null;
+  } catch {
+    return null;
+  }
+}
+
 // グループチャットの「送信済みメール」判定用: DBには何も永続化せず、Toヘッダーの宛先セットが
 // メンバー全員と完全一致するかどうかだけで、その都度判定する（送信履歴が増えてもD1を圧迫しない）
 function parseAddressSet(field: string): Set<string> {
@@ -183,6 +194,15 @@ export function useMailApp() {
   const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
   const [checkTrash, setCheckTrash] = useState<boolean>(() => getSavedBoxSettings()?.trash ?? false);
   const [checkSent, setCheckSent] = useState<boolean>(() => getSavedBoxSettings()?.sent ?? false);
+  // アカウント別の表示チェックボックス。キーはアカウントのメールアドレス、値がfalseのアカウントのメールは
+  // 個人/グループ/フィルターのどのタブでも表示されず、そのアカウントのメールしかないチャットは一覧からも消える
+  const [checkAccounts, setCheckAccounts] = useState<Record<string, boolean>>(() => getSavedAccountSettings() ?? {});
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("remail_account_settings", JSON.stringify(checkAccounts));
+  }, [checkAccounts]);
+  // メールの所属アカウント（e.accountId、未設定ならメインアカウント）がチェックボックスでオフになっていないか判定する。
+  // 場所（受信箱/アーカイブ等）のチェックとは独立した、ハードなフィルター（revealedCrossPromptsによる個別解除は無い）
+  const isAccountVisible = (accountId?: string) => checkAccounts[accountId || (session?.user?.email || "")] !== false;
   // チャット画面のタブ（個人チャット / グループチャット / フィルター）。フィルターのチェックボックスと同様、
   // この端末のブラウザにだけ保存する（D1には保存しない＝他の端末には同期されない）ので、
   // リロード・タブを閉じる・ログアウトをまたいでも維持されるが、別端末には影響しない
@@ -1411,6 +1431,7 @@ export function useMailApp() {
         const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
 
         if ((isInbox || isArchive || isSent) && (config?.isHidden || messageConfigs[messageConfigKey(e.id)]?.isHidden)) return false;
+        if (!isAccountVisible(e.accountId)) return false;
 
         // ★修正: 送信済みの「絶対権限（他のラベルを無視）」を適用
         let isCurrentBox = false;
@@ -1443,6 +1464,7 @@ export function useMailApp() {
         const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
 
         if ((isInbox || isArchive || isSent) && (config?.isHidden || messageConfigs[messageConfigKey(e.id)]?.isHidden)) return false;
+        if (!isAccountVisible(e.accountId)) return false;
 
         if (revealedCrossPrompts.includes(e.id)) return true;
 
@@ -1471,7 +1493,7 @@ export function useMailApp() {
       const timeB = getLatestValidDate(b);
       return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
-  }, [groupedEmails, chatConfigs, messageConfigs, checkSent, checkInbox, checkArchive, checkSpam, checkTrash, revealedCrossPrompts, draftChats]);
+  }, [groupedEmails, chatConfigs, messageConfigs, checkSent, checkInbox, checkArchive, checkSpam, checkTrash, checkAccounts, session, revealedCrossPrompts, draftChats]);
 
   const hiddenChats = keysOf(chatConfigs).filter(k => chatConfigs[k]?.isHidden);
   // messageConfigsは複合キーだが、他所（Modals.tsx等）との互換のため各要素のidは生のメッセージIDのまま返す
@@ -2785,13 +2807,13 @@ export function useMailApp() {
     }
   }, [chatNextPageToken, msgStatusMessage, currentChatLength, selectedSender]);
 
-  const pinnedMsgsInChat = (checkInbox || checkArchive || checkSent) ? (groupedEmails[selectedSender!] || []).filter(e => messageConfigs[messageConfigKey(e.id)]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM")) : [];
+  const pinnedMsgsInChat = (checkInbox || checkArchive || checkSent) ? (groupedEmails[selectedSender!] || []).filter(e => messageConfigs[messageConfigKey(e.id)]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && isAccountVisible(e.accountId)) : [];
 
   return {
     auth: { session, status },
     state: {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
-      isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent,
+      isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts,
       currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts,
       replySubject, replyBody, isSending, replyToMessage, replyAttachments, attachError,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
@@ -2802,7 +2824,7 @@ export function useMailApp() {
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
     actions: {
-      setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, changeChatTab,
+      setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setCheckAccounts, changeChatTab,
       setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
       setMoveDestination, setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleMenuBarClick, handleBackgroundClick, toggleSelection,
@@ -2815,7 +2837,7 @@ export function useMailApp() {
       openAttachmentModal, closeAttachmentModal,
       jumpToReplyTarget, createOrOpenChat, createGroupChat, createFilterGroup, deleteChatConfig, forwardMessageTo,
       updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail,
-      unlinkAccount,
+      unlinkAccount, isAccountVisible,
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
     refs: { touchTimer, hasPushedSelectRef, activeLoadRef, searchTimeoutRef }

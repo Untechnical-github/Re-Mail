@@ -1695,14 +1695,34 @@ export function Modals({ app }: { app: any }) {
               <div className="p-2 overflow-y-auto flex-1 space-y-4">
                 <div>
                   <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">非表示</div>
-                  {hideChatItems.map((c: string) => renderChatRow("hide", c))}
-                  {hideMsgItems.map((m: any) => renderMsgRow("hide", m))}
+                  {hideChatItems.length > 0 && (
+                    <div className="mb-2">
+                      <div className="text-[10px] font-bold text-gray-500 mb-1 px-2">チャット</div>
+                      {hideChatItems.map((c: string) => renderChatRow("hide", c))}
+                    </div>
+                  )}
+                  {hideMsgItems.length > 0 && (
+                    <div>
+                      <div className="text-[10px] font-bold text-gray-500 mb-1 px-2">メッセージ</div>
+                      {hideMsgItems.map((m: any) => renderMsgRow("hide", m))}
+                    </div>
+                  )}
                   {hideChatItems.length === 0 && hideMsgItems.length === 0 && <div className="text-gray-500 text-xs p-2 px-4">対象はありません</div>}
                 </div>
                 <div className="border-t border-[#1E1F22]/50 pt-2">
                   <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">ピン留め</div>
-                  {pinChatItems.map((c: string) => renderChatRow("pin", c))}
-                  {pinMsgItems.map((m: any) => renderMsgRow("pin", m))}
+                  {pinChatItems.length > 0 && (
+                    <div className="mb-2">
+                      <div className="text-[10px] font-bold text-gray-500 mb-1 px-2">チャット</div>
+                      {pinChatItems.map((c: string) => renderChatRow("pin", c))}
+                    </div>
+                  )}
+                  {pinMsgItems.length > 0 && (
+                    <div>
+                      <div className="text-[10px] font-bold text-gray-500 mb-1 px-2">メッセージ</div>
+                      {pinMsgItems.map((m: any) => renderMsgRow("pin", m))}
+                    </div>
+                  )}
                   {pinChatItems.length === 0 && pinMsgItems.length === 0 && <div className="text-gray-500 text-xs p-2 px-4">対象はありません</div>}
                 </div>
                 <div className="border-t border-[#1E1F22]/50 pt-2">
@@ -1843,11 +1863,14 @@ function getSearchBoxInfo(e: any): { key: BoxKey; name: string } {
 // 既に読み込み済みのデータ(allUniqueEmails/groupedEmails)のみを対象にしたクライアント側検索で、
 // Gmailへの再取得は行わない。
 export function SearchModal({ app }: { app: any }) {
-  const { modal, chatConfigs, messageConfigs, checkInbox, checkArchive, checkSpam, checkTrash, checkSent } = app.state;
+  const { modal, chatConfigs, messageConfigs, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, linkedAccounts } = app.state;
   const { setModal, safeBack, openChat, jumpToSearchResult, messageConfigKey } = app.actions;
   const { allUniqueEmails, groupedEmails, contactDirectory } = app.computed;
+  const { session } = app.auth;
 
   const active = modal?.type === "search" ? modal : null;
+  const mainEmail = session?.user?.email || "";
+  const searchAccountList: string[] = [mainEmail, ...linkedAccounts];
 
   const [keyword, setKeyword] = useState("");
   const [activeTab, setActiveTab] = useState<SearchTab>("all");
@@ -1855,6 +1878,10 @@ export function SearchModal({ app }: { app: any }) {
   const [boxFilter, setBoxFilter] = useState<Record<BoxKey, boolean>>({
     inbox: checkInbox, archive: checkArchive, sent: checkSent, spam: checkSpam, trash: checkTrash,
   });
+  // タブごとに独立させず、検索モーダル内で共有するアカウント別チェックボックス（宛先名/アドレス/件名/本文いずれの
+  // 絞り込みにも同じ集合を使う）。開いた瞬間は現在のサイドバーの表示設定を初期値として引き継ぐ
+  const [accountFilter, setAccountFilter] = useState<Record<string, boolean>>(checkAccounts);
+  const isAccountFilterVisible = (acct?: string) => accountFilter[acct || mainEmail] !== false;
   // すべてタブで各カテゴリー6件目以降を折りたたむかどうか（カテゴリーキーごと）
   const [expandedAllSections, setExpandedAllSections] = useState<Record<string, boolean>>({});
 
@@ -1873,6 +1900,7 @@ export function SearchModal({ app }: { app: any }) {
     setActiveTab("all");
     setSortOrder("newest");
     setExpandedAllSections({});
+    setAccountFilter(checkAccounts);
     searchedServerKeywordsRef.current.clear();
     const t = setTimeout(() => inputRef.current?.focus(), 50);
     return () => clearTimeout(t);
@@ -1882,10 +1910,10 @@ export function SearchModal({ app }: { app: any }) {
   const kwLower = keyword.trim().toLowerCase();
 
   const roomInfos = useMemo(() => {
-    const infos: { room: string; label: string; address: string | null; isGroup: boolean; latestDate: number }[] = [];
+    const infos: { room: string; label: string; address: string | null; isGroup: boolean; latestDate: number; accountEmail: string }[] = [];
     (contactDirectory as any[]).forEach(c => {
       if (chatConfigs[c.room]?.isHidden) return;
-      infos.push({ room: c.room, label: c.label, address: c.address || null, isGroup: false, latestDate: c.latestDate });
+      infos.push({ room: c.room, label: c.label, address: c.address || null, isGroup: false, latestDate: c.latestDate, accountEmail: c.accountEmail });
     });
     Object.keys(chatConfigs).forEach(room => {
       const cfg = chatConfigs[room];
@@ -1896,6 +1924,7 @@ export function SearchModal({ app }: { app: any }) {
           address: null,
           isGroup: true,
           latestDate: groupedEmails[room][0]?.date ? new Date(groupedEmails[room][0].date).getTime() : 0,
+          accountEmail: app.actions.roomAccountEmail(room),
         });
       }
     });
@@ -1925,33 +1954,35 @@ export function SearchModal({ app }: { app: any }) {
 
   const recipientMatches = useMemo(() => {
     if (!kwLower) return [];
-    return roomInfos.filter(r => r.label.toLowerCase().includes(kwLower));
-  }, [roomInfos, kwLower]);
+    return roomInfos.filter(r => r.label.toLowerCase().includes(kwLower) && isAccountFilterVisible(r.accountEmail));
+  }, [roomInfos, kwLower, accountFilter]);
 
   const addressMatches = useMemo(() => {
     if (!kwLower) return [];
-    return roomInfos.filter(r => r.address && r.address.toLowerCase().includes(kwLower));
-  }, [roomInfos, kwLower]);
+    return roomInfos.filter(r => r.address && r.address.toLowerCase().includes(kwLower) && isAccountFilterVisible(r.accountEmail));
+  }, [roomInfos, kwLower, accountFilter]);
 
   const subjectMatches = useMemo(() => {
     if (!kwLower) return [];
     return allUniqueEmails.filter((e: any) => {
       if (!(e.subject || "").toLowerCase().includes(kwLower)) return false;
       if (isEmailHiddenFromSearch(e)) return false;
+      if (!isAccountFilterVisible(e.accountId)) return false;
       return boxFilter[getSearchBoxInfo(e).key];
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allUniqueEmails, kwLower, boxFilter, emailRoomMap, chatConfigs, messageConfigs]);
+  }, [allUniqueEmails, kwLower, boxFilter, accountFilter, emailRoomMap, chatConfigs, messageConfigs]);
 
   const bodyMatches = useMemo(() => {
     if (!kwLower) return [];
     return allUniqueEmails.filter((e: any) => {
       if (!(e.body || "").toLowerCase().includes(kwLower)) return false;
       if (isEmailHiddenFromSearch(e)) return false;
+      if (!isAccountFilterVisible(e.accountId)) return false;
       return boxFilter[getSearchBoxInfo(e).key];
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allUniqueEmails, kwLower, boxFilter, emailRoomMap, chatConfigs, messageConfigs]);
+  }, [allUniqueEmails, kwLower, boxFilter, accountFilter, emailRoomMap, chatConfigs, messageConfigs]);
 
   // クライアント側（既に読み込み済みのメールだけ）の検索結果が0件の場合、Gmail本体を対象に
   // サーバー検索するフォールバック。ヒットしたメールはsearchServerSide内でemails stateへ
@@ -2166,6 +2197,16 @@ export function SearchModal({ app }: { app: any }) {
                 <label key={key} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1 rounded hover:bg-[#3f4147]">
                   <input type="checkbox" checked={boxFilter[key]} onChange={(e) => setBoxFilter(prev => ({ ...prev, [key]: e.target.checked }))} className="accent-[#5865F2]" />
                   {SEARCH_BOX_LABELS[key]}
+                </label>
+              ))}
+            </div>
+          )}
+          {searchAccountList.length > 1 && (
+            <div className="flex flex-wrap gap-1 text-[11px] font-bold">
+              {searchAccountList.map(acct => (
+                <label key={acct} title={acct} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1 rounded hover:bg-[#3f4147]">
+                  <input type="checkbox" checked={accountFilter[acct] !== false} onChange={(e) => setAccountFilter(prev => ({ ...prev, [acct]: e.target.checked }))} className="accent-[#5865F2]" />
+                  {acct.split("@")[0]}
                 </label>
               ))}
             </div>
