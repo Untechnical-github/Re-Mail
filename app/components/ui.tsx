@@ -211,7 +211,7 @@ export function formatFileSize(bytes: number): string {
 export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
   const { selectionMode, selectedIds } = app.state;
-  const { handleMenuBarClick, setModal, setSelectedIds, setSelectionMode, setRenameInput,
+  const { handleMenuBarClick, setModal, setSelectedIds, setRenameInput,
           setReplySubject, setReplyBody, setReplyToMessage, safeBack, enterSelectionMode } = app.actions;
 
   const [showCopiedToast, setShowCopiedToast] = useState(false);
@@ -253,7 +253,9 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   });
 
   const isDisabled = (action: string): boolean => {
-    if (action === "reset") return !isAnySelection || !hasItems;
+    // リセットは常に有効（このボタン自体はチャット画面にしか描画されない）。無選択時は
+    // 全チャット/メッセージから選ぶ画面を開く
+    if (action === "reset") return false;
     if (!isAnySelection || !hasItems) return true;
     if ((action === "pin" || action === "hide") && !isChat && !hasSelectedTarget) return true;
     return isActionRestrictedForAll(action);
@@ -447,25 +449,12 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         {renderText("削除")}
       </button>
 
-      {/* リセット: チャット画面のみ、選択時のみ有効 */}
+      {/* リセット: チャット画面のみ。選択チャットがあればその範囲、無ければ全体から選ぶ画面を開く */}
       {isChat && (
         <button onClick={() => handleMenuBarClick("chat_reset")} className={getBtnClass("reset", true)}>
           {renderText("リセット")}
         </button>
       )}
-
-      {/* 非表示解除 */}
-      <button
-        onClick={() => {
-          setModal({ type: "unhide_select", targetMode: modePrefix as any, targets: [] });
-          setSelectedIds([]);
-          setSelectionMode("none");
-          window.history.pushState({ action: "modal" }, "", window.location.href);
-        }}
-        className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}
-      >
-        非表示解除
-      </button>
       </div>
     </>
   );

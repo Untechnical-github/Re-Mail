@@ -1318,9 +1318,9 @@ export function AttachmentModal({ app }: { app: any }) {
 }
 
 export function Modals({ app }: { app: any }) {
-  const { modal, renameInput, moveDestination, resetOptions, chatConfigs, messageConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
-  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, setSelectedIds, setResetOptions, updateChatConfigByRoomKey, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
-  const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs } = app.computed;
+  const { modal, renameInput, moveDestination, chatConfigs, messageConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
+  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, updateChatConfigByRoomKey, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
+  const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats } = app.computed;
 
   if (!modal || modal.type === "search" || modal.type === "filter_tool") return null;
 
@@ -1570,85 +1570,6 @@ export function Modals({ app }: { app: any }) {
           );
         })()}
 
-        {modal.type === "confirm_unhide" && (
-          <div className="p-5">
-            <h2 className="text-lg font-bold text-white mb-2">非表示を解除</h2>
-            <p className="text-sm text-gray-300 mb-6 leading-relaxed">選択した項目を再び画面に表示しますか？</p>
-            <div className="flex justify-end gap-3">
-              <button onClick={() => { setModal({ type: "unhide_select", targetMode: modal.targetMode, targets: [] }); setSelectedIds([]); }} className="px-4 py-2 hover:underline text-gray-300 text-sm">戻る</button>
-              <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">解除する</button>
-            </div>
-          </div>
-        )}
-
-        {modal.type === "unhide_select" && (
-          <div className="flex flex-col max-h-[80vh]">
-            <div className="p-4 border-b border-[#1E1F22]">
-              <h2 className="text-lg font-bold text-white">
-                {modal.targetMode === "chat" ? "非表示の解除" : "非表示メッセージの解除"}
-              </h2>
-            </div>
-            <div className="p-2 overflow-y-auto flex-1 space-y-4">
-              {modal.targetMode === "chat" ? (
-                <>
-                  <div>
-                    <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">非表示のチャット</div>
-                    {hiddenChats.map((c: string) => (
-                      <label key={c} className="flex items-center gap-3 p-2 hover:bg-[#2B2D31] rounded cursor-pointer">
-                        <input type="checkbox" checked={selectedIds.includes(c)} onChange={() => app.actions.toggleSelection(c)} className="accent-[#5865F2]" />
-                        <span className="text-sm truncate">{chatConfigs[c]?.customName || app.actions.roomLocalKey(c)}</span>
-                      </label>
-                    ))}
-                    {hiddenChats.length === 0 && <div className="text-gray-500 text-xs p-2 px-4">非表示のチャットはありません</div>}
-                  </div>
-
-                  <div className="border-t border-[#1E1F22]/50 pt-2">
-                    <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">非表示のメッセージ（すべてのチャットから）</div>
-                    {hiddenMsgs.map((m: any) => {
-                      const roomId = messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId; const chatName = roomId ? (chatConfigs[roomId]?.customName || app.actions.roomLocalKey(roomId)) : "不明なチャット";
-                      return (
-                        <label key={m.id} className="flex items-center gap-3 p-2 hover:bg-[#2B2D31] rounded cursor-pointer">
-                          <input type="checkbox" checked={selectedIds.includes(m.id)} onChange={() => app.actions.toggleSelection(m.id)} className="accent-[#5865F2]" />
-                          <div className="text-sm truncate flex-1 flex flex-col gap-0.5">
-                            <span className="text-[11px] text-[#5865F2] font-bold truncate">{chatName}</span>
-                            <div className="text-gray-200 truncate">
-                              <span className="text-gray-400 text-xs mr-2">{new Date(m.date).toLocaleDateString()}</span>
-                              {m.subject || m.snippet || "(件名なし)"}
-                            </div>
-                          </div>
-                        </label>
-                      );
-                    })}
-                    {hiddenMsgs.length === 0 && <div className="text-gray-500 text-xs p-2 px-4">非表示のメッセージはありません</div>}
-                  </div>
-                </>
-              ) : (
-                <div>
-                  <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">このチャット内の非表示メッセージ</div>
-                  {hiddenMsgs.filter((m: any) => messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId === selectedSender).map((m: any) => (
-                    <label key={m.id} className="flex items-center gap-3 p-2 hover:bg-[#2B2D31] rounded cursor-pointer">
-                      <input type="checkbox" checked={selectedIds.includes(m.id)} onChange={() => app.actions.toggleSelection(m.id)} className="accent-[#5865F2]" />
-                      <div className="text-sm truncate flex-1 flex flex-col gap-0.5">
-                        <div className="text-gray-200 truncate">
-                          <span className="text-gray-400 text-xs mr-2">{new Date(m.date).toLocaleDateString()}</span>
-                          {m.subject || m.snippet || "(件名なし)"}
-                        </div>
-                      </div>
-                    </label>
-                  ))}
-                  {hiddenMsgs.filter((m: any) => messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId === selectedSender).length === 0 && (
-                    <div className="text-gray-500 text-sm p-4 text-center">このチャット内に非表示のメッセージはありません</div>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="p-4 border-t border-[#1E1F22] flex justify-end gap-3">
-              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-              <button disabled={selectedIds.length === 0} onClick={() => setModal({ type: "confirm_unhide", targetMode: modal.targetMode, targets: selectedIds })} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-gray-600 disabled:text-gray-400">次へ ({selectedIds.length})</button>
-            </div>
-          </div>
-        )}
-
         {modal.type === "select_reply_target" && (() => {
           const isGroup = chatConfigs[selectedSender!]?.isGroup;
           const source = isGroup ? (app.computed.groupReplyPools[selectedSender!] || []) : (groupedEmails[selectedSender!] || []);
@@ -1724,34 +1645,86 @@ export function Modals({ app }: { app: any }) {
           </div>
         )}
 
-        {modal.type === "confirm_reset" && (
-          <div className="p-5">
-            <h2 className="text-lg font-bold text-white mb-2">設定のリセット</h2>
-            <div className="flex flex-col gap-2 mb-6 text-sm text-gray-200 mt-4">
-              <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition">
-                <input type="checkbox" checked={resetOptions.pin} onChange={(e) => setResetOptions({...resetOptions, pin: e.target.checked})} className="accent-[#5865F2] w-4 h-4" />
-                ピン留め (通常・永続) を解除
+        {modal.type === "reset_select" && (() => {
+          const scope = modal.resetScope || "all";
+          const targetChatIds = new Set(modal.targets as string[]);
+          const inScope = (roomId: string | undefined) => scope === "all" || (roomId !== undefined && targetChatIds.has(roomId));
+
+          // 選択中チャットが非表示ということはあり得ない（非表示チャットはそもそも一覧に出ず選べない）ため、
+          // specificスコープでは「非表示のチャット」欄は出さず、メッセージのみを対象にする
+          const hideChatItems: string[] = scope === "all" ? hiddenChats : [];
+          const hideMsgItems = (hiddenMsgs as any[]).filter((m: any) => inScope(messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId));
+          const pinChatItems: string[] = scope === "all" ? pinnedChats : pinnedChats.filter((c: string) => targetChatIds.has(c));
+          const pinMsgItems = (pinnedMsgs as any[]).filter((m: any) => inScope(messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId));
+          const nameChatItems: string[] = scope === "all" ? nameChangedChats : nameChangedChats.filter((c: string) => targetChatIds.has(c));
+
+          const key = (category: string, level: string, id: string) => `${category}:${level}:${id}`;
+          const totalCount = hideChatItems.length + hideMsgItems.length + pinChatItems.length + pinMsgItems.length + nameChatItems.length;
+
+          const renderChatRow = (category: string, c: string) => (
+            <label key={key(category, "chat", c)} className="flex items-center gap-3 p-2 hover:bg-[#2B2D31] rounded cursor-pointer">
+              <input type="checkbox" checked={selectedIds.includes(key(category, "chat", c))} onChange={() => app.actions.toggleSelection(key(category, "chat", c))} className="accent-[#5865F2]" />
+              <span className="text-sm truncate">{chatConfigs[c]?.customName || app.actions.roomLocalKey(c)}</span>
+            </label>
+          );
+          const renderMsgRow = (category: string, m: any) => {
+            const roomId = messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId;
+            const chatName = roomId ? (chatConfigs[roomId]?.customName || app.actions.roomLocalKey(roomId)) : "不明なチャット";
+            return (
+              <label key={key(category, "msg", m.id)} className="flex items-center gap-3 p-2 hover:bg-[#2B2D31] rounded cursor-pointer">
+                <input type="checkbox" checked={selectedIds.includes(key(category, "msg", m.id))} onChange={() => app.actions.toggleSelection(key(category, "msg", m.id))} className="accent-[#5865F2]" />
+                <div className="text-sm truncate flex-1 flex flex-col gap-0.5">
+                  <span className="text-[11px] text-[#5865F2] font-bold truncate">{chatName}</span>
+                  <div className="text-gray-200 truncate">
+                    <span className="text-gray-400 text-xs mr-2">{new Date(m.date).toLocaleDateString()}</span>
+                    {m.subject || m.snippet || "(件名なし)"}
+                  </div>
+                </div>
               </label>
-              <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition">
-                <input type="checkbox" checked={resetOptions.hide} onChange={(e) => setResetOptions({...resetOptions, hide: e.target.checked})} className="accent-[#5865F2] w-4 h-4" />
-                非表示設定 を解除
-              </label>
-              <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition">
-                <input type="checkbox" checked={resetOptions.name} onChange={(e) => setResetOptions({...resetOptions, name: e.target.checked})} className="accent-[#5865F2] w-4 h-4" />
-                名前の変更 を初期化
-              </label>
-              <div className="border-t border-[#1E1F22] my-1" />
-              <label className="flex items-center gap-3 cursor-pointer hover:bg-[#2B2D31] p-2 rounded transition">
-                <input type="checkbox" checked={resetOptions.crossBox} onChange={(e) => setResetOptions({...resetOptions, crossBox: e.target.checked})} className="accent-[#5865F2] w-4 h-4" />
-                <span>他の場所のメールの読み込みをリセット<span className="block text-xs text-gray-400">現在のフィルター対象外のメールを読み込みボタンに戻す</span></span>
-              </label>
+            );
+          };
+
+          return (
+            <div className="flex flex-col max-h-[80vh]">
+              <div className="p-4 border-b border-[#1E1F22]">
+                <h2 className="text-lg font-bold text-white">設定のリセット</h2>
+                <p className="text-xs text-gray-400 mt-1">
+                  {scope === "all" ? "すべてのチャット・メッセージが対象です" : `選択した${targetChatIds.size}件のチャットが対象です`}
+                </p>
+              </div>
+              <div className="p-2 overflow-y-auto flex-1 space-y-4">
+                <div>
+                  <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">非表示</div>
+                  {hideChatItems.map((c: string) => renderChatRow("hide", c))}
+                  {hideMsgItems.map((m: any) => renderMsgRow("hide", m))}
+                  {hideChatItems.length === 0 && hideMsgItems.length === 0 && <div className="text-gray-500 text-xs p-2 px-4">対象はありません</div>}
+                </div>
+                <div className="border-t border-[#1E1F22]/50 pt-2">
+                  <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">ピン留め</div>
+                  {pinChatItems.map((c: string) => renderChatRow("pin", c))}
+                  {pinMsgItems.map((m: any) => renderMsgRow("pin", m))}
+                  {pinChatItems.length === 0 && pinMsgItems.length === 0 && <div className="text-gray-500 text-xs p-2 px-4">対象はありません</div>}
+                </div>
+                <div className="border-t border-[#1E1F22]/50 pt-2">
+                  <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">名前変更（チャットのみ）</div>
+                  {nameChatItems.map((c: string) => renderChatRow("name", c))}
+                  {nameChatItems.length === 0 && <div className="text-gray-500 text-xs p-2 px-4">対象はありません</div>}
+                </div>
+                {totalCount === 0 && <div className="text-gray-500 text-sm p-4 text-center">リセットできる項目がありません</div>}
+              </div>
+              <div className="p-4 border-t border-[#1E1F22] flex justify-end gap-3">
+                <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
+                <button
+                  disabled={selectedIds.length === 0}
+                  onClick={() => { app.actions.executeResetSelection(selectedIds); exitAfterAction(); }}
+                  className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c] disabled:bg-[#3f4147] disabled:text-gray-500"
+                >
+                  リセットする ({selectedIds.length})
+                </button>
+              </div>
             </div>
-            <div className="flex justify-end gap-3">
-              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-              <button onClick={executeConfirmedAction} disabled={!resetOptions.pin && !resetOptions.hide && !resetOptions.name && !resetOptions.crossBox} className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c] disabled:bg-[#3f4147] disabled:text-gray-500">リセットする</button>
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {modal.type === "select_move_dest" && (
           <div className="p-5">
