@@ -7,7 +7,7 @@ import { signIn } from "next-auth/react";
 import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
 import { Modals, EmailModal, AttachmentModal, SearchModal, FilterToolModal } from "./components/Modals";
-import { getFileIcon, formatFileSize } from "./components/ui";
+import { getFileIcon, formatFileSize, PinIcon, PaperclipIcon, WarningIcon } from "./components/ui";
 import { chatConfigTab, isMineEmail } from "./lib/filterMatch";
 
 function InlineAttachmentImage({ attachment, messageId, accountId, cacheKey, onOpen }: {
@@ -205,8 +205,8 @@ export default function Home() {
   </div>
 )}
 {state.errorToast && (
-  <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] bg-[#2B2D31] text-white text-sm font-bold px-4 py-2.5 rounded-lg shadow-lg border border-red-500/60 max-w-[90vw] text-center">
-    ⚠ {state.errorToast}
+  <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] bg-[#2B2D31] text-white text-sm font-bold px-4 py-2.5 rounded-lg shadow-lg border border-red-500/60 max-w-[90vw] text-center flex items-center justify-center gap-1.5">
+    <WarningIcon className="w-4 h-4 flex-shrink-0" /> {state.errorToast}
   </div>
 )}
 
@@ -450,7 +450,7 @@ export default function Home() {
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-baseline">
                         <div className="flex items-center gap-1 truncate pr-2">
-                          {config?.isPinned && <span className="text-[#FEE75C] text-[10px]">📌</span>}
+                          {config?.isPinned && <PinIcon className="w-3 h-3 text-[#FEE75C] flex-shrink-0" />}
                           <span className="font-bold text-sm truncate">{config?.customName || actions.roomLocalKey(sender)}</span>
                           {state.linkedAccounts.length > 0 && (() => {
                             const acct = actions.roomAccountEmail(sender);
@@ -459,9 +459,9 @@ export default function Home() {
                             return (
                               <span
                                 title={needsReauth ? `${acct}（連携が切れています。再連携してください）` : acct}
-                                className={`text-[9px] font-bold px-1 py-0.5 rounded flex-shrink-0 leading-none ${needsReauth ? "bg-red-500/25 text-red-400" : "bg-[#5865F2]/25 text-[#5865F2]"}`}
+                                className={`text-[9px] font-bold px-1 py-0.5 rounded flex-shrink-0 leading-none flex items-center ${needsReauth ? "bg-red-500/25 text-red-400" : "bg-[#5865F2]/25 text-[#5865F2]"}`}
                               >
-                                {needsReauth ? "⚠" : (acct[0]?.toUpperCase() || "?")}
+                                {needsReauth ? <WarningIcon className="w-2.5 h-2.5" /> : (acct[0]?.toUpperCase() || "?")}
                               </span>
                             );
                           })()}
@@ -509,9 +509,9 @@ export default function Home() {
                     return (
                       <span
                         title={needsReauth ? `${acct}（連携が切れています。再連携してください）` : acct}
-                        className={`text-[9px] font-bold px-1 py-0.5 rounded flex-shrink-0 leading-none ${needsReauth ? "bg-red-500/25 text-red-400" : "bg-[#5865F2]/25 text-[#5865F2]"}`}
+                        className={`text-[9px] font-bold px-1 py-0.5 rounded flex-shrink-0 leading-none flex items-center ${needsReauth ? "bg-red-500/25 text-red-400" : "bg-[#5865F2]/25 text-[#5865F2]"}`}
                       >
-                        {needsReauth ? "⚠" : (acct[0]?.toUpperCase() || "?")}
+                        {needsReauth ? <WarningIcon className="w-2.5 h-2.5" /> : (acct[0]?.toUpperCase() || "?")}
                       </span>
                     );
                   })()}
@@ -599,7 +599,7 @@ export default function Home() {
 
               {computed.pinnedMsgsInChat.length > 0 && (
                 <div className="bg-[#2B2D31] border-b border-[#1E1F22] px-4 py-1.5 flex gap-2 overflow-x-auto scrollbar-none items-center shadow-inner cursor-default">
-                   <span className="text-xs text-[#FEE75C] font-bold">📌</span>
+                   <PinIcon className="w-3.5 h-3.5 text-[#FEE75C] flex-shrink-0" />
                    {computed.pinnedMsgsInChat.map((m: any) => (
                       <button key={`pin-${m.id}`} onClick={(e) => { e.stopPropagation(); document.getElementById(`msg-${m.id}`)?.scrollIntoView({behavior: 'smooth', block: 'center'}); }} className="text-xs bg-[#1E1F22] text-gray-300 px-3 py-1.5 rounded-full truncate max-w-[200px] hover:text-white border border-[#35373C] flex-shrink-0 transition active:scale-95">
                          {m.subject || m.snippet}
@@ -810,7 +810,7 @@ export default function Home() {
                                 if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                               }}
                            >
-                              {state.messageConfigs[actions.messageConfigKey(email.id)]?.isPinned && <span className="text-[#FEE75C] text-xs mr-2 select-none">📌</span>}
+                              {state.messageConfigs[actions.messageConfigKey(email.id)]?.isPinned && <PinIcon className="w-3.5 h-3.5 text-[#FEE75C] mr-2 flex-shrink-0 inline-block align-text-bottom" />}
                               {hasVisibleSubject && (
                                 <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={displaySubject} highlight={subjectFindHighlight} field="subject" activeField={activeFindField} activeIndex={activeFindIndex} /></div>
                               )}
@@ -868,7 +868,7 @@ export default function Home() {
                                      onClick={(e) => { e.stopPropagation(); actions.openAttachmentModal({ ...att, messageId: email.id, accountId: email.accountId, cacheKey }); }}
                                      className="flex items-center gap-2 px-3 py-2 rounded-xl bg-black/20 border border-white/10 hover:bg-black/30 transition text-left max-w-[200px]"
                                    >
-                                     <span className="text-xl flex-shrink-0">{getFileIcon(att.mimeType)}</span>
+                                     <span className="flex-shrink-0">{getFileIcon(att.mimeType, "w-5 h-5")}</span>
                                      <div className="min-w-0">
                                        <div className="text-xs font-bold truncate text-gray-200">{att.filename}</div>
                                        <div className="text-[10px] text-gray-400">{formatFileSize(att.size)}</div>
@@ -928,7 +928,7 @@ export default function Home() {
                     <div className="flex flex-wrap gap-2 mb-2">
                       {state.replyAttachments.map((att: any, idx: number) => (
                         <div key={`${att.filename}-${idx}`} className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-black/20 border border-white/10 max-w-[220px]">
-                          <span className="text-base flex-shrink-0">{getFileIcon(att.mimeType)}</span>
+                          <span className="flex-shrink-0">{getFileIcon(att.mimeType, "w-4 h-4")}</span>
                           <div className="min-w-0">
                             <div className="text-xs font-bold truncate text-gray-200">{att.filename}</div>
                             <div className="text-[10px] text-gray-400">{formatFileSize(att.size)}</div>
@@ -954,7 +954,7 @@ export default function Home() {
                         className="hidden"
                         onChange={(e) => { if (e.target.files && e.target.files.length > 0) actions.addReplyAttachments(e.target.files); e.target.value = ""; }}
                       />
-                      📎
+                      <PaperclipIcon className="w-5 h-5" />
                     </label>
                     <textarea disabled={isSendDisabled} placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || actions.roomLocalKey(state.selectedSender!)}`} rows={state.isMobile ? 1 : 2} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
                     <button onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={isSendDisabled || state.isSending || !state.replyBody.trim()} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">

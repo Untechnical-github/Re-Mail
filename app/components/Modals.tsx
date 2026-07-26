@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
 import { signOut } from "next-auth/react";
-import { BodyWithLinks, getFileIcon, formatFileSize, HighlightText } from "./ui";
+import { BodyWithLinks, getFileIcon, formatFileSize, HighlightText, WarningIcon } from "./ui";
 import { FilterCriteria, ConditionSet, TextField, TextRule, DateDirection, FindBarBoxKey, messageMatchesFilter, isEmptyFilterCriteria, getFindBarBoxKey, isActionBoxRestricted, getConditionSets } from "../lib/filterMatch";
 import { shouldTriggerServerSearch, markServerSearched } from "../lib/searchFallback";
 import { encodeRoomKey, decodeRoomKey } from "../lib/roomKey";
@@ -1224,7 +1224,7 @@ export function AttachmentModal({ app }: { app: any }) {
       >
         {/* ヘッダー */}
         <div className="flex items-center gap-3 p-4 border-b border-[#1E1F22] flex-shrink-0">
-          <span className="text-2xl flex-shrink-0">{getFileIcon(mimeType)}</span>
+          <span className="flex-shrink-0">{getFileIcon(mimeType, "w-6 h-6")}</span>
           <div className="flex-1 min-w-0">
             <div className="font-bold text-white text-sm truncate">{filename}</div>
             <div className="text-[11px] text-gray-400">{formatFileSize(size)} · {mimeType}</div>
@@ -1239,7 +1239,7 @@ export function AttachmentModal({ app }: { app: any }) {
           )}
           {!isLoading && !base64 && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm p-4 text-center">
-              <span className="text-4xl">{getFileIcon(mimeType)}</span>
+              <span>{getFileIcon(mimeType, "w-9 h-9")}</span>
               <span>ファイルを読み込めませんでした</span>
             </div>
           )}
@@ -1289,7 +1289,7 @@ export function AttachmentModal({ app }: { app: any }) {
           )}
           {!isLoading && base64 && !canPreview && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-gray-400 p-8 text-center">
-              <span className="text-6xl">{getFileIcon(mimeType)}</span>
+              <span>{getFileIcon(mimeType, "w-16 h-16")}</span>
               <span className="text-sm font-bold text-gray-300">{filename}</span>
               <span className="text-xs text-gray-500">このファイル形式はプレビューできません</span>
             </div>
@@ -1390,10 +1390,10 @@ export function Modals({ app }: { app: any }) {
                             {needsReauth && (
                               <button
                                 onClick={() => { window.location.href = "/api/accounts/connect"; }}
-                                className="text-xs font-bold text-[#FEE75C] hover:text-white px-2"
+                                className="text-xs font-bold text-[#FEE75C] hover:text-white px-2 flex items-center gap-1"
                                 title="連携が切れています。再連携してください"
                               >
-                                ⚠ 再連携
+                                <WarningIcon className="w-3.5 h-3.5" /> 再連携
                               </button>
                             )}
                             <button
