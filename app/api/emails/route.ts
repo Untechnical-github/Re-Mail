@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { auth } from "../../../auth";
 import { getValidAccessToken } from "../../lib/googleToken";
+import { encryptSecret, decryptSecret, isEncrypted } from "../../lib/tokenCrypto";
 
 export const runtime = 'edge';
 
@@ -36,17 +37,38 @@ async function resolveAccessToken(session: any, accountEmail: string | null): Pr
   const row = results?.[0] as any;
   if (!row?.refresh_token) return null;
 
+  // refresh_token/access_tokenはD1に暗号化して保存している（tokenCrypto.ts参照）。
+  // TOKEN_ENCRYPTION_KEY未設定のまま暗号化済みデータを復号しようとした場合は例外になるため、
+  // それはGoogle側のトークン失効とは別の運用上の問題として区別する（needs_reauthは立てない）
+  let storedRefreshToken: string;
+  let storedAccessToken: string | null;
   try {
-    const result = await getValidAccessToken(accountEmail, row.access_token ?? null, row.expires_at ?? null, row.refresh_token);
-    const tokenChanged = result.accessToken !== row.access_token || result.expiresAt !== row.expires_at || !!result.refreshToken;
-    if (tokenChanged || row.needs_reauth) {
+    storedRefreshToken = await decryptSecret(row.refresh_token);
+    storedAccessToken = row.access_token ? await decryptSecret(row.access_token) : null;
+  } catch (error) {
+    console.error(`Failed to decrypt stored tokens for linked account ${accountEmail} (TOKEN_ENCRYPTION_KEY may have changed):`, error);
+    return null;
+  }
+  const wasLegacyPlaintext = !isEncrypted(row.refresh_token) || (row.access_token && !isEncrypted(row.access_token));
+
+  try {
+    const result = await getValidAccessToken(accountEmail, storedAccessToken, row.expires_at ?? null, storedRefreshToken);
+    const tokenChanged = result.accessToken !== storedAccessToken || result.expiresAt !== row.expires_at || !!result.refreshToken;
+    // 既存データが暗号化前の平文だった場合、他に変化が無くてもここで暗号化済みへ書き戻す
+    // （鍵導入時点の既存連携アカウントを、次にアクセスされたタイミングで自然に移行させるため）
+    if (tokenChanged || row.needs_reauth || wasLegacyPlaintext) {
       // Googleがリフレッシュトークンをローテーションした場合（result.refreshTokenが返る場合）は
       // 必ずD1側も更新する。ここを怠ると古いrefresh_tokenが残り続け、次回のリフレッシュ時に
       // invalid_grantで失効する（auth.tsのメインアカウント側と同じ理由でrefreshToken ?? 旧値を使う）。
       // 成功した以上、以前 needs_reauth が立っていてもここで解除する
+      const nextRefreshToken = result.refreshToken ?? storedRefreshToken;
+      const [encryptedAccessToken, encryptedRefreshToken] = await Promise.all([
+        encryptSecret(result.accessToken),
+        encryptSecret(nextRefreshToken),
+      ]);
       await db.prepare(
         "UPDATE linked_accounts SET access_token = ?, expires_at = ?, refresh_token = ?, needs_reauth = 0 WHERE user_email = ? AND account_email = ?"
-      ).bind(result.accessToken, result.expiresAt, result.refreshToken ?? row.refresh_token, session.user.email, accountEmail).run();
+      ).bind(encryptedAccessToken, result.expiresAt, encryptedRefreshToken, session.user.email, accountEmail).run();
     }
     return result.accessToken;
   } catch (error: any) {

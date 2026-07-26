@@ -1885,6 +1885,12 @@ export function SearchModal({ app }: { app: any }) {
   const [expandedAllSections, setExpandedAllSections] = useState<Record<string, boolean>>({});
 
   const inputRef = useRef<HTMLInputElement>(null);
+  // サーバー検索フォールバックを既に試した「キーワード::対象フィールド」の組み合わせを記録する。
+  // subjectMatches/bodyMatchesは0件のままでも、allUniqueEmailsが（このサーバー検索以外の理由、例:
+  // 60秒ごとのバックグラウンド再取得で）更新されるたびに新しい配列参照になり useEffect の依存配列
+  // （.lengthは変わらなくても念のため）を再評価しうるため、同じキーワードに対してGmailへの
+  // クォータを消費する検索を何度も撃たないよう、実行済みの組み合わせはここで確実にスキップする
+  const searchedServerKeywordsRef = useRef<Set<string>>(new Set());
 
   // モーダルが開いた瞬間にタブとキーワードを初期化し、入力欄にフォーカスする
   useEffect(() => {
@@ -1893,6 +1899,7 @@ export function SearchModal({ app }: { app: any }) {
     setActiveTab("all");
     setSortOrder("newest");
     setExpandedAllSections({});
+    searchedServerKeywordsRef.current.clear();
     const t = setTimeout(() => inputRef.current?.focus(), 50);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1980,11 +1987,16 @@ export function SearchModal({ app }: { app: any }) {
   useEffect(() => {
     if (!kwLower || kwLower.length < 2) { setIsServerSearching(false); return; }
     if (activeTab !== "all" && activeTab !== "subject" && activeTab !== "body") return;
-    const needSubject = subjectMatches.length === 0;
-    const needBody = bodyMatches.length === 0;
+    // 「このキーワード・このフィールドは既にサーバー検索を試した」ものは、たとえローカル結果が
+    // 引き続き0件でも二度と撃たない（他の理由でallUniqueEmailsが更新され、この副作用が
+    // 再評価された場合の無駄なGmail API呼び出し・クォータ消費を防ぐ）
+    const needSubject = subjectMatches.length === 0 && !searchedServerKeywordsRef.current.has(`${kwLower}::subject`);
+    const needBody = bodyMatches.length === 0 && !searchedServerKeywordsRef.current.has(`${kwLower}::body`);
     if (!needSubject && !needBody) return;
     let cancelled = false;
     const t = setTimeout(async () => {
+      if (needSubject) searchedServerKeywordsRef.current.add(`${kwLower}::subject`);
+      if (needBody) searchedServerKeywordsRef.current.add(`${kwLower}::body`);
       setIsServerSearching(true);
       try {
         await Promise.all([

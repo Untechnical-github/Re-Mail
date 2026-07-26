@@ -50,6 +50,21 @@ function reconcileFakeSentEmails(list: any[]): any[] {
   return supersededFakeIds.size === 0 ? list : list.filter(e => !supersededFakeIds.has(e.id));
 }
 
+// D1に保存するpersistedDataのサイズを一定の範囲に収める。ピン留めしたチャットは、読み込み済みの
+// 全メッセージ（本文込み）をそのままchat_configs.custom_name列にJSONで保存する設計のため、
+// 長文メール（特にHTML由来の本文）を大量にピン留めすると行が際限なく肥大化しうる。
+// 保存用のコピーだけ本文を切り詰める（画面表示用の実データ・persistedEmails stateはそのまま
+// 完全な内容を保持するため、切り詰めるのはリロード後に復元される保存データだけ）
+const MAX_PERSISTED_BODY_CHARS = 20000;
+function capPersistedDataForStorage(data: any): any {
+  if (!data) return data;
+  const cap = (e: any) => {
+    if (!e || typeof e.body !== "string" || e.body.length <= MAX_PERSISTED_BODY_CHARS) return e;
+    return { ...e, body: e.body.slice(0, MAX_PERSISTED_BODY_CHARS) + "\n…(長文のため以下省略)" };
+  };
+  return Array.isArray(data) ? data.map(cap) : cap(data);
+}
+
 function getSavedBoxSettings(): { inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; sent?: boolean } | null {
   if (typeof window === "undefined") return null;
   try {
@@ -508,7 +523,7 @@ export function useMailApp() {
     let nameToSave = nextConfig.customName || "";
     if (nextConfig.forceFetch || nextConfig.isGroup || nextConfig.filterAction) {
       nameToSave = JSON.stringify({
-        name: nextConfig.customName, forceFetch: nextConfig.forceFetch, data: nextConfig.persistedData,
+        name: nextConfig.customName, forceFetch: nextConfig.forceFetch, data: capPersistedDataForStorage(nextConfig.persistedData),
         isGroup: nextConfig.isGroup, groupMembers: nextConfig.groupMembers, groupMemberAddresses: nextConfig.groupMemberAddresses, groupMode: nextConfig.groupMode,
         groupHiddenMembers: nextConfig.groupHiddenMembers,
         filterCriteria: nextConfig.filterCriteria, filterHideOriginal: nextConfig.filterHideOriginal,
@@ -530,7 +545,7 @@ export function useMailApp() {
     setMessageConfigs(prev => ({ ...prev, [stateKey]: nextConfig }));
     let nameToSave = "";
     if (nextConfig.forceFetch || nextConfig.roomId) {
-      nameToSave = JSON.stringify({ forceFetch: nextConfig.forceFetch, data: nextConfig.persistedData, roomId: nextConfig.roomId });
+      nameToSave = JSON.stringify({ forceFetch: nextConfig.forceFetch, data: capPersistedDataForStorage(nextConfig.persistedData), roomId: nextConfig.roomId });
     }
     try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
   };

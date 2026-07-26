@@ -1,6 +1,7 @@
 import { NextResponse, NextRequest } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { auth } from "../../../../auth";
+import { encryptSecret } from "../../../lib/tokenCrypto";
 
 export const runtime = 'edge';
 
@@ -69,6 +70,14 @@ export async function GET(request: NextRequest) {
     const accountEmail = userInfo.email as string | undefined;
     if (!accountEmail) throw new Error("Failed to resolve account email from userinfo");
 
+    // refresh_token/access_tokenはGmailへの継続的なアクセスを許す長期的な資格情報のため、
+    // D1に平文では置かず暗号化してから保存する（TOKEN_ENCRYPTION_KEY未設定時は平文のまま。
+    // tokenCrypto.ts参照）
+    const [encryptedRefreshToken, encryptedAccessToken] = await Promise.all([
+      encryptSecret(tokens.refresh_token),
+      tokens.access_token ? encryptSecret(tokens.access_token) : Promise.resolve(null),
+    ]);
+
     const db = getRequestContext().env.DB;
     await db.prepare(
       `INSERT INTO linked_accounts (user_email, account_email, refresh_token, access_token, expires_at, created_at, needs_reauth)
@@ -81,8 +90,8 @@ export async function GET(request: NextRequest) {
     ).bind(
       session.user.email,
       accountEmail,
-      tokens.refresh_token,
-      tokens.access_token ?? null,
+      encryptedRefreshToken,
+      encryptedAccessToken,
       tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null,
       new Date().toISOString(),
     ).run();
