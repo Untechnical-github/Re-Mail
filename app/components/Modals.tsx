@@ -1433,6 +1433,34 @@ export function Modals({ app }: { app: any }) {
           </div>
         )}
 
+        {modal.type === "settings" && (
+          <div className="p-5">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-bold text-white">設定</h2>
+              <button onClick={() => safeBack()} className="text-gray-400 hover:text-white font-bold text-lg px-1 transition flex-shrink-0">×</button>
+            </div>
+
+            <div className="mb-1">
+              <div className="text-sm font-bold text-gray-200 mb-1">送信ボタン・アクションバー・場所の表示</div>
+              <div className="text-xs text-gray-500 mb-3">送信ボタンや移動・削除などのボタン、受信箱〜ゴミ箱の表示を、文字ラベルとシンプルなアイコンのどちらで表示するか選べます（実験的な機能です）</div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => app.actions.setUseIconLabels(false)}
+                  className={`flex-1 py-2 rounded text-sm font-bold transition ${!app.state.useIconLabels ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#35373C]"}`}
+                >
+                  文字
+                </button>
+                <button
+                  onClick={() => app.actions.setUseIconLabels(true)}
+                  className={`flex-1 py-2 rounded text-sm font-bold transition ${app.state.useIconLabels ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#35373C]"}`}
+                >
+                  アイコン
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {modal.type === "confirm_pin" && (() => {
           const isChatMode = modal.targetMode === "chat";
           const existingForcePinnedChats = Object.keys(chatConfigs).filter(k =>

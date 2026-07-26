@@ -255,6 +255,135 @@ export function getFileIcon(mimeType: string, className: string = "w-5 h-5"): Re
   return <GenericFileIcon className={className} />;
 }
 
+// アクションバー・ボックスフィルター・送信ボタン用のアイコン一式（設定でON/OFFできる「文字→アイコン」表示切替用）。
+// 既存のPinIcon等と同じく単色fillのSVGで統一する
+
+export function SelectAllIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+    </svg>
+  );
+}
+
+export function CloseIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+    </svg>
+  );
+}
+
+export function PlusIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M19 13H13v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+    </svg>
+  );
+}
+
+export function EditIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
+    </svg>
+  );
+}
+
+export function CopyIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z" />
+    </svg>
+  );
+}
+
+export function FolderIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
+    </svg>
+  );
+}
+
+export function TrashIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
+    </svg>
+  );
+}
+
+export function RefreshIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" />
+    </svg>
+  );
+}
+
+// 右向き矢印（転送）。座標は自前で組んだ単純な矢印形状（軸+三角の頭）
+export function ForwardArrowIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M4 11h10V7l6 5-6 5v-4H4z" />
+    </svg>
+  );
+}
+
+// 左向き矢印（返信・リプライ）。ForwardArrowIconの左右反転版
+export function ReplyArrowIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M20 13H10v4l-6-5 6-5v4h10z" />
+    </svg>
+  );
+}
+
+// 非表示（目に斜線）。この1つだけ線画スタイル（斜線が塗りつぶしを突き抜けて見えるようにするため）
+export function HideIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z" />
+      <circle cx="12" cy="12" r="2.5" />
+      <line x1="3" y1="3" x2="21" y2="21" />
+    </svg>
+  );
+}
+
+export function InboxIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M19 3H4.99c-1.11 0-1.98.9-1.98 2L3 19c0 1.1.89 2 1.99 2H19c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 12h-4c0 1.66-1.35 3-3 3s-3-1.34-3-3H4.99V5H19v10z" />
+    </svg>
+  );
+}
+
+export function ArchiveIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M20.54 5.23l-1.39-1.68C18.88 3.21 18.47 3 18 3H6c-.47 0-.88.21-1.16.55L3.46 5.23C3.17 5.57 3 6.02 3 6.5V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6.5c0-.48-.17-.93-.46-1.27zM6.24 5h11.52l.81.97H5.44l.8-.97zM5 19V8h14v11H5zm8.45-9h-2.9v3H8l4 4 4-4h-2.55z" />
+    </svg>
+  );
+}
+
+export function SendIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+    </svg>
+  );
+}
+
+// 迷惑メール（八角形+「！」）。八角形も「！」の穴も自前の座標で正確に組んだ形状
+export function SpamIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className}>
+      <path fillRule="evenodd" clipRule="evenodd" fill="currentColor" d="M9 3h6l6 6v6l-6 6H9l-6-6v-6z M11 8h2v6h-2z M11 16h2v2h-2z" />
+    </svg>
+  );
+}
+
 export function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -327,9 +456,19 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     return `${btnBase} ${colorClass} ${disabled ? "opacity-30 pointer-events-none grayscale" : ""}`;
   };
 
-  const renderText = (text: string) => {
-    if (isAnySelection && hasItems) return `${text}(${selectedIds.length})`;
-    return text;
+  const useIconLabels = !!app.state.useIconLabels;
+  // withCount=true のボタンは、選択中の件数を末尾に付ける（アイコン表示時は小さな数字バッジとして添える）
+  const renderLabel = (text: string, icon: React.ReactNode, withCount = false) => {
+    const count = withCount && isAnySelection && hasItems ? `(${selectedIds.length})` : "";
+    if (useIconLabels) {
+      return (
+        <span className="flex items-center justify-center gap-1" title={`${text}${count}`}>
+          {icon}
+          {count && <span className="text-[10px]">{count}</span>}
+        </span>
+      );
+    }
+    return `${text}${count}`;
   };
 
   const containerClass = isChat
@@ -387,7 +526,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
       {/* 全選択 */}
       <button onClick={handleSelectAll} className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200`}>
-        全選択
+        {renderLabel("全選択", <SelectAllIcon className="w-4 h-4" />)}
       </button>
 
       {/* キャンセル */}
@@ -395,7 +534,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
         onClick={() => { if (isAnySelection) safeBack(); }}
         className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!isAnySelection ? "opacity-30 pointer-events-none grayscale" : ""}`}
       >
-        キャンセル
+        {renderLabel("キャンセル", <CloseIcon className="w-4 h-4" />)}
       </button>
 
       {/* チャット: 作成（未選択なら通常通り新規作成、選択中ならそのチャットを選択済みの状態でモーダルを開く） */}
@@ -417,7 +556,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
           title={selectedSpansMultipleAccounts ? "複数のアカウントにまたがるチャットからはグループを作成できません" : undefined}
           className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${selectedSpansMultipleAccounts ? "opacity-30 pointer-events-none grayscale" : ""}`}
         >
-          作成
+          {renderLabel("作成", <PlusIcon className="w-4 h-4" />)}
         </button>
       )}
 
@@ -435,7 +574,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
           }}
           className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!isAnySelection || selectedIds.length !== 1 ? "opacity-30 pointer-events-none grayscale" : ""}`}
         >
-          名前変更
+          {renderLabel("名前変更", <EditIcon className="w-4 h-4" />)}
         </button>
       )}
 
@@ -453,7 +592,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
             }}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
           >
-            転送
+            {renderLabel("転送", <ForwardArrowIcon className="w-4 h-4" />)}
           </button>
           <button
             onClick={() => {
@@ -464,7 +603,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
             }}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${(!selectedMsg || isInboundOnlyGroupBar) ? "opacity-30 pointer-events-none grayscale" : ""}`}
           >
-            リプライ
+            {renderLabel("リプライ", <ReplyArrowIcon className="w-4 h-4" />)}
           </button>
           <button
             onClick={() => {
@@ -477,35 +616,35 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
             }}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}
           >
-            コピー
+            {renderLabel("コピー", <CopyIcon className="w-4 h-4" />)}
           </button>
         </>
       )}
 
       {/* ピン留め / ピン解除 */}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_${allPinned ? "unpin" : "pin"}`)} className={getBtnClass("pin")}>
-        {renderText(allPinned ? "ピン解除" : "ピン留め")}
+        {renderLabel(allPinned ? "ピン解除" : "ピン留め", <PinIcon className="w-4 h-4" />, true)}
       </button>
 
       {/* 移動 */}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_move`)} className={getBtnClass("move")}>
-        {renderText("移動")}
+        {renderLabel("移動", <FolderIcon className="w-4 h-4" />, true)}
       </button>
 
       {/* 非表示 */}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_hide`)} className={getBtnClass("hide")}>
-        {renderText("非表示")}
+        {renderLabel("非表示", <HideIcon className="w-4 h-4" />, true)}
       </button>
 
       {/* 削除 */}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_delete`)} className={getBtnClass("delete", true)}>
-        {renderText("削除")}
+        {renderLabel("削除", <TrashIcon className="w-4 h-4" />, true)}
       </button>
 
       {/* リセット: チャット画面のみ。選択チャットがあればその範囲、無ければ全体から選ぶ画面を開く */}
       {isChat && (
         <button onClick={() => handleMenuBarClick("chat_reset")} className={getBtnClass("reset", true)}>
-          {renderText("リセット")}
+          {renderLabel("リセット", <RefreshIcon className="w-4 h-4" />, true)}
         </button>
       )}
       </div>

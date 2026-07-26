@@ -189,6 +189,15 @@ export function useMailApp() {
   });
   const skipFindBarAutoCloseRef = useRef(false);
   const hasPushedFindBarRef = useRef(false);
+  // 設定画面での実験的なトグル: アクションバー・ボックスフィルター・送信ボタンの文字ラベルを
+  // シンプルな単色アイコン表示に切り替える。この端末のブラウザにだけ保存する
+  const [useIconLabels, setUseIconLabels] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("remail_use_icon_labels") === "true";
+  });
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("remail_use_icon_labels", String(useIconLabels));
+  }, [useIconLabels]);
   const [checkInbox, setCheckInbox] = useState<boolean>(() => getSavedBoxSettings()?.inbox ?? true);
   const [checkArchive, setCheckArchive] = useState<boolean>(() => getSavedBoxSettings()?.archive ?? true);
   const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
@@ -2816,7 +2825,7 @@ export function useMailApp() {
     auth: { session, status },
     state: {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
-      isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts,
+      isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, useIconLabels,
       currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts,
       replySubject, replyBody, isSending, replyToMessage, replyAttachments, attachError,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
@@ -2827,7 +2836,7 @@ export function useMailApp() {
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
     actions: {
-      setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setCheckAccounts, changeChatTab,
+      setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setCheckAccounts, setUseIconLabels, changeChatTab,
       setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
       setMoveDestination, setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleMenuBarClick, handleBackgroundClick, toggleSelection,
