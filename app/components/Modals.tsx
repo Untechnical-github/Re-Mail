@@ -1911,7 +1911,7 @@ export function SearchModal({ app }: { app: any }) {
   const kwLower = keyword.trim().toLowerCase();
 
   const roomInfos = useMemo(() => {
-    const infos: { room: string; label: string; address: string | null; isGroup: boolean; latestDate: number; accountEmail: string }[] = [];
+    const infos: { room: string; label: string; originalName: string; address: string | null; isGroup: boolean; latestDate: number; accountEmail: string }[] = [];
 
     // 通常グループ作成時に「個別チャットの表示設定」をオフにして非表示にした宛先は、
     // その人自身のroomはもう一覧に出ないが、グループ自体が非表示でない限り宛先名/アドレスでの
@@ -1932,17 +1932,20 @@ export function SearchModal({ app }: { app: any }) {
         const groupRoom = hiddenMemberGroup.get(c.room);
         // グループ化以外の理由で非表示にした宛先は、従来通り検索対象から除外する
         if (!groupRoom) return;
-        infos.push({ room: groupRoom, label: c.label, address: c.address || null, isGroup: false, latestDate: c.latestDate, accountEmail: c.accountEmail });
+        infos.push({ room: groupRoom, label: c.label, originalName: c.originalName, address: c.address || null, isGroup: false, latestDate: c.latestDate, accountEmail: c.accountEmail });
         return;
       }
-      infos.push({ room: c.room, label: c.label, address: c.address || null, isGroup: false, latestDate: c.latestDate, accountEmail: c.accountEmail });
+      infos.push({ room: c.room, label: c.label, originalName: c.originalName, address: c.address || null, isGroup: false, latestDate: c.latestDate, accountEmail: c.accountEmail });
     });
     Object.keys(chatConfigs).forEach(room => {
       const cfg = chatConfigs[room];
       if (cfg?.isGroup && !cfg.isHidden && (groupedEmails[room] || []).length > 0) {
+        const label = cfg.customName || app.actions.roomLocalKey(room);
         infos.push({
           room,
-          label: cfg.customName || app.actions.roomLocalKey(room),
+          label,
+          // グループ名は作成時に必須入力のため「変更前の名前」という概念が無く、labelと同一でよい
+          originalName: label,
           address: null,
           isGroup: true,
           latestDate: groupedEmails[room][0]?.date ? new Date(groupedEmails[room][0].date).getTime() : 0,
@@ -1976,7 +1979,10 @@ export function SearchModal({ app }: { app: any }) {
 
   const recipientMatches = useMemo(() => {
     if (!kwLower) return [];
-    return roomInfos.filter(r => r.label.toLowerCase().includes(kwLower) && isAccountFilterVisible(r.accountEmail));
+    return roomInfos.filter(r =>
+      (r.label.toLowerCase().includes(kwLower) || r.originalName.toLowerCase().includes(kwLower))
+      && isAccountFilterVisible(r.accountEmail)
+    );
   }, [roomInfos, kwLower, accountFilter]);
 
   const addressMatches = useMemo(() => {

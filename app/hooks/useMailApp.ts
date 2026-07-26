@@ -1366,6 +1366,9 @@ export function useMailApp() {
         return {
           room,
           label: chatConfigs[room]?.customName || decoded.localKey,
+          // 名前変更後もリネーム前の元の表示名（相手のFromヘッダー由来の名前）で検索できるように、
+          // labelとは別に保持しておく（customNameが無ければlabelと同じ値になる）
+          originalName: decoded.localKey,
           address: getRoomAddress(room),
           accountEmail: decoded.accountEmail,
           latestDate: groupedEmails[room][0]?.date ? new Date(groupedEmails[room][0].date).getTime() : 0,
