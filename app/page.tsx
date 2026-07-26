@@ -8,7 +8,7 @@ import { useMailApp } from "./hooks/useMailApp";
 import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
 import { Modals, EmailModal, AttachmentModal, SearchModal, FilterToolModal } from "./components/Modals";
 import { getFileIcon, formatFileSize } from "./components/ui";
-import { chatConfigTab } from "./lib/filterMatch";
+import { chatConfigTab, isMineEmail } from "./lib/filterMatch";
 
 function InlineAttachmentImage({ attachment, messageId, accountId, cacheKey, onOpen }: {
   attachment: { filename: string; mimeType: string; size: number; attachmentId: string };
@@ -202,6 +202,11 @@ export default function Home() {
 {state.replyNotFoundToast && (
   <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] bg-[#2B2D31] text-white text-sm font-bold px-4 py-2 rounded-full shadow-lg border border-[#4752C4] pointer-events-none">
     このメールは存在しません
+  </div>
+)}
+{state.errorToast && (
+  <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] bg-[#2B2D31] text-white text-sm font-bold px-4 py-2.5 rounded-lg shadow-lg border border-red-500/60 max-w-[90vw] text-center">
+    ⚠ {state.errorToast}
   </div>
 )}
 
@@ -501,7 +506,7 @@ export default function Home() {
                       {isInboundOnlyGroup ? "・受信専用" : isOutboundOnlyGroup ? "・送信専用" : ""}
                     </span>
                   ) : (() => {
-                    const firstPartner = (computed.groupedEmails[state.selectedSender!] || []).find((e: any) => !e.isMe && !e.from.includes(actions.roomAccountEmail(state.selectedSender!)));
+                    const firstPartner = (computed.groupedEmails[state.selectedSender!] || []).find((e: any) => !isMineEmail(e, actions.roomAccountEmail(state.selectedSender!)));
                     if (!firstPartner) return null;
                     const addrMatch = firstPartner.from.match(/<([^>]+)>/);
                     const addr = addrMatch ? addrMatch[1].trim() : firstPartner.from.trim();
@@ -616,7 +621,7 @@ export default function Home() {
                     // このルーム自身が属するアカウントのメールアドレスで判定する
                     // （メインアカウントのメールアドレスで判定すると、連携アカウント側の受信メールが
                     // 差出人＝メインアカウントの場合に誤って「自分が送った」扱いになってしまう）
-                    const isMe = email.isMe || email.from.includes(actions.roomAccountEmail(state.selectedSender!));
+                    const isMe = isMineEmail(email, actions.roomAccountEmail(state.selectedSender!));
                     const isSelected = state.selectedIds.includes(email.id);
                     
                     // ★修正: 送信済みチェックを「絶対優先」に書き換え
@@ -903,7 +908,38 @@ export default function Home() {
                     )}
                   </div>
                   <input disabled={isSendDisabled} type="text" placeholder="件名 (省略可)" value={state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
+                  {state.replyAttachments.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {state.replyAttachments.map((att: any, idx: number) => (
+                        <div key={`${att.filename}-${idx}`} className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-black/20 border border-white/10 max-w-[220px]">
+                          <span className="text-base flex-shrink-0">{getFileIcon(att.mimeType)}</span>
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold truncate text-gray-200">{att.filename}</div>
+                            <div className="text-[10px] text-gray-400">{formatFileSize(att.size)}</div>
+                          </div>
+                          <button onClick={(e) => { e.stopPropagation(); actions.removeReplyAttachment(idx); }} className="text-gray-400 hover:text-white font-bold px-1 flex-shrink-0">×</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {state.attachError && (
+                    <div className="text-xs text-red-400 mb-2">{state.attachError}</div>
+                  )}
                   <div className="flex items-end gap-2">
+                    <label
+                      title="ファイルを添付"
+                      className={`flex-shrink-0 text-gray-400 hover:text-white transition p-2 rounded cursor-pointer ${isSendDisabled ? "pointer-events-none opacity-40" : ""}`}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="file"
+                        multiple
+                        disabled={isSendDisabled}
+                        className="hidden"
+                        onChange={(e) => { if (e.target.files && e.target.files.length > 0) actions.addReplyAttachments(e.target.files); e.target.value = ""; }}
+                      />
+                      📎
+                    </label>
                     <textarea disabled={isSendDisabled} placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || actions.roomLocalKey(state.selectedSender!)}`} rows={state.isMobile ? 1 : 2} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
                     <button onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={isSendDisabled || state.isSending || !state.replyBody.trim()} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
                       {state.isSending ? "..." : "送信"}

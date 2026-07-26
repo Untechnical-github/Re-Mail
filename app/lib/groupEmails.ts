@@ -52,7 +52,7 @@ export function groupEmailsByRoom(
   const tempSentEmails: Email[] = [];
   emails.forEach((email) => {
     if (email.senderRoom) { if (!groups[email.senderRoom]) groups[email.senderRoom] = []; groups[email.senderRoom].push(email); return; }
-    const isMe = email.isMe || email.from.includes(myAddress || "");
+    const isMe = isMineEmail(email, myAddress || "");
     if (!isMe) {
       const roomName = email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown";
       if (!groups[roomName]) groups[roomName] = []; groups[roomName].push(email);
@@ -68,7 +68,7 @@ export function groupEmailsByRoom(
     let matchedRoom: string | null = null;
     for (const roomName of Object.keys(groups)) {
       const roomNameLower = roomName.toLowerCase();
-      const partnerEmail = groups[roomName].find(e => !e.isMe && !e.from.includes(myAddress || ""))?.from.toLowerCase() || "";
+      const partnerEmail = groups[roomName].find(e => !isMineEmail(e, myAddress || ""))?.from.toLowerCase() || "";
       const partnerAddr = (partnerEmail.match(/<([^>]+)>/) || [null, partnerEmail])[1]?.trim() || partnerEmail.trim();
       if ((roomNameLower && toClean.includes(roomNameLower)) || (partnerAddr && toClean.includes(partnerAddr))) { matchedRoom = roomName; break; }
     }

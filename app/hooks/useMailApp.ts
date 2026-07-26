@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import localforage from "localforage";
 import { ChatConfig, MessageConfig, SelectionMode, ModalState, GroupMode } from "../types/mail";
 import { Email } from "../types/email";
-import { getCachedAttachment, setCachedAttachment } from "../lib/attachmentCache";
+import { getCachedAttachment, setCachedAttachment, attachmentCacheKey } from "../lib/attachmentCache";
 import { isMineEmail, getFindBarBoxKey, FindBarBoxKey, FilterCriteria, messageMatchesFilter, ChatListTab, chatConfigTab } from "../lib/filterMatch";
 import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
@@ -23,6 +23,31 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
   });
   await Promise.all(workers);
   return results;
+}
+
+// 送信直後、Gmailが採番した実IDを取得できなかった場合にだけ使うその場限りのフェイクID
+// （"fake-<timestamp>"）が、後からの再取得で同じメールの「実データ版」と重複して
+// 両方残ってしまうのを防ぐ。同じアカウント・送信済み・同じ宛先＋件名で、日時が数分以内に
+// 近い実メールが見つかったら、フェイク側を取り除いて実データ側だけを残す
+// （実IDを取得できた通常ケースでは、mapのキーがそもそも同じIDになるため、
+// この関数を通しても何も除去されない＝無害）
+function reconcileFakeSentEmails(list: any[]): any[] {
+  const fakes = list.filter(e => typeof e.id === "string" && e.id.startsWith("fake-"));
+  if (fakes.length === 0) return list;
+  const reals = list.filter(e => typeof e.id === "string" && !e.id.startsWith("fake-"));
+  const supersededFakeIds = new Set<string>();
+  fakes.forEach(fake => {
+    const fakeTime = new Date(fake.date).getTime();
+    const match = reals.find(real =>
+      (real.accountId || "") === (fake.accountId || "") &&
+      !!real.isMe === true &&
+      (real.to || "") === (fake.to || "") &&
+      (real.subject || "") === (fake.subject || "") &&
+      Math.abs(new Date(real.date).getTime() - fakeTime) < 5 * 60 * 1000
+    );
+    if (match) supersededFakeIds.add(fake.id);
+  });
+  return supersededFakeIds.size === 0 ? list : list.filter(e => !supersededFakeIds.has(e.id));
 }
 
 function getSavedBoxSettings(): { inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; sent?: boolean } | null {
@@ -208,6 +233,9 @@ export function useMailApp() {
   const [replyBody, setReplyBody] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [replyToMessage, setReplyToMessage] = useState<any | null>(null);
+  // 作成中のメールに添付するファイル（送信するまではローカルのbase64として保持する）
+  const [replyAttachments, setReplyAttachments] = useState<{ filename: string; mimeType: string; size: number; data: string }[]>([]);
+  const [attachError, setAttachError] = useState<string | null>(null);
 
   const [hasMouse, setHasMouse] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
@@ -222,6 +250,14 @@ export function useMailApp() {
   // 返信元メッセージへジャンプしようとして見つからなかった場合のトースト表示
   const [replyNotFoundToast, setReplyNotFoundToast] = useState(false);
   const isJumpingToReplyRef = useRef(false);
+  // 送信・転送・移動・削除など、alert()に頼らず一貫してユーザーに伝えたい汎用エラートースト
+  const [errorToast, setErrorToast] = useState<string | null>(null);
+  const errorToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showErrorToast = (message: string) => {
+    if (errorToastTimerRef.current) clearTimeout(errorToastTimerRef.current);
+    setErrorToast(message);
+    errorToastTimerRef.current = setTimeout(() => setErrorToast(null), 4000);
+  };
 
   // メッセージ折りたたみ・モーダル関連
   // collapseLinesCount: null = 折りたたまない（設定画面から変更予定）
@@ -767,7 +803,7 @@ export function useMailApp() {
 
       const map = new Map(currentEmailsState.map((e: any) => [e.id, e]));
       newMessages.forEach((m: any) => map.set(m.id, m));
-      const updatedEmails = Array.from(map.values()).sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      const updatedEmails = reconcileFakeSentEmails(Array.from(map.values())).sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
       const nextPMsgs = syncConfigs(updatedEmails, chatConfigsRef.current, messageConfigsRef.current);
       setPersistedEmails(nextPMsgs);
@@ -780,6 +816,42 @@ export function useMailApp() {
     } finally {
       if (!isSilent && !getIsCancelled()) setIsLoading(false);
     }
+  };
+
+  // 検索モーダル用フォールバック: クライアント側に既に読み込み済みのメールだけでなく、
+  // Gmail本体を対象にサーバー検索する。ローカルの検索結果が0件のときだけ呼ばれる想定
+  // （数千通あるような実アカウントで、読み込み範囲外の過去メールが検索に一切引っかからない
+  // 問題への対応）。メイン＋連携アカウントをまたいで検索し、見つかったメールはそのまま
+  // emails stateへマージする（クリックしてチャットを開いた際に即座に反映されるように）
+  const searchServerSide = async (keyword: string, field: "subject" | "body"): Promise<any[]> => {
+    const trimmed = keyword.trim();
+    if (!trimmed) return [];
+    const myEmail = session?.user?.email || "";
+    const accounts = [myEmail, ...linkedAccountsRef.current];
+    const escaped = trimmed.replace(/"/g, '\\"');
+    const q = field === "subject" ? `subject:"${escaped}"` : `"${escaped}"`;
+
+    const results = await mapWithConcurrency(accounts, 3, async (accountEmail) => {
+      const params = new URLSearchParams({ maxResults: "50", q, includeTrash: "true" });
+      if (accountEmail !== myEmail) params.append("accountEmail", accountEmail);
+      params.append("_t", Date.now().toString());
+      try {
+        const res = await fetch(`/api/emails?${params.toString()}`);
+        if (!res.ok) return [];
+        const data = await res.json();
+        return ((data.messages || []) as any[]).map((m: any) => ({ ...m, accountId: accountEmail }));
+      } catch { return []; }
+    });
+
+    const merged = results.flat();
+    if (merged.length > 0) {
+      setEmails(prev => {
+        const map = new Map(prev.map((e: any) => [e.id, e]));
+        merged.forEach((m: any) => map.set(m.id, m));
+        return reconcileFakeSentEmails(Array.from(map.values()));
+      });
+    }
+    return merged;
   };
 
   const initLoadDoneRef = useRef(false);
@@ -937,7 +1009,7 @@ export function useMailApp() {
           setEmails(prev => {
             const map = new Map(prev.map(e => [e.id, e]));
             validMessages.forEach((m: any) => map.set(m.id, m));
-            return Array.from(map.values());
+            return reconcileFakeSentEmails(Array.from(map.values()));
           });
         }
 
@@ -1783,6 +1855,49 @@ export function useMailApp() {
     setExpandedMsgIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
+  // 送信APIの上限（app/api/emails/route.tsのMAX_TOTAL_ATTACHMENT_BYTES）と揃えておく
+  const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+  const readFileAsBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // "data:<mime>;base64,xxxx" のうち、base64本体だけを取り出す
+      const commaIndex = result.indexOf(",");
+      resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
+  // 作成中のメールにファイルを添付する（複数選択・複数回呼び出しの両方に対応。合計サイズの上限を超える分は追加しない）
+  const addReplyAttachments = async (files: FileList | File[]) => {
+    setAttachError(null);
+    const fileArray = Array.from(files);
+    const currentTotal = replyAttachments.reduce((sum, a) => sum + a.size, 0);
+    let runningTotal = currentTotal;
+    const accepted: { filename: string; mimeType: string; size: number; data: string }[] = [];
+    const rejected: string[] = [];
+    for (const file of fileArray) {
+      if (runningTotal + file.size > MAX_TOTAL_ATTACHMENT_BYTES) { rejected.push(file.name); continue; }
+      try {
+        const data = await readFileAsBase64(file);
+        accepted.push({ filename: file.name, mimeType: file.type || "application/octet-stream", size: file.size, data });
+        runningTotal += file.size;
+      } catch {
+        rejected.push(file.name);
+      }
+    }
+    if (accepted.length > 0) setReplyAttachments(prev => [...prev, ...accepted]);
+    if (rejected.length > 0) {
+      setAttachError(`添付できませんでした（合計${Math.round(MAX_TOTAL_ATTACHMENT_BYTES / 1024 / 1024)}MBまで）: ${rejected.join(", ")}`);
+    }
+  };
+
+  const removeReplyAttachment = (index: number) => {
+    setReplyAttachments(prev => prev.filter((_, i) => i !== index));
+  };
+
   const handleSend = async () => {
     if (!selectedSender || !replyBody.trim()) return;
     const groupCfg = chatConfigs[selectedSender];
@@ -1798,7 +1913,7 @@ export function useMailApp() {
         actualTo = Array.from(resolveGroupMemberAddresses(groupCfg, groupedEmails, sendAccountEmail)).join(", ");
       } else {
         const targetEmails = groupedEmails[selectedSender] || [];
-        const partnerEmail = targetEmails.find((e: any) => !e.isMe && !e.from.includes(sendAccountEmail));
+        const partnerEmail = targetEmails.find((e: any) => !isMineEmail(e, sendAccountEmail));
         actualTo = partnerEmail ? partnerEmail.from : (targetEmails[0]?.to || sendLocalKey);
       }
       
@@ -1820,9 +1935,11 @@ export function useMailApp() {
         }
       }
 
+      const attachmentsToSend = replyAttachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, data: a.data }));
+
       const res = await fetch("/api/emails", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "send", to: actualTo, subject: finalSubject, body: bodyToSend, threadId, inReplyTo, accountEmail: sendAccountEmail })
+        body: JSON.stringify({ action: "send", to: actualTo, subject: finalSubject, body: bodyToSend, threadId, inReplyTo, accountEmail: sendAccountEmail, attachments: attachmentsToSend })
       });
 
       if (res.ok) {
@@ -1830,6 +1947,7 @@ export function useMailApp() {
         // 取得できなかった場合のみ、その場限りのフェイクIDにフォールバックする
         const sentData = await res.json().catch(() => ({} as any));
         const sentId: string = sentData.id || `fake-${Date.now()}`;
+        const sentAttachments = replyAttachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, size: a.size }));
         const sentFake = {
           id: sentId,
           threadId: sentData.threadId || threadId || "",
@@ -1845,16 +1963,23 @@ export function useMailApp() {
           inReplyTo: replyToMessage?.messageIdHeader,
           replyToId: replyToMessage?.id,
           accountId: sendAccountEmail,
+          attachments: sentAttachments,
         };
-        setEmails([sentFake, ...emails]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null);
+        // 添付ファイルの中身は既にローカルで持っているため、再取得を待たずに
+        // アタッチメントキャッシュへ先回りで書き込んでおく（再取得後の実IDでもキーが一致するように、
+        // page.tsx側のattachmentCacheKeyと同じ組み立て方＝messageId+添付順+ファイル名+サイズを使う）
+        replyAttachments.forEach((a, idx) => {
+          setCachedAttachment(attachmentCacheKey(sentId, idx, a.filename, a.size), a.data);
+        });
+        setEmails([sentFake, ...emails]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null);
         // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）
         if (selectedSender && draftChatsRef.current.includes(selectedSender)) removeDraftChat(selectedSender);
       } else {
         const errData = await res.json().catch(() => ({}));
         console.error("Failed to send:", errData);
-        alert("メールの送信に失敗しました。宛先が正しいか確認してください。");
+        showErrorToast("メールの送信に失敗しました。宛先が正しいか確認してください。");
       }
-    } catch (error) { console.error(error); } finally { setIsSending(false); }
+    } catch (error) { console.error(error); showErrorToast("メールの送信に失敗しました。通信状況を確認してください。"); } finally { setIsSending(false); }
   };
 
   // メッセージを任意の宛先（既存のチャットに限らず、新規アドレスも含む）へ転送する。
@@ -1924,7 +2049,7 @@ export function useMailApp() {
 
       if (!res.ok) {
         console.error("Failed to forward:", await res.json().catch(() => ({})));
-        alert("メールの転送に失敗しました。宛先が正しいか確認してください。");
+        showErrorToast("メールの転送に失敗しました。宛先が正しいか確認してください。");
         return;
       }
 
@@ -1945,7 +2070,7 @@ export function useMailApp() {
       }
     } catch (e) {
       console.error(e);
-      alert("メールの転送に失敗しました。宛先が正しいか確認してください。");
+      showErrorToast("メールの転送に失敗しました。通信状況を確認してください。");
     }
   };
 
@@ -2063,7 +2188,9 @@ export function useMailApp() {
       setPersistedEmails(nextPMsgs);
       setRevealedCrossPrompts(prev => prev.filter(id => !trashIds.includes(id)));
 
-      fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", trashIds }) }).catch(e => console.error(e));
+      fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", trashIds }) })
+        .then(res => { if (!res.ok) showErrorToast("削除がGmail側に反映されなかった可能性があります。時間をおいて再度お試しください。"); })
+        .catch(e => { console.error(e); showErrorToast("削除がGmail側に反映されなかった可能性があります。通信状況を確認してください。"); });
     } catch (e) { console.error(e); }
   };
 
@@ -2113,7 +2240,9 @@ export function useMailApp() {
 
           if (targetMode === "chat" && targets.includes(selectedSender)) setSelectedSender(null);
 
-          fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "move", ids: idsToMove, destination: moveDestination === "ARCHIVE" ? undefined : moveDestination }) }).catch(e => console.error(e));
+          fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "move", ids: idsToMove, destination: moveDestination === "ARCHIVE" ? undefined : moveDestination }) })
+            .then(res => { if (!res.ok) showErrorToast("移動がGmail側に反映されなかった可能性があります。時間をおいて再度お試しください。"); })
+            .catch(e => { console.error(e); showErrorToast("移動がGmail側に反映されなかった可能性があります。通信状況を確認してください。"); });
         } catch (e) { console.error(e); }
       }
     }
@@ -2259,7 +2388,9 @@ export function useMailApp() {
       if (ids.length === 0) return;
       fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "move", ids, destination: destination === "ARCHIVE" ? undefined : destination })
-      }).catch((e: any) => console.error(e));
+      })
+        .then(res => { if (!res.ok) showErrorToast("移動がGmail側に反映されなかった可能性があります。時間をおいて再度お試しください。"); })
+        .catch((e: any) => { console.error(e); showErrorToast("移動がGmail側に反映されなかった可能性があります。通信状況を確認してください。"); });
     });
   };
 
@@ -2358,7 +2489,7 @@ export function useMailApp() {
         setEmails(prev => {
           const map = new Map(prev.map((e: any) => [e.id, e]));
           rawMessages.forEach((m: any) => map.set(m.id, m));
-          return Array.from(map.values());
+          return reconcileFakeSentEmails(Array.from(map.values()));
         });
       }
 
@@ -2689,12 +2820,12 @@ export function useMailApp() {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
       isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent,
       currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts,
-      replySubject, replyBody, isSending, replyToMessage,
+      replySubject, replyBody, isSending, replyToMessage, replyAttachments, attachError,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
       resetOptions, moveDestination, revealedCrossPrompts, boxColors,
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
-      replyNotFoundToast, draftChats, activeChatTab,
+      replyNotFoundToast, errorToast, draftChats, activeChatTab,
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
     actions: {
@@ -2704,7 +2835,7 @@ export function useMailApp() {
       handleMenuBarClick, handleBackgroundClick, toggleSelection,
       jumpToSearchResult, updateFindBarKeyword, goToNextFindMatch, goToPrevFindMatch, closeFindBar, openFindBar,
       setFindBarSearchSubject, setFindBarSearchBody, setFindBarBox,
-      handleSend, executePin, executeConfirmedAction, applyPinToIds, applyDeleteToIds, applyMoveToIds, applyHideToIds,
+      handleSend, addReplyAttachments, removeReplyAttachment, searchServerSide, executePin, executeConfirmedAction, applyPinToIds, applyDeleteToIds, applyMoveToIds, applyHideToIds,
       openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, exitAfterAction, enterSelectionMode, executeBatchMove,
       setChatCacheLimit,
       openEmailModal, closeEmailModal, toggleMsgExpand,

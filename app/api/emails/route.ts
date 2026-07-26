@@ -5,6 +5,22 @@ import { getValidAccessToken } from "../../lib/googleToken";
 
 export const runtime = 'edge';
 
+// Gmail APIが429（レート制限）や一時的な5xxを返した場合に、指数バックオフ＋ジッターで
+// 数回だけ再試行する。特に多アカウント連携時・大きなメールボックスでの一括取得（メッセージ
+// 一覧・メッセージ詳細の並列取得）でクォータに触れやすいため、ここで吸収して黙って失敗しないようにする
+async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 2): Promise<Response> {
+  let lastRes: Response | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetch(url, init);
+    if (res.status !== 429 && res.status < 500) return res;
+    lastRes = res;
+    if (attempt === maxRetries) return res;
+    const backoffMs = 300 * Math.pow(2, attempt) + Math.random() * 200;
+    await new Promise(r => setTimeout(r, backoffMs));
+  }
+  return lastRes!;
+}
+
 // accountEmail が未指定、またはメインアカウント自身の場合はNextAuthのセッションが持つ
 // トークンをそのまま使う。追加連携アカウントの場合は linked_accounts からリフレッシュトークンを引き、
 // フェーズ2の getValidAccessToken で有効なアクセストークンを得る（必要ならD1に書き戻す）
@@ -67,8 +83,30 @@ function decodeBase64Url(base64Url: string) {
 
 function encodeBase64(text: string) {
   const bytes = new TextEncoder().encode(text);
-  const binString = Array.from(bytes).map(byte => String.fromCodePoint(byte)).join('');
+  // 添付ファイル同梱時はメッセージ全体が数MB〜十数MBになりうるため、1バイトずつ
+  // 文字列連結するのではなくチャンク単位でString.fromCharCodeを使う
+  // （前者はCPU時間・メモリの両面で大きな添付に対して非現実的に遅くなる）
+  let binString = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binString += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
   return btoa(binString);
+}
+
+// MIME本文中のbase64は1行76文字で折り返すのが仕様（RFC 2045）。折り返さなくても
+// 多くのメールクライアントは許容するが、Gmail自身が送信するメールと同じ形式に揃えておく
+function wrapBase64Lines(base64: string): string {
+  return base64.replace(/(.{76})/g, "$1\r\n");
+}
+
+// 添付ファイル名にASCII外の文字が含まれる場合のためのエンコード。
+// filename="..."（レガシー向けの素朴なフォールバック）と、RFC 2231準拠の
+// filename*=UTF-8''...（正しくUTF-8のファイル名を伝える方）の両方を付与する
+function encodeContentDispositionFilename(filename: string): string {
+  const asciiFallback = filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "'");
+  const encoded = encodeURIComponent(filename).replace(/'/g, "%27");
+  return `filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
 }
 
 // ★追加: Gmail特有の暗号(MIMEエンコード)を綺麗な日本語に解読するデコーダー
@@ -329,7 +367,7 @@ export async function GET(request: Request) {
   if (messageId && attachmentId) {
     if (messageId.startsWith("fake-")) return NextResponse.json({ data: null });
     try {
-      const res = await fetch(
+      const res = await fetchWithRetry(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
@@ -347,7 +385,7 @@ export async function GET(request: Request) {
   const lookupByMessageId = searchParams.get("lookupByMessageId");
   if (lookupByMessageId) {
     try {
-      const searchRes = await fetch(
+      const searchRes = await fetchWithRetry(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=1&includeSpamTrash=true&q=${encodeURIComponent(`rfc822msgid:${lookupByMessageId}`)}`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
@@ -356,7 +394,7 @@ export async function GET(request: Request) {
       const hit = (searchData.messages || [])[0];
       if (!hit) return NextResponse.json({ found: false });
 
-      const detailRes = await fetch(
+      const detailRes = await fetchWithRetry(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${hit.id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
@@ -372,7 +410,7 @@ export async function GET(request: Request) {
   if (messageId && searchParams.get("html") === "true") {
     if (messageId.startsWith("fake-")) return NextResponse.json({ htmlBody: null, hasHtml: false });
     try {
-      const detailRes = await fetch(
+      const detailRes = await fetchWithRetry(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?fields=payload`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
@@ -405,8 +443,9 @@ export async function GET(request: Request) {
     if (includeTrash) apiUrl += `&includeSpamTrash=true`;
     if (pageToken) apiUrl += `&pageToken=${pageToken}`;
 
-    const listRes = await fetch(apiUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const listRes = await fetchWithRetry(apiUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (listRes.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (listRes.status === 429) return NextResponse.json({ error: "Rate limited" }, { status: 429 });
     if (!listRes.ok) throw new Error("Failed to fetch messages list");
     
     const listData = await listRes.json();
@@ -424,13 +463,17 @@ export async function GET(request: Request) {
       const chunk = messagesToFetch.slice(i, i + chunkSize);
       const chunkResults = await Promise.all(
         chunk.map(async (msg: { id: string }) => {
-          const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`, {
+          const detailRes = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`, {
             headers: { Authorization: `Bearer ${accessToken}` },
           });
-          return detailRes.json();
+          // レート制限等で最終的に失敗した場合、エラーレスポンスのJSONを本物のメッセージとして
+          // 誤ってパースしてしまわないよう、ここで弾く（そのメッセージ1件だけ今回は諦める。
+          // 次回のポーリング/追加読み込みで再取得を試みる）
+          if (!detailRes.ok) return null;
+          return detailRes.json().catch(() => null);
         })
       );
-      detailedMessages.push(...chunkResults);
+      detailedMessages.push(...chunkResults.filter(Boolean));
     }
 
     const parsedMessages = detailedMessages.map(parseMessageDetail);
@@ -456,6 +499,17 @@ export async function POST(request: Request) {
     // ① メールの送信
     if (action === "send" || !action) {
       const { to, subject, body, bodyHtml, threadId, inReplyTo } = bodyData;
+      const attachments = (bodyData.attachments || []) as { filename: string; mimeType: string; data: string }[];
+
+      // 添付ファイルの合計サイズをサーバー側でも検証する（Gmail messages.sendの実質的な上限は
+      // 35MB程度。base64化で約1.37倍に膨らむため、余裕を持って25MBを上限にする）
+      const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+      if (attachments.length > 0) {
+        const totalBytes = attachments.reduce((sum, a) => sum + Math.floor(((a.data || "").length * 3) / 4), 0);
+        if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
+          return NextResponse.json({ error: "Attachments too large", details: { totalBytes, limit: MAX_TOTAL_ATTACHMENT_BYTES } }, { status: 413 });
+        }
+      }
 
       const formattedTo = (to || "").split(',').map((addr: string) => {
         const match = addr.match(/^(.*?)(<[^>]+>)$/);
@@ -481,21 +535,43 @@ export async function POST(request: Request) {
         headerLines.push(`In-Reply-To: ${safeInReplyTo}`);
         headerLines.push(`References: ${safeInReplyTo}`);
       }
+
+      const bodyContentType = bodyHtml ? "text/html; charset=utf-8" : "text/plain; charset=utf-8";
       // 転送メールなど、元のHTMLメールをそのまま保持して送りたい場合は bodyHtml を使う
       // （Gmail転送と同じく体裁・情報の欠落を防ぐため、cleanseBodyで加工したテキストは使わない）
-      if (bodyHtml) {
-        headerLines.push("MIME-Version: 1.0", "Content-Type: text/html; charset=utf-8", "", bodyHtml);
+      const bodyText = bodyHtml || body || "";
+
+      let rawMessage: string;
+      if (attachments.length > 0) {
+        // 添付ファイルがある場合は multipart/mixed で本文パート＋添付パートを組み立てる
+        const boundary = `remail_${crypto.randomUUID().replace(/-/g, "")}`;
+        headerLines.push("MIME-Version: 1.0", `Content-Type: multipart/mixed; boundary="${boundary}"`, "");
+        headerLines.push(`--${boundary}`, `Content-Type: ${bodyContentType}`, "", bodyText, "");
+        attachments.forEach(att => {
+          const mimeType = att.mimeType || "application/octet-stream";
+          const dispositionName = encodeContentDispositionFilename(att.filename || "attachment");
+          headerLines.push(
+            `--${boundary}`,
+            `Content-Type: ${mimeType}; name="${(att.filename || "attachment").replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "'")}"`,
+            "Content-Transfer-Encoding: base64",
+            `Content-Disposition: attachment; ${dispositionName}`,
+            "",
+            wrapBase64Lines(att.data || ""),
+            ""
+          );
+        });
+        headerLines.push(`--${boundary}--`);
+        rawMessage = headerLines.join("\r\n");
       } else {
-        headerLines.push("Content-Type: text/plain; charset=utf-8", "", body || "");
+        headerLines.push("MIME-Version: 1.0", `Content-Type: ${bodyContentType}`, "", bodyText);
+        rawMessage = headerLines.join("\r\n");
       }
 
-      const rawMessage = headerLines.join("\r\n");
-      
       const encodedMessage = encodeBase64(rawMessage).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
       const requestBody: any = { raw: encodedMessage };
       if (threadId) requestBody.threadId = threadId;
 
-      const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+      const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
         method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
       });
@@ -524,7 +600,7 @@ export async function POST(request: Request) {
         const realPermanentIds = permanentIds.filter((id: string) => !id.startsWith("fake-"));
         
         if (realPermanentIds.length > 0) {
-          const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
+          const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
             method: "POST", 
             headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
             body: JSON.stringify({ ids: realPermanentIds }),
@@ -535,7 +611,7 @@ export async function POST(request: Request) {
       if (trashIds && trashIds.length > 0) {
         const realTrashIds = trashIds.filter((id: string) => !id.startsWith("fake-"));
         if (realTrashIds.length > 0) {
-          const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
+          const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
             method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
             body: JSON.stringify({ ids: realTrashIds, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX", "SPAM"] }),
           });
@@ -554,7 +630,7 @@ export async function POST(request: Request) {
       else if (destination === "TRASH") { addLabelIds = ["TRASH"]; removeLabelIds = ["INBOX", "SPAM"]; }
       else if (destination === "SPAM") { addLabelIds = ["SPAM"]; removeLabelIds = ["INBOX", "TRASH"]; }
 
-      const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
+      const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
         method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({ ids, addLabelIds, removeLabelIds }),
       });
@@ -567,14 +643,14 @@ export async function POST(request: Request) {
     if (action === "delete") {
       const { permanentIds, trashIds } = bodyData;
       if (permanentIds && permanentIds.length > 0) {
-        const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
+        const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
           method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
           body: JSON.stringify({ ids: permanentIds }),
         });
         if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       }
       if (trashIds && trashIds.length > 0) {
-        const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
+        const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
           method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
           body: JSON.stringify({ ids: trashIds, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX", "SPAM"] }),
         });

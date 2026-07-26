@@ -1,12 +1,28 @@
 // フィルターツール（作成/非表示/ピン留め/移動/削除）と検索バーで共有する、
 // メールが自分の送信したものかどうかの判定・保存場所判定・条件マッチングロジック。
 
+// From ヘッダーから実アドレス部分だけを厳密に取り出す（"表示名 <addr>" 形式ならaddr、
+// なければヘッダー全体をそのままアドレスとみなす）。大文字小文字を無視して比較できるよう
+// 小文字化・trimまで行う
+function extractFromAddress(raw: string): string {
+  const match = (raw || "").match(/<([^>]+)>/);
+  return ((match ? match[1] : raw) || "").trim().toLowerCase();
+}
+
 // メールが自分の送信したものかどうかの判定。バックエンドが返す「生の」メールデータには
 // isMe フィールドが元々存在せず、送信直後にローカルで作った表示用オブジェクトにだけ isMe:true を
 // 付けている。そのオブジェクトが後から（60秒毎の自動更新や再取得で）生データに上書きされると
-// isMe が失われるため、From に自分のアドレスが含まれるかどうかのフォールバックを必ず併用する
-export function isMineEmail(e: any, myEmail: string): boolean {
-  return !!e.isMe || !!(myEmail && (e.from || "").includes(myEmail));
+// isMe が失われるため、From が自分のアドレスと完全一致するかのフォールバックを必ず併用する。
+// myEmailは単一アドレスでも、複数アドレス（メイン＋連携）の配列でも渡せる。
+// 注意: 部分一致（.includes）で判定すると、例えば自分が a@gmail.com のとき
+// ba@gmail.com からのメールを「自分の送信」と誤判定してしまうため、必ず完全一致で比較する
+export function isMineEmail(e: any, myEmail: string | string[]): boolean {
+  if (e.isMe) return true;
+  const candidates = (Array.isArray(myEmail) ? myEmail : [myEmail]).filter(Boolean).map(a => a.trim().toLowerCase());
+  if (candidates.length === 0) return false;
+  const fromAddr = extractFromAddress(e.from || "");
+  if (!fromAddr) return false;
+  return candidates.includes(fromAddr);
 }
 
 export type FindBarBoxKey = "inbox" | "archive" | "sent" | "spam" | "trash";
@@ -185,8 +201,12 @@ function matchesConditionSet(email: any, set: ConditionSet, myEmail: string): bo
 }
 
 export function messageMatchesFilter(email: any, criteria: FilterCriteria, myEmail: string): boolean {
-  // email.accountId が無い（accountId導入前のデータ・ローカルfake等）場合は myEmail 名義として扱う
-  if (criteria.accountEmail && (email.accountId || myEmail) !== criteria.accountEmail) return false;
+  // email.accountId が無い（accountId導入前のデータ・ローカルfake等）場合は myEmail 名義として扱う。
+  // このメール自身が実際に属するアカウントを、以降の受信/送信（isMineEmail）判定にも使う。
+  // myEmailを呼び出し元がメインアカウント固定で渡していても、連携アカウントのメールに対して
+  // 正しく「自分＝そのメールの所属アカウント」で送受信判定できるようにするため
+  const emailAccount = email.accountId || myEmail;
+  if (criteria.accountEmail && emailAccount !== criteria.accountEmail) return false;
 
   if (criteria.boxes && criteria.boxes.length > 0) {
     if (!criteria.boxes.includes(getBoxKey(email))) return false;
@@ -194,7 +214,7 @@ export function messageMatchesFilter(email: any, criteria: FilterCriteria, myEma
 
   const sets = getConditionSets(criteria);
   if (sets.length > 0) {
-    if (!sets.some(set => matchesConditionSet(email, set, myEmail))) return false;
+    if (!sets.some(set => matchesConditionSet(email, set, emailAccount))) return false;
   }
 
   return true;

@@ -1972,6 +1972,33 @@ export function SearchModal({ app }: { app: any }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allUniqueEmails, kwLower, boxFilter, emailRoomMap, chatConfigs, messageConfigs]);
 
+  // クライアント側（既に読み込み済みのメールだけ）の検索結果が0件の場合、Gmail本体を対象に
+  // サーバー検索するフォールバック。ヒットしたメールはsearchServerSide内でemails stateへ
+  // マージされるため、上のsubjectMatches/bodyMatchesが次のレンダーで自動的に拾ってくれる
+  // （このコンポーネント側で結果を別途保持・マージする必要がない）
+  const [isServerSearching, setIsServerSearching] = useState(false);
+  useEffect(() => {
+    if (!kwLower || kwLower.length < 2) { setIsServerSearching(false); return; }
+    if (activeTab !== "all" && activeTab !== "subject" && activeTab !== "body") return;
+    const needSubject = subjectMatches.length === 0;
+    const needBody = bodyMatches.length === 0;
+    if (!needSubject && !needBody) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setIsServerSearching(true);
+      try {
+        await Promise.all([
+          needSubject ? app.actions.searchServerSide(keyword, "subject") : Promise.resolve([]),
+          needBody ? app.actions.searchServerSide(keyword, "body") : Promise.resolve([]),
+        ]);
+      } finally {
+        if (!cancelled) setIsServerSearching(false);
+      }
+    }, 500);
+    return () => { cancelled = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kwLower, activeTab, subjectMatches.length, bodyMatches.length]);
+
   const sortRooms = (list: typeof roomInfos, order: SearchSort) => {
     const arr = [...list];
     if (order === "kana") arr.sort((a, b) => a.label.localeCompare(b.label, "ja"));
@@ -2172,7 +2199,10 @@ export function SearchModal({ app }: { app: any }) {
           {!kwLower && (
             <div className="text-center text-sm text-gray-500 py-10">キーワードを入力してください</div>
           )}
-          {kwLower && noResults && (
+          {kwLower && isServerSearching && (
+            <div className="text-center text-xs text-[#5865F2] font-bold pt-2 pb-1 animate-pulse">Gmail全体から検索中...</div>
+          )}
+          {kwLower && noResults && !isServerSearching && (
             <div className="text-center text-sm text-gray-500 py-10">見つかりませんでした</div>
           )}
           {kwLower && activeTab === "all" && (
