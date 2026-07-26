@@ -28,5 +28,11 @@ CREATE TABLE IF NOT EXISTS linked_accounts (
   access_token TEXT,
   expires_at INTEGER,            -- access_token の有効期限（ミリ秒epoch）
   created_at TEXT,
+  needs_reauth INTEGER DEFAULT 0, -- リフレッシュトークンが失効し再連携が必要か (0: false, 1: true)
   PRIMARY KEY (user_email, account_email)
 );
+
+-- 既存DBに対する追記マイグレーション。CREATE TABLE IF NOT EXISTSは既存テーブルに
+-- 新しい列を追加してくれないため、既に linked_accounts が存在する環境ではこちらを
+-- 1回だけ手動実行する（列が既に存在する場合はエラーになるので、その場合は無視して良い）
+-- ALTER TABLE linked_accounts ADD COLUMN needs_reauth INTEGER DEFAULT 0;

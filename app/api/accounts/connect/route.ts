@@ -71,12 +71,13 @@ export async function GET(request: NextRequest) {
 
     const db = getRequestContext().env.DB;
     await db.prepare(
-      `INSERT INTO linked_accounts (user_email, account_email, refresh_token, access_token, expires_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO linked_accounts (user_email, account_email, refresh_token, access_token, expires_at, created_at, needs_reauth)
+       VALUES (?, ?, ?, ?, ?, ?, 0)
        ON CONFLICT(user_email, account_email) DO UPDATE SET
        refresh_token=excluded.refresh_token,
        access_token=excluded.access_token,
-       expires_at=excluded.expires_at`
+       expires_at=excluded.expires_at,
+       needs_reauth=0`
     ).bind(
       session.user.email,
       accountEmail,

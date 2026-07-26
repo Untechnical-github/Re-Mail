@@ -1378,17 +1378,38 @@ export function Modals({ app }: { app: any }) {
               <div className="mb-4">
                 <div className="text-xs font-bold text-gray-400 mb-1.5 px-1">連携中のアカウント</div>
                 <div className="flex flex-col gap-1">
-                  {(app.state.linkedAccounts as string[]).map((a) => (
-                    <div key={a} className="flex items-center justify-between gap-2 bg-[#2B2D31] rounded px-3 py-2">
-                      <span className="text-sm text-gray-200 truncate">{a}</span>
-                      <button
-                        onClick={() => app.actions.unlinkAccount(a)}
-                        className="text-xs font-bold text-red-400 hover:text-red-300 px-2 flex-shrink-0"
-                      >
-                        解除
-                      </button>
-                    </div>
-                  ))}
+                  {(app.state.linkedAccounts as string[]).map((a) => {
+                    const needsReauth = (app.state.reauthNeededAccounts as string[] || []).includes(a);
+                    return (
+                      <div key={a} className="bg-[#2B2D31] rounded px-3 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm text-gray-200 truncate">{a}</span>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            {needsReauth && (
+                              <button
+                                onClick={() => { window.location.href = "/api/accounts/connect"; }}
+                                className="text-xs font-bold text-[#FEE75C] hover:text-white px-2"
+                                title="連携が切れています。再連携してください"
+                              >
+                                ⚠ 再連携
+                              </button>
+                            )}
+                            <button
+                              onClick={() => app.actions.unlinkAccount(a)}
+                              className="text-xs font-bold text-red-400 hover:text-red-300 px-2"
+                            >
+                              解除
+                            </button>
+                          </div>
+                        </div>
+                        {needsReauth && (
+                          <div className="text-[11px] text-[#FEE75C] mt-1">
+                            連携が切れているため、このアカウントのメールが読み込めていません。「再連携」から連携し直してください。
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}

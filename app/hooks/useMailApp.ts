@@ -8,6 +8,23 @@ import { isMineEmail, getFindBarBoxKey, FindBarBoxKey, FilterCriteria, messageMa
 import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 
+// 同時実行数を制限しつつ配列の各要素に非同期処理を適用する。連携アカウント数が多い場合に
+// 全アカウントを一斉にPromise.allで叩くと、各アカウントのメール取得（内部でさらにメッセージ
+// 詳細を並列取得する）が重なってGmail APIのレート制限に触れる恐れがあるため、
+// アカウント単位のフェッチはこれで束ねる
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (nextIndex < items.length) {
+      const current = nextIndex++;
+      results[current] = await fn(items[current]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 function getSavedBoxSettings(): { inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; sent?: boolean } | null {
   if (typeof window === "undefined") return null;
   try {
@@ -182,6 +199,10 @@ export function useMailApp() {
   const [linkedAccounts, setLinkedAccounts] = useState<string[]>([]);
   const linkedAccountsRef = useRef<string[]>([]);
   useEffect(() => { linkedAccountsRef.current = linkedAccounts; }, [linkedAccounts]);
+  // リフレッシュトークンが失効し再連携が必要な連携アカウント（linkedAccountsの部分集合）。
+  // トークンリフレッシュに失敗しても連携アカウントのフェッチは黙ってスキップされるだけなので、
+  // ここに載っているアカウントはUI側で警告バッジ等を出し、再連携（/api/accounts/connect）へ誘導する
+  const [reauthNeededAccounts, setReauthNeededAccounts] = useState<string[]>([]);
 
   const [replySubject, setReplySubject] = useState("");
   const [replyBody, setReplyBody] = useState("");
@@ -289,9 +310,13 @@ export function useMailApp() {
     const sorted = [...cache.entries()].sort(([, a], [, b]) => a.lruTime - b.lruTime);
     while (cache.size > v) cache.delete(sorted.shift()![0]);
   };
-  const chatCacheRef = useRef<Map<string, { emails: Email[]; chatNextPageToken: string | null; lruTime: number }>>(new Map());
+  const chatCacheRef = useRef<Map<string, { emails: Email[]; chatNextPageToken: string | null; groupMemberTokens?: Record<string, string>; lruTime: number }>>(new Map());
   const chatNextPageTokenRef = useRef<string | null>("FIRST_PAGE");
   useEffect(() => { chatNextPageTokenRef.current = chatNextPageToken; }, [chatNextPageToken]);
+  // グループチャットの「追加読み込み」用: メンバーごとに独立したページングトークンを保持する
+  // （グループのローカルキー自体は group:xxxx でGmail検索語にならないため、chatNextPageToken
+  // という単一の値では対応できず、メンバーのアドレスごとに個別のページングが必要になる）
+  const groupMemberTokensRef = useRef<Record<string, string>>({});
 
   // フィルター単位のキャッシュ（フィルター切り替え時に復元）
   const filterCacheRef = useRef<Map<string, { emails: Email[]; currentNextPageTokens: Record<string, string | null> }>>(new Map());
@@ -492,7 +517,9 @@ export function useMailApp() {
     });
     // ピン留めされていた場合、ローカルにキャッシュしていたメッセージのコピーも消しておく
     // （D1側の行は削除で一括して消えるが、ローカルstateはそれとは別に残ってしまうため）
-    setPersistedEmails(prev => prev.filter((e: any) => e.senderRoom !== targetId));
+    // senderRoomだけで突き合わせると、別アカウントに同じ表示名（localKey）の相手がいる場合に
+    // そちらの永続データまで消してしまうため、accountIdも一致するものだけに絞り込む
+    setPersistedEmails(prev => prev.filter((e: any) => !(e.senderRoom === targetId && (e.accountId || session?.user?.email || "") === accountEmail)));
     if (selectedSender === stateKey) {
       setSelectedSender(null);
       if (typeof window !== "undefined") {
@@ -528,9 +555,12 @@ export function useMailApp() {
       let newConfig: Partial<ChatConfig> = { ...config };
 
       if (config?.isPinned && config.forceFetch) {
+        // latestEmailsは全アカウント分を含むため、accountIdも一致するものだけに絞り込む
+        // （そうしないと別アカウントの同名（同一localKey）の相手のメールが混入する）
         const chatEmails = latestEmails.filter(e => {
            const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
-           return room === targetId && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
+           const emailAccount = e.accountId || session?.user?.email || "";
+           return room === targetId && emailAccount === accountEmail && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
         }).map(e => ({...e, senderRoom: targetId}));
 
         const oldIds = (config.persistedData || []).map((e:any)=>e.id).join(",");
@@ -546,7 +576,9 @@ export function useMailApp() {
         const hiddenDate = config.hiddenAtDate ? new Date(config.hiddenAtDate) : new Date(0);
         const hasNewEmail = latestEmails.some(e => {
           const room = e.senderRoom || (e.from.split("<")[0].replace(/"/g, "").trim() || "Unknown");
+          const emailAccount = e.accountId || session?.user?.email || "";
           return room === targetId &&
+                 emailAccount === accountEmail &&
                  !e.labelIds?.includes("TRASH") &&
                  !e.labelIds?.includes("SPAM") &&
                  new Date(e.date) > hiddenDate;
@@ -687,7 +719,9 @@ export function useMailApp() {
       const accounts = [myEmail, ...linkedAccountsRef.current];
       const perAccountLimit = Math.max(1, Math.ceil(targetLimit / accounts.length));
 
-      const results = await Promise.all(accounts.map(async (accountEmail) => {
+      // アカウント数が多い場合にGmail APIのレート制限へ一斉に触れないよう、同時フェッチ数の
+      // 上限を設ける（1〜3アカウントなら実質そのまま全並列、それ以上は3アカウントずつ処理する）
+      const results = await mapWithConcurrency(accounts, 3, async (accountEmail) => {
         const params = new URLSearchParams({ maxResults: perAccountLimit.toString(), q, includeTrash: useIncludeTrash });
         if (accountEmail !== myEmail) params.append("accountEmail", accountEmail);
         params.append("_t", Date.now().toString());
@@ -697,7 +731,7 @@ export function useMailApp() {
         } catch {
           return { accountEmail, res: null as Response | null };
         }
-      }));
+      });
 
       // 認証切れの強制サインアウトはメインアカウントの失効時のみ行う。連携アカウントのトークン
       // 失効はそのアカウント分だけ黙って読み込めない扱いにし、メインアカウントの利用は継続させる
@@ -764,9 +798,11 @@ export function useMailApp() {
             fetch("/api/accounts").then(r => r.ok ? r.json() : { accounts: [] }).catch(() => ({ accounts: [] })),
           ]);
           // fetchEmails等が読む前に、ref側は同期的に確定させておく（state更新の再レンダリングを待たない）
-          const linkedEmails: string[] = ((linkedAccountsRes.accounts || []) as any[]).map((a: any) => a.account_email).filter(Boolean);
+          const linkedAccountRows = (linkedAccountsRes.accounts || []) as any[];
+          const linkedEmails: string[] = linkedAccountRows.map((a: any) => a.account_email).filter(Boolean);
           linkedAccountsRef.current = linkedEmails;
           setLinkedAccounts(linkedEmails);
+          setReauthNeededAccounts(linkedAccountRows.filter((a: any) => a.needs_reauth === 1).map((a: any) => a.account_email).filter(Boolean));
 
           // チェックボックスの状態はマウント時点で localStorage から同期的に復元済みなので、
           // ここでは読み直さず現在の state をそのまま使う（読み込み中に見た目が切り替わるのを防ぐ）
@@ -798,8 +834,19 @@ export function useMailApp() {
             const restoredConfig = loadedConfigs[selectedSender];
             const { accountEmail: restoredAccountEmail, localKey: restoredLocalKey } = decodeRoomKey(selectedSender);
             if (restoredConfig?.isGroup) {
-              // グループのルームキーはGmail検索語にならないため、メンバーごとに個別取得する
-              await Promise.all((restoredConfig.groupMembers || []).map(m => fetchChatCrossbox(asLocalKey(m), restoredAccountEmail, false, res.emails).catch(() => {})));
+              // グループのルームキーはGmail検索語にならないため、メンバーごとに個別取得する。
+              // 「追加読み込み」で使うメンバーごとのページングトークンもここで正しく初期化しておく
+              // （しないと復元直後の「追加読み込み」が常に1ページ目を取り直すだけになる）
+              groupMemberTokensRef.current = {};
+              const restoredMembers = (restoredConfig.groupMembers || []) as LocalKey[];
+              await Promise.all(restoredMembers.map(async m => {
+                const result = await fetchChatCrossbox(asLocalKey(m), restoredAccountEmail, false, res.emails, true).catch(() => ({ nextToken: "END_ALL" }));
+                groupMemberTokensRef.current[m] = result.nextToken || "END_ALL";
+              }));
+              const allDone = restoredMembers.every(m => ["END_ALL", "END_LIMIT"].includes(groupMemberTokensRef.current[m]));
+              const anyLimit = restoredMembers.some(m => groupMemberTokensRef.current[m] === "END_LIMIT");
+              const nextToken = restoredMembers.length === 0 ? "END_ALL" : allDone ? (anyLimit ? "END_LIMIT" : "END_ALL") : `GROUP_MORE_${Date.now()}`;
+              setChatNextPageToken(nextToken); chatNextPageTokenRef.current = nextToken;
             } else {
               await fetchChatCrossbox(restoredLocalKey, restoredAccountEmail, false, res.emails);
             }
@@ -846,12 +893,16 @@ export function useMailApp() {
   // 複合roomKeyを渡すと壊れる（"from:\"account name\"" のような無意味な検索になる）。
   // accountEmail はこの相手が所属するアカウント（roomKeyのアカウント部分）で、どの連携アカウントの
   // Gmailから取得するかを決める
-  const fetchChatCrossbox = async (sender: LocalKey, accountEmail: string, isLoadMore = false, knownEmails = emailsRef.current, skipToken = false) => {
+  // overrideToken: グループの各メンバーなど、共有の chatNextPageTokenRef とは別に
+  // メンバーごとのページングトークンを明示的に渡したい場合に使う（指定時は skipToken も併用し、
+  // 単一チャット用の共有トークンを巻き込まないようにする）
+  const fetchChatCrossbox = async (sender: LocalKey, accountEmail: string, isLoadMore = false, knownEmails = emailsRef.current, skipToken = false, overrideToken?: string) => {
+    const currentToken = overrideToken !== undefined ? overrideToken : chatNextPageTokenRef.current;
     try {
       // ref を使う: state(chatNextPageToken)は連続でループ呼び出しした場合に
       // 再レンダリング前の古い値を参照し続けてしまう（同じページを取得し続ける）ことがあるため
-      if (isLoadMore && chatNextPageTokenRef.current?.startsWith("END")) {
-        return { found: false, nextToken: chatNextPageTokenRef.current, messages: [] };
+      if (isLoadMore && currentToken?.startsWith("END")) {
+        return { found: false, nextToken: currentToken, messages: [] };
       }
 
       const addrSet = new Set<string>();
@@ -871,7 +922,7 @@ export function useMailApp() {
 
       const params = new URLSearchParams({ maxResults: "100", q, includeTrash: "true" });
       if (accountEmail && accountEmail !== (session?.user?.email || "")) params.append("accountEmail", accountEmail);
-      const tokenToUse = isLoadMore ? (chatNextPageTokenRef.current === "FIRST_PAGE" ? null : chatNextPageTokenRef.current) : null;
+      const tokenToUse = isLoadMore ? (currentToken === "FIRST_PAGE" ? null : currentToken) : null;
       if (tokenToUse) params.append("pageToken", tokenToUse);
       params.append("_t", Date.now().toString());
 
@@ -893,7 +944,7 @@ export function useMailApp() {
         return { found: validMessages.length > 0, nextToken, messages: validMessages };
       }
     } catch(e) { console.error(e); }
-    return { found: false, nextToken: isLoadMore ? chatNextPageTokenRef.current : "FIRST_PAGE", messages: [] };
+    return { found: false, nextToken: isLoadMore ? currentToken : "FIRST_PAGE", messages: [] };
   };
 
   // ルームの履歴を取得する。グループチャットの場合はルームキー自体がGmail検索語にならないため、
@@ -902,10 +953,47 @@ export function useMailApp() {
     const cfg = chatConfigsRef.current[room];
     const { accountEmail, localKey } = decodeRoomKey(room);
     if (cfg?.isGroup) {
-      await Promise.all((cfg.groupMembers || []).map(m => fetchChatCrossbox(asLocalKey(m), accountEmail, false, knownEmails).catch(() => {})));
+      // グループの「追加読み込み」はメンバーごとに独立したページングトークンが必要なため、
+      // ここでは共有の chatNextPageToken を汚さず（skipToken: true）、メンバーごとの
+      // トークンを groupMemberTokensRef に記録する。全メンバー分そろってから、
+      // 追加読み込みが可能かどうかを共有の chatNextPageToken に反映する
+      groupMemberTokensRef.current = {};
+      const members = (cfg.groupMembers || []) as LocalKey[];
+      await Promise.all(members.map(async m => {
+        const result = await fetchChatCrossbox(asLocalKey(m), accountEmail, false, knownEmails, true).catch(() => ({ nextToken: "END_ALL" }));
+        groupMemberTokensRef.current[m] = result.nextToken || "END_ALL";
+      }));
+      const allDone = members.every(m => ["END_ALL", "END_LIMIT"].includes(groupMemberTokensRef.current[m]));
+      const anyLimit = members.some(m => groupMemberTokensRef.current[m] === "END_LIMIT");
+      const nextToken = members.length === 0 ? "END_ALL" : allDone ? (anyLimit ? "END_LIMIT" : "END_ALL") : `GROUP_MORE_${Date.now()}`;
+      setChatNextPageToken(nextToken); chatNextPageTokenRef.current = nextToken;
     } else {
       await fetchChatCrossbox(localKey, accountEmail, false, knownEmails);
     }
+  };
+
+  // グループチャットの「追加読み込み」: まだ読み終えていないメンバーだけ、そのメンバー自身の
+  // ページングトークンを使って次のページを取得する。全メンバーが読み終わったら
+  // END_ALL/END_LIMIT を共有の chatNextPageToken に反映し、自動読み込みのトリガーを止める
+  const fetchGroupLoadMore = async (room: RoomKeyStr) => {
+    const cfg = chatConfigsRef.current[room];
+    const { accountEmail } = decodeRoomKey(room);
+    const members = (cfg?.groupMembers || []) as LocalKey[];
+    const pending = members.filter(m => !["END_ALL", "END_LIMIT"].includes(groupMemberTokensRef.current[m]));
+
+    if (pending.length > 0) {
+      await Promise.all(pending.map(async m => {
+        const tokenForMember = groupMemberTokensRef.current[m] ?? "FIRST_PAGE";
+        const result = await fetchChatCrossbox(asLocalKey(m), accountEmail, true, emailsRef.current, true, tokenForMember).catch(() => ({ nextToken: "END_ALL" }));
+        groupMemberTokensRef.current[m] = result.nextToken || "END_ALL";
+      }));
+    }
+
+    const allDone = members.every(m => ["END_ALL", "END_LIMIT"].includes(groupMemberTokensRef.current[m]));
+    const anyLimit = members.some(m => groupMemberTokensRef.current[m] === "END_LIMIT");
+    const nextToken = allDone ? (anyLimit ? "END_LIMIT" : "END_ALL") : `GROUP_MORE_${Date.now()}`;
+    setChatNextPageToken(nextToken); chatNextPageTokenRef.current = nextToken;
+    return { nextToken };
   };
 
   useEffect(() => {
@@ -997,11 +1085,25 @@ export function useMailApp() {
     }
   }, [selectedSender]);
 
+  // 連携アカウントの再連携要求状態（needs_reauth）を再取得する。トークンのリフレッシュ失敗は
+  // メール取得のポーリング中に裏側で起きるため、定期的にここで再チェックしてUIに反映する
+  const refreshLinkedAccountsStatus = async () => {
+    if (linkedAccountsRef.current.length === 0) return;
+    try {
+      const res = await fetch("/api/accounts");
+      if (!res.ok) return;
+      const data = await res.json();
+      const rows = (data.accounts || []) as any[];
+      setReauthNeededAccounts(rows.filter((a: any) => a.needs_reauth === 1).map((a: any) => a.account_email).filter(Boolean));
+    } catch { /* 一時的な取得失敗は無視し、次回のポーリングに任せる */ }
+  };
+
   useEffect(() => {
     if (!session) return;
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
         fetchEmails(100, "", { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, true, emailsRef.current, () => false, false);
+        refreshLinkedAccountsStatus();
       }
     }, 60000);
 
@@ -1081,6 +1183,7 @@ export function useMailApp() {
     const myEmail = session?.user?.email || "";
     setLinkedAccounts(prev => prev.filter(a => a !== accountEmail));
     linkedAccountsRef.current = linkedAccountsRef.current.filter(a => a !== accountEmail);
+    setReauthNeededAccounts(prev => prev.filter(a => a !== accountEmail));
     setEmails(prev => prev.filter((e: any) => (e.accountId || myEmail) !== accountEmail));
     setCurrentNextPageTokens(prev => {
       const next = { ...prev };
@@ -1351,6 +1454,7 @@ export function useMailApp() {
       chatCacheRef.current.set(prevSender, {
         emails: senderEmails,
         chatNextPageToken: chatNextPageTokenRef.current,
+        groupMemberTokens: chatConfigsRef.current[prevSender]?.isGroup ? { ...groupMemberTokensRef.current } : undefined,
         lruTime: Date.now(),
       });
       // LRU 上限を超えた古いエントリを削除
@@ -1387,8 +1491,11 @@ export function useMailApp() {
         cached.emails.forEach((e: any) => map.set(e.id, e));
         return Array.from(map.values());
       });
+      groupMemberTokensRef.current = cached.groupMemberTokens ? { ...cached.groupMemberTokens } : {};
       setChatNextPageToken(cached.chatNextPageToken || "FIRST_PAGE");
+      chatNextPageTokenRef.current = cached.chatNextPageToken || "FIRST_PAGE";
     } else {
+      groupMemberTokensRef.current = {};
       setChatNextPageToken("FIRST_PAGE");
       await fetchCrossboxForRoom(sender);
     }
@@ -1420,7 +1527,14 @@ export function useMailApp() {
       existingRoom = directKey;
     } else {
       const idLower = trimmed.toLowerCase();
-      existingRoom = keysOf(groupedEmails).find(room => !chatConfigs[room]?.isGroup && getRoomAddress(room) === idLower) || null;
+      // 対象アカウント（targetAccountEmail）が一致するルームだけを既存チャットの候補にする。
+      // これを見ないと、別アカウントに同じアドレスの相手がいる場合、そちらのチャットを
+      // 誤って開いてしまう（新規に選んだアカウントではなく既存のアカウント側が開かれる）
+      existingRoom = keysOf(groupedEmails).find(room =>
+        !chatConfigs[room]?.isGroup &&
+        decodeRoomKey(room).accountEmail === targetAccountEmail &&
+        getRoomAddress(room) === idLower
+      ) || null;
     }
 
     if (existingRoom) {
@@ -2267,12 +2381,17 @@ export function useMailApp() {
         return;
     }
     loadingMoreMsgRef.current = true;
-    setIsLoadingMore(true); 
+    setIsLoadingMore(true);
     setMsgStatusMessage(null);
-    
-    const { accountEmail: loadMoreAccountEmail, localKey: loadMoreLocalKey } = decodeRoomKey(selectedSender!);
-    const result = await fetchChatCrossbox(loadMoreLocalKey, loadMoreAccountEmail, true);
-    
+
+    const { localKey: loadMoreLocalKey } = decodeRoomKey(selectedSender!);
+    // グループのローカルキー（group:xxxx）はGmail検索語にならないため、通常のfetchChatCrossboxではなく
+    // メンバーごとに独立したページングを行うfetchGroupLoadMoreを使う
+    const isGroupRoom = chatConfigsRef.current[selectedSender!]?.isGroup;
+    const result = isGroupRoom
+      ? await fetchGroupLoadMore(selectedSender!)
+      : await fetchChatCrossbox(loadMoreLocalKey, decodeRoomKey(selectedSender!).accountEmail, true);
+
     if (result.nextToken === "END_LIMIT") {
         setMsgStatusMessage("re:mailの読み込み上限に達しました");
     } else if (result.nextToken === "END_ALL") {
@@ -2569,7 +2688,7 @@ export function useMailApp() {
     state: {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
       isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent,
-      currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts,
+      currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts,
       replySubject, replyBody, isSending, replyToMessage,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
       resetOptions, moveDestination, revealedCrossPrompts, boxColors,

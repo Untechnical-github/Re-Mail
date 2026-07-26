@@ -435,12 +435,13 @@ export default function Home() {
                           {state.linkedAccounts.length > 0 && (() => {
                             const acct = actions.roomAccountEmail(sender);
                             if (acct === (auth.session?.user?.email || "")) return null;
+                            const needsReauth = state.reauthNeededAccounts.includes(acct);
                             return (
                               <span
-                                title={acct}
-                                className="text-[9px] font-bold px-1 py-0.5 rounded bg-[#5865F2]/25 text-[#5865F2] flex-shrink-0 leading-none"
+                                title={needsReauth ? `${acct}（連携が切れています。再連携してください）` : acct}
+                                className={`text-[9px] font-bold px-1 py-0.5 rounded flex-shrink-0 leading-none ${needsReauth ? "bg-red-500/25 text-red-400" : "bg-[#5865F2]/25 text-[#5865F2]"}`}
                               >
-                                {acct[0]?.toUpperCase() || "?"}
+                                {needsReauth ? "⚠" : (acct[0]?.toUpperCase() || "?")}
                               </span>
                             );
                           })()}
@@ -484,7 +485,15 @@ export default function Home() {
                   {state.linkedAccounts.length > 0 && (() => {
                     const acct = actions.roomAccountEmail(state.selectedSender!);
                     if (acct === (auth.session?.user?.email || "")) return null;
-                    return <span title={acct} className="text-[9px] font-bold px-1 py-0.5 rounded bg-[#5865F2]/25 text-[#5865F2] flex-shrink-0 leading-none">{acct[0]?.toUpperCase() || "?"}</span>;
+                    const needsReauth = state.reauthNeededAccounts.includes(acct);
+                    return (
+                      <span
+                        title={needsReauth ? `${acct}（連携が切れています。再連携してください）` : acct}
+                        className={`text-[9px] font-bold px-1 py-0.5 rounded flex-shrink-0 leading-none ${needsReauth ? "bg-red-500/25 text-red-400" : "bg-[#5865F2]/25 text-[#5865F2]"}`}
+                      >
+                        {needsReauth ? "⚠" : (acct[0]?.toUpperCase() || "?")}
+                      </span>
+                    );
                   })()}
                   {selectedGroupConfig?.isGroup ? (
                     <span className="text-xs text-gray-500 truncate">

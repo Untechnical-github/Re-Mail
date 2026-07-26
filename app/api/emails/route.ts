@@ -15,21 +15,36 @@ async function resolveAccessToken(session: any, accountEmail: string | null): Pr
 
   const db = getRequestContext().env.DB;
   const { results } = await db.prepare(
-    "SELECT refresh_token, access_token, expires_at FROM linked_accounts WHERE user_email = ? AND account_email = ?"
+    "SELECT refresh_token, access_token, expires_at, needs_reauth FROM linked_accounts WHERE user_email = ? AND account_email = ?"
   ).bind(session.user.email, accountEmail).all();
   const row = results?.[0] as any;
   if (!row?.refresh_token) return null;
 
   try {
     const result = await getValidAccessToken(accountEmail, row.access_token ?? null, row.expires_at ?? null, row.refresh_token);
-    if (result.accessToken !== row.access_token || result.expiresAt !== row.expires_at) {
+    const tokenChanged = result.accessToken !== row.access_token || result.expiresAt !== row.expires_at || !!result.refreshToken;
+    if (tokenChanged || row.needs_reauth) {
+      // Googleがリフレッシュトークンをローテーションした場合（result.refreshTokenが返る場合）は
+      // 必ずD1側も更新する。ここを怠ると古いrefresh_tokenが残り続け、次回のリフレッシュ時に
+      // invalid_grantで失効する（auth.tsのメインアカウント側と同じ理由でrefreshToken ?? 旧値を使う）。
+      // 成功した以上、以前 needs_reauth が立っていてもここで解除する
       await db.prepare(
-        "UPDATE linked_accounts SET access_token = ?, expires_at = ? WHERE user_email = ? AND account_email = ?"
-      ).bind(result.accessToken, result.expiresAt, session.user.email, accountEmail).run();
+        "UPDATE linked_accounts SET access_token = ?, expires_at = ?, refresh_token = ?, needs_reauth = 0 WHERE user_email = ? AND account_email = ?"
+      ).bind(result.accessToken, result.expiresAt, result.refreshToken ?? row.refresh_token, session.user.email, accountEmail).run();
     }
     return result.accessToken;
-  } catch (error) {
+  } catch (error: any) {
     console.error(`Failed to refresh access token for linked account ${accountEmail}:`, error);
+    // invalid_grant/invalid_client はリフレッシュトークン自体が失効した恒久的なエラー
+    // （auth.tsのメインアカウント側と同じ判定基準）。ネットワーク瞬断等の一時的な失敗まで
+    // 再連携要求にしてしまうと、ユーザーに不要な再連携を何度も求めることになるため、
+    // 恒久的なエラーのときだけ needs_reauth を立てる
+    const isPermanent = error?.error === "invalid_grant" || error?.error === "invalid_client";
+    if (isPermanent) {
+      await db.prepare(
+        "UPDATE linked_accounts SET needs_reauth = 1 WHERE user_email = ? AND account_email = ?"
+      ).bind(session.user.email, accountEmail).run().catch((e: any) => console.error("Failed to set needs_reauth:", e));
+    }
     return null;
   }
 }
