@@ -3,6 +3,7 @@ import { signOut } from "next-auth/react";
 import { BodyWithLinks, getFileIcon, formatFileSize, HighlightText } from "./ui";
 import { FilterCriteria, ConditionSet, TextField, TextRule, DateDirection, FindBarBoxKey, messageMatchesFilter, isEmptyFilterCriteria, getFindBarBoxKey, isActionBoxRestricted, getConditionSets } from "../lib/filterMatch";
 import { shouldTriggerServerSearch, markServerSearched } from "../lib/searchFallback";
+import { encodeRoomKey, decodeRoomKey } from "../lib/roomKey";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
@@ -1911,8 +1912,29 @@ export function SearchModal({ app }: { app: any }) {
 
   const roomInfos = useMemo(() => {
     const infos: { room: string; label: string; address: string | null; isGroup: boolean; latestDate: number; accountEmail: string }[] = [];
+
+    // 通常グループ作成時に「個別チャットの表示設定」をオフにして非表示にした宛先は、
+    // その人自身のroomはもう一覧に出ないが、グループ自体が非表示でない限り宛先名/アドレスでの
+    // 検索対象からも外れるべきではない（吸収先のグループを検索結果として開けるようにする）
+    const hiddenMemberGroup = new Map<string, string>();
+    Object.keys(chatConfigs).forEach(room => {
+      const cfg = chatConfigs[room];
+      if (cfg?.isGroup && !cfg.filterCriteria && !cfg.isHidden && cfg.groupHiddenMembers?.length) {
+        const { accountEmail } = decodeRoomKey(room);
+        cfg.groupHiddenMembers.forEach((localKey: string) => {
+          hiddenMemberGroup.set(encodeRoomKey(accountEmail, localKey), room);
+        });
+      }
+    });
+
     (contactDirectory as any[]).forEach(c => {
-      if (chatConfigs[c.room]?.isHidden) return;
+      if (chatConfigs[c.room]?.isHidden) {
+        const groupRoom = hiddenMemberGroup.get(c.room);
+        // グループ化以外の理由で非表示にした宛先は、従来通り検索対象から除外する
+        if (!groupRoom) return;
+        infos.push({ room: groupRoom, label: c.label, address: c.address || null, isGroup: false, latestDate: c.latestDate, accountEmail: c.accountEmail });
+        return;
+      }
       infos.push({ room: c.room, label: c.label, address: c.address || null, isGroup: false, latestDate: c.latestDate, accountEmail: c.accountEmail });
     });
     Object.keys(chatConfigs).forEach(room => {
