@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } fr
 import { signOut } from "next-auth/react";
 import { BodyWithLinks, getFileIcon, formatFileSize, HighlightText } from "./ui";
 import { FilterCriteria, ConditionSet, TextField, TextRule, DateDirection, FindBarBoxKey, messageMatchesFilter, isEmptyFilterCriteria, getFindBarBoxKey, isActionBoxRestricted, getConditionSets } from "../lib/filterMatch";
+import { shouldTriggerServerSearch, markServerSearched } from "../lib/searchFallback";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
@@ -1989,14 +1990,15 @@ export function SearchModal({ app }: { app: any }) {
     if (activeTab !== "all" && activeTab !== "subject" && activeTab !== "body") return;
     // 「このキーワード・このフィールドは既にサーバー検索を試した」ものは、たとえローカル結果が
     // 引き続き0件でも二度と撃たない（他の理由でallUniqueEmailsが更新され、この副作用が
-    // 再評価された場合の無駄なGmail API呼び出し・クォータ消費を防ぐ）
-    const needSubject = subjectMatches.length === 0 && !searchedServerKeywordsRef.current.has(`${kwLower}::subject`);
-    const needBody = bodyMatches.length === 0 && !searchedServerKeywordsRef.current.has(`${kwLower}::body`);
+    // 再評価された場合の無駄なGmail API呼び出し・クォータ消費を防ぐ）。
+    // 判定ロジック自体は app/lib/searchFallback.ts に切り出してユニットテストしてある
+    const needSubject = shouldTriggerServerSearch(searchedServerKeywordsRef.current, kwLower, "subject", subjectMatches.length);
+    const needBody = shouldTriggerServerSearch(searchedServerKeywordsRef.current, kwLower, "body", bodyMatches.length);
     if (!needSubject && !needBody) return;
     let cancelled = false;
     const t = setTimeout(async () => {
-      if (needSubject) searchedServerKeywordsRef.current.add(`${kwLower}::subject`);
-      if (needBody) searchedServerKeywordsRef.current.add(`${kwLower}::body`);
+      if (needSubject) markServerSearched(searchedServerKeywordsRef.current, kwLower, "subject");
+      if (needBody) markServerSearched(searchedServerKeywordsRef.current, kwLower, "body");
       setIsServerSearching(true);
       try {
         await Promise.all([

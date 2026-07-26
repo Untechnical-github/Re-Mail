@@ -7,6 +7,7 @@ import { getCachedAttachment, setCachedAttachment, attachmentCacheKey } from "..
 import { isMineEmail, getFindBarBoxKey, FindBarBoxKey, FilterCriteria, messageMatchesFilter, ChatListTab, chatConfigTab } from "../lib/filterMatch";
 import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
+import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 
 // 同時実行数を制限しつつ配列の各要素に非同期処理を適用する。連携アカウント数が多い場合に
 // 全アカウントを一斉にPromise.allで叩くと、各アカウントのメール取得（内部でさらにメッセージ
@@ -53,16 +54,20 @@ function reconcileFakeSentEmails(list: any[]): any[] {
 // D1に保存するpersistedDataのサイズを一定の範囲に収める。ピン留めしたチャットは、読み込み済みの
 // 全メッセージ（本文込み）をそのままchat_configs.custom_name列にJSONで保存する設計のため、
 // 長文メール（特にHTML由来の本文）を大量にピン留めすると行が際限なく肥大化しうる。
-// 保存用のコピーだけ本文を切り詰める（画面表示用の実データ・persistedEmails stateはそのまま
-// 完全な内容を保持するため、切り詰めるのはリロード後に復元される保存データだけ）
+// 保存用のコピーだけ (1)本文を切り詰め (2)チャット全体をピン留めした場合は直近N件に絞る。
+// 画面表示用の実データ・persistedEmails stateはそのまま完全な内容を保持するため、
+// 影響を受けるのはリロード後に復元される保存データだけ
 const MAX_PERSISTED_BODY_CHARS = 20000;
+const MAX_PERSISTED_MESSAGES_PER_CHAT = 60;
 function capPersistedDataForStorage(data: any): any {
   if (!data) return data;
   const cap = (e: any) => {
     if (!e || typeof e.body !== "string" || e.body.length <= MAX_PERSISTED_BODY_CHARS) return e;
     return { ...e, body: e.body.slice(0, MAX_PERSISTED_BODY_CHARS) + "\n…(長文のため以下省略)" };
   };
-  return Array.isArray(data) ? data.map(cap) : cap(data);
+  if (!Array.isArray(data)) return cap(data);
+  // groupedEmails由来の配列は新しい順に並んでいるため、先頭から取れば「直近N件」になる
+  return data.slice(0, MAX_PERSISTED_MESSAGES_PER_CHAT).map(cap);
 }
 
 function getSavedBoxSettings(): { inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; sent?: boolean } | null {
@@ -930,9 +935,8 @@ export function useMailApp() {
                 const result = await fetchChatCrossbox(asLocalKey(m), restoredAccountEmail, false, res.emails, true).catch(() => ({ nextToken: "END_ALL" }));
                 groupMemberTokensRef.current[m] = result.nextToken || "END_ALL";
               }));
-              const allDone = restoredMembers.every(m => ["END_ALL", "END_LIMIT"].includes(groupMemberTokensRef.current[m]));
-              const anyLimit = restoredMembers.some(m => groupMemberTokensRef.current[m] === "END_LIMIT");
-              const nextToken = restoredMembers.length === 0 ? "END_ALL" : allDone ? (anyLimit ? "END_LIMIT" : "END_ALL") : `GROUP_MORE_${Date.now()}`;
+              const aggState = aggregateGroupPagingState(restoredMembers, groupMemberTokensRef.current);
+              const nextToken = aggState === "MORE" ? `GROUP_MORE_${Date.now()}` : aggState;
               setChatNextPageToken(nextToken); chatNextPageTokenRef.current = nextToken;
             } else {
               await fetchChatCrossbox(restoredLocalKey, restoredAccountEmail, false, res.emails);
@@ -1050,9 +1054,8 @@ export function useMailApp() {
         const result = await fetchChatCrossbox(asLocalKey(m), accountEmail, false, knownEmails, true).catch(() => ({ nextToken: "END_ALL" }));
         groupMemberTokensRef.current[m] = result.nextToken || "END_ALL";
       }));
-      const allDone = members.every(m => ["END_ALL", "END_LIMIT"].includes(groupMemberTokensRef.current[m]));
-      const anyLimit = members.some(m => groupMemberTokensRef.current[m] === "END_LIMIT");
-      const nextToken = members.length === 0 ? "END_ALL" : allDone ? (anyLimit ? "END_LIMIT" : "END_ALL") : `GROUP_MORE_${Date.now()}`;
+      const aggState = aggregateGroupPagingState(members, groupMemberTokensRef.current);
+      const nextToken = aggState === "MORE" ? `GROUP_MORE_${Date.now()}` : aggState;
       setChatNextPageToken(nextToken); chatNextPageTokenRef.current = nextToken;
     } else {
       await fetchChatCrossbox(localKey, accountEmail, false, knownEmails);
@@ -1066,7 +1069,7 @@ export function useMailApp() {
     const cfg = chatConfigsRef.current[room];
     const { accountEmail } = decodeRoomKey(room);
     const members = (cfg?.groupMembers || []) as LocalKey[];
-    const pending = members.filter(m => !["END_ALL", "END_LIMIT"].includes(groupMemberTokensRef.current[m]));
+    const pending = pendingMembers(members, groupMemberTokensRef.current);
 
     if (pending.length > 0) {
       await Promise.all(pending.map(async m => {
@@ -1076,9 +1079,8 @@ export function useMailApp() {
       }));
     }
 
-    const allDone = members.every(m => ["END_ALL", "END_LIMIT"].includes(groupMemberTokensRef.current[m]));
-    const anyLimit = members.some(m => groupMemberTokensRef.current[m] === "END_LIMIT");
-    const nextToken = allDone ? (anyLimit ? "END_LIMIT" : "END_ALL") : `GROUP_MORE_${Date.now()}`;
+    const aggState = aggregateGroupPagingState(members, groupMemberTokensRef.current);
+    const nextToken = aggState === "MORE" ? `GROUP_MORE_${Date.now()}` : aggState;
     setChatNextPageToken(nextToken); chatNextPageTokenRef.current = nextToken;
     return { nextToken };
   };
