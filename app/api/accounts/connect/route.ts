@@ -2,6 +2,7 @@ import { NextResponse, NextRequest } from "next/server";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { auth } from "../../../../auth";
 import { encryptSecret } from "../../../lib/tokenCrypto";
+import type { GoogleTokenResponse } from "../../../lib/googleToken";
 
 
 // 追加のGoogleアカウントを連携するための、NextAuth本体のログインとは別系統のOAuthフロー。
@@ -55,7 +56,7 @@ export async function GET(request: NextRequest) {
         redirect_uri: redirectUri,
       }),
     });
-    const tokens: any = await tokenRes.json();
+    const tokens = (await tokenRes.json()) as GoogleTokenResponse;
     if (!tokenRes.ok) throw tokens;
     if (!tokens.refresh_token) {
       // prompt=consentを必ず付けているので通常は起きないはずだが、念のため
@@ -65,7 +66,7 @@ export async function GET(request: NextRequest) {
     const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
       headers: { Authorization: `Bearer ${tokens.access_token}` },
     });
-    const userInfo: any = await userInfoRes.json();
+    const userInfo = (await userInfoRes.json()) as { email?: string; name?: string; picture?: string };
     const accountEmail = userInfo.email as string | undefined;
     if (!accountEmail) throw new Error("Failed to resolve account email from userinfo");
 
@@ -103,7 +104,7 @@ export async function GET(request: NextRequest) {
     const res = NextResponse.redirect(new URL(`/?accountLinked=${encodeURIComponent(accountEmail)}`, request.url));
     res.cookies.delete(STATE_COOKIE);
     return res;
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Account link error:", error);
     return NextResponse.redirect(new URL("/?accountLinkError=1", request.url));
   }

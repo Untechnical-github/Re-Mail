@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { errorMessage } from "../../lib/errorMessage";
 import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせる
 
 
@@ -15,9 +16,9 @@ export async function GET(request: Request) {
       ? await db.prepare("SELECT * FROM chat_configs WHERE user_email = ? AND account_email = ?").bind(session.user.email, accountEmail).all()
       : await db.prepare("SELECT * FROM chat_configs WHERE user_email = ?").bind(session.user.email).all();
     return NextResponse.json({ configs: results });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("DB GET Error:", error);
-    return NextResponse.json({ error: "Database Error", details: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database Error", details: errorMessage(error) }, { status: 500 });
   }
 }
 
@@ -51,9 +52,9 @@ export async function POST(request: Request) {
     ).run();
 
     return NextResponse.json({ success: true });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("DB POST Error:", error);
-    return NextResponse.json({ error: "Database Error", details: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database Error", details: errorMessage(error) }, { status: 500 });
   }
 }
 
@@ -73,8 +74,8 @@ export async function DELETE(request: Request) {
       .bind(session.user.email, accountEmail, chatId).run();
 
     return NextResponse.json({ success: true });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("DB DELETE Error:", error);
-    return NextResponse.json({ error: "Database Error", details: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database Error", details: errorMessage(error) }, { status: 500 });
   }
 }

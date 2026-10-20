@@ -16,7 +16,11 @@ Gmail をチャット風 UI（相手ごとのトークルーム）で読み書�
 ## 触ってはいけないもの
 
 - `.next/` `.open-next/` `.wrangler/` と、Next.js が自動生成する `next-env.d.ts` `types/routes.d.ts` `types/cache-life.d.ts` `types/validator.ts` は手で編集しない。
-- `.env.local`・シークレット・API キー・トークンをファイルやコミットに書かない。Worker のシークレットは `npx wrangler secret put` で、CI 用は GitHub の Secrets で管理する。`wrangler.json` の `database_id` も変えない。
+- `.env.local`・シークレット・API キー・トークンをファイルやコミットに書かない。`wrangler.json` の `database_id` も変えない。
+- シークレットの置き場所と現在の一覧（値はどこにも書かない）:
+  - Worker 用（`npx wrangler secret put <名前>`）: `AUTH_SECRET` `GOOGLE_CLIENT_ID` `GOOGLE_CLIENT_SECRET` `TOKEN_ENCRYPTION_KEY`
+  - GitHub Actions 用（`gh secret set <名前>`）: `CLOUDFLARE_API_TOKEN`（Workers 編集＋D1 編集の権限）`CLOUDFLARE_ACCOUNT_ID`
+  - この環境の wrangler は本番の認証が通らないので、Claude はシークレットを登録・変更できない。新しい環境変数やシークレットが要る変更では、push する前に、登録してほしい名前とコマンドをユーザーに伝えて登録してもらう（登録前にデプロイすると動作確認に失敗して前の版に戻る）。
 - `TOKEN_ENCRYPTION_KEY` を変える・消す前提のコードを書かない。D1 の暗号化済みトークン（`encv1:` 始まり）が復号できなくなり、連携アカウントが全滅する。
 - メール本文を表示する iframe の `sandbox` に `allow-scripts` を足さない。メール内のスクリプトが実行され XSS になる。
 
@@ -42,7 +46,9 @@ Gmail をチャット風 UI（相手ごとのトークルーム）で読み書�
 
 ## 変更したら確認すること
 
-- `npm test`・`npm run lint`・`npx tsc --noEmit` がすべて通ってから push する。
+- `npm test`・`npm run lint`・`npx tsc --noEmit` がすべて通ってから push する（3つとも CI でも確認し、失敗するとデプロイされない）。
+- Lint のエラーは 0 に保つ。警告も増やさない。ルールをその行だけ外すときは `// eslint-disable-next-line <ルール> -- <理由>` の形で必ず理由を書く。
+- `any` を使わない。Gmail・D1・API の応答には型を付ける（メールは `app/types/email.ts` の `Email`、ルームのキーは `RoomKeyStr`）。
 - `app/lib/` の純粋関数を変えたら、対応する `*.test.ts` にテストを足す。
 - 実際の Google ログインや Gmail の実データが要る動作（送受信・添付・ページング・アカウント連携）は、この環境では確かめられない。変更したら「ユーザーが実機で確認すべき手順」を作業報告に書く。
 

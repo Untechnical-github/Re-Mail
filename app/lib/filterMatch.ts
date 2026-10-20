@@ -1,5 +1,9 @@
 // フィルターツール（作成/非表示/ピン留め/移動/削除）と検索バーで共有する、
 // メールが自分の送信したものかどうかの判定・保存場所判定・条件マッチングロジック。
+import type { Email } from "../types/email";
+
+// 判定に使うフィールドだけを持つメール（テストや送信直後の仮オブジェクトでは一部が欠けている）
+type MatchableEmail = Partial<Email>;
 
 // From ヘッダーから実アドレス部分だけを厳密に取り出す（"表示名 <addr>" 形式ならaddr、
 // なければヘッダー全体をそのままアドレスとみなす）。大文字小文字を無視して比較できるよう
@@ -16,7 +20,7 @@ function extractFromAddress(raw: string): string {
 // myEmailは単一アドレスでも、複数アドレス（メイン＋連携）の配列でも渡せる。
 // 注意: 部分一致（.includes）で判定すると、例えば自分が a@gmail.com のとき
 // ba@gmail.com からのメールを「自分の送信」と誤判定してしまうため、必ず完全一致で比較する
-export function isMineEmail(e: any, myEmail: string | string[]): boolean {
+export function isMineEmail(e: MatchableEmail, myEmail: string | string[]): boolean {
   if (e.isMe) return true;
   const candidates = (Array.isArray(myEmail) ? myEmail : [myEmail]).filter(Boolean).map(a => a.trim().toLowerCase());
   if (candidates.length === 0) return false;
@@ -28,12 +32,11 @@ export function isMineEmail(e: any, myEmail: string | string[]): boolean {
 export type FindBarBoxKey = "inbox" | "archive" | "sent" | "spam" | "trash";
 
 // メッセージがどの場所（受信箱・アーカイブ等）に属するかを判定する
-function getBoxKey(e: any): FindBarBoxKey {
+function getBoxKey(e: MatchableEmail): FindBarBoxKey {
   const isTrash = e.labelIds?.includes("TRASH");
   const isSpam = e.labelIds?.includes("SPAM");
   const isInbox = e.labelIds?.includes("INBOX");
   const isSent = e.labelIds?.includes("SENT") || e.isMe;
-  const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
   return isSent ? "sent" : isTrash ? "trash" : isSpam ? "spam" : isInbox ? "inbox" : "archive";
 }
 export { getBoxKey as getFindBarBoxKey };
@@ -119,7 +122,7 @@ export function getConditionSets(criteria: FilterCriteria): ConditionSet[] {
 
 // メッセージの「相手」（自分が送信したなら宛先、受信したなら差出人）の生ヘッダー文字列を返す。
 // TextRule.direction が未指定の古いデータ向けの後方互換フォールバックにのみ使う
-function getPartnerRaw(email: any, myEmail: string): string {
+function getPartnerRaw(email: MatchableEmail, myEmail: string): string {
   return isMineEmail(email, myEmail) ? (email.to || "") : (email.from || "");
 }
 
@@ -146,7 +149,7 @@ function parseLocalDayEnd(dateStr: string): Date {
   return new Date(y, (m || 1) - 1, d || 1, 23, 59, 59, 999);
 }
 
-function matchesTextRule(email: any, rule: TextRule, myEmail: string, direction: DateDirection | undefined): boolean {
+function matchesTextRule(email: MatchableEmail, rule: TextRule, myEmail: string, direction: DateDirection | undefined): boolean {
   let target = "";
   if (rule.field === "recipientName" || rule.field === "recipientAddress") {
     const raw = direction ? (direction === "sent" ? (email.to || "") : (email.from || "")) : getPartnerRaw(email, myEmail);
@@ -158,7 +161,7 @@ function matchesTextRule(email: any, rule: TextRule, myEmail: string, direction:
   return rule.mode === "contains" ? contains : !contains;
 }
 
-function matchesConditionSet(email: any, set: ConditionSet, myEmail: string): boolean {
+function matchesConditionSet(email: MatchableEmail, set: ConditionSet, myEmail: string): boolean {
   if (set.direction) {
     const isSent = isMineEmail(email, myEmail);
     if (set.direction === "received" && isSent) return false;
@@ -171,7 +174,7 @@ function matchesConditionSet(email: any, set: ConditionSet, myEmail: string): bo
 
   if (set.dateRange) {
     const { from, to } = set.dateRange;
-    const emailDate = new Date(email.date);
+    const emailDate = new Date(email.date ?? NaN);
     if (isNaN(emailDate.getTime())) return false; // 日時が壊れている/未解析のメールは期間条件付きでは対象外にする
     if (from && emailDate < parseLocalDayStart(from)) return false;
     if (to && emailDate > parseLocalDayEnd(to)) return false;
@@ -200,7 +203,7 @@ function matchesConditionSet(email: any, set: ConditionSet, myEmail: string): bo
   return true;
 }
 
-export function messageMatchesFilter(email: any, criteria: FilterCriteria, myEmail: string): boolean {
+export function messageMatchesFilter(email: MatchableEmail, criteria: FilterCriteria, myEmail: string): boolean {
   // email.accountId が無い（accountId導入前のデータ・ローカルfake等）場合は myEmail 名義として扱う。
   // このメール自身が実際に属するアカウントを、以降の受信/送信（isMineEmail）判定にも使う。
   // myEmailを呼び出し元がメインアカウント固定で渡していても、連携アカウントのメールに対して
@@ -223,7 +226,7 @@ export function messageMatchesFilter(email: any, criteria: FilterCriteria, myEma
 // チャット一覧のタブ種別。フィルターツールで作成したグループ（isGroup && filterCriteria）は
 // アドレスベースの通常グループとは別の「フィルター」タブに分類する
 export type ChatListTab = "individual" | "group" | "filter";
-export function chatConfigTab(cfg: any): ChatListTab {
+export function chatConfigTab(cfg: { isGroup?: boolean; filterCriteria?: unknown } | null | undefined): ChatListTab {
   if (!cfg?.isGroup) return "individual";
   return cfg.filterCriteria ? "filter" : "group";
 }

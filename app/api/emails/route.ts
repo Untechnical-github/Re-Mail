@@ -1,9 +1,22 @@
 import { NextResponse } from "next/server";
+import type { Session } from "next-auth";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { auth } from "../../../auth";
 import { getValidAccessToken } from "../../lib/googleToken";
 import { encryptSecret, decryptSecret, isEncrypted } from "../../lib/tokenCrypto";
 
+
+// Gmail API の生データ（必要なフィールドだけ）
+type GmailHeader = { name: string; value: string };
+type GmailMessagePart = {
+  mimeType?: string;
+  filename?: string;
+  headers?: GmailHeader[];
+  body?: { data?: string; size?: number; attachmentId?: string };
+  parts?: GmailMessagePart[];
+};
+type GmailMessage = { id: string; threadId: string; snippet?: string; labelIds?: string[]; payload?: GmailMessagePart };
+type LinkedAccountTokenRow = { refresh_token: string; access_token: string | null; expires_at: number | null; needs_reauth: number | null };
 
 // Gmail APIが429（レート制限）や一時的な5xxを返した場合に、指数バックオフ＋ジッターで
 // 数回だけ再試行する。特に多アカウント連携時・大きなメールボックスでの一括取得（メッセージ
@@ -24,7 +37,7 @@ async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 2): P
 // accountEmail が未指定、またはメインアカウント自身の場合はNextAuthのセッションが持つ
 // トークンをそのまま使う。追加連携アカウントの場合は linked_accounts からリフレッシュトークンを引き、
 // フェーズ2の getValidAccessToken で有効なアクセストークンを得る（必要ならD1に書き戻す）
-async function resolveAccessToken(session: any, accountEmail: string | null): Promise<string | null> {
+async function resolveAccessToken(session: Session, accountEmail: string | null): Promise<string | null> {
   if (!accountEmail || accountEmail === session.user?.email) {
     return session.accessToken || null;
   }
@@ -32,8 +45,8 @@ async function resolveAccessToken(session: any, accountEmail: string | null): Pr
   const db = getCloudflareContext().env.DB;
   const { results } = await db.prepare(
     "SELECT refresh_token, access_token, expires_at, needs_reauth FROM linked_accounts WHERE user_email = ? AND account_email = ?"
-  ).bind(session.user.email, accountEmail).all();
-  const row = results?.[0] as any;
+  ).bind(session.user?.email, accountEmail).all();
+  const row = results?.[0] as LinkedAccountTokenRow | undefined;
   if (!row?.refresh_token) return null;
 
   // refresh_token/access_tokenはD1に暗号化して保存している（tokenCrypto.ts参照）。
@@ -67,26 +80,27 @@ async function resolveAccessToken(session: any, accountEmail: string | null): Pr
       ]);
       await db.prepare(
         "UPDATE linked_accounts SET access_token = ?, expires_at = ?, refresh_token = ?, needs_reauth = 0 WHERE user_email = ? AND account_email = ?"
-      ).bind(encryptedAccessToken, result.expiresAt, encryptedRefreshToken, session.user.email, accountEmail).run();
+      ).bind(encryptedAccessToken, result.expiresAt, encryptedRefreshToken, session.user?.email, accountEmail).run();
     }
     return result.accessToken;
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error(`Failed to refresh access token for linked account ${accountEmail}:`, error);
     // invalid_grant/invalid_client はリフレッシュトークン自体が失効した恒久的なエラー
     // （auth.tsのメインアカウント側と同じ判定基準）。ネットワーク瞬断等の一時的な失敗まで
     // 再連携要求にしてしまうと、ユーザーに不要な再連携を何度も求めることになるため、
     // 恒久的なエラーのときだけ needs_reauth を立てる
-    const isPermanent = error?.error === "invalid_grant" || error?.error === "invalid_client";
+    const code = (error as { error?: string } | null)?.error;
+    const isPermanent = code === "invalid_grant" || code === "invalid_client";
     if (isPermanent) {
       await db.prepare(
         "UPDATE linked_accounts SET needs_reauth = 1 WHERE user_email = ? AND account_email = ?"
-      ).bind(session.user.email, accountEmail).run().catch((e: any) => console.error("Failed to set needs_reauth:", e));
+      ).bind(session.user?.email, accountEmail).run().catch((e: unknown) => console.error("Failed to set needs_reauth:", e));
     }
     return null;
   }
 }
 
-function getHeader(headers: any[], name: string): string {
+function getHeader(headers: GmailHeader[], name: string): string {
   const header = headers.find((h) => h.name.toLowerCase() === name.toLowerCase());
   return header ? header.value : "";
 }
@@ -97,7 +111,7 @@ function decodeBase64Url(base64Url: string) {
     const binString = atob(base64);
     const bytes = Uint8Array.from(binString, (m) => m.codePointAt(0)!);
     return new TextDecoder().decode(bytes);
-  } catch (e) {
+  } catch {
     return "";
   }
 }
@@ -151,14 +165,14 @@ function decodeMimeHeader(header: string): string {
         }
         return new TextDecoder(charset.toLowerCase() === 'shift_jis' ? 'shift_jis' : 'utf-8').decode(bytes);
       }
-    } catch (e) {
+    } catch {
       return match;
     }
     return match;
   });
 }
 
-function getTextBody(payload: any): string {
+function getTextBody(payload: GmailMessagePart): string {
   if (payload.body && payload.body.data) return decodeBase64Url(payload.body.data);
   if (payload.parts) {
     for (const part of payload.parts) {
@@ -184,15 +198,15 @@ function isSmimeSignaturePart(mimeType: string, filename: string): boolean {
   return /^smime\.p7[sm]$/i.test(filename.trim());
 }
 
-function extractAttachments(payload: any): Array<{ filename: string; mimeType: string; size: number; attachmentId: string }> {
+function extractAttachments(payload: GmailMessagePart | undefined): Array<{ filename: string; mimeType: string; size: number; attachmentId: string }> {
   const results: Array<{ filename: string; mimeType: string; size: number; attachmentId: string }> = [];
-  function walk(part: any) {
+  function walk(part: GmailMessagePart | undefined) {
     if (!part) return;
     if (part.body?.attachmentId && part.filename?.trim()) {
-      const disp = (part.headers || []).find((h: any) => h.name?.toLowerCase() === 'content-disposition')?.value?.toLowerCase() ?? '';
+      const disp = (part.headers || []).find((h) => h.name?.toLowerCase() === 'content-disposition')?.value?.toLowerCase() ?? '';
       const mimeType = part.mimeType || 'application/octet-stream';
-      if (!disp.startsWith('inline') && !isSmimeSignaturePart(mimeType, part.filename)) {
-        results.push({ filename: part.filename, mimeType, size: part.body.size || 0, attachmentId: part.body.attachmentId });
+      if (!disp.startsWith('inline') && !isSmimeSignaturePart(mimeType, part.filename!)) {
+        results.push({ filename: part.filename!, mimeType, size: part.body.size || 0, attachmentId: part.body.attachmentId });
       }
     }
     if (part.parts) part.parts.forEach(walk);
@@ -223,9 +237,9 @@ function extractHtmlLinks(html: string): Array<{text: string, href: string}> {
 // multipart/related や multipart/alternative が何重にもネストしていても取りこぼさないよう、
 // 木構造を最後まで走査してすべての text/html パートを集め、最も内容量の多いものを採用する
 // （マーケティングメールなどで、装飾用の小さいhtml断片が本文より先に見つかってしまうのを防ぐ）
-function getHtmlBody(payload: any): string {
+function getHtmlBody(payload: GmailMessagePart | undefined): string {
   const candidates: string[] = [];
-  function walk(part: any) {
+  function walk(part: GmailMessagePart | undefined) {
     if (!part) return;
     if (part.mimeType === "text/html" && part.body?.data) {
       const decoded = decodeBase64Url(part.body.data);
@@ -336,7 +350,7 @@ function cleanseBody(text: string, isForward = false): string {
 }
 
 // 一覧取得・返信元の単体検索の両方で使う、メッセージ生データ→フロントエンド向け整形の共通処理
-function parseMessageDetail(message: any) {
+function parseMessageDetail(message: GmailMessage) {
   const payload = message.payload;
   const headers = payload?.headers || [];
 
@@ -349,7 +363,7 @@ function parseMessageDetail(message: any) {
   const labelIds = message.labelIds || [];
   // Discord風の「返信先」チップ表示のため、Message-ID / In-Reply-To を保持しておく
   const messageIdHeader = getHeader(headers, "Message-ID") || undefined;
-  const rawBody = getTextBody(payload) || message.snippet || "";
+  const rawBody = (payload ? getTextBody(payload) : "") || message.snippet || "";
   const rawHtmlForCheck = getHtmlBody(payload);
   // HTML側は引用が "> " ではなく <blockquote>/gmail_quote 等のタグで表現されるため、
   // 先に引用部分を取り除いた「自分の文章」だけを転送判定に使う。
@@ -372,7 +386,7 @@ function parseMessageDetail(message: any) {
 }
 
 export async function GET(request: Request) {
-  const session = await auth() as any;
+  const session = await auth();
   if (!session || !session.user?.email || session.error === "RefreshAccessTokenError") {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -475,11 +489,11 @@ export async function GET(request: Request) {
 
     if (messages.length === 0) return NextResponse.json({ messages: [], topIds: [], nextPageToken });
 
-    const topIds = messages.map((m: any) => m.id);
-    const messagesToFetch = messages.filter((m: any) => !knownIds.has(m.id));
+    const topIds = messages.map((m: { id: string }) => m.id);
+    const messagesToFetch = messages.filter((m: { id: string }) => !knownIds.has(m.id));
 
     const chunkSize = 20;
-    const detailedMessages: any[] = [];
+    const detailedMessages: GmailMessage[] = [];
     for (let i = 0; i < messagesToFetch.length; i += chunkSize) {
       const chunk = messagesToFetch.slice(i, i + chunkSize);
       const chunkResults = await Promise.all(
@@ -491,22 +505,22 @@ export async function GET(request: Request) {
           // 誤ってパースしてしまわないよう、ここで弾く（そのメッセージ1件だけ今回は諦める。
           // 次回のポーリング/追加読み込みで再取得を試みる）
           if (!detailRes.ok) return null;
-          return detailRes.json().catch(() => null);
+          return (detailRes.json() as Promise<GmailMessage>).catch(() => null);
         })
       );
-      detailedMessages.push(...chunkResults.filter(Boolean));
+      detailedMessages.push(...chunkResults.filter((m): m is GmailMessage => !!m));
     }
 
     const parsedMessages = detailedMessages.map(parseMessageDetail);
 
     return NextResponse.json({ messages: parsedMessages, topIds, nextPageToken });
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
-  const session = await auth() as any;
+  const session = await auth();
   if (!session || !session.user?.email || session.error === "RefreshAccessTokenError") {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -589,7 +603,7 @@ export async function POST(request: Request) {
       }
 
       const encodedMessage = encodeBase64(rawMessage).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-      const requestBody: any = { raw: encodedMessage };
+      const requestBody: { raw: string; threadId?: string } = { raw: encodedMessage };
       if (threadId) requestBody.threadId = threadId;
 
       const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
@@ -608,7 +622,7 @@ export async function POST(request: Request) {
 
       // Gmailが実際に採番したメッセージID/スレッドIDをクライアントへ返す。
       // グループチャットで送信したメールをリロード後も正しく識別するために必要
-      const sentData = await res.json().catch(() => ({} as any));
+      const sentData = (await res.json().catch(() => ({}))) as { id?: string; threadId?: string };
       return NextResponse.json({ success: true, id: sentData.id, threadId: sentData.threadId });
     }
 
@@ -681,7 +695,7 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

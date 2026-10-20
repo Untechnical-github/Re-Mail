@@ -8,6 +8,15 @@
 // 場合は、D1に一時的な「リフレッシュ中フラグ」を持たせる方式に拡張できる）
 type TokenResult = { accessToken: string; expiresAt: number; refreshToken?: string };
 
+// Google の OAuth トークンエンドポイントのレスポンス（失敗時は error / error_description が入る）
+export type GoogleTokenResponse = {
+  access_token?: string;
+  expires_in?: number;
+  refresh_token?: string;
+  error?: string;
+  error_description?: string;
+};
+
 const inFlightRefreshes = new Map<string, Promise<TokenResult>>();
 
 export async function getValidAccessToken(
@@ -34,13 +43,13 @@ export async function getValidAccessToken(
         refresh_token: refreshToken,
       }),
     });
-    const tokens: any = await res.json();
+    const tokens = (await res.json()) as GoogleTokenResponse;
     if (!res.ok) throw tokens;
     // Googleは新しいリフレッシュトークンを返す場合があり、その場合は呼び出し側で保存し直す必要がある
     // （ローテーション後に古いリフレッシュトークンを使い続けるとinvalid_grantで失効するため）
     return {
       accessToken: tokens.access_token as string,
-      expiresAt: Date.now() + tokens.expires_in * 1000,
+      expiresAt: Date.now() + (tokens.expires_in ?? 0) * 1000,
       refreshToken: tokens.refresh_token as string | undefined,
     };
   })();

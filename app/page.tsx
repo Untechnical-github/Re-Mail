@@ -9,9 +9,10 @@ import { HighlightText, ActionBar, BodyWithLinks } from "./components/ui";
 import { Modals, EmailModal, AttachmentModal, SearchModal, FilterToolModal } from "./components/Modals";
 import { getFileIcon, formatFileSize, PinIcon, PaperclipIcon, WarningIcon, InboxIcon, ArchiveIcon, SendIcon, SpamIcon, TrashIcon } from "./components/ui";
 import { chatConfigTab, isMineEmail } from "./lib/filterMatch";
+import type { Email } from "./types/email";
 
 function InlineAttachmentImage({ attachment, messageId, accountId, cacheKey, onOpen }: {
-  attachment: { filename: string; mimeType: string; size: number; attachmentId: string };
+  attachment: { filename: string; mimeType: string; size: number; attachmentId?: string };
   messageId: string;
   accountId?: string;
   cacheKey: string;
@@ -30,6 +31,9 @@ function InlineAttachmentImage({ attachment, messageId, accountId, cacheKey, onO
       if (cancelled) return;
       if (cached) { setBase64(cached); setLoading(false); return; }
       // L3: fetch from API
+      // 送信直後のローカルのメールは attachmentId を持たない（中身は送信時にキャッシュへ書き込み済み）。
+      // 問い合わせても取得できないので、取得失敗と同じ扱いにする
+      if (!attachment.attachmentId) { if (!cancelled) setLoading(false); return; }
       try {
         const attParams = new URLSearchParams({ messageId, attachmentId: attachment.attachmentId });
         if (accountId) attParams.append("accountEmail", accountId);
@@ -78,7 +82,7 @@ function fitBox(ratio: number, maxW: number, maxH: number) {
 }
 
 function VideoAttachmentChip({ attachment, messageId, accountId, cacheKey, onOpen }: {
-  attachment: { filename: string; mimeType: string; size: number; attachmentId: string };
+  attachment: { filename: string; mimeType: string; size: number; attachmentId?: string };
   messageId: string;
   accountId?: string;
   cacheKey: string;
@@ -97,7 +101,7 @@ function VideoAttachmentChip({ attachment, messageId, accountId, cacheKey, onOpe
 
       // 再生時と同じキャッシュを共有するので、後で開いたときに二重ダウンロードにならない
       let base64 = await getCachedAttachment(cacheKey);
-      if (!base64) {
+      if (!base64 && attachment.attachmentId) {
         try {
           const attParams = new URLSearchParams({ messageId, attachmentId: attachment.attachmentId });
           if (accountId) attParams.append("accountEmail", accountId);
@@ -163,7 +167,7 @@ export default function Home() {
   const lastMsgIdxRef = useRef<number>(-1);
 
   if (auth.status === "loading") return <div className="flex h-screen items-center justify-center bg-[#313338] text-gray-400 font-bold">読み込み中...</div>;
-  if (!auth.session || (auth.session as any).error === "RefreshAccessTokenError") return (
+  if (!auth.session || auth.session.error === "RefreshAccessTokenError") return (
     <div className="flex h-screen flex-col items-center justify-center bg-[#313338] text-white">
       <h1 className="mb-8 text-5xl font-extrabold text-[#5865F2]">Re:Mail</h1>
       <button onClick={() => signIn("google", { callbackUrl: "/" })} className="rounded bg-[#5865F2] px-8 py-3 font-bold shadow transition hover:bg-[#4752C4] active:scale-95">Googleでログインして始める</button>
@@ -183,7 +187,7 @@ export default function Home() {
   const bodyFindHighlight = state.findBarOpen && state.findBarSearchBody ? state.findBarKeyword : "";
 
   // メッセージが属する場所（受信箱・送信済み等）に応じた色を返す（返信元チップの色分けにも使う）
-  const getMsgColor = (msg: any) => {
+  const getMsgColor = (msg: Email) => {
     const isTrash = msg.labelIds?.includes("TRASH");
     const isSpam = msg.labelIds?.includes("SPAM");
     const isInbox = msg.labelIds?.includes("INBOX");
@@ -302,7 +306,7 @@ export default function Home() {
               const allEmails = computed.groupedEmails[sender] || [];
               const config = state.chatConfigs[sender];
 
-              const visibleEmails = allEmails.filter((e: any) => {
+              const visibleEmails = allEmails.filter((e) => {
                  const isTrash = e.labelIds?.includes("TRASH");
                  const isSpam = e.labelIds?.includes("SPAM");
                  const isInbox = e.labelIds?.includes("INBOX");
@@ -335,17 +339,17 @@ export default function Home() {
 
               const previewSubject = latestEmail ? (latestEmail.subject || "No Subject") : "";
 
-              const isChatOnlySent = allEmails.every((e: any) => (e.labelIds?.includes("SENT") || e.isMe) && !e.labelIds?.includes("TRASH"));
+              const isChatOnlySent = allEmails.every((e) => (e.labelIds?.includes("SENT") || e.isMe) && !e.labelIds?.includes("TRASH"));
 
               const isMoveGrayedOut = state.selectionMode === "chat_move" && (
                  isChatOnlySent ||
                  (state.moveDestination &&
-                   visibleEmails.length > 0 && visibleEmails.every((e: any) => e.labelIds?.includes(state.moveDestination!) || (state.moveDestination === "ARCHIVE" && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("SENT") && !e.isMe))
+                   visibleEmails.length > 0 && visibleEmails.every((e) => e.labelIds?.includes(state.moveDestination!) || (state.moveDestination === "ARCHIVE" && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("SENT") && !e.isMe))
                  )
               );
 
               // ★修正: ピン留め/非表示の対象(INBOXかARCHIVE)がいるか判定
-              const hasValidFetchedMail = visibleEmails.some((e: any) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+              const hasValidFetchedMail = visibleEmails.some((e) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
               
               const hasLiveTarget = hasValidFetchedMail;
               
@@ -353,13 +357,13 @@ export default function Home() {
               const isHideGrayedOut = state.selectionMode === "chat_hide" && !hasLiveTarget;
 
               const isDeleteGrayedOut = state.selectionMode === "chat_delete" &&
-                visibleEmails.length > 0 && visibleEmails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
+                visibleEmails.length > 0 && visibleEmails.every((e) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
 
               const isActionGrayedOut = isMoveGrayedOut || isPinGrayedOut || isHideGrayedOut || isDeleteGrayedOut;
 
               // グラデーション色を計算（SENTを最優先：ゴミ箱内の送信済みも緑扱い）
               const colorsSet = new Set<string>();
-              allEmails.forEach((e: any) => {
+              allEmails.forEach((e) => {
                 if (!actions.isAccountVisible(e.accountId)) return;
                 const isSentE = e.labelIds?.includes("SENT") || e.isMe;
                 const isTrashE = !isSentE && e.labelIds?.includes("TRASH");
@@ -529,7 +533,7 @@ export default function Home() {
                       {isInboundOnlyGroup ? "・受信専用" : isOutboundOnlyGroup ? "・送信専用" : ""}
                     </span>
                   ) : (() => {
-                    const firstPartner = (computed.groupedEmails[state.selectedSender!] || []).find((e: any) => !isMineEmail(e, actions.roomAccountEmail(state.selectedSender!)));
+                    const firstPartner = (computed.groupedEmails[state.selectedSender!] || []).find((e) => !isMineEmail(e, actions.roomAccountEmail(state.selectedSender!)));
                     if (!firstPartner) return null;
                     const addrMatch = firstPartner.from.match(/<([^>]+)>/);
                     const addr = addrMatch ? addrMatch[1].trim() : firstPartner.from.trim();
@@ -608,7 +612,7 @@ export default function Home() {
               {computed.pinnedMsgsInChat.length > 0 && (
                 <div className="bg-[#2B2D31] border-b border-[#1E1F22] px-4 py-1.5 flex gap-2 overflow-x-auto scrollbar-none items-center shadow-inner cursor-default">
                    <PinIcon className="w-3.5 h-3.5 text-[#FEE75C] flex-shrink-0" />
-                   {computed.pinnedMsgsInChat.map((m: any) => (
+                   {computed.pinnedMsgsInChat.map((m) => (
                       <button key={`pin-${m.id}`} onClick={(e) => { e.stopPropagation(); document.getElementById(`msg-${m.id}`)?.scrollIntoView({behavior: 'smooth', block: 'center'}); }} className="text-xs bg-[#1E1F22] text-gray-300 px-3 py-1.5 rounded-full truncate max-w-[200px] hover:text-white border border-[#35373C] flex-shrink-0 transition active:scale-95">
                          {m.subject || m.snippet}
                       </button>
@@ -631,7 +635,7 @@ export default function Home() {
                     まだメッセージがありません。最初のメッセージを送信しましょう。
                   </div>
                 )}
-                {(computed.groupedEmails[state.selectedSender!] || []).map((email: any) => {
+                {(computed.groupedEmails[state.selectedSender!] || []).map((email) => {
                     const isTrash = email.labelIds?.includes("TRASH");
                     const isSpam = email.labelIds?.includes("SPAM");
                     const isInbox = email.labelIds?.includes("INBOX");
@@ -716,7 +720,7 @@ export default function Home() {
                     const isCollapsed = state.collapseLinesCount !== null && !state.expandedMsgIds.includes(email.id);
                     // Discord風の「返信先」チップ用: このメッセージがどのメッセージへの返信かを解決する
                     const replyTarget = (email.replyToId || email.inReplyTo)
-                      ? computed.allUniqueEmails.find((e: any) => (email.replyToId && e.id === email.replyToId) || (email.inReplyTo && e.messageIdHeader === email.inReplyTo))
+                      ? computed.allUniqueEmails.find((e) => (email.replyToId && e.id === email.replyToId) || (email.inReplyTo && e.messageIdHeader === email.inReplyTo))
                       : null;
                     const displaySubject = (email.subject || "").trim();
                     const hasVisibleSubject = !!displaySubject;
@@ -739,7 +743,7 @@ export default function Home() {
                                 const allMsgs = computed.groupedEmails[state.selectedSender!] || [];
                                 const min = Math.min(msgIdx, lastMsgIdxRef.current);
                                 const max = Math.max(msgIdx, lastMsgIdxRef.current);
-                                const rangeIds = allMsgs.slice(min, max + 1).map((m: any) => m.id);
+                                const rangeIds = allMsgs.slice(min, max + 1).map((m) => m.id);
                                 actions.setSelectedIds((prev: string[]) => [...new Set([...prev, ...rangeIds])]);
                               } else {
                                 if (!state.selectionMode.startsWith("msg_")) {
@@ -785,7 +789,7 @@ export default function Home() {
                                     const allMsgs = computed.groupedEmails[state.selectedSender!] || [];
                                     const min = Math.min(msgIdx, lastMsgIdxRef.current);
                                     const max = Math.max(msgIdx, lastMsgIdxRef.current);
-                                    const rangeIds = allMsgs.slice(min, max + 1).map((m: any) => m.id);
+                                    const rangeIds = allMsgs.slice(min, max + 1).map((m) => m.id);
                                     actions.setSelectedIds((prev: string[]) => [...new Set([...prev, ...rangeIds])]);
                                   } else {
                                     actions.toggleSelection(email.id);
@@ -842,7 +846,7 @@ export default function Home() {
                            </div>
                            {email.attachments && email.attachments.length > 0 && (
                              <div className={`flex flex-wrap gap-2 mt-2 mx-1 ${isMe ? 'justify-end' : 'justify-start'}`}>
-                               {email.attachments.map((att: any, attIdx: number) => {
+                               {email.attachments.map((att, attIdx) => {
                                  // attachmentId は再取得のたびに変わることがあるため、
                                  // 添付順+ファイル名+サイズで安定したキャッシュキーを作る
                                  const cacheKey = attachmentCacheKey(email.id, attIdx, att.filename, att.size);
@@ -934,7 +938,7 @@ export default function Home() {
                   <input disabled={isSendDisabled} type="text" placeholder="件名 (省略可)" value={state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
                   {state.replyAttachments.length > 0 && (
                     <div className="flex flex-wrap gap-2 mb-2">
-                      {state.replyAttachments.map((att: any, idx: number) => (
+                      {state.replyAttachments.map((att, idx) => (
                         <div key={`${att.filename}-${idx}`} className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-black/20 border border-white/10 max-w-[220px]">
                           <span className="flex-shrink-0">{getFileIcon(att.mimeType, "w-4 h-4")}</span>
                           <div className="min-w-0">

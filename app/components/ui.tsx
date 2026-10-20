@@ -2,6 +2,9 @@
 
 import React, { useState } from "react";
 import { chatConfigTab } from "../lib/filterMatch";
+import type { MailAppHook } from "../hooks/useMailApp";
+import type { Email } from "../types/email";
+import type { RoomKeyStr } from "../lib/roomKey";
 
 // field/matchCountBefore/activeField/activeIndex は、メッセージ画面の検索バーで
 // 「今対象として表示されている一致箇所」だけをオレンジにするための仕組み。
@@ -390,11 +393,11 @@ export function formatFileSize(bytes: number): string {
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
 
-export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
+export function ActionBar({ app, isChat }: { app: MailAppHook, isChat: boolean }) {
   const modePrefix = isChat ? "chat" : "msg";
   const { selectionMode, selectedIds } = app.state;
   const { handleMenuBarClick, setModal, setSelectedIds, setRenameInput,
-          setReplySubject, setReplyBody, setReplyToMessage, safeBack, enterSelectionMode } = app.actions;
+          setReplySubject, setReplyToMessage, safeBack, enterSelectionMode } = app.actions;
 
   const [showCopiedToast, setShowCopiedToast] = useState(false);
 
@@ -407,14 +410,14 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     return selectedIds.every((id: string) => {
       if (isChat) {
         if (action === "pin" || action === "hide") return false;
-        const chatEmails: any[] = app.computed.groupedEmails[id] || [];
+        const chatEmails: Email[] = app.computed.groupedEmails[id as RoomKeyStr] || [];
         if (chatEmails.length === 0) return false;
         if (action === "delete")
-          return chatEmails.every((e: any) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
+          return chatEmails.every((e) => e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe);
         if (action === "move")
-          return chatEmails.every((e: any) => e.labelIds?.includes("SENT") || e.isMe);
+          return chatEmails.every((e) => e.labelIds?.includes("SENT") || e.isMe);
       } else {
-        const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
+        const msg = app.computed.allUniqueEmails.find((e) => e.id === id);
         if (!msg) return true;
         const isTrash = msg.labelIds?.includes("TRASH");
         const isSpam = msg.labelIds?.includes("SPAM");
@@ -430,7 +433,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
 
   const hasSelectedTarget = selectedIds.some((id: string) => {
     if (isChat) return true; // チャットは常に対象
-    const msg = app.computed.allUniqueEmails.find((e: any) => e.id === id);
+    const msg = app.computed.allUniqueEmails.find((e) => e.id === id);
     return msg && !msg.labelIds?.includes("TRASH") && !msg.labelIds?.includes("SPAM");
   });
 
@@ -478,24 +481,24 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
   const handleSelectAll = () => {
     if (isChat) {
       // 現在表示中のタブ（個人 / グループ / フィルター）に含まれるチャットだけを対象にする
-      const allIds = (app.computed.senderList as string[]).filter(
-        (id: string) => chatConfigTab(app.state.chatConfigs[id]) === app.state.activeChatTab
+      const allIds = app.computed.senderList.filter(
+        (id) => chatConfigTab(app.state.chatConfigs[id]) === app.state.activeChatTab
       );
       if (!isAnySelection) enterSelectionMode("chat", allIds[0]);
       setSelectedIds(allIds);
     } else {
-      const allIds = ((app.computed.groupedEmails[app.state.selectedSender] || []) as any[]).map((e: any) => e.id);
+      const allIds = (app.state.selectedSender ? (app.computed.groupedEmails[app.state.selectedSender] || []) : []).map((e) => e.id);
       if (!isAnySelection) enterSelectionMode("msg", allIds[0]);
       setSelectedIds(allIds);
     }
   };
 
   const selectedMsg = !isChat && selectedIds.length === 1
-    ? app.computed.allUniqueEmails.find((e: any) => e.id === selectedIds[0])
+    ? app.computed.allUniqueEmails.find((e) => e.id === selectedIds[0])
     : null;
 
   const allPinned = isAnySelection && hasItems && selectedIds.every((id: string) =>
-    isChat ? app.state.chatConfigs[id]?.isPinned : app.state.messageConfigs[app.actions.messageConfigKey(id)]?.isPinned
+    isChat ? app.state.chatConfigs[id as RoomKeyStr]?.isPinned : app.state.messageConfigs[app.actions.messageConfigKey(id)]?.isPinned
   );
 
   const showBanner = isAnySelection && hasItems;
@@ -506,7 +509,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
     new Set(selectedIds.map((id: string) => app.actions.roomAccountEmail(id))).size > 1;
 
   // グループチャットの表示モードによるアクションバー制限
-  const selectedGroupConfig = !isChat ? app.state.chatConfigs[app.state.selectedSender] : undefined;
+  const selectedGroupConfig = !isChat ? (app.state.selectedSender ? app.state.chatConfigs[app.state.selectedSender] : undefined) : undefined;
   const isInboundOnlyGroupBar = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "inbound_only");
   const isOutboundOnlyGroupBar = !!(selectedGroupConfig?.isGroup && selectedGroupConfig.groupMode === "outbound_only");
 
@@ -543,7 +546,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
           onClick={() => {
             if (selectedSpansMultipleAccounts) return;
             const preSelected = isAnySelection && hasItems
-              ? selectedIds.filter((id: string) => !app.state.chatConfigs[id]?.isGroup)
+              ? selectedIds.filter((id: string) => !app.state.chatConfigs[id as RoomKeyStr]?.isGroup)
               : [];
             // 選択モードの履歴(select)の上にモーダルの履歴を重ねて積む。
             // ここで先に selectionMode を終了しようとすると（history.back 等）、
@@ -568,7 +571,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
           onClick={() => {
             if (!isAnySelection || selectedIds.length !== 1) return;
             const id = selectedIds[0];
-            setRenameInput(app.state.chatConfigs[id]?.customName || app.actions.roomLocalKey(id));
+            setRenameInput(app.state.chatConfigs[id as RoomKeyStr]?.customName || app.actions.roomLocalKey(id));
             setModal({ type: "rename", targetMode: "chat", targets: [id] });
             window.history.pushState({ action: "modal" }, "", window.location.href);
           }}
@@ -587,7 +590,7 @@ export function ActionBar({ app, isChat }: { app: any, isChat: boolean }) {
               // 「作成」と同じ宛先選択モーダルを転送モードで開く。選択モードの履歴の上に
               // モーダルの履歴を重ねるだけにし、選択の終了はモーダル側の完了処理に任せる
               // （先にここで選択を終了すると、その非同期popstateがモーダルを巻き込んで閉じてしまうため）
-              setModal({ type: "compose_new_chat", targetMode: "current_chat", targets: [], composeMode: "forward", forwardMessage: selectedMsg } as any);
+              setModal({ type: "compose_new_chat", targetMode: "current_chat", targets: [], composeMode: "forward", forwardMessage: selectedMsg });
               window.history.pushState({ action: "modal" }, "", window.location.href);
             }}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${!selectedMsg ? "opacity-30 pointer-events-none grayscale" : ""}`}

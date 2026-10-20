@@ -1,5 +1,6 @@
 import type { FilterCriteria } from "../lib/filterMatch";
 import type { LocalKey, RoomKeyStr } from "../lib/roomKey";
+import type { Email } from "./email";
 
 export type GroupMode = "normal" | "inbound_only" | "outbound_only";
 
@@ -11,7 +12,8 @@ export type ChatConfig = {
   unhideOnNew?: boolean;
   // チャット全体をピン留めしたときに、そのチャットの全メッセージを強制的に永続読み込みするかどうか
   forceFetch?: boolean;
-  persistedData?: any;
+  // ピン留めで保持するメールのコピー（チャット単位は配列、古いデータや単体保存は1件のこともある）
+  persistedData?: Email[] | Email | null;
   isGroup?: boolean;
   // メンバーはアカウント内のローカルキー（相手の表示名やアドレス）で保存する。groupEmailsByRoomが
   // アカウントごとのローカルroom空間で照合するため、複合キー（RoomKeyStr）を混ぜてはいけない
@@ -56,7 +58,7 @@ export type MessageConfig = {
   unhideOnNew?: boolean;
   // このメッセージ自身の永続コピーを保持するか（ピン留め等で、通常の取得ページングの外にあっても表示し続けるため）
   forceFetch?: boolean;
-  persistedData?: any;
+  persistedData?: Email[] | Email | null;
   // このメッセージがどのroomに属するか（room単位のchatConfigsのキーと同じ空間＝複合キー）
   roomId?: RoomKeyStr;
 };
@@ -66,13 +68,16 @@ export type SelectionMode = "none" | "chat_select" | "msg_select" | "chat_hide" 
 export type ModalState = {
   type: "confirm_delete" | "confirm_hide" | "rename" | "confirm_pin" | "confirm_unpin" | "reset_select" | "select_move_dest" | "select_move_dest_context" | "confirm_move" | "categorized_action_select" | "select_reply_target" | "compose_new_chat" | "confirm_delete_group" | "search" | "account_menu" | "filter_tool" | "settings";
   targetMode: "chat" | "msg" | "all_chats" | "current_chat" | "specific_chat";
-  targets: any[];
+  targets: string[];
   action?: "pin" | "hide" | "delete" | "move";
   refinedTargets?: string[];
   // compose_new_chat 用: "forward" のとき、宛先選択後のボタンは「転送」になり、
   // forwardMessage を選択した宛先へ転送する（新しいチャットを開いたりグループを作ったりはしない）
   composeMode?: "create" | "forward";
-  forwardMessage?: any;
+  forwardMessage?: Email;
   // reset_select 用: 対象がすべてのチャット/メッセージ（"all"）か、選択した特定のチャットだけ（"specific"）か
   resetScope?: "all" | "specific";
 } | null;
+
+// モーダルの対象の種類（チャット単位・メッセージ単位など）
+export type ModalTargetMode = NonNullable<ModalState>["targetMode"];

@@ -3,10 +3,13 @@ import { signOut } from "next-auth/react";
 import { BodyWithLinks, getFileIcon, formatFileSize, HighlightText, WarningIcon } from "./ui";
 import { FilterCriteria, ConditionSet, TextField, TextRule, DateDirection, FindBarBoxKey, messageMatchesFilter, isEmptyFilterCriteria, getFindBarBoxKey, isActionBoxRestricted, getConditionSets } from "../lib/filterMatch";
 import { shouldTriggerServerSearch, markServerSearched } from "../lib/searchFallback";
-import { encodeRoomKey, decodeRoomKey } from "../lib/roomKey";
+import { encodeRoomKey, decodeRoomKey, keysOf, asLocalKey, type RoomKeyStr } from "../lib/roomKey";
+import type { MailAppHook } from "../hooks/useMailApp";
+import type { Email } from "../types/email";
+import type { ChatConfig, ModalState, SelectionMode } from "../types/mail";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
-function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<any> }) {
+function CategorizedActionSelect({ app, modal }: { app: MailAppHook; modal: NonNullable<ModalState> }) {
   const action = modal.action as "pin" | "hide" | "delete" | "move";
   const targetMode = modal.targetMode as "chat" | "msg";
   const targets = modal.targets as string[];
@@ -36,7 +39,7 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
   };
 
   // 送信済みメールは場所に関係なくSENTとして分類（D1と同じ優先度）
-  const getEmailBox = (email: any): string => {
+  const getEmailBox = (email: Email): string => {
     if (email.labelIds?.includes("SENT") || email.isMe) return "SENT";
     if (email.labelIds?.includes("TRASH")) return "TRASH";
     if (email.labelIds?.includes("SPAM")) return "SPAM";
@@ -45,7 +48,7 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
   };
 
   // ボタン状態（未読み込み）の他の場所のメールを除外: 現在のフィルターに合うか明示的に読み込んだものだけ対象
-  const isRevealedEmail = (email: any): boolean => {
+  const isRevealedEmail = (email: Email): boolean => {
     const box = getEmailBox(email);
     const isCurrentBox =
       box === "SENT" ? checkSent :
@@ -66,9 +69,9 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
     targets.forEach(chatId => {
       const account = roomAccountEmail(chatId) || mainEmail;
       seenAccounts.add(account);
-      const emails = groupedEmails[chatId] || [];
+      const emails = groupedEmails[chatId as RoomKeyStr] || [];
       const seen = new Set<string>();
-      emails.filter(isRevealedEmail).forEach((email: any) => {
+      emails.filter(isRevealedEmail).forEach((email) => {
         const key = boxKey(account, getEmailBox(email));
         if (!boxCounts[key]) { boxCounts[key] = 0; boxChatIds[key] = []; }
         boxCounts[key]++;
@@ -77,7 +80,7 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
     });
   } else {
     targets.forEach(msgId => {
-      const msg = allUniqueEmails.find((e: any) => e.id === msgId);
+      const msg = allUniqueEmails.find((e) => e.id === msgId);
       if (!msg) return;
       const account = msg.accountId || mainEmail;
       seenAccounts.add(account);
@@ -144,8 +147,8 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
           destGroups[dest].push(...(boxMsgIds[key] || []));
         } else {
           (boxChatIds[key] || []).forEach((chatId: string) => {
-            const emails = groupedEmails[chatId] || [];
-            emails.filter((e: any) => getEmailBox(e) === box && isRevealedEmail(e)).forEach((e: any) => {
+            const emails = groupedEmails[chatId as RoomKeyStr] || [];
+            emails.filter((e) => getEmailBox(e) === box && isRevealedEmail(e)).forEach((e) => {
               destGroups[dest].push(e.id);
             });
           });
@@ -287,7 +290,7 @@ function CategorizedActionSelect({ app, modal }: { app: any; modal: NonNullable<
 }
 
 // 「作成」モーダル: 過去にやり取りした宛先の選択・検索・新規アドレス追加を行い、チャットを作成/オープンする
-function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
+function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: NonNullable<ModalState> }) {
   const { contactDirectory } = app.computed;
   const { safeBack, createOrOpenChat, createGroupChat, forwardMessageTo, exitAfterAction } = app.actions;
   const isForward = modal?.composeMode === "forward";
@@ -310,12 +313,12 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
   const isValidEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
 
   const getLabel = (id: string) => {
-    const contact = (contactDirectory as any[]).find(c => c.room === id);
+    const contact = contactDirectory.find(c => c.room === id);
     return contact ? contact.label : id;
   };
 
   // 候補は選択中のアカウントのものだけを表示する（アカウント選択を切り替えると候補も切り替わる）
-  const availableContacts = (contactDirectory as any[]).filter(c => !selected.includes(c.room) && c.accountEmail === account);
+  const availableContacts = contactDirectory.filter(c => !selected.includes(c.room) && c.accountEmail === account);
   const trimmedSearch = search.trim();
   const query = trimmedSearch.toLowerCase();
   const filteredContacts = query
@@ -336,7 +339,7 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
   // 通常モード: 単数選択は従来通りその場でチャットを開く/作成する。複数選択はグループ設定画面へ進む
   const handleNext = () => {
     if (selected.length === 0) return;
-    if (isForward) {
+    if (isForward && modal.forwardMessage) {
       // 履歴の戻し方はメッセージ選択モードの終了も兼ねる exitAfterAction に統一する
       exitAfterAction();
       forwardMessageTo(modal.forwardMessage, selected);
@@ -361,7 +364,7 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
   const allMembersVisible = selected.every(id => memberVisible[id]);
 
   const resolveAddress = (id: string) => {
-    const contact = (contactDirectory as any[]).find(c => c.room === id);
+    const contact = contactDirectory.find(c => c.room === id);
     return (contact ? contact.address : id).toLowerCase();
   };
 
@@ -593,16 +596,16 @@ function ComposeNewChatModal({ app, modal }: { app: any; modal: any }) {
   );
 }
 
-function ChatHideConfirm({ app, modal }: { app: any; modal: NonNullable<any> }) {
+function ChatHideConfirm({ app, modal }: { app: MailAppHook; modal: NonNullable<ModalState> }) {
   const [unhideOnNew, setUnhideOnNew] = useState(false);
   const { safeBack, exitAfterAction, updateChatConfigByRoomKey, setSelectedSender } = app.actions;
   const { selectedSender } = app.state;
 
   const handleExecute = () => {
     modal.targets.forEach((target: string) => {
-      updateChatConfigByRoomKey(target, { isHidden: true, hiddenAtDate: new Date().toISOString(), unhideOnNew });
+      updateChatConfigByRoomKey(target as RoomKeyStr, { isHidden: true, hiddenAtDate: new Date().toISOString(), unhideOnNew });
     });
-    if (modal.targets.includes(selectedSender)) setSelectedSender(null);
+    if (selectedSender !== null && modal.targets.includes(selectedSender)) setSelectedSender(null);
     exitAfterAction();
   };
 
@@ -641,7 +644,7 @@ function prepareHtml(raw: string): string {
 }
 
 
-export function EmailModal({ app }: { app: any }) {
+export function EmailModal({ app }: { app: MailAppHook }) {
   const { emailModal } = app.state;
   const { closeEmailModal } = app.actions;
 
@@ -660,7 +663,7 @@ export function EmailModal({ app }: { app: any }) {
   // モーダルが閉じたら window リスナーをクリーンアップ
   useEffect(() => {
     if (!emailModal) { cleanupRef.current?.(); cleanupRef.current = null; }
-  }, [emailModal]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [emailModal]);
 
   // アンマウント時のクリーンアップ
   useEffect(() => { return () => { cleanupRef.current?.(); }; }, []);
@@ -913,32 +916,32 @@ export function EmailModal({ app }: { app: any }) {
   );
 }
 
-export function AttachmentModal({ app }: { app: any }) {
+export function AttachmentModal({ app }: { app: MailAppHook }) {
   const { attachmentModal } = app.state;
   const { closeAttachmentModal } = app.actions;
-  const [textContent, setTextContent] = useState<string | null>(null);
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const imgCleanupRef = useRef<(() => void) | null>(null);
 
-  useLayoutEffect(() => {
-    if (!attachmentModal?.base64 || !attachmentModal.mimeType.startsWith('text/')) {
-      setTextContent(null);
-      return;
-    }
+  // テキスト添付の中身は base64 から決まるだけなので、state に持たず描画時に計算する
+  const textBase64 = attachmentModal?.base64;
+  const textMimeType = attachmentModal?.mimeType;
+  const textContent = useMemo(() => {
+    if (!textBase64 || !textMimeType?.startsWith('text/')) return null;
     try {
-      const bytes = Uint8Array.from(atob(attachmentModal.base64), (c: string) => c.charCodeAt(0));
-      setTextContent(new TextDecoder().decode(bytes));
+      const bytes = Uint8Array.from(atob(textBase64), (c: string) => c.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
     } catch {
-      setTextContent(null);
+      return null;
     }
-  }, [attachmentModal?.base64, attachmentModal?.mimeType]);
+  }, [textBase64, textMimeType]);
 
   // PDFは data:URI だと Android Chrome の iframe 内で表示できないことがあるため、
   // blob: URL に変換して渡す（Android Chrome でも埋め込みPDFビューアが起動しやすくなる）
   useEffect(() => {
     if (!attachmentModal?.base64 || attachmentModal.mimeType !== 'application/pdf') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- blob URL は作ったら後片付け（revoke）が必要なので、effect で作って state に持つ
       setPdfBlobUrl(null);
       return;
     }
@@ -976,6 +979,7 @@ export function AttachmentModal({ app }: { app: any }) {
     if (!img || !container) return;
     // Cached images may fire onLoad synchronously before DOM layout
     if (container.clientWidth === 0) {
+      // eslint-disable-next-line react-hooks/immutability -- 読み込み直後に大きさが 0 のときだけ、次のフレームで自分自身をもう一度呼ぶ（呼ぶ時点では宣言済み）
       requestAnimationFrame(() => { if (imgRef.current && imgContainerRef.current) onImgLoad(); });
       return;
     }
@@ -1170,7 +1174,7 @@ export function AttachmentModal({ app }: { app: any }) {
       img.removeEventListener('touchmove', onTouchMove);
       img.removeEventListener('touchend', onTouchEnd);
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!attachmentModal) return null;
 
@@ -1207,7 +1211,7 @@ export function AttachmentModal({ app }: { app: any }) {
       const bytes = Uint8Array.from(atob(base64), (c: string) => c.charCodeAt(0));
       const blob = new Blob([bytes], { type: mimeType });
       const file = new File([blob], filename, { type: mimeType });
-      if ((navigator as any).canShare?.({ files: [file] })) {
+      if (navigator.canShare?.({ files: [file] })) {
         await navigator.share({ files: [file], title: filename });
         return;
       }
@@ -1318,7 +1322,7 @@ export function AttachmentModal({ app }: { app: any }) {
   );
 }
 
-export function Modals({ app }: { app: any }) {
+export function Modals({ app }: { app: MailAppHook }) {
   const { modal, renameInput, moveDestination, chatConfigs, messageConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
   const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, updateChatConfigByRoomKey, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats } = app.computed;
@@ -1326,11 +1330,11 @@ export function Modals({ app }: { app: any }) {
   if (!modal || modal.type === "search" || modal.type === "filter_tool") return null;
 
   const getActionableEmails = (targets: string[], targetMode: string) => {
-    let result: any[] = [];
+    let result: Email[] = [];
     if (targetMode === "chat") {
       targets.forEach((chat: string) => {
-        const chatEmails = groupedEmails[chat] || [];
-        result.push(...chatEmails.filter((e: any) => {
+        const chatEmails = groupedEmails[chat as RoomKeyStr] || [];
+        result.push(...chatEmails.filter((e) => {
           const isTrash = e.labelIds?.includes("TRASH");
           const isSpam = e.labelIds?.includes("SPAM");
           const isInbox = e.labelIds?.includes("INBOX");
@@ -1343,7 +1347,7 @@ export function Modals({ app }: { app: any }) {
         }));
       });
     } else {
-      result = allUniqueEmails.filter((e: any) => targets.includes(e.id));
+      result = allUniqueEmails.filter((e) => targets.includes(e.id));
     }
     return result;
   };
@@ -1475,14 +1479,14 @@ export function Modals({ app }: { app: any }) {
 
         {modal.type === "confirm_pin" && (() => {
           const isChatMode = modal.targetMode === "chat";
-          const existingForcePinnedChats = Object.keys(chatConfigs).filter(k =>
+          const existingForcePinnedChats = keysOf(chatConfigs).filter(k =>
             chatConfigs[k]?.isPinned && chatConfigs[k]?.forceFetch
           );
-          const existingPinnedMsgCount = Object.keys(messageConfigs).filter(k =>
+          const existingPinnedMsgCount = keysOf(messageConfigs).filter(k =>
             messageConfigs[k]?.isPinned && messageConfigs[k]?.forceFetch
           ).length;
           const newToPin = isChatMode
-            ? modal.targets.filter((t: string) => !existingForcePinnedChats.includes(t))
+            ? modal.targets.filter((t: string) => !existingForcePinnedChats.includes(t as RoomKeyStr))
             : modal.targets;
           const willExceedLimit = isChatMode
             ? existingForcePinnedChats.length + newToPin.length > 10
@@ -1578,7 +1582,7 @@ export function Modals({ app }: { app: any }) {
               <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
               <button
                 onClick={() => {
-                  modal.targets.forEach((room: string) => app.actions.deleteChatConfigByRoomKey(room));
+                  modal.targets.forEach((room: string) => app.actions.deleteChatConfigByRoomKey(room as RoomKeyStr));
                   exitAfterAction();
                 }}
                 className="px-4 py-2 bg-[#DA373C] text-white rounded text-sm font-bold hover:bg-[#a1282c]"
@@ -1614,14 +1618,14 @@ export function Modals({ app }: { app: any }) {
         {modal.type === "select_reply_target" && (() => {
           const isGroup = chatConfigs[selectedSender!]?.isGroup;
           const source = isGroup ? (app.computed.groupReplyPools[selectedSender!] || []) : (groupedEmails[selectedSender!] || []);
-          const msgs = (source as any[]).slice().sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          const msgs = (source as Email[]).slice().sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
           return (
             <div className="flex flex-col max-h-[80vh]">
               <div className="p-4 border-b border-[#1E1F22]">
                 <h2 className="text-lg font-bold text-white">返信先を選択</h2>
               </div>
               <div className="p-2 overflow-y-auto flex-1 space-y-1">
-                {msgs.map((m: any) => (
+                {msgs.map((m) => (
                   <div key={m.id} className="flex items-center gap-2 p-2 hover:bg-[#2B2D31] rounded">
                     <div className="flex-1 min-w-0 text-sm">
                       <div className="text-gray-400 text-[11px]">{new Date(m.date).toLocaleString("ja-JP")}</div>
@@ -1663,7 +1667,7 @@ export function Modals({ app }: { app: any }) {
               onChange={(e) => setRenameInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
-                  updateChatConfigByRoomKey(modal.targets[0], { customName: renameInput.trim() || undefined });
+                  updateChatConfigByRoomKey(modal.targets[0] as RoomKeyStr, { customName: renameInput.trim() || undefined });
                   safeBack();
                 }
               }}
@@ -1675,7 +1679,7 @@ export function Modals({ app }: { app: any }) {
               <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
               <button
                 onClick={() => {
-                  updateChatConfigByRoomKey(modal.targets[0], { customName: renameInput.trim() || undefined });
+                  updateChatConfigByRoomKey(modal.targets[0] as RoomKeyStr, { customName: renameInput.trim() || undefined });
                   safeBack();
                 }}
                 className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]"
@@ -1694,9 +1698,9 @@ export function Modals({ app }: { app: any }) {
           // 選択中チャットが非表示ということはあり得ない（非表示チャットはそもそも一覧に出ず選べない）ため、
           // specificスコープでは「非表示のチャット」欄は出さず、メッセージのみを対象にする
           const hideChatItems: string[] = scope === "all" ? hiddenChats : [];
-          const hideMsgItems = (hiddenMsgs as any[]).filter((m: any) => inScope(messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId));
+          const hideMsgItems = (hiddenMsgs as Email[]).filter((m) => inScope(messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId));
           const pinChatItems: string[] = scope === "all" ? pinnedChats : pinnedChats.filter((c: string) => targetChatIds.has(c));
-          const pinMsgItems = (pinnedMsgs as any[]).filter((m: any) => inScope(messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId));
+          const pinMsgItems = (pinnedMsgs as Email[]).filter((m) => inScope(messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId));
           const nameChatItems: string[] = scope === "all" ? nameChangedChats : nameChangedChats.filter((c: string) => targetChatIds.has(c));
 
           const key = (category: string, level: string, id: string) => `${category}:${level}:${id}`;
@@ -1705,10 +1709,10 @@ export function Modals({ app }: { app: any }) {
           const renderChatRow = (category: string, c: string) => (
             <label key={key(category, "chat", c)} className="flex items-center gap-3 p-2 hover:bg-[#2B2D31] rounded cursor-pointer">
               <input type="checkbox" checked={selectedIds.includes(key(category, "chat", c))} onChange={() => app.actions.toggleSelection(key(category, "chat", c))} className="accent-[#5865F2]" />
-              <span className="text-sm truncate">{chatConfigs[c]?.customName || app.actions.roomLocalKey(c)}</span>
+              <span className="text-sm truncate">{chatConfigs[c as RoomKeyStr]?.customName || app.actions.roomLocalKey(c)}</span>
             </label>
           );
-          const renderMsgRow = (category: string, m: any) => {
+          const renderMsgRow = (category: string, m: Email) => {
             const roomId = messageConfigs[app.actions.messageConfigKey(m.id)]?.roomId;
             const chatName = roomId ? (chatConfigs[roomId]?.customName || app.actions.roomLocalKey(roomId)) : "不明なチャット";
             return (
@@ -1745,7 +1749,7 @@ export function Modals({ app }: { app: any }) {
                   {hideMsgItems.length > 0 && (
                     <div>
                       <div className="text-[10px] font-bold text-gray-500 mb-1 px-2">メッセージ</div>
-                      {hideMsgItems.map((m: any) => renderMsgRow("hide", m))}
+                      {hideMsgItems.map((m) => renderMsgRow("hide", m))}
                     </div>
                   )}
                   {hideChatItems.length === 0 && hideMsgItems.length === 0 && <div className="text-gray-500 text-xs p-2 px-4">対象はありません</div>}
@@ -1761,7 +1765,7 @@ export function Modals({ app }: { app: any }) {
                   {pinMsgItems.length > 0 && (
                     <div>
                       <div className="text-[10px] font-bold text-gray-500 mb-1 px-2">メッセージ</div>
-                      {pinMsgItems.map((m: any) => renderMsgRow("pin", m))}
+                      {pinMsgItems.map((m) => renderMsgRow("pin", m))}
                     </div>
                   )}
                   {pinChatItems.length === 0 && pinMsgItems.length === 0 && <div className="text-gray-500 text-xs p-2 px-4">対象はありません</div>}
@@ -1792,13 +1796,13 @@ export function Modals({ app }: { app: any }) {
             <h2 className="text-lg font-bold text-white mb-4">移動先の選択</h2>
             <div className="flex flex-col gap-2 mb-4">
               {/* ★追加: アーカイブ移動の選択肢 */}
-              {["INBOX", "ARCHIVE", "SPAM", "TRASH"].map(dest => {
+              {(["INBOX", "ARCHIVE", "SPAM", "TRASH"] as const).map(dest => {
                 const labels: Record<string, string> = { "INBOX": "受信箱", "ARCHIVE": "アーカイブ", "SPAM": "迷惑メール", "TRASH": "ゴミ箱" };
                 return (
                   <button 
                     key={dest} 
                     onClick={() => { 
-                      setMoveDestination(dest as any); 
+                      setMoveDestination(dest); 
                       setSelectionMode((modal.targetMode + "_move") as SelectionMode); 
                       setModal(null); 
                       window.history.replaceState({ action: "select" }, "", window.location.href);
@@ -1822,19 +1826,19 @@ export function Modals({ app }: { app: any }) {
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-4">移動先の選択</h2>
               <div className="flex flex-col gap-2 mb-4">
-                {["INBOX", "ARCHIVE", "SPAM", "TRASH"].map(dest => {
+                {(["INBOX", "ARCHIVE", "SPAM", "TRASH"] as const).map(dest => {
                   // ★修正: 以前の if (isMySentMail && ...) のブロックを削除。
                   // 送信済みメールが含まれていても、他の受信メールを移動できるようにするため。
 
                   // 「すべてが移動先に存在するか」の判定（送信済みを除外して計算）
                   const isAllInDest = modal.targetMode === "chat"
                     ? modal.targets.length > 0 && modal.targets.every((tId: string) => {
-                        const chatEmails = (groupedEmails[tId] || []).filter((e: any) => !e.labelIds?.includes("SENT") && !e.isMe);
+                        const chatEmails = (groupedEmails[tId as RoomKeyStr] || []).filter((e) => !e.labelIds?.includes("SENT") && !e.isMe);
                         if (chatEmails.length === 0) return false;
-                        if (dest === "ARCHIVE") return chatEmails.every((e: any) => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
-                        return chatEmails.every((e: any) => e.labelIds?.includes(dest));
+                        if (dest === "ARCHIVE") return chatEmails.every((e) => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
+                        return chatEmails.every((e) => e.labelIds?.includes(dest));
                       })
-                    : targetEmails.length > 0 && targetEmails.every((e: any) => {
+                    : targetEmails.length > 0 && targetEmails.every((e) => {
                         if (e.labelIds?.includes("SENT") || e.isMe) return true; // 送信済みは「すでに移動済み」扱いで無視させる
                         if (dest === "ARCHIVE") return !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
                         return e.labelIds?.includes(dest);
@@ -1845,7 +1849,7 @@ export function Modals({ app }: { app: any }) {
                     <button 
                       key={dest} 
                       disabled={isAllInDest}
-                      onClick={() => { setMoveDestination(dest as any); setModal({ type: "confirm_move", targetMode: modal.targetMode, targets: modal.targets }); }} 
+                      onClick={() => { setMoveDestination(dest); setModal({ type: "confirm_move", targetMode: modal.targetMode, targets: modal.targets }); }} 
                       className={`w-full py-2.5 border rounded font-bold transition flex justify-between px-4 ${isAllInDest ? 'bg-[#1E1F22] text-gray-600 border-[#1E1F22] cursor-not-allowed' : 'bg-[#2B2D31] hover:bg-[#3f4147] border-[#1E1F22] text-white'}`}
                     >
                       <span>{labels[dest]}</span>
@@ -1889,12 +1893,11 @@ const SEARCH_BOX_LABELS: Record<BoxKey, string> = {
   inbox: "受信箱", archive: "アーカイブ", sent: "送信済み", spam: "迷惑メール", trash: "ゴミ箱",
 };
 
-function getSearchBoxInfo(e: any): { key: BoxKey; name: string } {
+function getSearchBoxInfo(e: Email): { key: BoxKey; name: string } {
   const isTrash = e.labelIds?.includes("TRASH");
   const isSpam = e.labelIds?.includes("SPAM");
   const isInbox = e.labelIds?.includes("INBOX");
   const isSent = e.labelIds?.includes("SENT") || e.isMe;
-  const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
   const key: BoxKey = isSent ? "sent" : isTrash ? "trash" : isSpam ? "spam" : isInbox ? "inbox" : "archive";
   return { key, name: SEARCH_BOX_LABELS[key] };
 }
@@ -1903,7 +1906,7 @@ function getSearchBoxInfo(e: any): { key: BoxKey; name: string } {
 // メッセージ画面の検索は、このモーダルを経由せずメッセージ画面上部の検索バー（Ctrl+F風）で直接行う。
 // 既に読み込み済みのデータ(allUniqueEmails/groupedEmails)のみを対象にしたクライアント側検索で、
 // Gmailへの再取得は行わない。
-export function SearchModal({ app }: { app: any }) {
+export function SearchModal({ app }: { app: MailAppHook }) {
   const { modal, chatConfigs, messageConfigs, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, linkedAccounts, linkedAccountProfiles, useIconLabels } = app.state;
   const { setModal, safeBack, openChat, jumpToSearchResult, messageConfigKey } = app.actions;
   const { allUniqueEmails, groupedEmails, contactDirectory } = app.computed;
@@ -1937,6 +1940,7 @@ export function SearchModal({ app }: { app: any }) {
   // モーダルが開いた瞬間にタブとキーワードを初期化し、入力欄にフォーカスする
   useEffect(() => {
     if (!active) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- モーダルを開いた瞬間に入力欄などを初期状態に戻す処理
     setKeyword("");
     setActiveTab("all");
     setSortOrder("newest");
@@ -1951,13 +1955,13 @@ export function SearchModal({ app }: { app: any }) {
   const kwLower = keyword.trim().toLowerCase();
 
   const roomInfos = useMemo(() => {
-    const infos: { room: string; label: string; originalName: string; address: string | null; isGroup: boolean; latestDate: number; accountEmail: string }[] = [];
+    const infos: { room: RoomKeyStr; label: string; originalName: string; address: string | null; isGroup: boolean; latestDate: number; accountEmail: string }[] = [];
 
     // 通常グループ作成時に「個別チャットの表示設定」をオフにして非表示にした宛先は、
     // その人自身のroomはもう一覧に出ないが、グループ自体が非表示でない限り宛先名/アドレスでの
     // 検索対象からも外れるべきではない（吸収先のグループを検索結果として開けるようにする）
-    const hiddenMemberGroup = new Map<string, string>();
-    Object.keys(chatConfigs).forEach(room => {
+    const hiddenMemberGroup = new Map<string, RoomKeyStr>();
+    keysOf(chatConfigs).forEach(room => {
       const cfg = chatConfigs[room];
       if (cfg?.isGroup && !cfg.filterCriteria && !cfg.isHidden && cfg.groupHiddenMembers?.length) {
         const { accountEmail } = decodeRoomKey(room);
@@ -1967,7 +1971,7 @@ export function SearchModal({ app }: { app: any }) {
       }
     });
 
-    (contactDirectory as any[]).forEach(c => {
+    contactDirectory.forEach(c => {
       if (chatConfigs[c.room]?.isHidden) {
         const groupRoom = hiddenMemberGroup.get(c.room);
         // グループ化以外の理由で非表示にした宛先は、従来通り検索対象から除外する
@@ -1977,7 +1981,7 @@ export function SearchModal({ app }: { app: any }) {
       }
       infos.push({ room: c.room, label: c.label, originalName: c.originalName, address: c.address || null, isGroup: false, latestDate: c.latestDate, accountEmail: c.accountEmail });
     });
-    Object.keys(chatConfigs).forEach(room => {
+    keysOf(chatConfigs).forEach(room => {
       const cfg = chatConfigs[room];
       if (cfg?.isGroup && !cfg.isHidden && (groupedEmails[room] || []).length > 0) {
         const label = cfg.customName || app.actions.roomLocalKey(room);
@@ -1999,13 +2003,13 @@ export function SearchModal({ app }: { app: any }) {
   const roomInfoMap = useMemo(() => new Map(roomInfos.map(r => [r.room, r])), [roomInfos]);
 
   const emailRoomMap = useMemo(() => {
-    const map = new Map<string, string>();
-    Object.keys(groupedEmails).forEach(room => (groupedEmails[room] || []).forEach((e: any) => map.set(e.id, room)));
+    const map = new Map<string, RoomKeyStr>();
+    keysOf(groupedEmails).forEach(room => (groupedEmails[room] || []).forEach((e) => map.set(e.id, room)));
     return map;
   }, [groupedEmails]);
 
   // 非表示にしたチャット・メッセージは検索結果にも出さない（useMailApp.ts の senderList と同じ判定基準）
-  const isEmailHiddenFromSearch = (e: any): boolean => {
+  const isEmailHiddenFromSearch = (e: Email): boolean => {
     const isTrash = e.labelIds?.includes("TRASH");
     const isSpam = e.labelIds?.includes("SPAM");
     const isInbox = e.labelIds?.includes("INBOX");
@@ -2032,7 +2036,7 @@ export function SearchModal({ app }: { app: any }) {
 
   const subjectMatches = useMemo(() => {
     if (!kwLower) return [];
-    return allUniqueEmails.filter((e: any) => {
+    return allUniqueEmails.filter((e) => {
       if (!(e.subject || "").toLowerCase().includes(kwLower)) return false;
       if (isEmailHiddenFromSearch(e)) return false;
       if (!isAccountFilterVisible(e.accountId)) return false;
@@ -2043,7 +2047,7 @@ export function SearchModal({ app }: { app: any }) {
 
   const bodyMatches = useMemo(() => {
     if (!kwLower) return [];
-    return allUniqueEmails.filter((e: any) => {
+    return allUniqueEmails.filter((e) => {
       if (!(e.body || "").toLowerCase().includes(kwLower)) return false;
       if (isEmailHiddenFromSearch(e)) return false;
       if (!isAccountFilterVisible(e.accountId)) return false;
@@ -2058,6 +2062,7 @@ export function SearchModal({ app }: { app: any }) {
   // （このコンポーネント側で結果を別途保持・マージする必要がない）
   const [isServerSearching, setIsServerSearching] = useState(false);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- キーワードが短くなったら、実行中表示を消す（既存の挙動を保つ）
     if (!kwLower || kwLower.length < 2) { setIsServerSearching(false); return; }
     if (activeTab !== "all" && activeTab !== "subject" && activeTab !== "body") return;
     // 「このキーワード・このフィールドは既にサーバー検索を試した」ものは、たとえローカル結果が
@@ -2092,7 +2097,7 @@ export function SearchModal({ app }: { app: any }) {
     else arr.sort((a, b) => b.latestDate - a.latestDate);
     return arr;
   };
-  const sortEmailsByDate = (list: any[], order: "newest" | "oldest") => {
+  const sortEmailsByDate = (list: Email[], order: "newest" | "oldest") => {
     const arr = [...list];
     arr.sort((a, b) => order === "oldest"
       ? new Date(a.date).getTime() - new Date(b.date).getTime()
@@ -2121,13 +2126,13 @@ export function SearchModal({ app }: { app: any }) {
   // 履歴の位置がずれ、意図しないタイミングでポップされてチャットが開いた直後に閉じてしまう。
   // そのため、検索モーダルの履歴エントリは openChat 側で同期的に replaceState して片付ける
   // （jumpToSearchResult も同様の仕組みで検索バー用エントリを扱う）
-  const handleOpenChat = (room: string) => {
+  const handleOpenChat = (room: RoomKeyStr) => {
     setModal(null);
     const cameFromModal = typeof window !== "undefined" && window.history.state?.action === "modal";
     openChat(room, { replaceHistory: cameFromModal });
   };
 
-  const handleJumpToMessage = (room: string, msgId: string, field: "subject" | "body") => {
+  const handleJumpToMessage = (room: RoomKeyStr, msgId: string, field: "subject" | "body") => {
     jumpToSearchResult(room, msgId, keyword, field);
   };
 
@@ -2136,7 +2141,7 @@ export function SearchModal({ app }: { app: any }) {
   const showKanaSort = activeTab === "recipient" || activeTab === "address";
   const showBoxFilter = activeTab === "subject" || activeTab === "body";
 
-  const renderRoomRow = (info: { room: string; label: string; address: string | null }, primary: "label" | "address") => (
+  const renderRoomRow = (info: { room: RoomKeyStr; label: string; address: string | null }, primary: "label" | "address") => (
     <button
       key={info.room}
       onClick={() => handleOpenChat(info.room)}
@@ -2156,7 +2161,7 @@ export function SearchModal({ app }: { app: any }) {
     </button>
   );
 
-  const renderEmailRow = (email: any, field: "subject" | "body") => {
+  const renderEmailRow = (email: Email, field: "subject" | "body") => {
     const room = emailRoomMap.get(email.id);
     const info = room ? roomInfoMap.get(room) : undefined;
     const boxName = getSearchBoxInfo(email).name;
@@ -2176,7 +2181,7 @@ export function SearchModal({ app }: { app: any }) {
           </div>
         )}
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px] text-gray-500">
-          <span className="truncate max-w-[150px]">{info?.label || app.actions.roomLocalKey(room)}</span>
+          <span className="truncate max-w-[150px]">{info?.label || (room ? app.actions.roomLocalKey(room) : "")}</span>
           {info?.address && <span className="truncate max-w-[150px]">{info.address}</span>}
           <span>{dateStr}</span>
           <span>{boxName}</span>
@@ -2363,7 +2368,7 @@ const FILTER_KIND_LABELS: Record<string, string> = { group: "グループ", hide
 const FILTER_ACTION_VERB: Record<string, string> = { hide: "非表示にする", pin: "ピン留めする", move: "移動する", delete: "削除する" };
 
 // chatConfigs の1行が「グループフィルター」か「アクションフィルター（継続のみ保存される）」かを判定する
-function filterKindOf(cfg: any): FilterToolAction | null {
+function filterKindOf(cfg: ChatConfig | undefined): FilterToolAction | null {
   if (!cfg) return null;
   if (cfg.isGroup && cfg.filterCriteria) return "group";
   if (cfg.filterAction) return cfg.filterAction as FilterToolAction;
@@ -2412,13 +2417,13 @@ function ThreeWayToggle({ label, value, onChange, yesLabel, noLabel }: {
 // 新着メールにも自動で1回だけ適用され続ける）を行う。
 // クリックすると、まず保存済みフィルター（グループ・継続アクション）の一覧画面が開き、
 // 「作成」または各行の「編集」から、条件→OR一覧→アクション選択→確認、の4画面を進む。
-export function FilterToolModal({ app }: { app: any }) {
+export function FilterToolModal({ app }: { app: MailAppHook }) {
   const { modal, chatConfigs } = app.state;
   const active = modal?.type === "filter_tool" ? modal : null;
 
   const [screen, setScreen] = useState<FilterToolScreen>("list");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<RoomKeyStr | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<RoomKeyStr | null>(null);
 
   const [filterName, setFilterName] = useState("");
   const [action, setAction] = useState<FilterToolAction>("group");
@@ -2450,7 +2455,7 @@ export function FilterToolModal({ app }: { app: any }) {
   const linkedAccounts: string[] = app.state.linkedAccounts || [];
 
   const existingFilters = useMemo(() => {
-    return Object.keys(chatConfigs)
+    return keysOf(chatConfigs)
       .map(id => ({ id, cfg: chatConfigs[id], kind: filterKindOf(chatConfigs[id]) }))
       .filter(f => f.kind !== null);
   }, [chatConfigs]);
@@ -2507,6 +2512,7 @@ export function FilterToolModal({ app }: { app: any }) {
 
   useEffect(() => {
     if (!active) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- モーダルを開いた瞬間に一覧画面へ戻す処理
     setScreen("list");
     setEditingId(null);
     setDeleteConfirmId(null);
@@ -2518,7 +2524,7 @@ export function FilterToolModal({ app }: { app: any }) {
     setScreen("conditions");
   };
 
-  const openEdit = (id: string) => {
+  const openEdit = (id: RoomKeyStr) => {
     const cfg = chatConfigs[id];
     if (!cfg) return;
     const kind = filterKindOf(cfg);
@@ -2598,7 +2604,7 @@ export function FilterToolModal({ app }: { app: any }) {
   const boxCounts = useMemo(() => {
     const counts: Record<string, number> = { inbox: 0, archive: 0, sent: 0, spam: 0, trash: 0 };
     if (action === "group") return counts;
-    (app.computed.allUniqueEmails as any[]).forEach(e => {
+    app.computed.allUniqueEmails.forEach(e => {
       if (!messageMatchesFilter(e, criteriaWithoutBoxes, myEmail)) return;
       const box = getFindBarBoxKey(e);
       counts[box] = (counts[box] || 0) + 1;
@@ -2624,7 +2630,7 @@ export function FilterToolModal({ app }: { app: any }) {
 
   const matchCount = useMemo(() => {
     if (isCriteriaEmpty) return 0;
-    return (app.computed.allUniqueEmails as any[]).filter(e => messageMatchesFilter(e, criteria, myEmail)).length;
+    return app.computed.allUniqueEmails.filter(e => messageMatchesFilter(e, criteria, myEmail)).length;
   }, [isCriteriaEmpty, criteria, app.computed.allUniqueEmails, myEmail]);
 
   const handleClose = () => app.actions.safeBack();
@@ -2653,7 +2659,7 @@ export function FilterToolModal({ app }: { app: any }) {
       return;
     }
 
-    const matchedIds = (app.computed.allUniqueEmails as any[]).filter(e => messageMatchesFilter(e, criteria, myEmail)).map(e => e.id);
+    const matchedIds = app.computed.allUniqueEmails.filter(e => messageMatchesFilter(e, criteria, myEmail)).map(e => e.id);
 
     if (continuous) {
       const reuseId = !!editingId && existingKind === action;
@@ -2671,7 +2677,7 @@ export function FilterToolModal({ app }: { app: any }) {
       } else {
         // 新規のローカルキーを自分のアカウント名義で作成する（既存の複合キーではないため直接updateChatConfigを使う）
         const localId = `filter:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        app.actions.updateChatConfig(localId, updates, myEmail);
+        app.actions.updateChatConfig(asLocalKey(localId), updates, myEmail);
       }
       // 「これまでのメールを含める」がONの時だけ、保存時点で既に一致しているメールに即座に適用する。
       // OFFなら以降に届く新着メールだけが自動適用エンジン（filterLastAppliedAt=now）の対象になる

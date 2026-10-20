@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { errorMessage } from "../../lib/errorMessage";
 import { auth } from "../../../auth";
 
 
-export async function GET(request: Request) {
+export async function GET() {
   const session = await auth();
   if (!session?.user?.email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -11,9 +12,9 @@ export async function GET(request: Request) {
     const db = getCloudflareContext().env.DB;
     const { results } = await db.prepare("SELECT account_email, needs_reauth, name, picture FROM linked_accounts WHERE user_email = ?").bind(session.user.email).all();
     return NextResponse.json({ accounts: results });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("DB GET Error:", error);
-    return NextResponse.json({ error: "Database Error", details: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database Error", details: errorMessage(error) }, { status: 500 });
   }
 }
 
@@ -32,8 +33,8 @@ export async function DELETE(request: Request) {
     await db.prepare("DELETE FROM linked_accounts WHERE user_email = ? AND account_email = ?").bind(session.user.email, accountEmail).run();
 
     return NextResponse.json({ success: true });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("DB DELETE Error:", error);
-    return NextResponse.json({ error: "Database Error", details: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database Error", details: errorMessage(error) }, { status: 500 });
   }
 }

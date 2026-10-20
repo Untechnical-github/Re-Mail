@@ -1,6 +1,14 @@
+// 添付ファイルのメタデータ。送信直後にローカルで作ったメールには attachmentId が無い
+// （中身はアタッチメントキャッシュに先回りで書き込んである）
+export type EmailAttachment = {
+  filename: string;
+  mimeType: string;
+  size: number;
+  attachmentId?: string;
+};
+
 // Gmail APIのメッセージ（生データ）と、送信直後にローカルで作る表示用オブジェクトの両方が
-// 流れ込む、アプリ全体で扱う「メール」の形。バックエンドのレスポンス形状にかなり近いため、
-// 未使用の付随データ（添付ファイルの詳細など）は any のまま残す
+// 流れ込む、アプリ全体で扱う「メール」の形（/api/emails の parseMessageDetail の戻り値に合わせる）
 export type Email = {
   id: string;
   threadId: string;
@@ -16,7 +24,9 @@ export type Email = {
   isMe?: boolean;
   // グループチャット等で、このメッセージがどのルームに属するか明示的に指定する場合に使う
   senderRoom?: string;
-  attachments?: any[];
+  attachments?: EmailAttachment[];
+  // HTML本文から抜き出したリンク（テキスト版本文ではリンク先が失われるため）
+  htmlLinks?: { text: string; href: string }[];
   hasHtml?: boolean;
   // 返信元メッセージのローカルID（表示用のチップ紐付けに使う）
   replyToId?: string;

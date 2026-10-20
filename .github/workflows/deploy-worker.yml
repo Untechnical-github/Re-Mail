@@ -14,6 +14,7 @@ on:
       - 'open-next.config.ts'
       - 'postcss.config.mjs'
       - 'tsconfig.json'
+      - 'eslint.config.mjs'
       - 'wrangler.json'
       - 'package.json'
       - 'package-lock.json'
@@ -44,6 +45,7 @@ jobs:
           cache: npm
       - run: bash script/ci/retry.sh npm ci
       - run: npm test
+      - run: npm run lint
       - run: npx tsc --noEmit
       - name: Build
         run: npx opennextjs-cloudflare build

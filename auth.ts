@@ -63,12 +63,13 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           // Googleは新しいリフレッシュトークンを返さない場合があるため、その場合は古いものを使い回す
           refreshToken: result.refreshToken ?? token.refreshToken,
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error("Error refreshing access token", error);
         // Googleが「リフレッシュトークン自体が無効」と明言した場合のみ致命的エラーにする。
         // ネットワーク瞬断やGoogle側の一時的な障害まで同じ扱いにすると、
         // 一時的な不調のたびにサインアウト＆リロードが走ってしまうため。
-        const isPermanent = error?.error === "invalid_grant" || error?.error === "invalid_client";
+        const code = (error as { error?: string } | null)?.error;
+        const isPermanent = code === "invalid_grant" || code === "invalid_client";
         if (isPermanent) {
           return { ...token, error: "RefreshAccessTokenError" };
         }
@@ -78,8 +79,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     },
     async session({ session, token }) {
       // セッションオブジェクトにアクセストークンとエラー状態を乗せてAPIルートで使えるようにする
-      (session as any).accessToken = token.accessToken;
-      (session as any).error = token.error;
+      session.accessToken = token.accessToken as string | undefined;
+      session.error = token.error as string | undefined;
       return session;
     },
   },
