@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-import { getRequestContext } from "@cloudflare/next-on-pages";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { auth } from "../../../auth";
 import { getValidAccessToken } from "../../lib/googleToken";
 import { encryptSecret, decryptSecret, isEncrypted } from "../../lib/tokenCrypto";
 
-export const runtime = 'edge';
 
 // Gmail APIが429（レート制限）や一時的な5xxを返した場合に、指数バックオフ＋ジッターで
 // 数回だけ再試行する。特に多アカウント連携時・大きなメールボックスでの一括取得（メッセージ
@@ -30,7 +29,7 @@ async function resolveAccessToken(session: any, accountEmail: string | null): Pr
     return session.accessToken || null;
   }
 
-  const db = getRequestContext().env.DB;
+  const db = getCloudflareContext().env.DB;
   const { results } = await db.prepare(
     "SELECT refresh_token, access_token, expires_at, needs_reauth FROM linked_accounts WHERE user_email = ? AND account_email = ?"
   ).bind(session.user.email, accountEmail).all();

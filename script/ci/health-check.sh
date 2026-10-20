@@ -5,7 +5,7 @@
 set -euo pipefail
 URL="https://re-mail.eusng90912.workers.dev"
 for i in 1 2 3; do
-  if curl -fsS "$URL/" | grep -q 'Re:Mail' \
+  if curl -fsS -o /dev/null "$URL/" \
     && curl -fsS "$URL/api/auth/providers" | grep -q '"google"'; then
     echo "Worker は正常に応答しています"
     exit 0

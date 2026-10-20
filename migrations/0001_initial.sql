@@ -1,8 +1,7 @@
--- schema.sql
--- 注意: このファイルは今後、フェーズが進むたびに追記していく前提。
--- 過去に一度適用済みのテーブルを毎回 DROP+CREATE すると、その後に溜まった実データを
--- 再適用のたびに消してしまうため、既存テーブルは CREATE TABLE IF NOT EXISTS で
--- 「無ければ作る」形にし、以後は基本的に非破壊で運用する
+-- 0001_initial.sql
+-- 旧 schema.sql をそのまま移したもの。本番 D1 には同じ内容が適用済みなので、
+-- CREATE TABLE IF NOT EXISTS により初回の migrations apply では何も変わらず「適用済み」として記録される。
+-- 以後のスキーマ変更は、このファイルを書き換えずに migrations/0002_xxx.sql のように新しいファイルを足す。
 -- （chat_configs は複数アカウント対応のため一度だけ意図的にDROP+CREATEで作り直し済み）
 
 CREATE TABLE IF NOT EXISTS chat_configs (
@@ -34,9 +33,8 @@ CREATE TABLE IF NOT EXISTS linked_accounts (
   PRIMARY KEY (user_email, account_email)
 );
 
--- 既存DBに対する追記マイグレーション。CREATE TABLE IF NOT EXISTSは既存テーブルに
--- 新しい列を追加してくれないため、既に linked_accounts が存在する環境ではこちらを
--- 1回だけ手動実行する（列が既に存在する場合はエラーになるので、その場合は無視して良い）
+-- 移行前に本番 D1 へ手動で実行済みの追記マイグレーション（履歴として残す）。
+-- 上の CREATE 文にはこれらの列が含まれているので、新しく作る DB では不要
 -- ALTER TABLE linked_accounts ADD COLUMN needs_reauth INTEGER DEFAULT 0;
 -- ALTER TABLE linked_accounts ADD COLUMN name TEXT;
 -- ALTER TABLE linked_accounts ADD COLUMN picture TEXT;

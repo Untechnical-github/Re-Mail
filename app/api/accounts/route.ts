@@ -1,15 +1,14 @@
 import { NextResponse } from "next/server";
-import { getRequestContext } from "@cloudflare/next-on-pages";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { auth } from "../../../auth";
 
-export const runtime = 'edge';
 
 export async function GET(request: Request) {
   const session = await auth();
   if (!session?.user?.email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const db = getRequestContext().env.DB;
+    const db = getCloudflareContext().env.DB;
     const { results } = await db.prepare("SELECT account_email, needs_reauth, name, picture FROM linked_accounts WHERE user_email = ?").bind(session.user.email).all();
     return NextResponse.json({ accounts: results });
   } catch (error: any) {
@@ -27,7 +26,7 @@ export async function DELETE(request: Request) {
     const accountEmail = searchParams.get("account_email");
     if (!accountEmail) return NextResponse.json({ error: "account_email is required" }, { status: 400 });
 
-    const db = getRequestContext().env.DB;
+    const db = getCloudflareContext().env.DB;
     // 連携解除は linked_accounts のみ削除する。関連する chat_configs はあえて残す
     // （再連携すればそのまま復元されるため、ここで一緒に消す必要はない）
     await db.prepare("DELETE FROM linked_accounts WHERE user_email = ? AND account_email = ?").bind(session.user.email, accountEmail).run();

@@ -1,15 +1,14 @@
 import { NextResponse, NextRequest } from "next/server";
-import { getRequestContext } from "@cloudflare/next-on-pages";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { auth } from "../../../../auth";
 import { encryptSecret } from "../../../lib/tokenCrypto";
 
-export const runtime = 'edge';
 
 // 追加のGoogleアカウントを連携するための、NextAuth本体のログインとは別系統のOAuthフロー。
 // このエンドポイント自身が「①Googleへリダイレクト」と「②codeを受け取ってトークン交換」の
 // 両方を兼ねる（GoogleのOAuthコールバックは1つのURLに固定登録する必要があるため）。
 // 事前に、GoogleのOAuthクライアント設定の「承認済みのリダイレクトURI」に、
-// このルートの絶対URL（例: https://re-mail.pages.dev/api/accounts/connect）を追加しておく必要がある。
+// このルートの絶対URL（例: https://re-mail.eusng90912.workers.dev/api/accounts/connect）を追加しておく必要がある。
 const STATE_COOKIE = "remail_link_state";
 
 export async function GET(request: NextRequest) {
@@ -78,7 +77,7 @@ export async function GET(request: NextRequest) {
       tokens.access_token ? encryptSecret(tokens.access_token) : Promise.resolve(null),
     ]);
 
-    const db = getRequestContext().env.DB;
+    const db = getCloudflareContext().env.DB;
     // name/pictureは表示専用（アイコン設定でアバターを出すため）で、認証・照合には一切使わない
     await db.prepare(
       `INSERT INTO linked_accounts (user_email, account_email, refresh_token, access_token, expires_at, created_at, needs_reauth, name, picture)

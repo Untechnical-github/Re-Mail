@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { getRequestContext } from "@cloudflare/next-on-pages";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせる
 
-export const runtime = 'edge';
 
 export async function GET(request: Request) {
   const session = await auth();
@@ -11,7 +10,7 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const accountEmail = searchParams.get("account_email");
-    const db = getRequestContext().env.DB;
+    const db = getCloudflareContext().env.DB;
     const { results } = accountEmail
       ? await db.prepare("SELECT * FROM chat_configs WHERE user_email = ? AND account_email = ?").bind(session.user.email, accountEmail).all()
       : await db.prepare("SELECT * FROM chat_configs WHERE user_email = ?").bind(session.user.email).all();
@@ -29,7 +28,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     if (!body.account_email) return NextResponse.json({ error: "account_email is required" }, { status: 400 });
-    const db = getRequestContext().env.DB;
+    const db = getCloudflareContext().env.DB;
 
     await db.prepare(
       `INSERT INTO chat_configs (user_email, account_email, chat_id, custom_name, is_pinned, is_hidden, hidden_at_date, unhide_on_new)
@@ -69,7 +68,7 @@ export async function DELETE(request: Request) {
     if (!chatId) return NextResponse.json({ error: "chat_id is required" }, { status: 400 });
     if (!accountEmail) return NextResponse.json({ error: "account_email is required" }, { status: 400 });
 
-    const db = getRequestContext().env.DB;
+    const db = getCloudflareContext().env.DB;
     await db.prepare(`DELETE FROM chat_configs WHERE user_email = ? AND account_email = ? AND chat_id = ?`)
       .bind(session.user.email, accountEmail, chatId).run();
 

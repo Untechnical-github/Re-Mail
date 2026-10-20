@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
 
 const nextConfig: NextConfig = {
   // デプロイ時の厳格チェックをパスする設定
@@ -11,3 +12,6 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
+
+// next dev でも getCloudflareContext() から D1 などのバインディングを使えるようにする
+initOpenNextCloudflareForDev();

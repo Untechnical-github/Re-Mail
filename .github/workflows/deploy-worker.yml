@@ -1,0 +1,67 @@
+name: Deploy Worker
+
+on:
+  push:
+    branches: [main]
+    # Worker に関係するファイルが変わったときだけ動かす（README など文書だけの変更では動かない）
+    paths:
+      - 'app/**'
+      - 'public/**'
+      - 'migrations/**'
+      - 'auth.ts'
+      - 'env.d.ts'
+      - 'next.config.ts'
+      - 'open-next.config.ts'
+      - 'postcss.config.mjs'
+      - 'tsconfig.json'
+      - 'wrangler.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'script/ci/**'
+      - '.github/workflows/deploy-worker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# デプロイが重ならないように1つずつ順番に動かす
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: bash script/ci/retry.sh npm ci
+      - run: npm test
+      - run: npx tsc --noEmit
+      - name: Build
+        run: npx opennextjs-cloudflare build
+      - name: Check secrets
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::GitHub の Secrets に CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID が登録されていません"
+            exit 1
+          fi
+      # 新しいコードが新しい列を使う場合に備えて、デプロイより先にスキーマを当てる。
+      # 適用済みのファイルは D1 側に記録されているので、何度実行しても同じものは二度当たらない
+      - name: Apply D1 migrations
+        run: bash script/ci/retry.sh npx wrangler d1 migrations apply re-mail --remote
+      - id: deploy
+        run: bash script/ci/retry.sh npx opennextjs-cloudflare deploy
+      - name: Health check
+        run: bash script/ci/health-check.sh
+      # 動作確認に失敗したら、1つ前の版に戻す（D1 のスキーマは戻らない）
+      - name: Roll back
+        if: failure() && steps.deploy.outcome == 'success'
+        run: bash script/ci/retry.sh npx wrangler rollback --yes --message "Health check failed (run ${{ github.run_id }})"
