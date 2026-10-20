@@ -9,6 +9,12 @@ const eslintConfig = defineConfig([
     rules: {
       // 位置引数の並びを保つために残している未使用の引数は、先頭に _ を付けて明示する
       "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_", caughtErrors: "none" }],
+      // React Compiler を使う前提のルール。Re:Mail は React Compiler を使っておらず、
+      // イベント処理の中のコードまで「描画中」と判定する誤検知が多いため、知らせるだけ（警告）にする
+      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/refs": "warn",
+      "react-hooks/purity": "warn",
+      "react-hooks/immutability": "warn",
     },
   },
   // Override default ignores of eslint-config-next.

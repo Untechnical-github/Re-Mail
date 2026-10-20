@@ -265,7 +265,6 @@ export function useMailApp() {
   useEffect(() => {
     if (!selectedSender) return;
     const wantTab = chatConfigTab(chatConfigs[selectedSender]);
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 既存の挙動を保つため（描画中の計算へ書き換えると表示の切り替わるタイミングが変わるので、実機で確かめられるときに行う）
     if (wantTab !== activeChatTab) changeChatTab(wantTab);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSender, chatConfigs]);
@@ -393,7 +392,6 @@ export function useMailApp() {
   };
 
   // チャットを閉じたら展開状態をリセット
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- 既存の挙動を保つため（描画中の計算へ書き換えると表示の切り替わるタイミングが変わるので、実機で確かめられるときに行う）
   useEffect(() => { setExpandedMsgIds([]); }, [selectedSender]);
   useEffect(() => { currentNextPageTokensRef.current = currentNextPageTokens; }, [currentNextPageTokens]);
 
@@ -430,7 +428,6 @@ export function useMailApp() {
   // 「まだ何も取得していない新フィルター」に「古いフィルターの中身」が誤って紐付いてしまい、
   // 次にそのフィルターへ戻ったときに空(または無関係)なキャッシュが復元される不具合になるため、
   // 実際に取得が完了したフィルターキーと filterKeyRef が一致する場合のみキャッシュを書き込む
-  // eslint-disable-next-line react-hooks/refs -- 初期値として一度読むだけで、描画結果には使わない
   const emailsFilterKeyRef = useRef<string>(filterKeyRef.current);
 
   useEffect(() => {
@@ -730,7 +727,6 @@ export function useMailApp() {
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(pointer: fine)');
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- window はサーバー側の描画に無いため、ブラウザで動き始めてから実際の値を入れる
     setHasMouse(mediaQuery.matches);
     const handler = (e: MediaQueryListEvent) => setHasMouse(e.matches);
     mediaQuery.addEventListener('change', handler);
@@ -849,7 +845,6 @@ export function useMailApp() {
           // signOut のサーバー側処理（セッションCookie破棄）が終わる前に遷移すると、
           // 古いセッションが残ったままリロードされ無限ループになるため必ず完了を待つ
           await signOut({ redirect: false });
-          // eslint-disable-next-line react-hooks/immutability -- ログアウト処理の中でのページ遷移で、描画中には実行されない
           window.location.href = "/";
         }
         return { success: false, emails: currentEmailsState };
@@ -988,7 +983,6 @@ export function useMailApp() {
               groupMemberTokensRef.current = {};
               const restoredMembers = (restoredConfig.groupMembers || []) as LocalKey[];
               await Promise.all(restoredMembers.map(async m => {
-                // eslint-disable-next-line react-hooks/immutability -- effect の中の非同期処理から呼ぶため、実行時には宣言済み
                 const result = await fetchChatCrossbox(asLocalKey(m), restoredAccountEmail, false, res.emails, true).catch(() => ({ nextToken: "END_ALL" }));
                 groupMemberTokensRef.current[m] = result.nextToken || "END_ALL";
               }));
@@ -1016,9 +1010,7 @@ export function useMailApp() {
               if (ui.replySubject) setReplySubject(ui.replySubject);
               if (ui.replyBody) setReplyBody(ui.replyBody);
               if (ui.replyToMessage) setReplyToMessage(ui.replyToMessage);
-              // eslint-disable-next-line react-hooks/immutability -- effect の中の非同期処理から呼ぶため、実行時には宣言済み
               if (ui.emailModalEmail) openEmailModal(ui.emailModalEmail);
-              // eslint-disable-next-line react-hooks/immutability -- effect の中の非同期処理から呼ぶため、実行時には宣言済み
               if (ui.attachmentModal) openAttachmentModal(ui.attachmentModal);
             }
           } catch (e) { console.error(e); }
@@ -1208,7 +1200,6 @@ export function useMailApp() {
   // フィルター変化時（チャットタブの切り替えを含む）に選択をキャンセル
   useEffect(() => {
     if (selectionMode === "none") return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 既存の挙動を保つため（描画中の計算へ書き換えると表示の切り替わるタイミングが変わるので、実機で確かめられるときに行う）
     setSelectionMode("none");
     setSelectedIds([]);
     if (hasPushedSelectRef.current) {
@@ -1226,7 +1217,6 @@ export function useMailApp() {
   useEffect(() => {
     if (skipFindBarAutoCloseRef.current) { skipFindBarAutoCloseRef.current = false; return; }
     if (findBarOpen) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- 既存の挙動を保つため（描画中の計算へ書き換えると表示の切り替わるタイミングが変わるので、実機で確かめられるときに行う）
       setFindBarOpen(false);
       setFindBarKeyword("");
       setFindBarMatchIndex(-1);
@@ -1500,7 +1490,6 @@ export function useMailApp() {
 
     const allRoomKeys = Array.from(new Set([...keysOf(groupedEmails), ...draftChats])) as RoomKeyStr[];
 
-    // eslint-disable-next-line react-hooks/refs -- messageConfigKey などが messageConfigsRef（messageConfigs state の写し）を読む既存の作り。ref を使わない形への書き換えは別作業
     return allRoomKeys.filter((sender: RoomKeyStr) => {
       const config = chatConfigs[sender];
       if (config?.isHidden) return false;
@@ -1531,7 +1520,6 @@ export function useMailApp() {
       if (!hasDisplayableEmail && !config?.isPinned) return false;
       return true;
 
-    // eslint-disable-next-line react-hooks/refs -- messageConfigKey などが messageConfigsRef（messageConfigs state の写し）を読む既存の作り。ref を使わない形への書き換えは別作業
     }).sort((a: RoomKeyStr, b: RoomKeyStr): number => {
       // 作成直後の下書きチャットは通常のチャットと同様、一番上（ピン留めより上）に表示する
       const isDraftA = draftChats.includes(a) && (!groupedEmails[a] || groupedEmails[a].length === 0) ? 1 : 0;
@@ -2051,7 +2039,6 @@ export function useMailApp() {
         // Gmailが実際に採番したIDを使う（リロード後の再取得でも同じメールとして同一視できるようにするため）。
         // 取得できなかった場合のみ、その場限りのフェイクIDにフォールバックする
         const sentData = (await res.json().catch(() => ({}))) as { id?: string; threadId?: string };
-        // eslint-disable-next-line react-hooks/purity -- 送信処理（イベント）の中で実行され、描画中には呼ばれない
         const sentId: string = sentData.id || `fake-${Date.now()}`;
         const sentAttachments = replyAttachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, size: a.size }));
         const sentFake = {
@@ -2116,7 +2103,6 @@ export function useMailApp() {
     let originalHtml: string | null = null;
     if (typeof message.id === "string" && !message.id.startsWith("fake-")) {
       try {
-        // eslint-disable-next-line react-hooks/purity -- 転送処理（イベント）の中で実行され、描画中には呼ばれない
         const htmlParams = new URLSearchParams({ messageId: message.id, html: "true", _t: Date.now().toString() });
         if (sendAccountEmail !== myEmail) htmlParams.append("accountEmail", sendAccountEmail);
         const htmlRes = await fetch(`/api/emails?${htmlParams.toString()}`);
@@ -2166,7 +2152,6 @@ export function useMailApp() {
       if (recipientRoomKeys.length === 1 && groupedEmails[recipientRoomKeys[0]] && !chatConfigsRef.current[recipientRoomKeys[0]]?.isGroup) {
         const room = recipientRoomKeys[0];
         const sentFake = {
-          // eslint-disable-next-line react-hooks/purity -- 転送処理（イベント）の中で実行され、描画中には呼ばれない
           id: sentData.id || `fake-${Date.now()}`,
           threadId: sentData.threadId || "",
           subject, from: sendAccountEmail || "自分", to,
@@ -2851,7 +2836,6 @@ export function useMailApp() {
     if (!asideEl) return;
     const { scrollHeight, clientHeight, scrollTop } = asideEl as HTMLElement;
     if (scrollHeight - Math.abs(scrollTop) - clientHeight < 100) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- スクロール位置（DOM）を見て追加読み込みを始める処理で、effect でしか判定できない
       handleLoadMoreChats();
     }
   }, [isLoading, senderList, chatStatusMessage, hasMoreChatsToLoad, checkInbox, checkArchive, checkSpam, checkTrash, checkSent]);
@@ -2865,12 +2849,10 @@ export function useMailApp() {
     if (!mainEl) return;
     const { scrollHeight, clientHeight, scrollTop } = mainEl as HTMLElement;
     if (scrollHeight - Math.abs(scrollTop) - clientHeight < 100) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- スクロール位置（DOM）を見て追加読み込みを始める処理で、effect でしか判定できない
       handleLoadMoreMessage();
     }
   }, [chatNextPageToken, msgStatusMessage, currentChatLength, selectedSender]);
 
-  // eslint-disable-next-line react-hooks/refs -- messageConfigKey などが messageConfigsRef（messageConfigs state の写し）を読む既存の作り。ref を使わない形への書き換えは別作業
   const pinnedMsgsInChat = (checkInbox || checkArchive || checkSent) ? (groupedEmails[selectedSender!] || []).filter(e => messageConfigs[messageConfigKey(e.id)]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && isAccountVisible(e.accountId)) : [];
 
   return {

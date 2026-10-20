@@ -941,7 +941,6 @@ export function AttachmentModal({ app }: { app: MailAppHook }) {
   // blob: URL に変換して渡す（Android Chrome でも埋め込みPDFビューアが起動しやすくなる）
   useEffect(() => {
     if (!attachmentModal?.base64 || attachmentModal.mimeType !== 'application/pdf') {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- blob URL は作ったら後片付け（revoke）が必要なので、effect で作って state に持つ
       setPdfBlobUrl(null);
       return;
     }
@@ -979,7 +978,6 @@ export function AttachmentModal({ app }: { app: MailAppHook }) {
     if (!img || !container) return;
     // Cached images may fire onLoad synchronously before DOM layout
     if (container.clientWidth === 0) {
-      // eslint-disable-next-line react-hooks/immutability -- 読み込み直後に大きさが 0 のときだけ、次のフレームで自分自身をもう一度呼ぶ（呼ぶ時点では宣言済み）
       requestAnimationFrame(() => { if (imgRef.current && imgContainerRef.current) onImgLoad(); });
       return;
     }
@@ -1940,7 +1938,6 @@ export function SearchModal({ app }: { app: MailAppHook }) {
   // モーダルが開いた瞬間にタブとキーワードを初期化し、入力欄にフォーカスする
   useEffect(() => {
     if (!active) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- モーダルを開いた瞬間に入力欄などを初期状態に戻す処理
     setKeyword("");
     setActiveTab("all");
     setSortOrder("newest");
@@ -2062,7 +2059,6 @@ export function SearchModal({ app }: { app: MailAppHook }) {
   // （このコンポーネント側で結果を別途保持・マージする必要がない）
   const [isServerSearching, setIsServerSearching] = useState(false);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- キーワードが短くなったら、実行中表示を消す（既存の挙動を保つ）
     if (!kwLower || kwLower.length < 2) { setIsServerSearching(false); return; }
     if (activeTab !== "all" && activeTab !== "subject" && activeTab !== "body") return;
     // 「このキーワード・このフィールドは既にサーバー検索を試した」ものは、たとえローカル結果が
@@ -2512,7 +2508,6 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
 
   useEffect(() => {
     if (!active) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- モーダルを開いた瞬間に一覧画面へ戻す処理
     setScreen("list");
     setEditingId(null);
     setDeleteConfirmId(null);
