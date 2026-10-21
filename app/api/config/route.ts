@@ -3,8 +3,8 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { errorMessage } from "../../lib/errorMessage";
 import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせる
 import { logError } from "../../lib/safeLog";
-import { decryptSecret } from "../../lib/tokenCrypto";
-import { revealConfigName } from "../../lib/configCrypto";
+import { decryptSecret, encryptSecret } from "../../lib/tokenCrypto";
+import { revealConfigName, sealConfigName, hasPlainRoomId } from "../../lib/configCrypto";
 
 
 export async function GET(request: Request) {
@@ -18,8 +18,23 @@ export async function GET(request: Request) {
     const { results } = accountEmail
       ? await db.prepare("SELECT * FROM chat_configs WHERE user_email = ? AND account_email = ?").bind(session.user.email, accountEmail).all()
       : await db.prepare("SELECT * FROM chat_configs WHERE user_email = ?").bind(session.user.email).all();
+    type Row = { account_email: string; chat_id: string; custom_name?: string | null };
+    const rows = results as Row[];
+    // 暗号化する前に保存された行（平文の roomId）は、読んだついでに暗号化して書き戻す（段階2）。
+    // 失敗しても画面への応答は止めない（次に読んだときにまた試す）
+    const plainRows = rows.filter((row) => hasPlainRoomId(row.custom_name));
+    if (plainRows.length > 0) {
+      try {
+        const stmts = await Promise.all(plainRows.map(async (row) => db.prepare(
+          "UPDATE chat_configs SET custom_name = ? WHERE user_email = ? AND account_email = ? AND chat_id = ?"
+        ).bind(await sealConfigName(row.custom_name, encryptSecret), session.user!.email, row.account_email, row.chat_id)));
+        await db.batch(stmts);
+      } catch (e) {
+        logError("config.sealExisting", { count: plainRows.length }, e);
+      }
+    }
     // 暗号化して保存した値（相手の名前を含む roomId など）を、画面に返す前に復号する
-    const configs = await Promise.all((results as { custom_name?: string | null }[]).map(async (row) => ({
+    const configs = await Promise.all(rows.map(async (row) => ({
       ...row,
       custom_name: await revealConfigName(row.custom_name, decryptSecret),
     })));
@@ -52,7 +67,8 @@ export async function POST(request: Request) {
       session.user.email,
       body.account_email,
       body.chat_id,
-      body.custom_name || null,
+      // 相手の名前を含む roomId は暗号化して保存する（D1 に平文の個人情報を書かない。絶対ルール1）
+      (await sealConfigName(typeof body.custom_name === "string" ? body.custom_name : null, encryptSecret)) || null,
       body.is_pinned ? 1 : 0,
       body.is_hidden ? 1 : 0,
       body.hidden_at_date || null,
