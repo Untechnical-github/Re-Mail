@@ -1011,6 +1011,23 @@ export function useMailApp() {
       // 失効はそのアカウント分だけ黙って読み込めない扱いにし、メインアカウントの利用は継続させる
       const mainResult = results.find(r => r.accountEmail === myEmail);
       if (mainResult?.res && (mainResult.res.status === 401 || mainResult.res.status === 403)) {
+        // 401 は「ログインが本当に切れた」とは限らない。トークンの更新が一時的に失敗して古いトークンのまま
+        // Gmail に断られただけのこともある（実機テストで、これで勝手にログアウトされ下書きも消えた）。
+        // セッションを取り直して（ここでトークンの更新とログイン情報の保存も行われる）、
+        // Google がログインを無効と言っている場合だけログアウトする
+        let loginInvalid = true;
+        try {
+          const s = (await (await fetch("/api/auth/session", { cache: "no-store" })).json()) as { user?: unknown; error?: string } | null;
+          loginInvalid = !s?.user || s.error === "RefreshAccessTokenError";
+        } catch {
+          // 通信できないときはログイン状態を判断できないので、ログアウトはしない
+          loginInvalid = false;
+        }
+        if (!loginInvalid) {
+          logWarn("emails.unauthorizedTransient", { status: mainResult.res.status });
+          showErrorToast("Gmail との接続が一時的に切れました。しばらくすると自動でつなぎ直します。");
+          return { success: false, emails: currentEmailsState };
+        }
         if (!signingOutRef.current) {
           signingOutRef.current = true;
           // 認証切れでログアウトするときも、端末に残したメールの中身・下書きを消す
