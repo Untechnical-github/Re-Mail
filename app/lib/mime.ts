@@ -161,7 +161,8 @@ function bodySegments(text: string | undefined, html: string | undefined): MimeS
 
 export function buildMimeSegments(input: MimeInput): MimeSegment[] {
   const headers: string[] = [];
-  headers.push(`Date: ${(input.date || new Date()).toUTCString().replace("GMT", "+0000")}`);
+  // Date は付けない。純正 Gmail と同じ形式（送信者のタイムゾーン）で Gmail 側が付ける
+  if (input.date) headers.push(`Date: ${input.date.toUTCString().replace("GMT", "+0000")}`);
   if (input.messageId) headers.push(`Message-ID: ${stripLineBreaks(input.messageId).trim()}`);
   headers.push(`To: ${formatAddressHeader(input.to || "")}`);
   if (input.cc && input.cc.trim()) headers.push(`Cc: ${formatAddressHeader(input.cc)}`);
@@ -240,4 +241,34 @@ export function buildGmailUploadBody(message: MimeSegment[], threadId?: string):
     `${CRLF}--${b}--${CRLF}`,
   ];
   return { body: assembleBytes(segments), contentType: `multipart/related; boundary=${b}` };
+}
+
+// 受信したヘッダーの encoded-word（=?UTF-8?B?...?= など）を日本語に戻す
+export function decodeMimeHeader(header: string): string {
+  if (!header) return "";
+  const regex = /=\?([^?]+)\?([BQbq])\?([^?]+)\?=/g;
+  // 長い件名は複数の encoded-word に分けて折り返されている。語と語の間の空白・改行は
+  // 文字ではなく区切りなので取り除く（RFC 2047。残すと日本語の途中に空白が入る）
+  return header.replace(/(\?=)\s+(?==\?)/g, "$1").replace(regex, (match, charset, encoding, text) => {
+    try {
+      if (encoding.toUpperCase() === 'B') {
+        const binaryString = atob(text);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return new TextDecoder(charset.toLowerCase() === 'shift_jis' ? 'shift_jis' : 'utf-8').decode(bytes);
+      } else if (encoding.toUpperCase() === 'Q') {
+        const qDecoded = text.replace(/_/g, ' ').replace(/=([a-fA-F0-9]{2})/g, (_: string, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+        const bytes = new Uint8Array(qDecoded.length);
+        for (let i = 0; i < qDecoded.length; i++) {
+          bytes[i] = qDecoded.charCodeAt(i);
+        }
+        return new TextDecoder(charset.toLowerCase() === 'shift_jis' ? 'shift_jis' : 'utf-8').decode(bytes);
+      }
+    } catch {
+      return match;
+    }
+    return match;
+  });
 }

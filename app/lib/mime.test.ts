@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   encodeHeaderText, splitAddressList, parseAddress, formatAddressHeader,
-  buildMimeSegments, assembleBytes, buildGmailUploadBody, cleanBase64, utf8ToBase64,
+  buildMimeSegments, assembleBytes, buildGmailUploadBody, cleanBase64, utf8ToBase64, decodeMimeHeader,
 } from "./mime";
 
 // テスト用: encoded-word を元の文字列に戻す
@@ -138,5 +138,25 @@ describe("buildGmailUploadBody", () => {
 describe("cleanBase64", () => {
   it("base64 以外の文字を除く", () => {
     expect(cleanBase64("QU\r\nJD")).toBe("QUJD");
+  });
+});
+
+describe("decodeMimeHeader", () => {
+  it("折り返された複数の encoded-word を、間に空白を入れずに戻す", () => {
+    const subject = "【重要】来週の打ち合わせ資料について（第3回プロジェクト定例会議のご案内）";
+    expect(decodeMimeHeader(encodeHeaderText(subject))).toBe(subject);
+  });
+
+  it("Q エンコードと、encoded-word でない部分の空白はそのまま", () => {
+    expect(decodeMimeHeader("Re: =?UTF-8?Q?caf=C3=A9_au_lait?= today")).toBe("Re: café au lait today");
+  });
+
+  it("壊れた base64 でも例外にせず元の文字列を返す", () => {
+    expect(decodeMimeHeader("=?UTF-8?B?***?=")).toBe("=?UTF-8?B?***?=");
+  });
+
+  it("Date ヘッダーは自分では付けない（Gmail が付ける）", () => {
+    const text = new TextDecoder().decode(assembleBytes(buildMimeSegments({ to: "a@example.com", subject: "s", text: "t" })));
+    expect(text).not.toMatch(/^Date:/m);
   });
 });

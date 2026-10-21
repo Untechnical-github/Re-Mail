@@ -4,7 +4,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { auth } from "../../../auth";
 import { getValidAccessToken } from "../../lib/googleToken";
 import { encryptSecret, decryptSecret, isEncrypted } from "../../lib/tokenCrypto";
-import { buildMimeSegments, buildGmailUploadBody } from "../../lib/mime";
+import { buildMimeSegments, buildGmailUploadBody, decodeMimeHeader } from "../../lib/mime";
 
 
 // Gmail API の生データ（必要なフィールドだけ）
@@ -115,34 +115,6 @@ function decodeBase64Url(base64Url: string) {
   } catch {
     return "";
   }
-}
-
-// ★追加: Gmail特有の暗号(MIMEエンコード)を綺麗な日本語に解読するデコーダー
-function decodeMimeHeader(header: string): string {
-  if (!header) return "";
-  const regex = /=\?([^?]+)\?([BQbq])\?([^?]+)\?=/g;
-  return header.replace(regex, (match, charset, encoding, text) => {
-    try {
-      if (encoding.toUpperCase() === 'B') {
-        const binaryString = atob(text);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        return new TextDecoder(charset.toLowerCase() === 'shift_jis' ? 'shift_jis' : 'utf-8').decode(bytes);
-      } else if (encoding.toUpperCase() === 'Q') {
-        const qDecoded = text.replace(/_/g, ' ').replace(/=([a-fA-F0-9]{2})/g, (_: string, hex: string) => String.fromCharCode(parseInt(hex, 16)));
-        const bytes = new Uint8Array(qDecoded.length);
-        for (let i = 0; i < qDecoded.length; i++) {
-          bytes[i] = qDecoded.charCodeAt(i);
-        }
-        return new TextDecoder(charset.toLowerCase() === 'shift_jis' ? 'shift_jis' : 'utf-8').decode(bytes);
-      }
-    } catch {
-      return match;
-    }
-    return match;
-  });
 }
 
 function getTextBody(payload: GmailMessagePart): string {
