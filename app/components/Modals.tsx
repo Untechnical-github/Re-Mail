@@ -8,6 +8,7 @@ import type { MailAppHook } from "../hooks/useMailApp";
 import type { Email } from "../types/email";
 import type { ChatConfig, ModalState, SelectionMode } from "../types/mail";
 import { logError } from "../lib/safeLog";
+import { prepareEmailHtml, hasRemoteContent } from "../lib/emailHtml";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: MailAppHook; modal: NonNullable<ModalState> }) {
@@ -645,24 +646,14 @@ function ChatHideConfirm({ app, modal }: { app: MailAppHook; modal: NonNullable<
   );
 }
 
-function prepareHtml(raw: string): string {
-  // max-width:100%!important は削除 — メールを自然な幅でレンダリングし、zoom でフィットさせる
-  const inject =
-    '<base target="_blank">' +
-    '<style>*{box-sizing:border-box;}img{max-width:100%;height:auto;}body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;word-break:break-word;opacity:0;transform-origin:0 0;will-change:transform;}</style>';
-  if (/<head[\s>]/i.test(raw)) {
-    return raw.replace(/(<head[^>]*>)/i, `$1${inject}`);
-  }
-  return `<!DOCTYPE html><html><head>${inject}</head><body>${raw}</body></html>`;
-}
-
-
 export function EmailModal({ app }: { app: MailAppHook }) {
   const { emailModal } = app.state;
   const { closeEmailModal } = app.actions;
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
+  // 「画像を表示」を押したメールの ID。メールごとに押す（設定として覚えない）。別のメールを開けば元に戻る
+  const [remoteAllowedFor, setRemoteAllowedFor] = useState<string | null>(null);
 
   // レンダー直後・ペイント前にビューポートをロック（モーダル開閉と同期）
   useLayoutEffect(() => {
@@ -869,6 +860,8 @@ export function EmailModal({ app }: { app: MailAppHook }) {
   const { email, htmlBody, isLoading } = emailModal;
   const showHtml = !isLoading && !!htmlBody;
   const showText = !isLoading && !htmlBody;
+  const allowRemote = remoteAllowedFor === email.id;
+  const remoteBlocked = showHtml && !allowRemote && hasRemoteContent(htmlBody!);
 
   return (
     <div
@@ -899,6 +892,16 @@ export function EmailModal({ app }: { app: MailAppHook }) {
           </button>
         </div>
 
+        {/* 外部の画像は既定で読み込まない（読み込むと送信者に開封が伝わるため） */}
+        {remoteBlocked && (
+          <div className="flex items-center gap-2 px-4 py-2 text-xs text-gray-300 bg-[#1E1F22] border-b border-[#1E1F22] flex-shrink-0">
+            <span className="flex-1 min-w-0">外部の画像を読み込んでいません</span>
+            <button onClick={() => setRemoteAllowedFor(email.id)} className="flex-shrink-0 font-bold px-2 py-0.5 rounded border border-[#4E5058] text-gray-200 hover:text-white">
+              画像を表示
+            </button>
+          </div>
+        )}
+
         {/* コンテンツ - 両モードとも h-full で同一高さ */}
         <div className="flex-1 min-h-0">
           {isLoading && (
@@ -909,7 +912,7 @@ export function EmailModal({ app }: { app: MailAppHook }) {
           {showHtml && (
             <iframe
               ref={iframeRef}
-              srcDoc={prepareHtml(htmlBody!)}
+              srcDoc={prepareEmailHtml(htmlBody!, allowRemote)}
               sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
               className="w-full h-full border-none block bg-white"
               title="メール本文"
