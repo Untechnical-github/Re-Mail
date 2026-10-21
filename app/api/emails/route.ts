@@ -77,31 +77,41 @@ async function postSendOnce(upload: { body: Uint8Array<ArrayBuffer>; contentType
   return { outcome: "failed" };
 }
 
-// 転送する元のメールの添付を Gmail から取り直す。合計が 25MB を超える、または1つでも取れない場合は null
-async function loadForwardAttachments(accessToken: string, messageId: string): Promise<{ filename: string; mimeType: string; data: string }[] | null> {
+type ForwardAttachmentsResult =
+  | { ok: true; attachments: { filename: string; mimeType: string; data: string }[] }
+  // 失敗した段階・HTTP ステータス・Gmail の理由コードだけを持つ（個人情報は入れない）。原因を追えるよう画面側にも返す
+  | { ok: false; stage: "list" | "tooLarge" | "get" | "empty" | "exception"; status?: number; reason?: string };
+
+// 転送する元のメールの添付を Gmail から取り直す。合計が 25MB を超える、または1つでも取れない場合は失敗
+async function loadForwardAttachments(accessToken: string, messageId: string): Promise<ForwardAttachmentsResult> {
   const auth = { headers: { Authorization: `Bearer ${accessToken}` } };
   const base = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`;
+  const fail = async (stage: "list" | "get", res: Response): Promise<ForwardAttachmentsResult> => {
+    const reason = gmailErrorReason(await res.json().catch(() => null));
+    logWarn(`forward.attachments.${stage}`, { status: res.status, reason, messageId });
+    return { ok: false, stage, status: res.status, reason };
+  };
   try {
     const msgRes = await fetchWithRetry(`${base}?fields=payload`, auth);
-    if (!msgRes.ok) { logWarn("forward.attachments.list", { status: msgRes.status, messageId }); return null; }
+    if (!msgRes.ok) return fail("list", msgRes);
     const list = extractAttachments(((await msgRes.json()) as GmailMessage).payload);
     const total = list.reduce((sum, a) => sum + (a.size || 0), 0);
-    if (total > 25 * 1024 * 1024) { logWarn("forward.attachments.tooLarge", { messageId, count: list.length }); return null; }
+    if (total > 25 * 1024 * 1024) { logWarn("forward.attachments.tooLarge", { messageId, count: list.length }); return { ok: false, stage: "tooLarge" }; }
     const out: { filename: string; mimeType: string; data: string }[] = [];
     // 大きな添付を一度に何本も抱えないよう、1つずつ取る
     for (const att of list) {
       const res = await fetchWithRetry(`${base}/attachments/${encodeURIComponent(att.attachmentId)}`, auth);
-      if (!res.ok) { logWarn("forward.attachments.get", { status: res.status, messageId }); return null; }
+      if (!res.ok) return fail("get", res);
       const data = ((await res.json()) as { data?: string }).data;
-      if (!data) return null;
+      if (!data) { logWarn("forward.attachments.empty", { messageId }); return { ok: false, stage: "empty" }; }
       // Gmail は base64url で返すので、MIME 用の通常の base64 に直す
       const b64 = data.replace(/-/g, "+").replace(/_/g, "/");
       out.push({ filename: att.filename, mimeType: att.mimeType, data: b64 + "===".slice((b64.length + 3) % 4) });
     }
-    return out;
+    return { ok: true, attachments: out };
   } catch (e) {
     logError("forward.attachments", { messageId }, e);
-    return null;
+    return { ok: false, stage: "exception" };
   }
 }
 
@@ -437,8 +447,11 @@ export async function POST(request: Request) {
       if (typeof forwardFrom === "string" && forwardFrom) {
         if (!/^[0-9a-f]{6,32}$/i.test(forwardFrom)) return NextResponse.json({ error: "FORWARD_ATTACHMENTS_FAILED" }, { status: 400 });
         const forwarded = await loadForwardAttachments(accessToken, forwardFrom);
-        if (!forwarded) return NextResponse.json({ error: "FORWARD_ATTACHMENTS_FAILED" }, { status: 502 });
-        attachments.push(...forwarded);
+        if (!forwarded.ok) {
+          const { stage, status, reason } = forwarded;
+          return NextResponse.json({ error: "FORWARD_ATTACHMENTS_FAILED", stage, status, reason }, { status: 502 });
+        }
+        attachments.push(...forwarded.attachments);
       }
 
       // 添付ファイルの合計サイズをサーバー側でも検証する（upload エンドポイントの上限はメール全体で

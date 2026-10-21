@@ -9,7 +9,7 @@ import { isMineEmail, getFindBarBoxKey, FilterCriteria, messageMatchesFilter, Ch
 import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
-import { makeMessageId } from "../lib/sendVerify";
+import { makeMessageId, isRateLimitReason } from "../lib/sendVerify";
 import { planReply, type ReplyPlan } from "../lib/recipients";
 import { parseAddress } from "../lib/mime";
 import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, composeReplyBodies, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, type SendAsInfo } from "../lib/replyCompose";
@@ -35,7 +35,7 @@ type SendApiPayload = {
   attachments?: { filename: string; mimeType: string; data: string }[];
 };
 // unconfirmed: 送れたか分からず、送信済みにも見つからなかった / unverifiable: 送信済みを確かめることもできなかった
-type SendApiResult = { ok: true; id?: string; threadId?: string } | { ok: false; reason: "failed" | "unconfirmed" | "unverifiable"; status?: number; code?: string };
+type SendApiResult = { ok: true; id?: string; threadId?: string } | { ok: false; reason: "failed" | "unconfirmed" | "unverifiable"; status?: number; code?: string; gmailReason?: string };
 
 // /api/config が返す chat_configs の行
 type D1ConfigRow = {
@@ -2268,11 +2268,13 @@ export function useMailApp() {
       const d = (await res.json().catch(() => ({}))) as { id?: string; threadId?: string };
       return { ok: true, id: d.id, threadId: d.threadId };
     }
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    const err = (await res.json().catch(() => ({}))) as { error?: string; reason?: string; stage?: string; status?: number };
     if (err.error === "SEND_UNCONFIRMED") return { ok: false, reason: "unconfirmed" };
     // JSON を返さない 5xx は Worker が途中で落ちた可能性があり、送れたかどうか分からないので照合する
     if (res.status >= 500 && !err.error) return verify();
-    return { ok: false, reason: "failed", status: res.status, code: err.error };
+    // 原因を追えるよう、段階・ステータス・Gmail の理由コードだけを残す
+    logWarn(`send.failed.${err.stage || "send"}`, { status: err.status ?? res.status, reason: err.reason });
+    return { ok: false, reason: "failed", status: res.status, code: err.error, gmailReason: err.reason };
   };
 
   // 送信して、成功なら onSent、失敗ならトースト、結果が分からなければ再送するかを確認する。
@@ -2287,7 +2289,8 @@ export function useMailApp() {
     if (r.ok) { onSent(r); return; }
     if (r.reason === "failed") {
       showErrorToast(
-        r.code === "FORWARD_ATTACHMENTS_FAILED" ? "元のメールの添付ファイルを取得できなかったため、転送しませんでした。時間をおいてもう一度お試しください。"
+        isRateLimitReason(r.gmailReason) || r.status === 429 ? `Gmail の利用上限に一時的に達したため${label}できませんでした。1分ほど待ってからもう一度お試しください。`
+        : r.code === "FORWARD_ATTACHMENTS_FAILED" ? "元のメールの添付ファイルを取得できなかったため、転送しませんでした。時間をおいてもう一度お試しください。"
         : r.status === 401 ? `ログインの有効期限が切れたため${label}できませんでした。再読み込みしてからもう一度お試しください。`
         : r.status === 413 ? `添付ファイルが大きすぎるため${label}できませんでした（合計25MBまで）。`
         : `メールの${label}に失敗しました。宛先が正しいか確認してください。`
