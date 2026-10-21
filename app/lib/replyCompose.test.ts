@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { replySubjectFor, buildReferences, pickSendAs, signatureToText, formatQuoteHeader, composeReplyBodies, escapeHtml, extractHtmlBodyInner } from "./replyCompose";
+import { replySubjectFor, buildReferences, pickSendAs, signatureToText, formatQuoteHeader, composeReplyBodies, escapeHtml, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies } from "./replyCompose";
 
 describe("replySubjectFor", () => {
   it("Re: を1回だけ付ける", () => {
@@ -102,5 +102,33 @@ describe("extractHtmlBodyInner", () => {
   it("body が無ければ html の中、それも無ければそのまま", () => {
     expect(extractHtmlBodyInner("<html><p>a</p></html>")).toEqual({ inner: "<p>a</p>", attrs: "" });
     expect(extractHtmlBodyInner("<p>a</p>")).toEqual({ inner: "<p>a</p>", attrs: "" });
+  });
+});
+
+describe("forwardSubjectFor", () => {
+  it("Fwd: を1回だけ付ける", () => {
+    expect(forwardSubjectFor("見積書")).toBe("Fwd: 見積書");
+    expect(forwardSubjectFor("Fwd: 見積書")).toBe("Fwd: 見積書");
+    expect(forwardSubjectFor("FW: 見積書")).toBe("FW: 見積書");
+    expect(forwardSubjectFor("(件名なし)")).toBe("Fwd: ");
+  });
+});
+
+describe("composeForwardBodies", () => {
+  const original = { from: "相手 <a@example.com>", date: new Date(2026, 0, 1, 9, 5), subject: "見積書", to: "me@example.com", cc: "c@example.com", text: "本文1\n本文2" };
+
+  it("日本語版 Gmail と同じ見出しで、Cc があれば Cc 行も入る", () => {
+    const r = composeForwardBodies({ original });
+    expect(r.text).toBe("\n\n---------- Forwarded message ---------\nFrom: 相手 <a@example.com>\nDate: 2026年1月1日(木) 9:05\nSubject: 見積書\nTo: me@example.com\nCc: c@example.com\n\n\n本文1\n本文2");
+    expect(r.html).toContain("From: 相手 &lt;a@example.com&gt;<br>Date: 2026年1月1日(木) 9:05");
+    expect(r.html).toContain("本文1<br>本文2");
+  });
+
+  it("署名は見出しより前、元の HTML があれば body の中身を使う", () => {
+    const r = composeForwardBodies({ signatureHtml: "山田", original: { ...original, cc: undefined, html: '<html><body bgcolor="#eee"><p>元</p></body></html>' } });
+    expect(r.html.indexOf("gmail_signature")).toBeLessThan(r.html.indexOf("Forwarded message"));
+    expect(r.html).toContain('<div bgcolor="#eee"><p>元</p></div>');
+    expect(r.text).not.toContain("Cc:");
+    expect(r.text.startsWith("\n\n-- \n山田\n\n---------- Forwarded message")).toBe(true);
   });
 });

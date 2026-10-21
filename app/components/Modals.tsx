@@ -295,6 +295,10 @@ function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: NonNulla
   const { contactDirectory } = app.computed;
   const { safeBack, createOrOpenChat, createGroupChat, forwardMessageTo, exitAfterAction } = app.actions;
   const isForward = modal?.composeMode === "forward";
+  // 転送では元のメールの添付も一緒に送る。純正 Gmail と同じ 25MB を超える場合は、送る前に止める
+  const forwardAttachments = isForward ? (modal.forwardMessage?.attachments || []) : [];
+  const forwardAttachmentBytes = forwardAttachments.reduce((sum, a) => sum + (a.size || 0), 0);
+  const forwardTooLarge = forwardAttachmentBytes > 25 * 1024 * 1024;
 
   const mainEmail: string = app.auth?.session?.user?.email || "";
   const linkedAccounts: string[] = app.state.linkedAccounts || [];
@@ -500,6 +504,14 @@ function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: NonNulla
             件名: {modal.forwardMessage?.subject || "(件名なし)"}
           </p>
         )}
+        {forwardAttachments.length > 0 && (
+          <p className={`text-xs mt-1 flex items-center gap-1 ${forwardTooLarge ? "text-red-400" : "text-gray-400"}`}>
+            {forwardTooLarge && <WarningIcon className="w-3.5 h-3.5 flex-shrink-0" />}
+            {forwardTooLarge
+              ? `添付ファイルが合計25MBを超えるため転送できません（${formatFileSize(forwardAttachmentBytes)}）`
+              : `添付ファイル ${forwardAttachments.length}件（${formatFileSize(forwardAttachmentBytes)}）も一緒に転送します`}
+          </p>
+        )}
       </div>
 
       <div className="p-3 border-b border-[#1E1F22]">
@@ -586,7 +598,7 @@ function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: NonNulla
       <div className="p-4 border-t border-[#1E1F22] flex justify-end gap-3">
         <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
         <button
-          disabled={selected.length === 0}
+          disabled={selected.length === 0 || forwardTooLarge}
           onClick={handleNext}
           className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-gray-600 disabled:text-gray-400"
         >

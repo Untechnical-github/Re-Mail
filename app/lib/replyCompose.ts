@@ -108,3 +108,52 @@ export function extractHtmlBodyInner(html: string): { inner: string; attrs: stri
   if (htmlMatch) return { inner: htmlMatch[1], attrs: "" };
   return { inner: html, attrs: "" };
 }
+
+// 「Fwd: 元の件名」。すでに Fwd: / Fw: で始まっていれば付け足さない
+export function forwardSubjectFor(original: string): string {
+  const s = (original || "").trim() === "(件名なし)" ? "" : (original || "").trim();
+  if (/^fwd?\s*:/i.test(s)) return s;
+  return `Fwd: ${s}`;
+}
+
+// 日本語版 Gmail の転送の Date 行「2026年1月1日(木) 9:05」
+export function formatForwardDate(date: Date): string {
+  const weekday = ["日", "月", "火", "水", "木", "金", "土"][date.getDay()];
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日(${weekday}) ${date.getHours()}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+export type ForwardComposeInput = {
+  signatureHtml?: string;
+  original: { from: string; date: Date; subject: string; to: string; cc?: string; text: string; html?: string };
+};
+
+// 転送の本文を純正 Gmail と同じ並び（署名 → 「---------- Forwarded message ---------」の見出し → 元の本文）で作る。
+// 見出しの文言は日本語版 Gmail でも英語のまま
+export function composeForwardBodies(input: ForwardComposeInput): { text: string; html: string } {
+  const o = input.original;
+  const sig = (input.signatureHtml || "").trim();
+  const headerLines = [
+    "---------- Forwarded message ---------",
+    `From: ${o.from}`,
+    `Date: ${formatForwardDate(o.date)}`,
+    `Subject: ${o.subject}`,
+    `To: ${o.to}`,
+    ...(o.cc ? [`Cc: ${o.cc}`] : []),
+  ];
+
+  let text = "";
+  if (sig) text += `\n\n-- \n${signatureToText(sig)}`;
+  text += `\n\n${headerLines.join("\n")}\n\n\n${o.text}`;
+
+  let html = '<div dir="ltr">';
+  if (sig) html += `<br clear="all"><div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature">${sig}</div>`;
+  html += `<br><div class="gmail_quote gmail_quote_container"><div dir="ltr" class="gmail_attr">${headerLines.map(escapeHtml).join("<br>")}<br></div><br><br>`;
+  if (o.html && o.html.trim()) {
+    const { inner, attrs } = extractHtmlBodyInner(o.html);
+    html += `<div${attrs}>${inner}</div>`;
+  } else {
+    html += textToHtml(o.text);
+  }
+  html += "</div></div>";
+  return { text, html };
+}

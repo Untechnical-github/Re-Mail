@@ -10,7 +10,7 @@ import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf 
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId } from "../lib/sendVerify";
 import { planReply, type ReplyPlan } from "../lib/recipients";
-import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, composeReplyBodies, extractHtmlBodyInner, type SendAsInfo } from "../lib/replyCompose";
+import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, composeReplyBodies, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, type SendAsInfo } from "../lib/replyCompose";
 import { readPinnedField, capPinnedIds, mergePinnedIds, missingPinnedEmail } from "../lib/pinnedIds";
 import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
 import { logError, logWarn } from "../lib/safeLog";
@@ -22,6 +22,8 @@ type SendApiPayload = {
   from?: string;
   replyTo?: string;
   references?: string;
+  // 転送のとき、このメッセージ ID のメールの添付をサーバー側で取り直して一緒に送る
+  forwardAttachmentsFrom?: string;
   subject: string;
   body: string;
   bodyHtml?: string;
@@ -31,7 +33,7 @@ type SendApiPayload = {
   attachments?: { filename: string; mimeType: string; data: string }[];
 };
 // unconfirmed: 送れたか分からず、送信済みにも見つからなかった / unverifiable: 送信済みを確かめることもできなかった
-type SendApiResult = { ok: true; id?: string; threadId?: string } | { ok: false; reason: "failed" | "unconfirmed" | "unverifiable"; status?: number };
+type SendApiResult = { ok: true; id?: string; threadId?: string } | { ok: false; reason: "failed" | "unconfirmed" | "unverifiable"; status?: number; code?: string };
 
 // /api/config が返す chat_configs の行
 type D1ConfigRow = {
@@ -2204,7 +2206,7 @@ export function useMailApp() {
     if (err.error === "SEND_UNCONFIRMED") return { ok: false, reason: "unconfirmed" };
     // JSON を返さない 5xx は Worker が途中で落ちた可能性があり、送れたかどうか分からないので照合する
     if (res.status >= 500 && !err.error) return verify();
-    return { ok: false, reason: "failed", status: res.status };
+    return { ok: false, reason: "failed", status: res.status, code: err.error };
   };
 
   // 送信して、成功なら onSent、失敗ならトースト、結果が分からなければ再送するかを確認する。
@@ -2219,7 +2221,8 @@ export function useMailApp() {
     if (r.ok) { onSent(r); return; }
     if (r.reason === "failed") {
       showErrorToast(
-        r.status === 401 ? `ログインの有効期限が切れたため${label}できませんでした。再読み込みしてからもう一度お試しください。`
+        r.code === "FORWARD_ATTACHMENTS_FAILED" ? "元のメールの添付ファイルを取得できなかったため、転送しませんでした。時間をおいてもう一度お試しください。"
+        : r.status === 401 ? `ログインの有効期限が切れたため${label}できませんでした。再読み込みしてからもう一度お試しください。`
         : r.status === 413 ? `添付ファイルが大きすぎるため${label}できませんでした（合計25MBまで）。`
         : `メールの${label}に失敗しました。宛先が正しいか確認してください。`
       );
@@ -2367,48 +2370,35 @@ export function useMailApp() {
     const to = addresses.join(", ");
     if (!to) return;
 
-    const subject = (message.subject || "").startsWith("Fwd:") ? message.subject : `Fwd: ${message.subject || ""}`;
+    const subject = forwardSubjectFor(message.subject || "");
 
-    // Gmailの転送と同じヘッダー体裁（この定型文言自体もGmail準拠。日本語版Gmailでもこの部分は英語のまま）
-    const forwardHeaderText = `---------- Forwarded message ---------\nFrom: ${message.from || ""}\nDate: ${new Date(message.date).toLocaleString("ja-JP")}\nSubject: ${message.subject || ""}\nTo: ${message.to || ""}\n\n\n`;
-
-    // cleanseBodyで加工済みのテキスト本文だと情報が欠落するため、転送時は元のHTML本文を取り直して
-    // そのまま使う（Gmailの転送が体裁・内容を保ったまま転送できているのと同じにするため）
-    let originalHtml: string | null = null;
-    if (typeof message.id === "string" && !message.id.startsWith("fake-")) {
-      try {
-        const htmlParams = new URLSearchParams({ messageId: message.id, html: "true", _t: Date.now().toString() });
-        if (sendAccountEmail !== myEmail) htmlParams.append("accountEmail", sendAccountEmail);
-        const htmlRes = await fetch(`/api/emails?${htmlParams.toString()}`);
-        if (htmlRes.ok) {
-          const data = await htmlRes.json();
-          originalHtml = data.htmlBody || null;
-        }
-      } catch (e) { logError("forward.fetchHtml", {}, e); }
+    // 元のメールの添付も一緒に転送する（純正 Gmail と同じ）。送信直後でまだ Gmail の ID が無いメールは
+    // 添付を取り直せないので、添付を落として送らずに止める
+    const hasAttachments = (message.attachments || []).length > 0;
+    if (hasAttachments && (message.id.startsWith("fake-") || message.isMissing)) {
+      showErrorToast("送信直後のメールの添付ファイルはまだ転送できません。少し待ってからもう一度お試しください。");
+      return;
     }
 
-    const bodyText = forwardHeaderText + (message.body || "");
-    const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    // 送信元と署名は返信と同じく Gmail の設定に従う（元のメールが自分のエイリアス宛てなら、そのエイリアスから送る）
+    const sendAsList = await getSendAs(sendAccountEmail);
+    const alias = sendAsList ? pickSendAs(sendAsList, `${message.to}, ${message.cc || ""}`, sendAccountEmail) : null;
+    const fromHeader = alias && !alias.isPrimary ? (alias.displayName ? `${alias.displayName} <${alias.sendAsEmail}>` : alias.sendAsEmail) : undefined;
 
-    // 元のHTMLメールは <html><head>...</head><body>...</body></html> という
-    // 完全なドキュメントであることが多い。これをそのまま<div>の中に入れ子にすると
-    // 不正なHTML構造になり、背景色などのスタイルが正しく反映されなくなるため、
-    // body要素の中身と属性（背景色など）だけを取り出して使う
-    const extractBodyContent = (html: string): { inner: string; attrs: string } => {
-      const bodyMatch = html.match(/<body([^>]*)>([\s\S]*)<\/body>/i);
-      if (bodyMatch) return { inner: bodyMatch[2], attrs: bodyMatch[1] };
-      const htmlMatch = html.match(/<html[^>]*>([\s\S]*)<\/html>/i);
-      if (htmlMatch) return { inner: htmlMatch[1], attrs: "" };
-      return { inner: html, attrs: "" };
-    };
+    // 画面用のテキストは整形済みで情報が欠けるため、元の HTML 本文を取り直してそのまま使う
+    const originalHtml = await fetchOriginalHtml(message, sendAccountEmail);
+    const bodies = composeForwardBodies({
+      signatureHtml: alias?.signature,
+      original: { from: message.from || "", date: new Date(message.date), subject: message.subject || "", to: message.to || "", cc: message.cc, text: message.body || "", html: originalHtml || undefined },
+    });
+    const bodyText = bodies.text;
+    const bodyHtml = bodies.html;
 
-    let bodyHtml: string | undefined;
-    if (originalHtml) {
-      const { inner, attrs } = extractBodyContent(originalHtml);
-      bodyHtml = `<div>${escapeHtml(forwardHeaderText).replace(/\n/g, "<br>")}</div><div${attrs}>${inner}</div>`;
-    }
-
-    await sendWithConfirm({ to, subject, body: bodyText, bodyHtml, accountEmail: sendAccountEmail }, "転送", (sentData) => {
+    await sendWithConfirm({
+      to, subject, body: bodyText, bodyHtml, accountEmail: sendAccountEmail,
+      from: fromHeader, replyTo: alias?.replyToAddress || undefined,
+      forwardAttachmentsFrom: hasAttachments ? message.id : undefined,
+    }, "転送", (sentData) => {
       // 転送先が既存の個別チャット1件だけの場合は、そのチャットにすぐ反映されるようローカルにも追加する
       // （複数宛先やグループ・新規アドレスの場合は、対応する単一のルームが存在しないため追加しない）
       if (recipientRoomKeys.length === 1 && groupedEmails[recipientRoomKeys[0]] && !chatConfigsRef.current[recipientRoomKeys[0]]?.isGroup) {
