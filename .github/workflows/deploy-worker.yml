@@ -47,8 +47,10 @@ jobs:
       - run: npm test
       - run: npm run lint
       - run: npx tsc --noEmit
+      # Next.js 15 は 2026-10-21 でサポート期間（2年）が終わり、フラグなしではビルドを拒否される。
+      # Next.js 16 へ上げるまでの間だけ、フラグを付けてビルドを通す
       - name: Build
-        run: npx opennextjs-cloudflare build
+        run: npx opennextjs-cloudflare build --dangerouslyUseUnsupportedNextVersion
       - name: Check secrets
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then

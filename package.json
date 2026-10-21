@@ -8,8 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run --passWithNoTests",
-    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-    "cf-build": "opennextjs-cloudflare build"
+    "preview": "opennextjs-cloudflare build --dangerouslyUseUnsupportedNextVersion && opennextjs-cloudflare preview",
+    "cf-build": "opennextjs-cloudflare build --dangerouslyUseUnsupportedNextVersion"
   },
   "dependencies": {
     "localforage": "^1.10.0",
