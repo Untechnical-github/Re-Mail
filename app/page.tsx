@@ -223,6 +223,11 @@ export default function Home() {
     </div>
   </div>
 )}
+{state.infoToast && !state.errorToast && (
+  <div role="status" className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] bg-[#2B2D31] text-white text-sm font-bold px-4 py-2.5 rounded-lg shadow-lg border border-[#5865F2] max-w-[90vw] text-center pointer-events-none">
+    {state.infoToast}
+  </div>
+)}
 {state.errorToast && (
   <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] bg-[#2B2D31] text-white text-sm font-bold px-4 py-2.5 rounded-lg shadow-lg border border-red-500/60 max-w-[90vw] text-center flex items-center justify-center gap-1.5">
     <WarningIcon className="w-4 h-4 flex-shrink-0" /> {state.errorToast}

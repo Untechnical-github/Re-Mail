@@ -17,6 +17,8 @@ import { readPinnedField, capPinnedIds, mergePinnedIds, missingPinnedEmail } fro
 import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
 import { logError, logWarn } from "../lib/safeLog";
 
+const CONFIG_SAVE_FAILED = "設定（ピン留め・名前変更など）を保存できませんでした。再読み込みすると元に戻ります。通信状況を確認して、もう一度お試しください。";
+
 // /api/emails の送信 API に渡す内容と、その結果
 type SendApiPayload = {
   to: string;
@@ -369,7 +371,17 @@ export function useMailApp() {
   // 送信の結果が分からず、送信済みにも見つからなかったときの「再送しますか？」の確認
   // actionLabel は確認ダイアログの実行ボタンの文字（既定は「再送する」）
   const [sendConfirm, setSendConfirm] = useState<{ message: string; resend: () => Promise<void>; actionLabel?: string } | null>(null);
+  // 転送中・転送完了など、エラーではない知らせ（null で消す。duration を省くと消えない）
+  const [infoToast, setInfoToast] = useState<string | null>(null);
+  const infoToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showInfoToast = (message: string | null, durationMs?: number) => {
+    if (infoToastTimerRef.current) clearTimeout(infoToastTimerRef.current);
+    setInfoToast(message);
+    if (message && durationMs) infoToastTimerRef.current = setTimeout(() => setInfoToast(null), durationMs);
+  };
   const showErrorToast = (message: string) => {
+    // エラーを出すときは、「転送しています…」などの知らせは消す（古い知らせが残らないように）
+    setInfoToast(null);
     if (errorToastTimerRef.current) clearTimeout(errorToastTimerRef.current);
     setErrorToast(message);
     errorToastTimerRef.current = setTimeout(() => setErrorToast(null), 4000);
@@ -644,6 +656,18 @@ export function useMailApp() {
     byAccount.forEach((list, account) => { void savePinnedCache(account, list); });
   }, [persistedEmails, linkedAccounts, session?.user?.email]);
 
+  // ピン留め・非表示・名前変更・グループなどの設定を D1 に保存する。失敗したら黙らずに伝える（絶対ルール3）。
+  // 画面の表示はもう変わっているので、保存されていないこと（再読み込みで元に戻ること）を伝える
+  const saveConfigRow = async (row: { chat_id: string; account_email: string; custom_name: string; is_pinned?: boolean; is_hidden?: boolean; hidden_at_date?: string; unhide_on_new?: boolean }) => {
+    try {
+      const res = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(row) });
+      if (!res.ok) { logWarn("config.save", { status: res.status }); showErrorToast(CONFIG_SAVE_FAILED); }
+    } catch (e) {
+      logError("config.save", {}, e);
+      showErrorToast(CONFIG_SAVE_FAILED);
+    }
+  };
+
   const loadD1Configs = async (): Promise<{ globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean } | null; formatted: Record<RoomKeyStr, ChatConfig> }> => {
     let globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean } | null = null;
     const formatted: Record<RoomKeyStr, ChatConfig> = {} as Record<RoomKeyStr, ChatConfig>;
@@ -716,7 +740,14 @@ export function useMailApp() {
         // 端末キャッシュと Gmail から、ピン留めメールの中身を後から埋める（最初の表示は待たせない）
         void hydratePinnedEmails(formatted, formattedMessages, pMsgs);
       }
-    } catch (e) { logError("config.load", {}, e); }
+      else {
+        logWarn("config.load", { status: res.status });
+        showErrorToast("ピン留め・名前変更などの設定を読み込めませんでした。再読み込みしてください。");
+      }
+    } catch (e) {
+      logError("config.load", {}, e);
+      showErrorToast("ピン留め・名前変更などの設定を読み込めませんでした。通信状況を確認して再読み込みしてください。");
+    }
     return { globalSettings, formatted };
   };
 
@@ -748,7 +779,7 @@ export function useMailApp() {
         filterIncludeExisting: nextConfig.filterIncludeExisting,
       });
     }
-    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { logError("config.save", {}, e); }
+    await saveConfigRow({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew });
   };
 
   // メッセージ単位の設定（ピン留め・非表示）。room単位のupdateChatConfigとはstate/キー空間が別
@@ -764,7 +795,7 @@ export function useMailApp() {
       // メッセージ単位のピン留めは chat_id がメッセージ ID そのものなので、中身は何も保存しない
       nameToSave = JSON.stringify({ forceFetch: nextConfig.forceFetch, roomId: nextConfig.roomId });
     }
-    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { logError("config.save", {}, e); }
+    await saveConfigRow({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew });
   };
 
   // グループチャットの削除: 設定行そのものを消すだけで、メンバーの個別チャットや実際のメールには一切触れない
@@ -795,7 +826,10 @@ export function useMailApp() {
         localStorage.removeItem("remail_scroll_main");
       }
     }
-    try { await fetch(`/api/config?chat_id=${encodeURIComponent(targetId)}&account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" }); } catch (e) { logError("config.delete", {}, e); }
+    try {
+      const res = await fetch(`/api/config?chat_id=${encodeURIComponent(targetId)}&account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" });
+      if (!res.ok) { logWarn("config.delete", { status: res.status }); showErrorToast(CONFIG_SAVE_FAILED); }
+    } catch (e) { logError("config.delete", {}, e); showErrorToast(CONFIG_SAVE_FAILED); }
   };
 
   // UI層（Modals.tsx等）はチャットの識別子として常に複合キー（RoomKeyStr、chatConfigsのstateキーと同じもの）
@@ -2223,10 +2257,11 @@ export function useMailApp() {
 
   // 送信元（自分のアドレスとエイリアス）と署名の設定。アカウントごとに一度だけ取りにいく（送信のたびに API を呼ばない）。
   // 読めなかったときは null を返し、次の送信で取り直す
-  const sendAsCacheRef = useRef(new Map<string, Promise<SendAsInfo[] | null>>());
+  const sendAsCacheRef = useRef(new Map<string, { promise: Promise<SendAsInfo[] | null>; at: number }>());
   const getSendAs = (account: string): Promise<SendAsInfo[] | null> => {
+    // Gmail で署名を変えたときに、再読み込みしなくても反映されるよう10分で取り直す
     const cached = sendAsCacheRef.current.get(account);
-    if (cached) return cached;
+    if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.promise;
     const myEmail = session?.user?.email || "";
     const params = new URLSearchParams({ sendAs: "1" });
     if (account !== myEmail) params.append("accountEmail", account);
@@ -2249,7 +2284,7 @@ export function useMailApp() {
       await new Promise(r => setTimeout(r, 4000));
       return loadOnce();
     })();
-    sendAsCacheRef.current.set(account, promise);
+    sendAsCacheRef.current.set(account, { promise, at: Date.now() });
     void promise.then(v => { if (v === null) sendAsCacheRef.current.delete(account); });
     return promise;
   };
@@ -2478,8 +2513,21 @@ export function useMailApp() {
 
   // メッセージを任意の宛先（既存のチャットに限らず、新規アドレスも含む）へ転送する。
   // 現在開いているチャットとは無関係に送信できるようにするため handleSend とは独立させている
+  // 転送は元のメールの HTML や添付を取り直すので数秒〜十数秒かかる。終わったか分かるよう、
+  // その間「転送しています…」を出し、送れたら「転送しました」に変える
+  const FORWARDING_MESSAGE = "転送しています…";
   const forwardMessageTo = async (message: Email, recipientIds: string[], opts: { allowNoSendAs?: boolean } = {}) => {
     if (!message || recipientIds.length === 0) return;
+    showInfoToast(FORWARDING_MESSAGE);
+    try {
+      await forwardMessageToInner(message, recipientIds, opts);
+    } finally {
+      // 送れなかったとき（確認ダイアログを出した・止めた）に「転送しています…」を残さない
+      setInfoToast(prev => (prev === FORWARDING_MESSAGE ? null : prev));
+    }
+  };
+
+  const forwardMessageToInner = async (message: Email, recipientIds: string[], opts: { allowNoSendAs?: boolean }) => {
     const myEmail = session?.user?.email || "";
     // 転送は元メッセージを受信したのと同じアカウントから送る（reply同様、相手から見て自然な送信元にするため）
     const sendAccountEmail = message.accountId || myEmail;
@@ -2553,6 +2601,7 @@ export function useMailApp() {
         };
         setEmails(prev => [sentFake, ...prev]);
       }
+      showInfoToast("転送しました", 3000);
     });
   };
 
@@ -3255,7 +3304,7 @@ export function useMailApp() {
       moveDestination, revealedCrossPrompts, boxColors,
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
-      replyNotFoundToast, errorToast, sendConfirm, replyAll, draftChats, activeChatTab,
+      replyNotFoundToast, errorToast, infoToast, sendConfirm, replyAll, draftChats, activeChatTab,
       isDraftReady: draftReadyRoom === selectedSender,
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
