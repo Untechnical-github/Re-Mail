@@ -24,7 +24,8 @@ const BASE_STYLE =
 // iframe の srcDoc に入れる HTML を作る。CSP はほかの何より先に効くよう、head の先頭に入れる
 export function prepareEmailHtml(raw: string, allowRemote: boolean): string {
   // <meta http-equiv="refresh"> は iframe の中を外部の URL へ移動させられる（CSP では止まらない）ので取り除く
-  const cleaned = raw.replace(/<meta\b[^>]*http-equiv\s*=\s*["']?\s*refresh[^>]*>/gi, "");
+  // （<meta …> を1つずつ切り出してから中身を見る。タグ全体を1つの正規表現で探すと、巨大なタグで後戻りが爆発する）
+  const cleaned = raw.replace(/<meta\b[^>]*>/gi, (tag) => (/http-equiv\s*=\s*["']?\s*refresh/i.test(tag) ? "" : tag));
   const inject =
     `<meta http-equiv="Content-Security-Policy" content="${emailCsp(allowRemote)}">` +
     '<base target="_blank">' +

@@ -19,7 +19,10 @@ export const HighlightText = ({ text, highlight, field, matchCountBefore = 0, ac
   activeIndex?: number;
 }) => {
   if (!highlight) return <>{text}</>;
-  const parts = text.split(new RegExp(`(${highlight})`, 'gi'));
+  // 検索語は利用者が入力した文字列なので、正規表現の記号として解釈させない
+  // （「(」1文字で例外になり画面が真っ白になる・「(a+)+$」のような語で固まるのを防ぐ）
+  const escaped = highlight.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
   let localMatchIdx = 0;
   return (
     <>
