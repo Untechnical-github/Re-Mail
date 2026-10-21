@@ -658,6 +658,16 @@ export default function Home() {
 
                     if ((isInbox || isArchive || isSent) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.messageConfigs[actions.messageConfigKey(email.id)]?.isHidden)) return null;
                     if (!actions.isAccountVisible(email.accountId)) return null;
+                    // ピン留めしていたが Gmail 側で削除されたメール。黙って消さず、存在しないことを示す
+                    if (email.isMissing) {
+                      return (
+                        <div id={`msg-${email.id}`} key={`missing-${email.id}`} className="flex justify-center w-full my-3 cursor-default">
+                          <span className="text-xs text-gray-400 px-3 py-1.5 bg-[#2B2D31] rounded-full border border-[#FEE75C]/40 flex items-center gap-1.5">
+                            <PinIcon className="w-3 h-3 text-[#FEE75C]" /> このメールは存在しません（ピン留め中）
+                          </span>
+                        </div>
+                      );
+                    }
 
                     // ★修正: 連携アカウントのチャットでは「自分」がメインアカウントとは限らないため、
                     // このルーム自身が属するアカウントのメールアドレスで判定する

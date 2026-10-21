@@ -12,8 +12,9 @@ export type ChatConfig = {
   unhideOnNew?: boolean;
   // チャット全体をピン留めしたときに、そのチャットの全メッセージを強制的に永続読み込みするかどうか
   forceFetch?: boolean;
-  // ピン留めで保持するメールのコピー（チャット単位は配列、古いデータや単体保存は1件のこともある）
-  persistedData?: Email[] | Email | null;
+  // ピン留めしたチャットのメールの Gmail メッセージ ID（新しい順、最大60件）。D1 には中身を置かず ID だけを保存し、
+  // 中身は端末キャッシュ（app/lib/pinnedCache.ts）と Gmail から取る
+  persistedIds?: string[] | null;
   isGroup?: boolean;
   // メンバーはアカウント内のローカルキー（相手の表示名やアドレス）で保存する。groupEmailsByRoomが
   // アカウントごとのローカルroom空間で照合するため、複合キー（RoomKeyStr）を混ぜてはいけない
@@ -58,7 +59,6 @@ export type MessageConfig = {
   unhideOnNew?: boolean;
   // このメッセージ自身の永続コピーを保持するか（ピン留め等で、通常の取得ページングの外にあっても表示し続けるため）
   forceFetch?: boolean;
-  persistedData?: Email[] | Email | null;
   // このメッセージがどのroomに属するか（room単位のchatConfigsのキーと同じ空間＝複合キー）
   roomId?: RoomKeyStr;
 };

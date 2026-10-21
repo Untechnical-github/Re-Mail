@@ -40,4 +40,6 @@ export type Email = {
   isForward?: boolean;
   // フェーズ3以降、どの連携アカウントで受信/送信したメールかを表す。フェーズ2までは未設定
   accountId?: string;
+  // ピン留めしていたメールが Gmail 側で削除されて取得できなかったときの表示用（app/lib/pinnedIds.ts）
+  isMissing?: boolean;
 };

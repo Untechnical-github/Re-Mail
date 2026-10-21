@@ -448,6 +448,33 @@ export async function GET(request: Request) {
     }
   }
 
+  // ピン留めしたメールを ID で取り直す（D1 には ID しか保存しないため、端末のキャッシュに無い分だけ取りに来る）。
+  // Gmail 側で削除されて見つからない ID は missing として返し、画面で「このメールは存在しません」と出す
+  const idsParam = searchParams.get("ids");
+  if (idsParam !== null) {
+    const ids = Array.from(new Set(idsParam.split(",").filter(id => /^[0-9a-f]{6,32}$/i.test(id)))).slice(0, 50);
+    const messages: ReturnType<typeof parseMessageDetail>[] = [];
+    const missing: string[] = [];
+    // 一覧取得と同じく、同時に投げる数を20件までにする（レート制限に触れないように）
+    for (let i = 0; i < ids.length; i += 20) {
+      await Promise.all(ids.slice(i, i + 20).map(async (id) => {
+        try {
+          const res = await fetchWithRetry(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          );
+          if (res.status === 404 || res.status === 400) { missing.push(id); return; }
+          if (!res.ok) { logWarn("emails.byId", { status: res.status, messageId: id }); return; }
+          messages.push(parseMessageDetail((await res.json()) as GmailMessage));
+        } catch (e) {
+          // 1件の失敗でほかのメールまで止めない。取れなかったものは次の読み込みで取り直す
+          logWarn("emails.byId", { messageId: id }, e);
+        }
+      }));
+    }
+    return NextResponse.json({ messages, missing });
+  }
+
   // 返信元メッセージの単体検索（Discord風の返信チップで、未読み込みの過去メールへジャンプする用）。
   // ページを何十件も読み込んで探すのではなく、Gmailの rfc822msgid: 検索で
   // Message-ID を直接指定し、1〜2回のAPI呼び出しで存在有無と場所を判定する

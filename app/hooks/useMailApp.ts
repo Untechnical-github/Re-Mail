@@ -10,7 +10,9 @@ import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf 
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId } from "../lib/sendVerify";
 import { planReply, type ReplyPlan } from "../lib/recipients";
-import { logError } from "../lib/safeLog";
+import { readPinnedField, capPinnedIds, mergePinnedIds, missingPinnedEmail } from "../lib/pinnedIds";
+import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
+import { logError, logWarn } from "../lib/safeLog";
 
 // /api/emails の送信 API に渡す内容と、その結果
 type SendApiPayload = {
@@ -80,30 +82,6 @@ function reconcileFakeSentEmails(list: Email[]): Email[] {
     if (match) supersededFakeIds.add(fake.id);
   });
   return supersededFakeIds.size === 0 ? list : list.filter(e => !supersededFakeIds.has(e.id));
-}
-
-// D1に保存するpersistedDataのサイズを一定の範囲に収める。ピン留めしたチャットは、読み込み済みの
-// 全メッセージ（本文込み）をそのままchat_configs.custom_name列にJSONで保存する設計のため、
-// 長文メール（特にHTML由来の本文）を大量にピン留めすると行が際限なく肥大化しうる。
-// 保存用のコピーだけ (1)本文を切り詰め (2)チャット全体をピン留めした場合は直近N件に絞る。
-// 画面表示用の実データ・persistedEmails stateはそのまま完全な内容を保持するため、
-// 影響を受けるのはリロード後に復元される保存データだけ
-const MAX_PERSISTED_BODY_CHARS = 20000;
-const MAX_PERSISTED_MESSAGES_PER_CHAT = 60;
-function capPersistedDataForStorage(data: Email[] | Email | null | undefined): Email[] | Email | null | undefined {
-  if (!data) return data;
-  const cap = (input: Email): Email => {
-    if (!input) return input;
-    // Cc・Reply-To は返信の宛先計算にだけ使う。D1 に個人情報を増やさないよう保存しない
-    const e: Email = { ...input };
-    delete e.cc;
-    delete e.replyTo;
-    if (typeof e.body !== "string" || e.body.length <= MAX_PERSISTED_BODY_CHARS) return e;
-    return { ...e, body: e.body.slice(0, MAX_PERSISTED_BODY_CHARS) + "\n…(長文のため以下省略)" };
-  };
-  if (!Array.isArray(data)) return cap(data);
-  // groupedEmails由来の配列は新しい順に並んでいるため、先頭から取れば「直近N件」になる
-  return data.slice(0, MAX_PERSISTED_MESSAGES_PER_CHAT).map(cap);
 }
 
 function getSavedBoxSettings(): { inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; sent?: boolean } | null {
@@ -512,6 +490,103 @@ export function useMailApp() {
     return Array.from(map.values());
   }, [emails, persistedEmails]);
 
+  // ピン留めの中身を埋める。まず端末キャッシュから出し、無い分だけ Gmail から ID で取る。
+  // Gmail で見つからなかったメッセージ単位のピン留めは、黙って消さず「このメールは存在しません」として出す
+  const pinnedHydratedRef = useRef(false);
+  const hydratePinnedEmails = async (chatCfgs: Record<RoomKeyStr, ChatConfig>, msgCfgs: Record<RoomKeyStr, MessageConfig>, have: Email[]) => {
+    const myEmail = session?.user?.email || "";
+    const haveIds = new Set(have.map(e => e.id));
+    const need = new Map<string, Map<string, { room?: string; isMessagePin: boolean }>>();
+    const add = (account: string, id: string, room: string | undefined, isMessagePin: boolean) => {
+      if (haveIds.has(id)) return;
+      if (!need.has(account)) need.set(account, new Map());
+      need.get(account)!.set(id, { room, isMessagePin });
+    };
+    keysOf(chatCfgs).forEach(k => {
+      const c = chatCfgs[k];
+      if (!c?.isPinned || !c.forceFetch) return;
+      const { accountEmail, localKey } = decodeRoomKey(k);
+      (c.persistedIds || []).forEach(id => add(accountEmail, id, localKey, false));
+    });
+    keysOf(msgCfgs).forEach(k => {
+      const c = msgCfgs[k];
+      if (!c?.isPinned || !c.forceFetch) return;
+      const { accountEmail, localKey } = decodeRoomKey(k);
+      add(accountEmail, localKey, c.roomId ? decodeRoomKey(c.roomId).localKey : undefined, true);
+    });
+
+    const found: Email[] = [];
+    try {
+      for (const [account, wanted] of need) {
+        const cache = await loadPinnedCache(account);
+        const toFetch: string[] = [];
+        wanted.forEach((info, id) => {
+          const cached = cache[id];
+          if (cached) found.push({ ...cached, senderRoom: info.room ?? cached.senderRoom, accountId: account });
+          else toFetch.push(id);
+        });
+        // API 側の上限（1回50件）に合わせて分けて取る
+        for (let i = 0; i < toFetch.length; i += 50) {
+          const params = new URLSearchParams({ ids: toFetch.slice(i, i + 50).join(",") });
+          if (account !== myEmail) params.append("accountEmail", account);
+          const res = await fetch(`/api/emails?${params.toString()}`);
+          if (!res.ok) { logWarn("pinned.fetch", { status: res.status }); continue; }
+          const data = (await res.json()) as { messages?: Email[]; missing?: string[] };
+          (data.messages || []).forEach(m => found.push({ ...m, senderRoom: wanted.get(m.id)?.room, accountId: account }));
+          (data.missing || []).forEach(id => {
+            const info = wanted.get(id);
+            if (info?.isMessagePin) found.push(missingPinnedEmail(id, info.room, account));
+          });
+        }
+      }
+    } catch (e) {
+      // 取れなかった分は表示されないだけで、ピン留め自体は残る（次の読み込みで取り直す）
+      logError("pinned.hydrate", {}, e);
+    } finally {
+      pinnedHydratedRef.current = true;
+    }
+    setPersistedEmails(prev => {
+      const ids = new Set(prev.map(e => e.id));
+      return [...prev, ...found.filter(e => !ids.has(e.id))];
+    });
+  };
+
+  // 同期処理（syncConfigs）が返したピン留めメールで置き換える。ただし、同期の時点で読み込めていなかった
+  // だけでまだピン留めされているメール（端末キャッシュや Gmail から埋めたもの）は残す
+  const applySyncedPersisted = (nextPMsgs: Email[]) => {
+    const myEmail = session?.user?.email || "";
+    const isStillPinned = (e: Email): boolean => {
+      const account = e.accountId || myEmail;
+      const msgCfg = messageConfigsRef.current[encodeRoomKey(account, asLocalKey(e.id))];
+      if (msgCfg?.isPinned && msgCfg.forceFetch) return true;
+      return keysOf(chatConfigsRef.current).some(k => {
+        const c = chatConfigsRef.current[k];
+        return !!(c?.isPinned && c.forceFetch && c.persistedIds?.includes(e.id) && decodeRoomKey(k).accountEmail === account);
+      });
+    };
+    setPersistedEmails(prev => {
+      const next = new Map(nextPMsgs.map(e => [e.id, e]));
+      prev.forEach(e => { if (!next.has(e.id) && isStillPinned(e)) next.set(e.id, e); });
+      return Array.from(next.values());
+    });
+  };
+
+  // ピン留めメールの中身を端末キャッシュに書き戻す（アカウントごと）。D1 に中身を置かない代わりに、
+  // 次に開いたときすぐ表示できるようにするため。読み込み前の空の状態でキャッシュを消さないよう、埋め終わってから書く
+  useEffect(() => {
+    if (!pinnedHydratedRef.current) return;
+    const myEmail = session?.user?.email || "";
+    const byAccount = new Map<string, Email[]>();
+    [myEmail, ...linkedAccounts].forEach(a => { if (a) byAccount.set(a, []); });
+    persistedEmails.forEach(e => {
+      const account = e.accountId || myEmail;
+      if (!account) return;
+      if (!byAccount.has(account)) byAccount.set(account, []);
+      byAccount.get(account)!.push(e);
+    });
+    byAccount.forEach((list, account) => { void savePinnedCache(account, list); });
+  }, [persistedEmails, linkedAccounts, session?.user?.email]);
+
   const loadD1Configs = async (): Promise<{ globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean } | null; formatted: Record<RoomKeyStr, ChatConfig> }> => {
     let globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean } | null = null;
     const formatted: Record<RoomKeyStr, ChatConfig> = {} as Record<RoomKeyStr, ChatConfig>;
@@ -528,7 +603,7 @@ export function useMailApp() {
           if (c.chat_id === "__KNOWN_BOXES__") { return; }
           let customNameVal = c.custom_name || undefined;
           let forceFetchVal = false;
-          let pData = null;
+          let pinnedIdsVal: string[] | undefined = undefined;
           let roomIdVal = undefined;
           let isGroupVal = undefined;
           let groupMembersVal = undefined;
@@ -546,23 +621,27 @@ export function useMailApp() {
           if (customNameVal && customNameVal.startsWith('{')) {
             try {
               const parsed = JSON.parse(customNameVal);
-              customNameVal = parsed.name; forceFetchVal = parsed.forceFetch; pData = parsed.data; roomIdVal = parsed.roomId;
+              customNameVal = parsed.name; forceFetchVal = parsed.forceFetch; roomIdVal = parsed.roomId;
               isGroupVal = parsed.isGroup; groupMembersVal = parsed.groupMembers; groupModeVal = parsed.groupMode;
               groupMemberAddressesVal = parsed.groupMemberAddresses; groupHiddenMembersVal = parsed.groupHiddenMembers;
               filterCriteriaVal = parsed.filterCriteria; filterHideOriginalVal = parsed.filterHideOriginal;
               filterActionVal = parsed.filterAction; filterContinuousVal = parsed.filterContinuous; filterDestinationVal = parsed.filterDestination;
               filterCreatedAtVal = parsed.filterCreatedAt; filterLastAppliedAtVal = parsed.filterLastAppliedAt;
               filterIncludeExistingVal = parsed.filterIncludeExisting;
-              if (pData) {
-                // ★修正: 過去のバグで保存された「送信済みメールのINBOXラベル」をロード時に強制消去する
-                const cleanData = (Array.isArray(pData) ? pData : [pData]).map(e => {
-                  if ((e.isMe || e.from?.includes(session?.user?.email || "")) && e.labelIds?.includes("INBOX")) {
-                     return { ...e, labelIds: e.labelIds.filter((l: string) => l !== "INBOX") };
-                  }
-                  return e;
-                });
-                pMsgs.push(...cleanData);
-              }
+              // ピン留めは ID だけを保存する。以前の形式（data にメール本体）で保存された行も読み、
+              // その本体は表示と端末キャッシュの種にだけ使う（D1 からは段階2で消す）
+              const pinned = readPinnedField(parsed);
+              pinnedIdsVal = pinned.ids;
+              // ★修正: 過去のバグで保存された「送信済みメールのINBOXラベル」をロード時に強制消去する
+              const rowAccount = c.account_email || session?.user?.email || "";
+              pMsgs.push(...pinned.legacyEmails.map(raw => {
+                // 端末キャッシュをアカウントごとに分けるため、どのアカウントのメールかを必ず持たせる
+                const e = { ...raw, accountId: raw.accountId || rowAccount };
+                if ((e.isMe || isMineEmail(e, rowAccount)) && e.labelIds?.includes("INBOX")) {
+                  return { ...e, labelIds: e.labelIds.filter((l: string) => l !== "INBOX") };
+                }
+                return e;
+              }));
             } catch { /* 壊れた保存データは無視する */ }
           }
           // roomIdの有無で、room単位の設定かメッセージ単位の設定かを振り分ける
@@ -571,12 +650,14 @@ export function useMailApp() {
           // stateのキーは常にencodeRoomKey済みの複合roomKeyに揃える（D1のaccount_email列 + chat_id列）
           const stateKey = encodeRoomKey(c.account_email || session?.user?.email || "", c.chat_id as LocalKey);
           if (roomIdVal !== undefined) {
-            formattedMessages[stateKey] = { isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, roomId: roomIdVal };
+            formattedMessages[stateKey] = { isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, roomId: roomIdVal };
           } else {
-            formatted[stateKey] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedData: pData, isGroup: isGroupVal, groupMembers: groupMembersVal, groupMemberAddresses: groupMemberAddressesVal, groupMode: groupModeVal, groupHiddenMembers: groupHiddenMembersVal, filterCriteria: filterCriteriaVal, filterHideOriginal: filterHideOriginalVal, filterAction: filterActionVal, filterContinuous: filterContinuousVal, filterDestination: filterDestinationVal, filterCreatedAt: filterCreatedAtVal, filterLastAppliedAt: filterLastAppliedAtVal, filterIncludeExisting: filterIncludeExistingVal };
+            formatted[stateKey] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedIds: pinnedIdsVal, isGroup: isGroupVal, groupMembers: groupMembersVal, groupMemberAddresses: groupMemberAddressesVal, groupMode: groupModeVal, groupHiddenMembers: groupHiddenMembersVal, filterCriteria: filterCriteriaVal, filterHideOriginal: filterHideOriginalVal, filterAction: filterActionVal, filterContinuous: filterContinuousVal, filterDestination: filterDestinationVal, filterCreatedAt: filterCreatedAtVal, filterLastAppliedAt: filterLastAppliedAtVal, filterIncludeExisting: filterIncludeExistingVal };
           }
         });
         setChatConfigs(formatted); setMessageConfigs(formattedMessages); setPersistedEmails(pMsgs);
+        // 端末キャッシュと Gmail から、ピン留めメールの中身を後から埋める（最初の表示は待たせない）
+        void hydratePinnedEmails(formatted, formattedMessages, pMsgs);
       }
     } catch (e) { logError("config.load", {}, e); }
     return { globalSettings, formatted };
@@ -600,7 +681,8 @@ export function useMailApp() {
     let nameToSave = nextConfig.customName || "";
     if (nextConfig.forceFetch || nextConfig.isGroup || nextConfig.filterAction) {
       nameToSave = JSON.stringify({
-        name: nextConfig.customName, forceFetch: nextConfig.forceFetch, data: capPersistedDataForStorage(nextConfig.persistedData),
+        // ピン留めはメールの中身を保存せず、Gmail のメッセージ ID だけを保存する（絶対ルール1）
+        name: nextConfig.customName, forceFetch: nextConfig.forceFetch, ids: nextConfig.persistedIds ? capPinnedIds(nextConfig.persistedIds) : undefined,
         isGroup: nextConfig.isGroup, groupMembers: nextConfig.groupMembers, groupMemberAddresses: nextConfig.groupMemberAddresses, groupMode: nextConfig.groupMode,
         groupHiddenMembers: nextConfig.groupHiddenMembers,
         filterCriteria: nextConfig.filterCriteria, filterHideOriginal: nextConfig.filterHideOriginal,
@@ -622,7 +704,8 @@ export function useMailApp() {
     setMessageConfigs(prev => ({ ...prev, [stateKey]: nextConfig }));
     let nameToSave = "";
     if (nextConfig.forceFetch || nextConfig.roomId) {
-      nameToSave = JSON.stringify({ forceFetch: nextConfig.forceFetch, data: capPersistedDataForStorage(nextConfig.persistedData), roomId: nextConfig.roomId });
+      // メッセージ単位のピン留めは chat_id がメッセージ ID そのものなので、中身は何も保存しない
+      nameToSave = JSON.stringify({ forceFetch: nextConfig.forceFetch, roomId: nextConfig.roomId });
     }
     try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { logError("config.save", {}, e); }
   };
@@ -691,14 +774,16 @@ export function useMailApp() {
            return room === targetId && emailAccount === accountEmail && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
         }).map(e => ({...e, senderRoom: targetId}));
 
-        // persistedData は古いデータだと配列でなく1件のこともあるため、配列に揃えてから比べる
-        const oldPersisted = config.persistedData ? (Array.isArray(config.persistedData) ? config.persistedData : [config.persistedData]) : [];
-        const oldIds = oldPersisted.map(e => e.id).join(",");
-        const newIds = chatEmails.map(e => e.id).join(",");
-        if (oldIds !== newIds) {
-           newConfig.persistedData = chatEmails.length > 0 ? chatEmails : null; hasUpdate = true;
+        // まだ読み込めていないピン留めの ID は残す（落とすと古いメールのピン留めが消えるため）。
+        // ゴミ箱・迷惑メールに移ったもの、Gmail に存在しなかったものだけ外す
+        const oldIds = config.persistedIds || [];
+        const dropIds = new Set(latestEmails.filter(e => oldIds.includes(e.id) && (e.isMissing || e.labelIds?.includes("TRASH") || e.labelIds?.includes("SPAM"))).map(e => e.id));
+        const nextIds = mergePinnedIds(chatEmails.map(e => e.id), oldIds, dropIds);
+        if (oldIds.join(",") !== nextIds.join(",")) {
+           newConfig.persistedIds = nextIds.length > 0 ? nextIds : null; hasUpdate = true;
         }
-        pMsgs.push(...chatEmails);
+        const idSet = new Set(nextIds);
+        pMsgs.push(...latestEmails.filter(e => idSet.has(e.id) && !e.isMissing).map(e => ({ ...e, senderRoom: targetId })));
       }
 
       // unhideOnNew が有効な場合のみ、非表示日時より新しいメールがあれば自動解除
@@ -731,10 +816,12 @@ export function useMailApp() {
 
       if (config?.isPinned) {
         const msg = latestEmails.find(e => e.id === targetId);
-        if (!msg || msg.labelIds?.includes("TRASH") || msg.labelIds?.includes("SPAM")) {
-          newConfig.isPinned = false; newConfig.forceFetch = false; newConfig.persistedData = null; hasUpdate = true;
-        } else if (config.forceFetch) {
-          pMsgs.push({ ...msg, senderRoom: config.roomId });
+        // 読み込めていないだけのメールはピン留めを外さない（端末キャッシュや Gmail から後で埋める）。
+        // Gmail で削除されていたものは「このメールは存在しません」として残し、黙って消さない
+        if (msg && (msg.labelIds?.includes("TRASH") || msg.labelIds?.includes("SPAM"))) {
+          newConfig.isPinned = false; newConfig.forceFetch = false; hasUpdate = true;
+        } else if (msg && config.forceFetch) {
+          pMsgs.push(msg.isMissing ? msg : { ...msg, senderRoom: config.roomId ? decodeRoomKey(config.roomId).localKey : msg.senderRoom });
         }
       }
 
@@ -900,7 +987,7 @@ export function useMailApp() {
       const updatedEmails = reconcileFakeSentEmails(Array.from(map.values())).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
       const nextPMsgs = syncConfigs(updatedEmails, chatConfigsRef.current, messageConfigsRef.current);
-      setPersistedEmails(nextPMsgs);
+      applySyncedPersisted(nextPMsgs);
       setEmails(updatedEmails);
 
       if (!isSilent || updatedEmails.length <= targetLimit) setCurrentNextPageTokens(nextTokens);
@@ -2289,7 +2376,7 @@ export function useMailApp() {
         const room = emailRoomMap.get(targetId) || selectedSender || undefined;
         const pData = { ...found, senderRoom: room ? decodeRoomKey(room).localKey : undefined };
         pMsgs.push(pData);
-        updateMessageConfig(asLocalKey(targetId), { isPinned: true, forceFetch: true, persistedData: pData, roomId: room }, resolveMessageAccountEmail(targetId));
+        updateMessageConfig(asLocalKey(targetId), { isPinned: true, forceFetch: true, roomId: room }, resolveMessageAccountEmail(targetId));
       }
     });
     if (pMsgs.length > 0) setPersistedEmails(prev => [...prev, ...pMsgs]);
@@ -2313,10 +2400,10 @@ export function useMailApp() {
         else updateMessageConfig(asLocalKey(id), { isHidden: false }, resolveMessageAccountEmail(id));
       } else if (category === "pin") {
         if (level === "chat") {
-          updateChatConfigByRoomKey(id as RoomKeyStr, { isPinned: false, forceFetch: false, persistedData: null });
+          updateChatConfigByRoomKey(id as RoomKeyStr, { isPinned: false, forceFetch: false, persistedIds: null });
           pinChatTargets.push(id as RoomKeyStr);
         } else {
-          updateMessageConfig(asLocalKey(id), { isPinned: false, forceFetch: false, persistedData: null }, resolveMessageAccountEmail(id));
+          updateMessageConfig(asLocalKey(id), { isPinned: false, forceFetch: false }, resolveMessageAccountEmail(id));
           pinMsgTargets.push(id);
         }
       } else if (category === "name") {
@@ -2348,7 +2435,7 @@ export function useMailApp() {
         const localId = decodeRoomKey(targetId).localKey;
         const pData = (groupedEmails[targetId] || []).map((e) => ({ ...e, senderRoom: localId }));
         pMsgs.push(...pData);
-        updateChatConfigByRoomKey(targetId, { isPinned: true, forceFetch: true, persistedData: pData });
+        updateChatConfigByRoomKey(targetId, { isPinned: true, forceFetch: true, persistedIds: capPinnedIds(pData.map(e => e.id)) });
       });
       setPersistedEmails(pMsgs);
     } else {
@@ -2413,7 +2500,7 @@ export function useMailApp() {
       const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current, messageConfigsRef.current);
 
       setEmails(nextEmails);
-      setPersistedEmails(nextPMsgs);
+      applySyncedPersisted(nextPMsgs);
       setRevealedCrossPrompts(prev => prev.filter(id => !trashIds.includes(id)));
 
       fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", trashIds }) })
@@ -2463,7 +2550,7 @@ export function useMailApp() {
           const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current, messageConfigsRef.current);
           
           setEmails(nextEmails); 
-          setPersistedEmails(nextPMsgs);
+          applySyncedPersisted(nextPMsgs);
           setRevealedCrossPrompts(prev => prev.filter(id => !idsToMove.includes(id)));
 
           if (targetMode === "chat" && selectedSender !== null && targets.includes(selectedSender)) setSelectedSender(null);
@@ -2485,11 +2572,11 @@ export function useMailApp() {
     else if (type === "confirm_unpin") {
       if (targetMode === "chat") {
         const chatTargets = targets as RoomKeyStr[];
-        chatTargets.forEach(targetId => updateChatConfigByRoomKey(targetId, { isPinned: false, forceFetch: false, persistedData: null }));
+        chatTargets.forEach(targetId => updateChatConfigByRoomKey(targetId, { isPinned: false, forceFetch: false, persistedIds: null }));
         const localTargets = chatTargets.map(t => decodeRoomKey(t).localKey);
         setPersistedEmails(prev => prev.filter(e => !(e.senderRoom && localTargets.includes(e.senderRoom as LocalKey))));
       } else {
-        (targets as string[]).forEach(targetId => updateMessageConfig(asLocalKey(targetId), { isPinned: false, forceFetch: false, persistedData: null }, resolveMessageAccountEmail(targetId)));
+        (targets as string[]).forEach(targetId => updateMessageConfig(asLocalKey(targetId), { isPinned: false, forceFetch: false }, resolveMessageAccountEmail(targetId)));
         setPersistedEmails(prev => prev.filter(e => !targets.includes(e.id)));
       }
     }
@@ -2522,7 +2609,7 @@ export function useMailApp() {
     const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current, messageConfigsRef.current);
 
     setEmails(nextEmails);
-    setPersistedEmails(nextPMsgs);
+    applySyncedPersisted(nextPMsgs);
     setRevealedCrossPrompts((prev: string[]) => prev.filter(id => !allIds.includes(id)));
 
     groups.forEach(({ ids, destination }) => {
