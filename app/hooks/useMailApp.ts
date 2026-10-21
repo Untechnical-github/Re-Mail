@@ -2199,10 +2199,10 @@ export function useMailApp() {
     const cached = sendAsCacheRef.current.get(account);
     if (cached) return cached;
     const myEmail = session?.user?.email || "";
-    const promise = (async () => {
+    const params = new URLSearchParams({ sendAs: "1" });
+    if (account !== myEmail) params.append("accountEmail", account);
+    const loadOnce = async (): Promise<SendAsInfo[] | null> => {
       try {
-        const params = new URLSearchParams({ sendAs: "1" });
-        if (account !== myEmail) params.append("accountEmail", account);
         const res = await fetch(`/api/emails?${params.toString()}`);
         if (!res.ok) { logWarn("sendAs.load", { status: res.status }); return null; }
         const data = (await res.json()) as { sendAs?: SendAsInfo[] };
@@ -2211,6 +2211,14 @@ export function useMailApp() {
         logWarn("sendAs.load", {}, e);
         return null;
       }
+    };
+    // 開いた直後はメールの一括取得で Gmail のレート制限に触れやすく、実機テストでもここが失敗した。
+    // すぐ「署名なしで送りますか」と聞かないよう、少し待ってから1回だけ取り直す
+    const promise = (async () => {
+      const first = await loadOnce();
+      if (first !== null) return first;
+      await new Promise(r => setTimeout(r, 4000));
+      return loadOnce();
     })();
     sendAsCacheRef.current.set(account, promise);
     void promise.then(v => { if (v === null) sendAsCacheRef.current.delete(account); });
