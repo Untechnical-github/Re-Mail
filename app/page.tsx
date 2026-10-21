@@ -208,6 +208,19 @@ export default function Home() {
     このメールは存在しません
   </div>
 )}
+{state.sendConfirm && (
+  <div className="fixed inset-0 bg-black/70 z-[90] flex items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
+    <div className="bg-[#313338] rounded-lg shadow-2xl w-full max-w-sm border border-[#1E1F22] p-5">
+      <p className="text-sm text-gray-200 mb-5 leading-relaxed flex items-start gap-1.5">
+        <WarningIcon className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-400" /> {state.sendConfirm.message}
+      </p>
+      <div className="flex justify-end gap-3">
+        <button onClick={() => actions.setSendConfirm(null)} className="px-4 py-2 hover:underline text-gray-300 text-sm">閉じる</button>
+        <button onClick={() => { void state.sendConfirm?.resend(); }} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">再送する</button>
+      </div>
+    </div>
+  </div>
+)}
 {state.errorToast && (
   <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] bg-[#2B2D31] text-white text-sm font-bold px-4 py-2.5 rounded-lg shadow-lg border border-red-500/60 max-w-[90vw] text-center flex items-center justify-center gap-1.5">
     <WarningIcon className="w-4 h-4 flex-shrink-0" /> {state.errorToast}

@@ -5,6 +5,7 @@ import { auth } from "../../../auth";
 import { getValidAccessToken } from "../../lib/googleToken";
 import { encryptSecret, decryptSecret, isEncrypted } from "../../lib/tokenCrypto";
 import { buildMimeSegments, buildGmailUploadBody, decodeMimeHeader } from "../../lib/mime";
+import { classifySendStatus, makeMessageId, isValidMessageId, matchSentMessage, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
 
 
 // Gmail API の生データ（必要なフィールドだけ）
@@ -33,6 +34,85 @@ async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 2): P
     await new Promise(r => setTimeout(r, backoffMs));
   }
   return lastRes!;
+}
+
+const GMAIL_SEND_URL = "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=multipart";
+// 35MB のアップロードでも十分に終わる長さ。これを超えたら「結果不明」として送信済みと照合する
+const SEND_TIMEOUT_MS = 90_000;
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// 送信は fetchWithRetry を通さない（5xx やタイムアウトでも Gmail 側では送れていることがあり、
+// 再試行すると二重送信になる）。再試行するのは、Gmail が受け付けを断った（＝送られていない）429 だけ
+async function postSendOnce(upload: { body: Uint8Array<ArrayBuffer>; contentType: string }, accessToken: string): Promise<{ outcome: SendOutcome; res?: Response }> {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(GMAIL_SEND_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": upload.contentType },
+        body: upload.body,
+        signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+      });
+    } catch {
+      // タイムアウト・通信断。Gmail に届いたかどうか分からない
+      return { outcome: "unknown" };
+    }
+    const outcome = classifySendStatus(res.status);
+    if (outcome !== "retry") return { outcome, res };
+    if (attempt === maxAttempts) return { outcome: "failed", res };
+    const retryAfterSec = Number(res.headers.get("Retry-After"));
+    const waitMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? Math.min(retryAfterSec * 1000, 10_000) : 500 * 2 ** attempt + Math.random() * 300;
+    await sleep(waitMs);
+  }
+  return { outcome: "failed" };
+}
+
+type GmailListResponse = { messages?: { id: string; threadId: string }[] };
+type GmailMetadataMessage = { id: string; threadId: string; internalDate?: string; snippet?: string; payload?: { headers?: GmailHeader[] } };
+
+// 結果が分からなかった送信が、実際には送れていたかを送信済みフォルダで確かめる。
+// まず Message-ID で探し、Gmail が Message-ID を付け替えていた場合に備えて、
+// 直近の送信済みを宛先・件名・時刻で照合する。Gmail の検索に反映されるまで少しかかるので2回見る
+async function findSentMessage(accessToken: string, exp: SentExpectation): Promise<{ id: string; threadId: string } | null> {
+  const auth = { headers: { Authorization: `Bearer ${accessToken}` } };
+  const base = "https://gmail.googleapis.com/gmail/v1/users/me/messages";
+  for (const delay of [1500, 4000]) {
+    await sleep(delay);
+    try {
+      const byIdRes = await fetchWithRetry(`${base}?maxResults=1&fields=messages(id,threadId)&q=${encodeURIComponent(`rfc822msgid:${exp.messageId.slice(1, -1)}`)}`, auth);
+      if (byIdRes.ok) {
+        const hit = ((await byIdRes.json()) as GmailListResponse).messages?.[0];
+        if (hit) return hit;
+      }
+      const afterSec = Math.floor((exp.sentAfterMs - 60_000) / 1000);
+      const recentRes = await fetchWithRetry(`${base}?maxResults=10&fields=messages(id)&q=${encodeURIComponent(`in:sent after:${afterSec}`)}`, auth);
+      if (!recentRes.ok) continue;
+      const recent = ((await recentRes.json()) as GmailListResponse).messages || [];
+      for (const m of recent) {
+        const metaRes = await fetchWithRetry(
+          `${base}/${encodeURIComponent(m.id)}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=Subject&metadataHeaders=To&metadataHeaders=Cc&fields=id,threadId,internalDate,snippet,payload/headers`,
+          auth
+        );
+        if (!metaRes.ok) continue;
+        const meta = (await metaRes.json()) as GmailMetadataMessage;
+        const h = meta.payload?.headers || [];
+        const matched = matchSentMessage({
+          messageIdHeader: getHeader(h, "Message-ID"),
+          snippet: meta.snippet || "",
+          subject: decodeMimeHeader(getHeader(h, "Subject")),
+          to: decodeMimeHeader(getHeader(h, "To")),
+          cc: decodeMimeHeader(getHeader(h, "Cc")),
+          internalDateMs: Number(meta.internalDate || 0),
+        }, exp);
+        if (matched) return { id: meta.id, threadId: meta.threadId };
+      }
+    } catch {
+      // 照合中の通信エラーは「見つからなかった」と同じ扱いにし、次の回か利用者の確認に回す
+    }
+  }
+  return null;
 }
 
 // accountEmail が未指定、またはメインアカウント自身の場合はNextAuthのセッションが持つ
@@ -491,6 +571,11 @@ export async function POST(request: Request) {
         }
       }
 
+      // Message-ID は送信前に決めておく（結果が分からないときの照合に使う）。
+      // クライアントが付けてきた場合はそれを使う（ブラウザ側の通信断のあとにクライアントからも照合できるように）
+      const messageId = isValidMessageId(bodyData.messageId) ? bodyData.messageId : makeMessageId(crypto.getRandomValues(new Uint8Array(40)));
+      const sentAfterMs = Date.now();
+
       // 転送など、元の HTML をそのまま保ちたい場合は bodyHtml を使い、テキスト版と一緒に
       // multipart/alternative で送る（受信側が HTML を表示できない場合にも読めるように）
       const segments = buildMimeSegments({
@@ -500,21 +585,26 @@ export async function POST(request: Request) {
         html: bodyHtml || undefined,
         attachments,
         inReplyTo: typeof inReplyTo === "string" ? inReplyTo : undefined,
+        messageId,
       });
       // raw を JSON に入れる通常の send は数MBで失敗するため、上限 35MB の upload エンドポイントに
       // メール本体をそのまま送る（JSON 用に base64 で包み直さないので、サイズも約 1.37 倍に膨らまない）
       const upload = buildGmailUploadBody(segments, typeof threadId === "string" && threadId ? threadId : undefined);
 
-      const res = await fetchWithRetry("https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=multipart", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": upload.contentType },
-        body: upload.body,
-      });
-      
-      if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        return NextResponse.json({ error: "Failed to send email", details: errorData }, { status: res.status });
+      const { outcome, res } = await postSendOnce(upload, accessToken);
+
+      if (outcome === "unauthorized") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      if (outcome === "failed") {
+        const errorData = (await res?.json().catch(() => ({}))) as { error?: { errors?: { reason?: string }[] } } | undefined;
+        // Gmail の生の応答は宛先などを含みうるので、理由コードだけを返す
+        const reason = errorData?.error?.errors?.[0]?.reason;
+        return NextResponse.json({ error: "Failed to send email", reason, messageId }, { status: res?.status || 500 });
+      }
+      if (outcome === "unknown") {
+        const found = await findSentMessage(accessToken, { messageId, subject: subject || "", to: to || "", body: body || "", sentAfterMs });
+        if (found) return NextResponse.json({ success: true, id: found.id, threadId: found.threadId, messageId, verified: true });
+        // 自動では再送しない。送れていないことを伝え、再送するかは利用者に決めてもらう
+        return NextResponse.json({ error: "SEND_UNCONFIRMED", messageId }, { status: 502 });
       }
 
       // ★修正: 送信したメールを受信箱(INBOX)に強制移動させていた余計な modify 処理を完全撤廃。
@@ -522,8 +612,19 @@ export async function POST(request: Request) {
 
       // Gmailが実際に採番したメッセージID/スレッドIDをクライアントへ返す。
       // グループチャットで送信したメールをリロード後も正しく識別するために必要
-      const sentData = (await res.json().catch(() => ({}))) as { id?: string; threadId?: string };
-      return NextResponse.json({ success: true, id: sentData.id, threadId: sentData.threadId });
+      const sentData = (await res!.json().catch(() => ({}))) as { id?: string; threadId?: string };
+      return NextResponse.json({ success: true, id: sentData.id, threadId: sentData.threadId, messageId });
+    }
+
+    // ブラウザと Worker の間の通信が切れて送信の結果を受け取れなかったときに、
+    // クライアントから「そのメールが送れていたか」を確かめる（再送はしない）
+    if (action === "verifySent") {
+      const { messageId, to, subject, body, sentAfterMs } = bodyData;
+      if (!isValidMessageId(messageId) || typeof sentAfterMs !== "number") {
+        return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+      }
+      const found = await findSentMessage(accessToken, { messageId, subject: subject || "", to: to || "", body: typeof body === "string" ? body : "", sentAfterMs });
+      return NextResponse.json(found ? { found: true, id: found.id, threadId: found.threadId } : { found: false });
     }
 
     // ③ メールの削除（完全削除含む）

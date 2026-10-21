@@ -8,6 +8,21 @@ import { isMineEmail, getFindBarBoxKey, FilterCriteria, messageMatchesFilter, Ch
 import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
+import { makeMessageId } from "../lib/sendVerify";
+
+// /api/emails の送信 API に渡す内容と、その結果
+type SendApiPayload = {
+  to: string;
+  subject: string;
+  body: string;
+  bodyHtml?: string;
+  threadId?: string;
+  inReplyTo?: string;
+  accountEmail: string;
+  attachments?: { filename: string; mimeType: string; data: string }[];
+};
+// unconfirmed: 送れたか分からず、送信済みにも見つからなかった / unverifiable: 送信済みを確かめることもできなかった
+type SendApiResult = { ok: true; id?: string; threadId?: string } | { ok: false; reason: "failed" | "unconfirmed" | "unverifiable"; status?: number };
 
 // /api/config が返す chat_configs の行
 type D1ConfigRow = {
@@ -318,6 +333,8 @@ export function useMailApp() {
   // 送信・転送・移動・削除など、alert()に頼らず一貫してユーザーに伝えたい汎用エラートースト
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const errorToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 送信の結果が分からず、送信済みにも見つからなかったときの「再送しますか？」の確認
+  const [sendConfirm, setSendConfirm] = useState<{ message: string; resend: () => Promise<void> } | null>(null);
   const showErrorToast = (message: string) => {
     if (errorToastTimerRef.current) clearTimeout(errorToastTimerRef.current);
     setErrorToast(message);
@@ -1991,6 +2008,75 @@ export function useMailApp() {
     setReplyAttachments(prev => prev.filter((_, i) => i !== index));
   };
 
+  // 送信 API を呼ぶ。送信は自動で再試行しない（二重送信になるため）。
+  // 結果が分からないとき（ブラウザと Worker の通信断、Worker が途中で落ちた）は送信済みフォルダと照合する
+  const postSendApi = async (payload: SendApiPayload, messageId: string): Promise<SendApiResult> => {
+    const sentAfterMs = Date.now();
+    const verify = async (): Promise<SendApiResult> => {
+      try {
+        const v = await fetch("/api/emails", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "verifySent", accountEmail: payload.accountEmail, messageId, to: payload.to, subject: payload.subject, body: payload.body, sentAfterMs }),
+        });
+        if (!v.ok) return { ok: false, reason: "unverifiable" };
+        const d = (await v.json()) as { found?: boolean; id?: string; threadId?: string };
+        return d.found ? { ok: true, id: d.id, threadId: d.threadId } : { ok: false, reason: "unconfirmed" };
+      } catch {
+        return { ok: false, reason: "unverifiable" };
+      }
+    };
+
+    let res: Response;
+    try {
+      res = await fetch("/api/emails", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "send", ...payload, messageId }),
+      });
+    } catch {
+      return verify();
+    }
+    if (res.ok) {
+      const d = (await res.json().catch(() => ({}))) as { id?: string; threadId?: string };
+      return { ok: true, id: d.id, threadId: d.threadId };
+    }
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    if (err.error === "SEND_UNCONFIRMED") return { ok: false, reason: "unconfirmed" };
+    // JSON を返さない 5xx は Worker が途中で落ちた可能性があり、送れたかどうか分からないので照合する
+    if (res.status >= 500 && !err.error) return verify();
+    return { ok: false, reason: "failed", status: res.status };
+  };
+
+  // 送信して、成功なら onSent、失敗ならトースト、結果が分からなければ再送するかを確認する。
+  // 再送するときは同じ Message-ID を使う（最初の分が遅れて届いていた場合に、同じメールとして扱われやすくするため）
+  const sendWithConfirm = async (
+    payload: SendApiPayload,
+    label: "送信" | "転送",
+    onSent: (sent: { id?: string; threadId?: string }) => void,
+    messageId: string = makeMessageId(crypto.getRandomValues(new Uint8Array(40))),
+  ): Promise<void> => {
+    const r = await postSendApi(payload, messageId);
+    if (r.ok) { onSent(r); return; }
+    if (r.reason === "failed") {
+      showErrorToast(
+        r.status === 401 ? `ログインの有効期限が切れたため${label}できませんでした。再読み込みしてからもう一度お試しください。`
+        : r.status === 413 ? `添付ファイルが大きすぎるため${label}できませんでした（合計25MBまで）。`
+        : `メールの${label}に失敗しました。宛先が正しいか確認してください。`
+      );
+      return;
+    }
+    const message = r.reason === "unconfirmed"
+      ? `${label}されていません。再送しますか？`
+      : `${label}できたか確認できませんでした。Gmail の送信済みを確認してから、必要なら再送してください。`;
+    setSendConfirm({
+      message,
+      resend: async () => {
+        setSendConfirm(null);
+        setIsSending(true);
+        try { await sendWithConfirm(payload, label, onSent, messageId); } finally { setIsSending(false); }
+      },
+    });
+  };
+
   const handleSend = async () => {
     if (!selectedSender || !replyBody.trim()) return;
     const groupCfg = chatConfigs[selectedSender];
@@ -2030,17 +2116,17 @@ export function useMailApp() {
 
       const attachmentsToSend = replyAttachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, data: a.data }));
 
-      const res = await fetch("/api/emails", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "send", to: actualTo, subject: finalSubject, body: bodyToSend, threadId, inReplyTo, accountEmail: sendAccountEmail, attachments: attachmentsToSend })
-      });
+      const payload: SendApiPayload = { to: actualTo, subject: finalSubject, body: bodyToSend, threadId, inReplyTo, accountEmail: sendAccountEmail, attachments: attachmentsToSend };
+      // 再送の確認ダイアログから呼ばれたときにも同じ内容で処理できるよう、送信時点の値を取っておく
+      const sentReplyTo = replyToMessage;
+      const sentAttachmentsData = replyAttachments;
+      const sentRoom = selectedSender;
 
-      if (res.ok) {
+      await sendWithConfirm(payload, "送信", (sentData) => {
         // Gmailが実際に採番したIDを使う（リロード後の再取得でも同じメールとして同一視できるようにするため）。
         // 取得できなかった場合のみ、その場限りのフェイクIDにフォールバックする
-        const sentData = (await res.json().catch(() => ({}))) as { id?: string; threadId?: string };
         const sentId: string = sentData.id || `fake-${Date.now()}`;
-        const sentAttachments = replyAttachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, size: a.size }));
+        const sentAttachments = sentAttachmentsData.map(a => ({ filename: a.filename, mimeType: a.mimeType, size: a.size }));
         const sentFake = {
           id: sentId,
           threadId: sentData.threadId || threadId || "",
@@ -2053,25 +2139,21 @@ export function useMailApp() {
           senderRoom: sendLocalKey,
           isMe: true,
           labelIds: ["SENT"],
-          inReplyTo: replyToMessage?.messageIdHeader,
-          replyToId: replyToMessage?.id,
+          inReplyTo: sentReplyTo?.messageIdHeader,
+          replyToId: sentReplyTo?.id,
           accountId: sendAccountEmail,
           attachments: sentAttachments,
         };
         // 添付ファイルの中身は既にローカルで持っているため、再取得を待たずに
         // アタッチメントキャッシュへ先回りで書き込んでおく（再取得後の実IDでもキーが一致するように、
         // page.tsx側のattachmentCacheKeyと同じ組み立て方＝messageId+添付順+ファイル名+サイズを使う）
-        replyAttachments.forEach((a, idx) => {
+        sentAttachmentsData.forEach((a, idx) => {
           setCachedAttachment(attachmentCacheKey(sentId, idx, a.filename, a.size), a.data);
         });
-        setEmails([sentFake, ...emails]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null);
+        setEmails(prev => [sentFake, ...prev]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null);
         // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）
-        if (selectedSender && draftChatsRef.current.includes(selectedSender)) removeDraftChat(selectedSender);
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        console.error("Failed to send:", errData);
-        showErrorToast("メールの送信に失敗しました。宛先が正しいか確認してください。");
-      }
+        if (sentRoom && draftChatsRef.current.includes(sentRoom)) removeDraftChat(sentRoom);
+      });
     } catch (error) { console.error(error); showErrorToast("メールの送信に失敗しました。通信状況を確認してください。"); } finally { setIsSending(false); }
   };
 
@@ -2134,19 +2216,7 @@ export function useMailApp() {
       bodyHtml = `<div>${escapeHtml(forwardHeaderText).replace(/\n/g, "<br>")}</div><div${attrs}>${inner}</div>`;
     }
 
-    try {
-      const res = await fetch("/api/emails", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "send", to, subject, body: bodyText, bodyHtml, accountEmail: sendAccountEmail }),
-      });
-
-      if (!res.ok) {
-        console.error("Failed to forward:", await res.json().catch(() => ({})));
-        showErrorToast("メールの転送に失敗しました。宛先が正しいか確認してください。");
-        return;
-      }
-
-      const sentData = (await res.json().catch(() => ({}))) as { id?: string; threadId?: string };
+    await sendWithConfirm({ to, subject, body: bodyText, bodyHtml, accountEmail: sendAccountEmail }, "転送", (sentData) => {
       // 転送先が既存の個別チャット1件だけの場合は、そのチャットにすぐ反映されるようローカルにも追加する
       // （複数宛先やグループ・新規アドレスの場合は、対応する単一のルームが存在しないため追加しない）
       if (recipientRoomKeys.length === 1 && groupedEmails[recipientRoomKeys[0]] && !chatConfigsRef.current[recipientRoomKeys[0]]?.isGroup) {
@@ -2161,10 +2231,7 @@ export function useMailApp() {
         };
         setEmails(prev => [sentFake, ...prev]);
       }
-    } catch (e) {
-      console.error(e);
-      showErrorToast("メールの転送に失敗しました。通信状況を確認してください。");
-    }
+    });
   };
 
   // メッセージ単位の非表示のコア処理。modal状態に依存しないため、確認モーダル経由の実行と
@@ -2866,7 +2933,7 @@ export function useMailApp() {
       moveDestination, revealedCrossPrompts, boxColors,
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
-      replyNotFoundToast, errorToast, draftChats, activeChatTab,
+      replyNotFoundToast, errorToast, sendConfirm, draftChats, activeChatTab,
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
     actions: {
@@ -2883,7 +2950,7 @@ export function useMailApp() {
       openAttachmentModal, closeAttachmentModal,
       jumpToReplyTarget, createOrOpenChat, createGroupChat, createFilterGroup, deleteChatConfig, forwardMessageTo,
       updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail,
-      unlinkAccount, isAccountVisible,
+      unlinkAccount, isAccountVisible, setSendConfirm,
     },
     computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
     refs: { touchTimer, hasPushedSelectRef, activeLoadRef, searchTimeoutRef }
