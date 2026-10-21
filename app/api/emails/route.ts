@@ -16,7 +16,7 @@ type LinkedAccountTokenRow = { refresh_token: string; access_token: string | nul
 // Gmail APIが429（レート制限）や一時的な5xxを返した場合に、指数バックオフ＋ジッターで
 // 数回だけ再試行する。特に多アカウント連携時・大きなメールボックスでの一括取得（メッセージ
 // 一覧・メッセージ詳細の並列取得）でクォータに触れやすいため、ここで吸収して黙って失敗しないようにする
-async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 2): Promise<Response> {
+async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 3): Promise<Response> {
   let lastRes: Response | null = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const res = await fetch(url, init);
@@ -25,8 +25,13 @@ async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 2): P
     if (res.status !== 429 && res.status < 500 && !rateLimited403) return res;
     lastRes = res;
     if (attempt === maxRetries) return res;
-    // 割り当ては1分単位で戻るので、レート制限のときは長めに待つ
-    const backoffMs = (res.status >= 500 ? 300 : 1500) * Math.pow(2, attempt) + Math.random() * 200;
+    // 実機テストでは、画面を開いたときの一括取得（詳細 約100件）で利用上限に触れ、15秒ほどで戻った。
+    // レート制限のときはそれをまたげるよう 2秒 → 4秒 → 8秒 と待つ（Retry-After があればそれに従う、最大10秒）。
+    // Workers は待っている間 CPU 時間を使わないので、費用はほぼ増えない
+    const retryAfterSec = Number(res.headers.get("Retry-After"));
+    const backoffMs = res.status >= 500
+      ? 300 * Math.pow(2, attempt) + Math.random() * 200
+      : Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? Math.min(retryAfterSec * 1000, 10_000) : 2000 * Math.pow(2, attempt) + Math.random() * 500;
     await new Promise(r => setTimeout(r, backoffMs));
   }
   return lastRes!;
