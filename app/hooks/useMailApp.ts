@@ -1250,6 +1250,14 @@ export function useMailApp() {
 
       const params = new URLSearchParams({ maxResults: "100", q, includeTrash: "true" });
       if (accountEmail && accountEmail !== (session?.user?.email || "")) params.append("accountEmail", accountEmail);
+      // すでに読み込んであるメールの詳細は取り直さない（Gmail の利用上限を使い切らないため。実機テストで、
+      // 開いた直後の一覧取得とこの取得が同じ約70件の詳細を二重に取り、上限に触れていた）
+      const myEmail = session?.user?.email || "";
+      const knownMap = new Map(knownEmails
+        .filter(e => !e.id.startsWith("fake-") && !e.isMissing && (e.accountId || myEmail) === (accountEmail || myEmail))
+        .map(e => [e.id, e] as const));
+      const knownIdsParam = Array.from(knownMap.keys()).slice(0, 300).join(",");
+      if (knownIdsParam) params.append("knownIds", knownIdsParam);
       const tokenToUse = isLoadMore ? (currentToken === "FIRST_PAGE" ? null : currentToken) : null;
       if (tokenToUse) params.append("pageToken", tokenToUse);
       params.append("_t", Date.now().toString());
@@ -1257,14 +1265,18 @@ export function useMailApp() {
       const res = await fetch(`/api/emails?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        const validMessages = ((data.messages || []) as Email[]).map((m) => ({ ...m, accountId: accountEmail }));
+        const fetchedMessages = ((data.messages || []) as Email[]).map((m) => ({ ...m, accountId: accountEmail }));
+        // 詳細を省いたメール（取得済みのもの）は、手元のものでこのページの結果を補う
+        const fetchedIds = new Set(fetchedMessages.map(m => m.id));
+        const knownInPage = ((data.topIds || []) as string[]).filter(id => !fetchedIds.has(id)).map(id => knownMap.get(id)).filter((m): m is Email => !!m);
+        const validMessages = [...fetchedMessages, ...knownInPage];
         const nextToken = data.nextPageToken || "END_ALL";
         if (!skipToken) { setChatNextPageToken(nextToken); chatNextPageTokenRef.current = nextToken; }
 
-        if (validMessages.length > 0) {
+        if (fetchedMessages.length > 0) {
           setEmails(prev => {
             const map = new Map(prev.map(e => [e.id, e]));
-            validMessages.forEach((m) => map.set(m.id, m));
+            fetchedMessages.forEach((m) => map.set(m.id, m));
             return reconcileFakeSentEmails(Array.from(map.values()));
           });
         }
