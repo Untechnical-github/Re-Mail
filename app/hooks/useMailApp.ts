@@ -9,10 +9,12 @@ import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "../lib
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId } from "../lib/sendVerify";
+import { planReply, type ReplyPlan } from "../lib/recipients";
 
 // /api/emails の送信 API に渡す内容と、その結果
 type SendApiPayload = {
   to: string;
+  cc?: string;
   subject: string;
   body: string;
   bodyHtml?: string;
@@ -89,8 +91,13 @@ const MAX_PERSISTED_BODY_CHARS = 20000;
 const MAX_PERSISTED_MESSAGES_PER_CHAT = 60;
 function capPersistedDataForStorage(data: Email[] | Email | null | undefined): Email[] | Email | null | undefined {
   if (!data) return data;
-  const cap = (e: Email): Email => {
-    if (!e || typeof e.body !== "string" || e.body.length <= MAX_PERSISTED_BODY_CHARS) return e;
+  const cap = (input: Email): Email => {
+    if (!input) return input;
+    // Cc・Reply-To は返信の宛先計算にだけ使う。D1 に個人情報を増やさないよう保存しない
+    const e: Email = { ...input };
+    delete e.cc;
+    delete e.replyTo;
+    if (typeof e.body !== "string" || e.body.length <= MAX_PERSISTED_BODY_CHARS) return e;
     return { ...e, body: e.body.slice(0, MAX_PERSISTED_BODY_CHARS) + "\n…(長文のため以下省略)" };
   };
   if (!Array.isArray(data)) return cap(data);
@@ -317,6 +324,9 @@ export function useMailApp() {
   // 作成中のメールに添付するファイル（送信するまではローカルのbase64として保持する）
   const [replyAttachments, setReplyAttachments] = useState<{ filename: string; mimeType: string; size: number; data: string }[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
+  // 「全員に返信」がオンになっているルームと返信先。チャットや返信先を変えたら自動で「相手のみ」に戻るよう、
+  // オン・オフの値ではなく「どこでオンにしたか」を持つ
+  const [replyAllKey, setReplyAllKey] = useState<string | null>(null);
 
   const [hasMouse, setHasMouse] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
@@ -2008,6 +2018,19 @@ export function useMailApp() {
     setReplyAttachments(prev => prev.filter((_, i) => i !== index));
   };
 
+  // 開いている個別チャットで返信するときの宛先の候補。返信先を選んでいればそのメール、
+  // なければ相手から届いた最新のメールを元にする（グループチャットは別の決め方なので対象外）
+  const getReplyPlan = (room: RoomKeyStr | null): ReplyPlan | null => {
+    if (!room || chatConfigs[room]?.isGroup) return null;
+    const { accountEmail } = decodeRoomKey(room);
+    const base = replyToMessage || (groupedEmails[room] || []).find(e => !isMineEmail(e, accountEmail));
+    if (!base) return null;
+    return planReply({ from: base.from, to: base.to, cc: base.cc, replyTo: base.replyTo }, [accountEmail]);
+  };
+  const replyAllScope = `${selectedSender || ""}|${replyToMessage?.id || ""}`;
+  const replyAll = replyAllKey === replyAllScope;
+  const setReplyAll = (on: boolean) => setReplyAllKey(on ? replyAllScope : null);
+
   // 送信 API を呼ぶ。送信は自動で再試行しない（二重送信になるため）。
   // 結果が分からないとき（ブラウザと Worker の通信断、Worker が途中で落ちた）は送信済みフォルダと照合する
   const postSendApi = async (payload: SendApiPayload, messageId: string): Promise<SendApiResult> => {
@@ -2087,13 +2110,21 @@ export function useMailApp() {
       // 宛のやり取りかによって、送信に使うGmailアカウントを切り替えるため）
       const { accountEmail: sendAccountEmail, localKey: sendLocalKey } = decodeRoomKey(selectedSender);
       let actualTo: string;
+      let actualCc = "";
       if (groupCfg?.isGroup) {
         // グループチャット: メンバー全員へ1通のメールとして一斉送信する
         actualTo = Array.from(resolveGroupMemberAddresses(groupCfg, groupedEmails, sendAccountEmail)).join(", ");
       } else {
-        const targetEmails = groupedEmails[selectedSender] || [];
-        const partnerEmail = targetEmails.find((e) => !isMineEmail(e, sendAccountEmail));
-        actualTo = partnerEmail ? partnerEmail.from : (targetEmails[0]?.to || sendLocalKey);
+        // 宛先は純正 Gmail と同じ決まりで計算する（Reply-To 優先、既定は相手のみ、切り替えで全員に返信）
+        const plan = getReplyPlan(selectedSender);
+        if (plan) {
+          const recipients = replyAll ? plan.all : plan.senderOnly;
+          actualTo = recipients.to;
+          actualCc = recipients.cc;
+        } else {
+          const targetEmails = groupedEmails[selectedSender] || [];
+          actualTo = targetEmails[0]?.to || sendLocalKey;
+        }
       }
       
       // ★修正: re:mail上の表示はDiscordのように「どのメッセージへの返信か」をチップで
@@ -2116,7 +2147,7 @@ export function useMailApp() {
 
       const attachmentsToSend = replyAttachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, data: a.data }));
 
-      const payload: SendApiPayload = { to: actualTo, subject: finalSubject, body: bodyToSend, threadId, inReplyTo, accountEmail: sendAccountEmail, attachments: attachmentsToSend };
+      const payload: SendApiPayload = { to: actualTo, cc: actualCc || undefined, subject: finalSubject, body: bodyToSend, threadId, inReplyTo, accountEmail: sendAccountEmail, attachments: attachmentsToSend };
       // 再送の確認ダイアログから呼ばれたときにも同じ内容で処理できるよう、送信時点の値を取っておく
       const sentReplyTo = replyToMessage;
       const sentAttachmentsData = replyAttachments;
@@ -2133,6 +2164,7 @@ export function useMailApp() {
           subject: finalSubject || "(件名なし)",
           from: sendAccountEmail || "自分",
           to: actualTo,
+          cc: actualCc || undefined,
           date: new Date().toUTCString(),
           body: finalBody,
           snippet: finalBody.slice(0, 60),
@@ -2150,7 +2182,7 @@ export function useMailApp() {
         sentAttachmentsData.forEach((a, idx) => {
           setCachedAttachment(attachmentCacheKey(sentId, idx, a.filename, a.size), a.data);
         });
-        setEmails(prev => [sentFake, ...prev]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null);
+        setEmails(prev => [sentFake, ...prev]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null); setReplyAllKey(null);
         // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）
         if (sentRoom && draftChatsRef.current.includes(sentRoom)) removeDraftChat(sentRoom);
       });
@@ -2933,7 +2965,7 @@ export function useMailApp() {
       moveDestination, revealedCrossPrompts, boxColors,
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
-      replyNotFoundToast, errorToast, sendConfirm, draftChats, activeChatTab,
+      replyNotFoundToast, errorToast, sendConfirm, replyAll, draftChats, activeChatTab,
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
     actions: {
@@ -2950,9 +2982,9 @@ export function useMailApp() {
       openAttachmentModal, closeAttachmentModal,
       jumpToReplyTarget, createOrOpenChat, createGroupChat, createFilterGroup, deleteChatConfig, forwardMessageTo,
       updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail,
-      unlinkAccount, isAccountVisible, setSendConfirm,
+      unlinkAccount, isAccountVisible, setSendConfirm, setReplyAll,
     },
-    computed: { allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
+    computed: { replyPlan: getReplyPlan(selectedSender), allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
     refs: { touchTimer, hasPushedSelectRef, activeLoadRef, searchTimeoutRef }
   };
 }

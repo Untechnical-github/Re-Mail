@@ -384,6 +384,8 @@ function parseMessageDetail(message: GmailMessage) {
   // メルマガ等では実際の「To」ヘッダーが空・汎用的な値のことがあり、Gmail自身は
   // 実配送先を示す「Delivered-To」ヘッダーで表示を補っている。同様にフォールバックする
   const to = decodeMimeHeader(getHeader(headers, "To")) || decodeMimeHeader(getHeader(headers, "Delivered-To"));
+  const cc = decodeMimeHeader(getHeader(headers, "Cc")) || undefined;
+  const replyTo = decodeMimeHeader(getHeader(headers, "Reply-To")) || undefined;
   const date = getHeader(headers, "Date");
   const labelIds = message.labelIds || [];
   // Discord風の「返信先」チップ表示のため、Message-ID / In-Reply-To を保持しておく
@@ -407,7 +409,7 @@ function parseMessageDetail(message: GmailMessage) {
 
   const attachments = extractAttachments(payload);
   const hasHtml = !!htmlBodyForLinks;
-  return { id: message.id, threadId: message.threadId, subject, from, to, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, inReplyTo, isForward, hasHtml };
+  return { id: message.id, threadId: message.threadId, subject, from, to, cc, replyTo, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, inReplyTo, isForward, hasHtml };
 }
 
 export async function GET(request: Request) {
@@ -558,7 +560,7 @@ export async function POST(request: Request) {
 
     // ① メールの送信
     if (action === "send" || !action) {
-      const { to, subject, body, bodyHtml, threadId, inReplyTo } = bodyData;
+      const { to, cc, subject, body, bodyHtml, threadId, inReplyTo } = bodyData;
       const attachments = (bodyData.attachments || []) as { filename: string; mimeType: string; data: string }[];
 
       // 添付ファイルの合計サイズをサーバー側でも検証する（upload エンドポイントの上限はメール全体で
@@ -580,6 +582,7 @@ export async function POST(request: Request) {
       // multipart/alternative で送る（受信側が HTML を表示できない場合にも読めるように）
       const segments = buildMimeSegments({
         to: to || "",
+        cc: typeof cc === "string" ? cc : undefined,
         subject: subject || "",
         text: body || (bodyHtml ? undefined : ""),
         html: bodyHtml || undefined,
@@ -601,7 +604,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Failed to send email", reason, messageId }, { status: res?.status || 500 });
       }
       if (outcome === "unknown") {
-        const found = await findSentMessage(accessToken, { messageId, subject: subject || "", to: to || "", body: body || "", sentAfterMs });
+        const found = await findSentMessage(accessToken, { messageId, subject: subject || "", to: to || "", cc: typeof cc === "string" ? cc : "", body: body || "", sentAfterMs });
         if (found) return NextResponse.json({ success: true, id: found.id, threadId: found.threadId, messageId, verified: true });
         // 自動では再送しない。送れていないことを伝え、再送するかは利用者に決めてもらう
         return NextResponse.json({ error: "SEND_UNCONFIRMED", messageId }, { status: 502 });
@@ -619,11 +622,11 @@ export async function POST(request: Request) {
     // ブラウザと Worker の間の通信が切れて送信の結果を受け取れなかったときに、
     // クライアントから「そのメールが送れていたか」を確かめる（再送はしない）
     if (action === "verifySent") {
-      const { messageId, to, subject, body, sentAfterMs } = bodyData;
+      const { messageId, to, cc, subject, body, sentAfterMs } = bodyData;
       if (!isValidMessageId(messageId) || typeof sentAfterMs !== "number") {
         return NextResponse.json({ error: "Invalid request" }, { status: 400 });
       }
-      const found = await findSentMessage(accessToken, { messageId, subject: subject || "", to: to || "", body: typeof body === "string" ? body : "", sentAfterMs });
+      const found = await findSentMessage(accessToken, { messageId, subject: subject || "", to: to || "", cc: typeof cc === "string" ? cc : "", body: typeof body === "string" ? body : "", sentAfterMs });
       return NextResponse.json(found ? { found: true, id: found.id, threadId: found.threadId } : { found: false });
     }
 

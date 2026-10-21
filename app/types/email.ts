@@ -15,6 +15,9 @@ export type Email = {
   subject: string;
   from: string;
   to: string;
+  // 返信の宛先（全員に返信・Reply-To）を純正 Gmail と同じに決めるために持つ。送信直後の仮オブジェクトには無いことがある
+  cc?: string;
+  replyTo?: string;
   date: string;
   body: string;
   snippet: string;

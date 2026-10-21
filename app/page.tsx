@@ -10,6 +10,7 @@ import { Modals, EmailModal, AttachmentModal, SearchModal, FilterToolModal } fro
 import { getFileIcon, formatFileSize, PinIcon, PaperclipIcon, WarningIcon, InboxIcon, ArchiveIcon, SendIcon, SpamIcon, TrashIcon } from "./components/ui";
 import { chatConfigTab, isMineEmail } from "./lib/filterMatch";
 import type { Email } from "./types/email";
+import { describeExtraRecipients } from "./lib/recipients";
 
 function InlineAttachmentImage({ attachment, messageId, accountId, cacheKey, onOpen }: {
   attachment: { filename: string; mimeType: string; size: number; attachmentId?: string };
@@ -948,6 +949,20 @@ export default function Home() {
                       <button onClick={(e) => { e.stopPropagation(); actions.setReplyToMessage(null); }} className="font-bold px-1 hover:text-white flex-shrink-0">×</button>
                     )}
                   </div>
+                  {/* Cc や複数の To があるメールへの返信のときだけ出す（既定は純正 Gmail と同じく相手のみ） */}
+                  {computed.replyPlan && computed.replyPlan.extra.length > 0 && (
+                    <div className="flex items-center gap-2 text-xs mb-2 px-2 text-gray-400">
+                      <span className="truncate flex-1" title={computed.replyPlan.extra.map(r => r.address).join(", ")}>
+                        {describeExtraRecipients(computed.replyPlan.extra)}
+                      </span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); actions.setReplyAll(!state.replyAll); }}
+                        className={`flex-shrink-0 font-bold px-2 py-0.5 rounded border transition ${state.replyAll ? "bg-[#5865F2] border-[#5865F2] text-white" : "border-[#4E5058] text-gray-300 hover:text-white"}`}
+                      >
+                        全員に返信
+                      </button>
+                    </div>
+                  )}
                   <input disabled={isSendDisabled} type="text" placeholder="件名 (省略可)" value={state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
                   {state.replyAttachments.length > 0 && (
                     <div className="flex flex-wrap gap-2 mb-2">
