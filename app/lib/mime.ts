@@ -5,6 +5,10 @@
 export type MimeAttachment = { filename: string; mimeType: string; data: string /* base64 */ };
 
 export type MimeInput = {
+  // 省略すると Gmail がアカウントの既定の送信元を入れる（純正と同じ）。エイリアスから送るときだけ指定する
+  from?: string;
+  // 送信元エイリアスに「返信先アドレス」が設定されているときに付ける（純正 Gmail と同じ）
+  replyTo?: string;
   to: string;
   cc?: string;
   subject: string;
@@ -164,6 +168,8 @@ export function buildMimeSegments(input: MimeInput): MimeSegment[] {
   // Date は付けない。純正 Gmail と同じ形式（送信者のタイムゾーン）で Gmail 側が付ける
   if (input.date) headers.push(`Date: ${input.date.toUTCString().replace("GMT", "+0000")}`);
   if (input.messageId) headers.push(`Message-ID: ${stripLineBreaks(input.messageId).trim()}`);
+  if (input.from && input.from.trim()) headers.push(`From: ${formatAddressHeader(input.from)}`);
+  if (input.replyTo && input.replyTo.trim()) headers.push(`Reply-To: ${formatAddressHeader(input.replyTo)}`);
   headers.push(`To: ${formatAddressHeader(input.to || "")}`);
   if (input.cc && input.cc.trim()) headers.push(`Cc: ${formatAddressHeader(input.cc)}`);
   headers.push(`Subject: ${encodeHeaderText(input.subject || "")}`);

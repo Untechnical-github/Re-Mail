@@ -393,6 +393,7 @@ function parseMessageDetail(message: GmailMessage) {
   const labelIds = message.labelIds || [];
   // Discord風の「返信先」チップ表示のため、Message-ID / In-Reply-To を保持しておく
   const messageIdHeader = getHeader(headers, "Message-ID") || undefined;
+  const references = getHeader(headers, "References") || undefined;
   const rawBody = (payload ? getTextBody(payload) : "") || message.snippet || "";
   const rawHtmlForCheck = getHtmlBody(payload);
   // HTML側は引用が "> " ではなく <blockquote>/gmail_quote 等のタグで表現されるため、
@@ -412,7 +413,7 @@ function parseMessageDetail(message: GmailMessage) {
 
   const attachments = extractAttachments(payload);
   const hasHtml = !!htmlBodyForLinks;
-  return { id: message.id, threadId: message.threadId, subject, from, to, cc, replyTo, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, inReplyTo, isForward, hasHtml };
+  return { id: message.id, threadId: message.threadId, subject, from, to, cc, replyTo, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, references, inReplyTo, isForward, hasHtml };
 }
 
 export async function GET(request: Request) {
@@ -445,6 +446,26 @@ export async function GET(request: Request) {
     } catch (e) {
       logError("attachments.get", {}, e);
       return NextResponse.json({ data: null });
+    }
+  }
+
+  // 送信元（自分のアドレスとエイリアス）と署名の設定。返信を純正 Gmail と同じ送信元・署名で送るために使う
+  if (searchParams.get("sendAs") === "1") {
+    try {
+      const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs", { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!res.ok) {
+        logWarn("sendAs.list", { status: res.status });
+        return NextResponse.json({ error: "Failed to load sendAs" }, { status: res.status });
+      }
+      const data = (await res.json()) as { sendAs?: { sendAsEmail: string; displayName?: string; replyToAddress?: string; signature?: string; isPrimary?: boolean; isDefault?: boolean; verificationStatus?: string }[] };
+      // 確認が済んでいないエイリアスからは送れないので除く
+      const sendAs = (data.sendAs || [])
+        .filter(s => s.isPrimary || s.verificationStatus === "accepted")
+        .map(s => ({ sendAsEmail: s.sendAsEmail, displayName: s.displayName, replyToAddress: s.replyToAddress, signature: s.signature, isPrimary: !!s.isPrimary, isDefault: !!s.isDefault }));
+      return NextResponse.json({ sendAs });
+    } catch (e) {
+      logError("sendAs.list", {}, e);
+      return NextResponse.json({ error: "Failed to load sendAs" }, { status: 500 });
     }
   }
 
@@ -606,7 +627,7 @@ export async function POST(request: Request) {
 
     // ① メールの送信
     if (action === "send" || !action) {
-      const { to, cc, subject, body, bodyHtml, threadId, inReplyTo } = bodyData;
+      const { to, cc, subject, body, bodyHtml, threadId, inReplyTo, references, from, replyTo } = bodyData;
       const attachments = (bodyData.attachments || []) as { filename: string; mimeType: string; data: string }[];
 
       // 添付ファイルの合計サイズをサーバー側でも検証する（upload エンドポイントの上限はメール全体で
@@ -634,6 +655,11 @@ export async function POST(request: Request) {
         html: bodyHtml || undefined,
         attachments,
         inReplyTo: typeof inReplyTo === "string" ? inReplyTo : undefined,
+        references: typeof references === "string" ? references : undefined,
+        // エイリアスから送るときだけ From を付ける（付けなければ Gmail が既定の送信元を純正と同じ形で入れる）。
+        // 登録されていないアドレスを指定しても、Gmail 側で既定の送信元に置き換えられる
+        from: typeof from === "string" ? from : undefined,
+        replyTo: typeof replyTo === "string" ? replyTo : undefined,
         messageId,
       });
       // raw を JSON に入れる通常の send は数MBで失敗するため、上限 35MB の upload エンドポイントに

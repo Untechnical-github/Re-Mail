@@ -75,6 +75,21 @@ describe("buildMimeSegments", () => {
     expect(text).toMatch(/^Message-ID: <new@example.com>$/m);
   });
 
+  it("From・Reply-To は指定したときだけ入り、日本語の表示名は encoded-word になる", () => {
+    const withFrom = toText(buildMimeSegments({ to: "a@example.com", subject: "s", text: "t", from: "営業部 <sales@example.com>", replyTo: "support@example.com" }));
+    expect(withFrom).toMatch(/^From: =\?UTF-8\?B\?[^?]+\?= <sales@example.com>$/m);
+    expect(withFrom).toMatch(/^Reply-To: support@example.com$/m);
+    const without = toText(buildMimeSegments({ to: "a@example.com", subject: "s", text: "t" }));
+    expect(without).not.toMatch(/^From:/m);
+    expect(without).not.toMatch(/^Reply-To:/m);
+  });
+
+  it("References を指定すれば In-Reply-To とは別にそれを使う", () => {
+    const text = toText(buildMimeSegments({ to: "a@example.com", subject: "s", text: "t", inReplyTo: "<b@example.com>", references: "<a@example.com> <b@example.com>" }));
+    expect(text).toMatch(/^References: <a@example.com> <b@example.com>$/m);
+    expect(text).toMatch(/^In-Reply-To: <b@example.com>$/m);
+  });
+
   it("Cc が空なら Cc ヘッダーを出さない", () => {
     const text = toText(buildMimeSegments({ to: "a@example.com", cc: " ", subject: "s", text: "t" }));
     expect(text).not.toMatch(/^Cc:/m);

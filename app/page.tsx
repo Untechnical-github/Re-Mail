@@ -11,6 +11,7 @@ import { getFileIcon, formatFileSize, PinIcon, PaperclipIcon, WarningIcon, Inbox
 import { chatConfigTab, isMineEmail } from "./lib/filterMatch";
 import type { Email } from "./types/email";
 import { describeExtraRecipients } from "./lib/recipients";
+import { replySubjectFor } from "./lib/replyCompose";
 
 function InlineAttachmentImage({ attachment, messageId, accountId, cacheKey, onOpen }: {
   attachment: { filename: string; mimeType: string; size: number; attachmentId?: string };
@@ -973,7 +974,7 @@ export default function Home() {
                       </button>
                     </div>
                   )}
-                  <input disabled={isSendDisabled} type="text" placeholder="件名 (省略可)" value={state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
+                  <input disabled={isSendDisabled || !!state.replyToMessage} title={state.replyToMessage ? "返信の件名は、スレッドが分かれないよう元の件名に揃えます" : undefined} type="text" placeholder="件名 (省略可)" value={state.replyToMessage ? replySubjectFor(state.replyToMessage.subject) : state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
                   {state.replyAttachments.length > 0 && (
                     <div className="flex flex-wrap gap-2 mb-2">
                       {state.replyAttachments.map((att, idx) => (

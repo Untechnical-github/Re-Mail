@@ -10,6 +10,7 @@ import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf 
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId } from "../lib/sendVerify";
 import { planReply, type ReplyPlan } from "../lib/recipients";
+import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, composeReplyBodies, extractHtmlBodyInner, type SendAsInfo } from "../lib/replyCompose";
 import { readPinnedField, capPinnedIds, mergePinnedIds, missingPinnedEmail } from "../lib/pinnedIds";
 import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
 import { logError, logWarn } from "../lib/safeLog";
@@ -18,6 +19,9 @@ import { logError, logWarn } from "../lib/safeLog";
 type SendApiPayload = {
   to: string;
   cc?: string;
+  from?: string;
+  replyTo?: string;
+  references?: string;
   subject: string;
   body: string;
   bodyHtml?: string;
@@ -2108,12 +2112,58 @@ export function useMailApp() {
 
   // 開いている個別チャットで返信するときの宛先の候補。返信先を選んでいればそのメール、
   // なければ相手から届いた最新のメールを元にする（グループチャットは別の決め方なので対象外）
-  const getReplyPlan = (room: RoomKeyStr | null): ReplyPlan | null => {
+  const getReplyBase = (room: RoomKeyStr | null): Email | null => {
     if (!room || chatConfigs[room]?.isGroup) return null;
     const { accountEmail } = decodeRoomKey(room);
-    const base = replyToMessage || (groupedEmails[room] || []).find(e => !isMineEmail(e, accountEmail));
-    if (!base) return null;
-    return planReply({ from: base.from, to: base.to, cc: base.cc, replyTo: base.replyTo }, [accountEmail]);
+    return replyToMessage || (groupedEmails[room] || []).find(e => !isMineEmail(e, accountEmail) && !e.isMissing) || null;
+  };
+  const getReplyPlan = (room: RoomKeyStr | null): ReplyPlan | null => {
+    const base = getReplyBase(room);
+    if (!room || !base) return null;
+    return planReply({ from: base.from, to: base.to, cc: base.cc, replyTo: base.replyTo }, [decodeRoomKey(room).accountEmail]);
+  };
+
+  // 送信元（自分のアドレスとエイリアス）と署名の設定。アカウントごとに一度だけ取りにいく（送信のたびに API を呼ばない）。
+  // 読めなかったときは null を返し、次の送信で取り直す
+  const sendAsCacheRef = useRef(new Map<string, Promise<SendAsInfo[] | null>>());
+  const getSendAs = (account: string): Promise<SendAsInfo[] | null> => {
+    const cached = sendAsCacheRef.current.get(account);
+    if (cached) return cached;
+    const myEmail = session?.user?.email || "";
+    const promise = (async () => {
+      try {
+        const params = new URLSearchParams({ sendAs: "1" });
+        if (account !== myEmail) params.append("accountEmail", account);
+        const res = await fetch(`/api/emails?${params.toString()}`);
+        if (!res.ok) { logWarn("sendAs.load", { status: res.status }); return null; }
+        const data = (await res.json()) as { sendAs?: SendAsInfo[] };
+        return data.sendAs || [];
+      } catch (e) {
+        logWarn("sendAs.load", {}, e);
+        return null;
+      }
+    })();
+    sendAsCacheRef.current.set(account, promise);
+    void promise.then(v => { if (v === null) sendAsCacheRef.current.delete(account); });
+    return promise;
+  };
+
+  // 返信・転送で引用するために、元のメールの HTML 本文を取り直す（画面用のテキストは整形済みで情報が欠けるため）。
+  // 取れなければ null を返し、呼び出し側はテキスト版を使う
+  const fetchOriginalHtml = async (message: Email, account: string): Promise<string | null> => {
+    if (typeof message.id !== "string" || message.id.startsWith("fake-") || message.isMissing) return null;
+    try {
+      const params = new URLSearchParams({ messageId: message.id, html: "true" });
+      if (account !== (session?.user?.email || "")) params.append("accountEmail", account);
+      // 古い応答を使わないよう、ブラウザのキャッシュを通さない
+      const res = await fetch(`/api/emails?${params.toString()}`, { cache: "no-store" });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { htmlBody?: string | null };
+      return data.htmlBody || null;
+    } catch (e) {
+      logWarn("original.fetchHtml", {}, e);
+      return null;
+    }
   };
   const replyAllScope = `${selectedSender || ""}|${replyToMessage?.id || ""}`;
   const replyAll = replyAllKey === replyAllScope;
@@ -2215,27 +2265,47 @@ export function useMailApp() {
         }
       }
       
-      // ★修正: re:mail上の表示はDiscordのように「どのメッセージへの返信か」をチップで
-      // 表示する方式にしたが、送信するメール本体には従来通りの引用文を付ける。
-      // 受信側の表示は本文から自動で引用文を取り除くロジック(stripQuotedReply)が
-      // 常にかかるため、Gmail等で開いたときは従来通りの引用付き表示のまま、
-      // re:mail側ではチップ表示、の両方が両立する
-      const finalBody = replyBody; let bodyToSend = replyBody; let threadId = undefined; let finalSubject = replySubject; let inReplyTo: string | undefined = undefined;
+      // 返信は純正 Gmail と同じ形にする（threadId・In-Reply-To・References を付け、件名は「Re: 元の件名」に揃える。
+      // 件名を変えると Gmail がスレッドを分けてしまうため、返信先を選んでいるときは件名の入力欄を使わない）。
+      // 本文の後に署名、その後に引用を付ける。Re:Mail の画面では、受信時の引用除去（stripQuotedReply・
+      // stripHtmlQuote）で引用は折りたたまれ、代わりに「どのメッセージへの返信か」のチップで見せる
+      const finalBody = replyBody;
+      let threadId: string | undefined = undefined;
+      let inReplyTo: string | undefined = undefined;
+      let references: string | undefined = undefined;
+      let finalSubject = replySubject;
       if (replyToMessage) {
-        threadId = replyToMessage.threadId;
+        threadId = replyToMessage.threadId || undefined;
         inReplyTo = replyToMessage.messageIdHeader;
-        if (!finalSubject) finalSubject = replyToMessage.subject.startsWith("Re:") ? replyToMessage.subject : `Re: ${replyToMessage.subject}`;
-        if (replyToMessage.body) {
-          const d = new Date(replyToMessage.date);
-          const weekday = ["日", "月", "火", "水", "木", "金", "土"][d.getDay()];
-          const quoteHeader = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${weekday}) ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")} ${replyToMessage.from}:`;
-          bodyToSend = `${replyBody}\n\n${quoteHeader}\n${(replyToMessage.body as string).split("\n").map((l: string) => `> ${l}`).join("\n")}`;
-        }
+        references = buildReferences(replyToMessage.references, replyToMessage.messageIdHeader) || undefined;
+        finalSubject = replySubjectFor(replyToMessage.subject);
       }
+
+      // 送信元（エイリアス）と署名は Gmail の設定に従う。元のメールが自分のエイリアス宛てなら、そのエイリアスから返す
+      const sendAsList = await getSendAs(sendAccountEmail);
+      const base = getReplyBase(selectedSender);
+      const alias = sendAsList ? pickSendAs(sendAsList, base ? `${base.to}, ${base.cc || ""}` : "", sendAccountEmail) : null;
+      // 既定のアドレス（primary）から送るときは From を付けず、Gmail に純正と同じ形で入れさせる
+      const fromHeader = alias && !alias.isPrimary ? (alias.displayName ? `${alias.displayName} <${alias.sendAsEmail}>` : alias.sendAsEmail) : undefined;
+
+      let quote: { header: string; originalText: string; originalHtml?: string } | undefined;
+      if (replyToMessage) {
+        const originalHtml = await fetchOriginalHtml(replyToMessage, sendAccountEmail);
+        quote = {
+          header: formatQuoteHeader(new Date(replyToMessage.date), replyToMessage.from),
+          originalText: replyToMessage.body || "",
+          originalHtml: originalHtml ? extractHtmlBodyInner(originalHtml).inner : undefined,
+        };
+      }
+      const bodies = composeReplyBodies({ text: replyBody, signatureHtml: alias?.signature, quote });
 
       const attachmentsToSend = replyAttachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, data: a.data }));
 
-      const payload: SendApiPayload = { to: actualTo, cc: actualCc || undefined, subject: finalSubject, body: bodyToSend, threadId, inReplyTo, accountEmail: sendAccountEmail, attachments: attachmentsToSend };
+      const payload: SendApiPayload = {
+        to: actualTo, cc: actualCc || undefined, subject: finalSubject, body: bodies.text, bodyHtml: bodies.html,
+        threadId, inReplyTo, references, from: fromHeader, replyTo: alias?.replyToAddress || undefined,
+        accountEmail: sendAccountEmail, attachments: attachmentsToSend,
+      };
       // 再送の確認ダイアログから呼ばれたときにも同じ内容で処理できるよう、送信時点の値を取っておく
       const sentReplyTo = replyToMessage;
       const sentAttachmentsData = replyAttachments;
@@ -2273,6 +2343,8 @@ export function useMailApp() {
         setEmails(prev => [sentFake, ...prev]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null); setReplyAllKey(null);
         // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）
         if (sentRoom && draftChatsRef.current.includes(sentRoom)) removeDraftChat(sentRoom);
+        // 署名・送信元の設定が読めなかった場合は、純正と違う形（署名なし・既定の送信元）で送ったことを伝える
+        if (sendAsList === null) showErrorToast("署名と送信元の設定を読み込めなかったため、署名なし・既定のアドレスで送信しました。");
       });
     } catch (error) { logError("send.reply", {}, error); showErrorToast("メールの送信に失敗しました。通信状況を確認してください。"); } finally { setIsSending(false); }
   };

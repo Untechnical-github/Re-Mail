@@ -37,6 +37,8 @@ export type Email = {
   inReplyTo?: string;
   // このメッセージ自体の Message-ID ヘッダー値（他メッセージから返信元として参照される）
   messageIdHeader?: string;
+  // このメッセージの References ヘッダー値（返信するときに、純正 Gmail と同じくこれを引き継ぐ）
+  references?: string;
   isForward?: boolean;
   // フェーズ3以降、どの連携アカウントで受信/送信したメールかを表す。フェーズ2までは未設定
   accountId?: string;
