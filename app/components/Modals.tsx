@@ -9,6 +9,7 @@ import type { Email } from "../types/email";
 import type { ChatConfig, ModalState, SelectionMode } from "../types/mail";
 import { logError } from "../lib/safeLog";
 import { prepareEmailHtml, hasRemoteContent } from "../lib/emailHtml";
+import { clearDeviceData } from "../lib/deviceData";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: MailAppHook; modal: NonNullable<ModalState> }) {
@@ -1454,7 +1455,11 @@ export function Modals({ app }: { app: MailAppHook }) {
                 + アカウントを追加
               </button>
               <button
-                onClick={() => signOut({ callbackUrl: "/" })}
+                onClick={async () => {
+                  // ログアウトの前に、端末に残したメールの中身・下書き・添付を消す（共有の PC で次の人に見られないように）
+                  await clearDeviceData();
+                  await signOut({ callbackUrl: "/" });
+                }}
                 className="w-full text-left px-3 py-2.5 rounded bg-[#2B2D31] text-sm text-red-400 hover:bg-[#35373C] transition font-bold"
               >
                 ログアウト

@@ -1,9 +1,9 @@
 import { useSession, signOut } from "next-auth/react";
 import { useState, useEffect, useMemo, useRef } from "react";
-import localforage from "localforage";
 import { ChatConfig, MessageConfig, SelectionMode, ModalState, ModalTargetMode, GroupMode } from "../types/mail";
 import { Email } from "../types/email";
-import { getCachedAttachment, setCachedAttachment, attachmentCacheKey } from "../lib/attachmentCache";
+import { getCachedAttachment, setCachedAttachment, attachmentCacheKey, attachmentIdCacheKey } from "../lib/attachmentCache";
+import { clearDeviceData, clearAccountDeviceData, DEVICE_OWNER_KEY } from "../lib/deviceData";
 import { isMineEmail, getFindBarBoxKey, FilterCriteria, messageMatchesFilter, ChatListTab, chatConfigTab } from "../lib/filterMatch";
 import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
@@ -370,6 +370,20 @@ export function useMailApp() {
   const activeLoadRef = useRef<number>(0);
   const signingOutRef = useRef(false);
   const isInitialFilterRun = useRef(true); 
+  // この端末で前に別の人がログインしていた（ログアウトせずに切り替わった）場合は、前の人のデータを消す
+  useEffect(() => {
+    const me = session?.user?.email;
+    if (!me) return;
+    try {
+      const owner = localStorage.getItem(DEVICE_OWNER_KEY);
+      if (owner && owner !== me) {
+        void clearDeviceData().then(() => { try { localStorage.setItem(DEVICE_OWNER_KEY, me); } catch { /* 保存できなくても動作は続ける */ } });
+      } else if (!owner) {
+        localStorage.setItem(DEVICE_OWNER_KEY, me);
+      }
+    } catch { /* 端末の保存領域が使えない環境では何も残っていない */ }
+  }, [session?.user?.email]);
+
   const chatConfigsRef = useRef(chatConfigs);
   useEffect(() => { chatConfigsRef.current = chatConfigs; }, [chatConfigs]);
   const messageConfigsRef = useRef(messageConfigs);
@@ -962,7 +976,8 @@ export function useMailApp() {
       if (mainResult?.res && (mainResult.res.status === 401 || mainResult.res.status === 403)) {
         if (!signingOutRef.current) {
           signingOutRef.current = true;
-          await localforage.clear();
+          // 認証切れでログアウトするときも、端末に残したメールの中身・下書きを消す
+          await clearDeviceData();
           // signOut のサーバー側処理（セッションCookie破棄）が終わる前に遷移すると、
           // 古いセッションが残ったままリロードされ無限ループになるため必ず完了を待つ
           await signOut({ redirect: false });
@@ -1466,7 +1481,16 @@ export function useMailApp() {
         }
       } catch { /* 複合キーでない古いデータは無視 */ }
     }
-    try { await fetch(`/api/accounts?account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" }); } catch (e) { logError("accounts.unlink", {}, e); }
+    setPersistedEmails(prev => prev.filter((e) => (e.accountId || myEmail) !== accountEmail));
+    // 端末に残したそのアカウントの添付・ピン留めの中身・下書きを消す
+    await clearAccountDeviceData(accountEmail);
+    try {
+      const res = await fetch(`/api/accounts?account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" });
+      if (!res.ok) showErrorToast("連携の解除がサーバーに反映されなかった可能性があります。再読み込みして確認してください。");
+    } catch (e) {
+      logError("accounts.unlink", {}, e);
+      showErrorToast("連携の解除がサーバーに反映されなかった可能性があります。通信状況を確認してください。");
+    }
   };
 
   // メッセージID → 所属ルームキーの逆引き。フィルターツールで複数ルームにまたがる
@@ -2023,7 +2047,7 @@ export function useMailApp() {
       return;
     }
     setAttachmentModal({ ...attachment, base64: null, isLoading: true });
-    const cacheKey = attachment.cacheKey || `${attachment.messageId}:${attachment.attachmentId}`;
+    const cacheKey = attachment.cacheKey || attachmentIdCacheKey(attachment.accountId || session?.user?.email || "", attachment.messageId, attachment.attachmentId);
     const cached = await getCachedAttachment(cacheKey);
     if (cached) {
       setAttachmentModal(prev => prev ? { ...prev, base64: cached, isLoading: false } : null);
@@ -2341,7 +2365,7 @@ export function useMailApp() {
         // アタッチメントキャッシュへ先回りで書き込んでおく（再取得後の実IDでもキーが一致するように、
         // page.tsx側のattachmentCacheKeyと同じ組み立て方＝messageId+添付順+ファイル名+サイズを使う）
         sentAttachmentsData.forEach((a, idx) => {
-          setCachedAttachment(attachmentCacheKey(sentId, idx, a.filename, a.size), a.data);
+          setCachedAttachment(attachmentCacheKey(sendAccountEmail, sentId, idx, a.filename, a.size), a.data);
         });
         setEmails(prev => [sentFake, ...prev]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null); setReplyAllKey(null);
         // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）

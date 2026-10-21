@@ -874,7 +874,7 @@ export default function Home() {
                                {email.attachments.map((att, attIdx) => {
                                  // attachmentId は再取得のたびに変わることがあるため、
                                  // 添付順+ファイル名+サイズで安定したキャッシュキーを作る
-                                 const cacheKey = attachmentCacheKey(email.id, attIdx, att.filename, att.size);
+                                 const cacheKey = attachmentCacheKey(email.accountId || auth.session?.user?.email || "", email.id, attIdx, att.filename, att.size);
                                  if (att.mimeType.startsWith('image/')) {
                                    return (
                                      <InlineAttachmentImage
