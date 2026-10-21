@@ -32,14 +32,23 @@ export function getHeader(headers: GmailHeader[], name: string): string {
   return header ? header.value : "";
 }
 
-// Gmail の body.data（base64url）を文字にする。本文は元のメールの charset のまま入っているので、
-// パートの Content-Type の charset で読む（ISO-2022-JP や Shift_JIS のメールを UTF-8 として読むと文字化けする）
+// Gmail の body.data（base64url）を文字にする。Gmail API はテキストのパートを UTF-8 に直して返す
+// （Content-Type の charset は元の Shift_JIS などのまま残る）ことを実機で確かめたので、まず UTF-8 として読む。
+// UTF-8 として正しくないバイト列のときだけ、書かれている charset で読み直す
 export function decodeBase64Url(base64Url: string, charset?: string) {
   try {
     const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
     const binString = atob(base64);
     const bytes = Uint8Array.from(binString, (m) => m.charCodeAt(0) & 0xff);
-    return decodeBytes(bytes, charset);
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      // ISO-2022-JP は ASCII だけでできているので UTF-8 としても正しく見える。
+      // 漢字への切り替え（ESC $ B / ESC $ @）が入っていれば ISO-2022-JP として読む
+      if (/\x1b\$[B@]/.test(text)) return decodeBytes(bytes, "iso-2022-jp");
+      return text;
+    } catch {
+      return decodeBytes(bytes, charset);
+    }
   } catch {
     return "";
   }

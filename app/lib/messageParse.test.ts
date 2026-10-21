@@ -157,7 +157,7 @@ describe("parseMessageDetail", () => {
   });
 });
 
-describe("本文の charset", () => {
+describe("本文の charset（UTF-8 として正しくないときだけ、書かれた charset で読む）", () => {
   const b64url = (bytes: number[]) => Buffer.from(bytes).toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
   const jis = [0x1b, 0x24, 0x42, 0x46, 0x7c, 0x4b, 0x5c, 0x38, 0x6c, 0x1b, 0x28, 0x42];
   const sjis = [0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea];
@@ -171,6 +171,10 @@ describe("本文の charset", () => {
     const payload = { mimeType: "multipart/alternative", parts: [part("text/plain", "Shift_JIS", sjis), part("text/html", "Shift_JIS", [0x3c, 0x70, 0x3e, ...sjis, 0x3c, 0x2f, 0x70, 0x3e])] };
     expect(getTextBody(payload)).toBe("日本語");
     expect(getHtmlBody(payload)).toBe("<p>日本語</p>");
+  });
+
+  it("Gmail が UTF-8 に直した本文は、Content-Type が Shift_JIS のままでも UTF-8 として読む（実機の挙動）", () => {
+    expect(getTextBody(part("text/plain", "Shift_JIS", Array.from(new TextEncoder().encode("これは Shift_JIS の本文"))))).toBe("これは Shift_JIS の本文");
   });
 
   it("charset が無ければ UTF-8 として読む", () => {
