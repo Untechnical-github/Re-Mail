@@ -6,7 +6,7 @@ import { getValidAccessToken } from "../../lib/googleToken";
 import { encryptSecret, decryptSecret, isEncrypted } from "../../lib/tokenCrypto";
 import { buildMimeSegments, buildGmailUploadBody, decodeMimeHeader } from "../../lib/mime";
 import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, extractAttachments, stripHtmlQuote, looksLikeForward, parseMessageDetail } from "../../lib/messageParse";
-import { classifySendStatus, makeMessageId, isValidMessageId, matchSentMessage, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
+import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
 import { logError, logWarn, logInfo } from "../../lib/safeLog";
 
 
@@ -20,23 +20,35 @@ async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 2): P
   let lastRes: Response | null = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const res = await fetch(url, init);
-    if (res.status !== 429 && res.status < 500) return res;
+    // Gmail はレート制限を 403（rateLimitExceeded など）でも返すので、それも待ってから取り直す
+    const rateLimited403 = res.status === 403 && await isRateLimited403(res);
+    if (res.status !== 429 && res.status < 500 && !rateLimited403) return res;
     lastRes = res;
     if (attempt === maxRetries) return res;
-    const backoffMs = 300 * Math.pow(2, attempt) + Math.random() * 200;
+    // 割り当ては1分単位で戻るので、レート制限のときは長めに待つ
+    const backoffMs = (res.status >= 500 ? 300 : 1500) * Math.pow(2, attempt) + Math.random() * 200;
     await new Promise(r => setTimeout(r, backoffMs));
   }
   return lastRes!;
 }
 
-const GMAIL_SEND_URL = "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=multipart";
+// 403 がレート制限によるものか。本文は呼び出し側でも読むので、複製を読む
+async function isRateLimited403(res: Response): Promise<boolean> {
+  try {
+    return isRateLimitReason(gmailErrorReason(await res.clone().json()));
+  } catch {
+    return false;
+  }
+}
+
+const GMAIL_SEND_URL ="https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=multipart";
 // 35MB のアップロードでも十分に終わる長さ。これを超えたら「結果不明」として送信済みと照合する
 const SEND_TIMEOUT_MS = 90_000;
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 // 送信は fetchWithRetry を通さない（5xx やタイムアウトでも Gmail 側では送れていることがあり、
-// 再試行すると二重送信になる）。再試行するのは、Gmail が受け付けを断った（＝送られていない）429 だけ
+// 再試行すると二重送信になる）。再試行するのは、Gmail が受け付けを断った（＝送られていない）429 とレート制限の 403 だけ
 async function postSendOnce(upload: { body: Uint8Array<ArrayBuffer>; contentType: string }, accessToken: string): Promise<{ outcome: SendOutcome; res?: Response }> {
   const maxAttempts = 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -53,7 +65,8 @@ async function postSendOnce(upload: { body: Uint8Array<ArrayBuffer>; contentType
       logWarn("send.noResponse", {}, e);
       return { outcome: "unknown" };
     }
-    const outcome = classifySendStatus(res.status);
+    const reason = res.status === 403 ? gmailErrorReason(await res.clone().json().catch(() => null)) : undefined;
+    const outcome = classifySendStatus(res.status, reason);
     if (outcome !== "retry") return { outcome, res };
     logWarn("send.rateLimited", { status: res.status, count: attempt });
     if (attempt === maxAttempts) return { outcome: "failed", res };
@@ -468,9 +481,8 @@ export async function POST(request: Request) {
 
       if (outcome === "unauthorized") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       if (outcome === "failed") {
-        const errorData = (await res?.json().catch(() => ({}))) as { error?: { errors?: { reason?: string }[] } } | undefined;
         // Gmail の生の応答は宛先などを含みうるので、理由コードだけを返す
-        const reason = errorData?.error?.errors?.[0]?.reason;
+        const reason = gmailErrorReason(await res?.json().catch(() => null));
         logError("send.failed", { status: res?.status, reason });
         return NextResponse.json({ error: "Failed to send email", reason, messageId }, { status: res?.status || 500 });
       }

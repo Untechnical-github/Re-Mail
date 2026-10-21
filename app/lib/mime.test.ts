@@ -175,3 +175,13 @@ describe("decodeMimeHeader", () => {
     expect(text).not.toMatch(/^Date:/m);
   });
 });
+
+describe("ヘッダーの並び", () => {
+  it("純正 Gmail と同じく MIME-Version → References → In-Reply-To → … → Subject → To → Cc の順", () => {
+    const text = new TextDecoder().decode(assembleBytes(buildMimeSegments({
+      to: "a@example.com", cc: "b@example.com", subject: "s", text: "t", inReplyTo: "<x@example.com>", messageId: "<m@example.com>",
+    })));
+    const names = text.split("\r\n\r\n")[0].split("\r\n").filter(l => /^[A-Za-z-]+:/.test(l)).map(l => l.split(":")[0]);
+    expect(names.slice(0, 7)).toEqual(["MIME-Version", "References", "In-Reply-To", "Message-ID", "Subject", "To", "Cc"]);
+  });
+});

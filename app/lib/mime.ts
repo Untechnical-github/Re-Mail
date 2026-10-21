@@ -166,18 +166,20 @@ function bodySegments(text: string | undefined, html: string | undefined): MimeS
 export function buildMimeSegments(input: MimeInput): MimeSegment[] {
   const headers: string[] = [];
   // Date は付けない。純正 Gmail と同じ形式（送信者のタイムゾーン）で Gmail 側が付ける
-  if (input.date) headers.push(`Date: ${input.date.toUTCString().replace("GMT", "+0000")}`);
-  if (input.messageId) headers.push(`Message-ID: ${stripLineBreaks(input.messageId).trim()}`);
-  if (input.from && input.from.trim()) headers.push(`From: ${formatAddressHeader(input.from)}`);
-  if (input.replyTo && input.replyTo.trim()) headers.push(`Reply-To: ${formatAddressHeader(input.replyTo)}`);
-  headers.push(`To: ${formatAddressHeader(input.to || "")}`);
-  if (input.cc && input.cc.trim()) headers.push(`Cc: ${formatAddressHeader(input.cc)}`);
-  headers.push(`Subject: ${encodeHeaderText(input.subject || "")}`);
+  // 並びは純正 Gmail が送るメールと同じにする（MIME-Version → References → In-Reply-To → From → Date →
+  // Message-ID → Subject → To → Cc）。Gmail は自分が付け直すヘッダーを並べ替えるが、それ以外はこの順のまま届くため
+  headers.push("MIME-Version: 1.0");
   const inReplyTo = input.inReplyTo ? stripLineBreaks(input.inReplyTo).trim() : "";
-  if (inReplyTo) headers.push(`In-Reply-To: ${inReplyTo}`);
   const references = input.references ? stripLineBreaks(input.references).trim() : inReplyTo;
   if (references) headers.push(`References: ${references}`);
-  headers.push("MIME-Version: 1.0");
+  if (inReplyTo) headers.push(`In-Reply-To: ${inReplyTo}`);
+  if (input.from && input.from.trim()) headers.push(`From: ${formatAddressHeader(input.from)}`);
+  if (input.date) headers.push(`Date: ${input.date.toUTCString().replace("GMT", "+0000")}`);
+  if (input.messageId) headers.push(`Message-ID: ${stripLineBreaks(input.messageId).trim()}`);
+  headers.push(`Subject: ${encodeHeaderText(input.subject || "")}`);
+  headers.push(`To: ${formatAddressHeader(input.to || "")}`);
+  if (input.cc && input.cc.trim()) headers.push(`Cc: ${formatAddressHeader(input.cc)}`);
+  if (input.replyTo && input.replyTo.trim()) headers.push(`Reply-To: ${formatAddressHeader(input.replyTo)}`);
 
   const attachments = input.attachments || [];
   if (attachments.length === 0) {

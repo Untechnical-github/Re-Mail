@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifySendStatus, makeMessageId, isValidMessageId, matchSentMessage, type SentCandidate } from "./sendVerify";
+import { classifySendStatus, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, type SentCandidate } from "./sendVerify";
 
 describe("classifySendStatus", () => {
   it("429 だけ再試行、5xx は照合、それ以外の 4xx は失敗", () => {
@@ -11,6 +11,22 @@ describe("classifySendStatus", () => {
     expect(classifySendStatus(400)).toBe("failed");
     expect(classifySendStatus(403)).toBe("failed");
     expect(classifySendStatus(413)).toBe("failed");
+  });
+
+  it("レート制限の 403 は送られていないので再試行、それ以外の 403 は失敗", () => {
+    expect(classifySendStatus(403, "rateLimitExceeded")).toBe("retry");
+    expect(classifySendStatus(403, "userRateLimitExceeded")).toBe("retry");
+    expect(classifySendStatus(403, "insufficientPermissions")).toBe("failed");
+    expect(classifySendStatus(400, "rateLimitExceeded")).toBe("failed");
+  });
+});
+
+describe("gmailErrorReason", () => {
+  it("Gmail のエラー応答から理由コードを取り出す（実機で返ってきた形）", () => {
+    expect(gmailErrorReason({ error: { code: 403, errors: [{ reason: "rateLimitExceeded" }] } })).toBe("rateLimitExceeded");
+    expect(gmailErrorReason({ error: { code: 403, status: "RESOURCE_EXHAUSTED" } })).toBe("rateLimitExceeded");
+    expect(gmailErrorReason(null)).toBeUndefined();
+    expect(gmailErrorReason("x")).toBeUndefined();
   });
 });
 

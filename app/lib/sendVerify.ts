@@ -8,10 +8,26 @@ import { splitAddressList, parseAddress } from "./mime";
 // - unknown: 5xx は Gmail 側で送れている可能性があるので、再試行せず送信済みと照合する
 export type SendOutcome = "ok" | "unauthorized" | "retry" | "failed" | "unknown";
 
-export function classifySendStatus(status: number): SendOutcome {
+// Gmail はレート制限・割り当て超過を 429 だけでなく 403（理由コード rateLimitExceeded など）でも返す。
+// 実機テストで、転送の添付取得がこの 403 で失敗していた
+const RATE_LIMIT_REASONS = new Set(["rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "dailyLimitExceeded"]);
+
+export function isRateLimitReason(reason: string | undefined): boolean {
+  return !!reason && RATE_LIMIT_REASONS.has(reason);
+}
+
+// Gmail のエラー応答（{ error: { errors: [{ reason }], status } }）から理由コードを取り出す
+export function gmailErrorReason(body: unknown): string | undefined {
+  const err = (body as { error?: { errors?: { reason?: string }[]; status?: string } } | null)?.error;
+  return err?.errors?.[0]?.reason || (err?.status === "RESOURCE_EXHAUSTED" ? "rateLimitExceeded" : undefined);
+}
+
+// reason は 403 のときだけ見る（レート制限の 403 は、受け付けを断った＝送られていないので再試行してよい）
+export function classifySendStatus(status: number, reason?: string): SendOutcome {
   if (status >= 200 && status < 300) return "ok";
   if (status === 401) return "unauthorized";
   if (status === 429) return "retry";
+  if (status === 403 && isRateLimitReason(reason)) return "retry";
   if (status >= 500) return "unknown";
   return "failed";
 }

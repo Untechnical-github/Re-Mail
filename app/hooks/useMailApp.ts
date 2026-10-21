@@ -11,6 +11,7 @@ import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf 
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId } from "../lib/sendVerify";
 import { planReply, type ReplyPlan } from "../lib/recipients";
+import { parseAddress } from "../lib/mime";
 import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, composeReplyBodies, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, type SendAsInfo } from "../lib/replyCompose";
 import { readPinnedField, capPinnedIds, mergePinnedIds, missingPinnedEmail } from "../lib/pinnedIds";
 import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
@@ -1561,6 +1562,15 @@ export function useMailApp() {
   // 連携アカウントのルームでは「自分」がメインアカウントとは限らないため、そのルーム自身が
   // 属するアカウントで判定する（メインアカウント固定だと、連携アカウント宛にメインアカウントから
   // 送ったメールを「相手からの受信」と誤認識してしまう）
+  // 宛先に書く「表示名 <アドレス>」。相手から届いたメールの From に表示名があればそれを使い、無ければアドレスだけ
+  const getRoomRecipient = (room: RoomKeyStr): string => {
+    const address = getRoomAddress(room);
+    const { accountEmail: roomOwnerEmail } = decodeRoomKey(room);
+    const partner = (groupedEmails[room] || []).find((e) => !isMineEmail(e, roomOwnerEmail));
+    const { name, address: fromAddress } = parseAddress(partner?.from || "");
+    if (name && fromAddress.trim().toLowerCase() === address) return `${name} <${address}>`;
+    return address;
+  };
   const getRoomAddress = (room: RoomKeyStr): string => {
     const msgs = groupedEmails[room] || [];
     const { accountEmail: roomOwnerEmail } = decodeRoomKey(room);
@@ -2425,8 +2435,9 @@ export function useMailApp() {
       try { decodeRoomKey(id); return id as RoomKeyStr; } catch { return encodeRoomKey(myEmail, asLocalKey(id)); }
     };
     const recipientRoomKeys = recipientIds.map(toRoomKey);
+    // 既存のチャットの相手には、純正 Gmail と同じく表示名を付けて送る（「髙澤家 <a@example.com>」）
     const addresses = recipientRoomKeys
-      .map((room, i) => (groupedEmails[room] ? getRoomAddress(room) : recipientIds[i].trim().toLowerCase()))
+      .map((room, i) => (groupedEmails[room] ? getRoomRecipient(room) : recipientIds[i].trim().toLowerCase()))
       .filter(Boolean);
     const to = addresses.join(", ");
     if (!to) return;
@@ -2455,9 +2466,14 @@ export function useMailApp() {
     const bodyText = bodies.text;
     const bodyHtml = bodies.html;
 
+    // 純正 Gmail の転送は、元のメールへの In-Reply-To / References を付け、送った側では同じスレッドに入れる
+    const isRealMessage = !message.id.startsWith("fake-") && !message.isMissing;
     await sendWithConfirm({
       to, subject, body: bodyText, bodyHtml, accountEmail: sendAccountEmail,
       from: fromHeader, replyTo: alias?.replyToAddress || undefined,
+      inReplyTo: message.messageIdHeader,
+      references: buildReferences(message.references, message.messageIdHeader) || undefined,
+      threadId: isRealMessage && message.threadId ? message.threadId : undefined,
       forwardAttachmentsFrom: hasAttachments ? message.id : undefined,
     }, "転送", (sentData) => {
       // 転送先が既存の個別チャット1件だけの場合は、そのチャットにすぐ反映されるようローカルにも追加する

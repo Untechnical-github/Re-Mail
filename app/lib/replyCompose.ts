@@ -60,12 +60,23 @@ export function signatureToText(html: string): string {
     .trim();
 }
 
+// 引用の見出しや転送の見出しに出す宛先の書き方。純正 Gmail は表示名を引用符で囲まず
+// 「山田 太郎 <a@example.com>」、表示名が無ければ「<a@example.com>」と書く
+export function displayAddress(entry: string): string {
+  const { name, address } = parseAddress(entry);
+  return name ? `${name} <${address}>` : `<${address}>`;
+}
+
+export function displayAddressList(list: string): string {
+  return splitAddressList(list || "").map(displayAddress).join(", ");
+}
+
 // 日本語版 Gmail の引用の見出し「2026年1月1日(木) 10:00 山田 太郎 <a@example.com>:」
 export function formatQuoteHeader(date: Date, from: string): string {
   const weekday = ["日", "月", "火", "水", "木", "金", "土"][date.getDay()];
   const hh = String(date.getHours()).padStart(2, "0");
   const mm = String(date.getMinutes()).padStart(2, "0");
-  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日(${weekday}) ${hh}:${mm} ${from}:`;
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日(${weekday}) ${hh}:${mm} ${displayAddress(from)}:`;
 }
 
 export type ReplyComposeInput = {
@@ -74,28 +85,31 @@ export type ReplyComposeInput = {
   quote?: { header: string; originalText: string; originalHtml?: string };
 };
 
-// テキスト版と HTML 版の本文を作る。並びは純正 Gmail と同じ「本文 → 署名（-- の後）→ 引用」
+// 署名の HTML。純正 Gmail が付けるものと同じ形
+function signatureHtmlBlock(sig: string): string {
+  return `<div><br clear="all"></div><div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature">${sig}</div>`;
+}
+
+// テキスト版と HTML 版の本文を作る。並びは純正 Gmail の既定（「返信で元のメッセージの前に署名を挿入」がオフ）と
+// 同じ「本文 → 引用 → 署名（-- の後）」。実際に純正 Gmail から送ったメールのソースと比べて合わせてある
 export function composeReplyBodies(input: ReplyComposeInput): { text: string; html: string } {
   const sig = (input.signatureHtml || "").trim();
   const sigText = sig ? signatureToText(sig) : "";
 
   let text = input.text;
-  if (sigText) text += `\n\n-- \n${sigText}`;
   if (input.quote) {
-    const quoted = input.quote.originalText.split(/\r?\n/).map(l => `> ${l}`).join("\n");
-    text += `\n\n${input.quote.header}\n${quoted}`;
+    const quoted = input.quote.originalText.replace(/\s+$/, "").split(/\r?\n/).map(l => (l ? `> ${l}` : ">")).join("\n");
+    text += `\n\n\n${input.quote.header}\n\n${quoted}\n>\n`;
   }
+  if (sigText) text += `\n\n-- \n${sigText}\n`;
 
-  let html = `<div dir="ltr">${textToHtml(input.text)}`;
-  if (sig) {
-    html += `<br clear="all"><div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature">${sig}</div>`;
-  }
-  html += "</div>";
+  let html = `<div dir="ltr">${textToHtml(input.text)}</div>`;
   if (input.quote) {
     const original = input.quote.originalHtml?.trim() ? input.quote.originalHtml : textToHtml(input.quote.originalText);
     html += `<br><div class="gmail_quote gmail_quote_container"><div dir="ltr" class="gmail_attr">${escapeHtml(input.quote.header)}<br></div>`
       + `<blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">${original}</blockquote></div>`;
   }
+  if (sig) html += signatureHtmlBlock(sig);
   return { text, html };
 }
 
@@ -123,37 +137,57 @@ export function formatForwardDate(date: Date): string {
 }
 
 export type ForwardComposeInput = {
+  // 転送に添える本文（Re:Mail の転送画面では今は書けないので、空のことが多い）
+  text?: string;
   signatureHtml?: string;
   original: { from: string; date: Date; subject: string; to: string; cc?: string; text: string; html?: string };
 };
 
-// 転送の本文を純正 Gmail と同じ並び（署名 → 「---------- Forwarded message ---------」の見出し → 元の本文）で作る。
-// 見出しの文言は日本語版 Gmail でも英語のまま
+// 転送の見出しの宛先（HTML）。純正 Gmail と同じく「表示名 &lt;アドレス&gt;」、表示名が無ければ「 &lt;アドレス&gt;」
+function forwardAddressHtml(list: string): string {
+  return splitAddressList(list || "").map(e => {
+    const { name, address } = parseAddress(e);
+    return `${escapeHtml(name)} &lt;${escapeHtml(address)}&gt;`;
+  }).join(", ");
+}
+
+// 転送の本文を純正 Gmail と同じ並び（本文 →「---------- Forwarded message ---------」の見出し → 元の本文 → 署名）で作る。
+// 見出しの文言は日本語版 Gmail でも英語のまま。実際に純正 Gmail から送ったメールのソースと比べて合わせてある
 export function composeForwardBodies(input: ForwardComposeInput): { text: string; html: string } {
   const o = input.original;
   const sig = (input.signatureHtml || "").trim();
+  const body = input.text || "";
   const headerLines = [
     "---------- Forwarded message ---------",
-    `From: ${o.from}`,
+    `From: ${displayAddress(o.from)}`,
     `Date: ${formatForwardDate(o.date)}`,
     `Subject: ${o.subject}`,
-    `To: ${o.to}`,
-    ...(o.cc ? [`Cc: ${o.cc}`] : []),
+    `To: ${displayAddressList(o.to)}`,
+    ...(o.cc ? [`Cc: ${displayAddressList(o.cc)}`] : []),
   ];
 
-  let text = "";
-  if (sig) text += `\n\n-- \n${signatureToText(sig)}`;
-  text += `\n\n${headerLines.join("\n")}\n\n\n${o.text}`;
+  let text = `${body}\n\n\n${headerLines.join("\n")}\n\n\n${o.text.replace(/\s+$/, "")}\n`;
+  if (sig) text += `\n\n-- \n${signatureToText(sig)}\n`;
 
-  let html = '<div dir="ltr">';
-  if (sig) html += `<br clear="all"><div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature">${sig}</div>`;
-  html += `<br><div class="gmail_quote gmail_quote_container"><div dir="ltr" class="gmail_attr">${headerLines.map(escapeHtml).join("<br>")}<br></div><br><br>`;
+  const from = parseAddress(o.from);
+  const headerHtml = [
+    "---------- Forwarded message ---------",
+    `From: <strong class="gmail_sendername" dir="auto">${escapeHtml(from.name || from.address)}</strong> <span dir="auto">&lt;${escapeHtml(from.address)}&gt;</span>`,
+    `Date: ${escapeHtml(formatForwardDate(o.date))}`,
+    `Subject: ${escapeHtml(o.subject)}`,
+    `To: ${forwardAddressHtml(o.to)}`,
+    ...(o.cc ? [`Cc: ${forwardAddressHtml(o.cc)}`] : []),
+  ].join("<br>");
+
+  let original: string;
   if (o.html && o.html.trim()) {
     const { inner, attrs } = extractHtmlBodyInner(o.html);
-    html += `<div${attrs}>${inner}</div>`;
+    original = `<div${attrs}>${inner}</div>`;
   } else {
-    html += textToHtml(o.text);
+    original = `<div dir="ltr">${textToHtml(o.text)}</div>`;
   }
+  let html = `<div dir="ltr">${textToHtml(body)}<div><br><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">${headerHtml}<br></div><br><br>${original}\n</div>`;
+  if (sig) html += signatureHtmlBlock(sig);
   html += "</div></div>";
   return { text, html };
 }
