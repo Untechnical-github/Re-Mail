@@ -1007,8 +1007,8 @@ export default function Home() {
                       />
                       {state.useIconLabels ? <PaperclipIcon className="w-5 h-5" /> : <span className="text-xs font-bold">添付</span>}
                     </label>
-                    <textarea disabled={isSendDisabled} placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || actions.roomLocalKey(state.selectedSender!)}`} rows={state.isMobile ? 1 : 2} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
-                    <button title="送信" onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={isSendDisabled || state.isSending || !state.replyBody.trim()} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
+                    <textarea disabled={isSendDisabled || !state.isDraftReady} placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || actions.roomLocalKey(state.selectedSender!)}`} rows={state.isMobile ? 1 : 2} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
+                    <button title="送信" onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={isSendDisabled || state.isSending || !state.isDraftReady || !state.replyBody.trim()} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
                       {state.isSending ? "..." : (state.useIconLabels ? <SendIcon className="w-4 h-4" /> : "送信")}
                     </button>
                   </div>

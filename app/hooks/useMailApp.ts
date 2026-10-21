@@ -4,6 +4,7 @@ import { ChatConfig, MessageConfig, SelectionMode, ModalState, ModalTargetMode, 
 import { Email } from "../types/email";
 import { getCachedAttachment, setCachedAttachment, attachmentCacheKey, attachmentIdCacheKey } from "../lib/attachmentCache";
 import { clearDeviceData, clearAccountDeviceData, DEVICE_OWNER_KEY } from "../lib/deviceData";
+import { loadDraft, saveDraft, removeDraft } from "../lib/drafts";
 import { isMineEmail, getFindBarBoxKey, FilterCriteria, messageMatchesFilter, ChatListTab, chatConfigTab } from "../lib/filterMatch";
 import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
@@ -313,6 +314,42 @@ export function useMailApp() {
   // オン・オフの値ではなく「どこでオンにしたか」を持つ
   const [replyAllKey, setReplyAllKey] = useState<string | null>(null);
 
+  // 入力中の返信はチャットごとの下書きとして端末に保存し、チャットを開いたら読み戻す（送信の失敗・通信断・
+  // 再読み込みで失わないため。また、別のチャットで書きかけた文が今のチャットに残って誤送信されないため）。
+  // draftReadyRoom が今のチャットになるまでは、入力欄と送信ボタンを使えないようにする
+  const [draftReadyRoom, setDraftReadyRoom] = useState<string | null>(null);
+  const selectedSenderRef = useRef(selectedSender);
+  useEffect(() => { selectedSenderRef.current = selectedSender; }, [selectedSender]);
+  useEffect(() => {
+    const room = selectedSender;
+    let cancelled = false;
+    void (room ? loadDraft(room) : Promise.resolve(null)).then(d => {
+      if (cancelled) return;
+      setReplySubject(d?.subject || "");
+      setReplyBody(d?.body || "");
+      setReplyToMessage(d?.replyToMessage || null);
+      setReplyAttachments(d?.attachments || []);
+      setAttachError(null);
+      setDraftReadyRoom(room);
+    });
+    return () => { cancelled = true; };
+  }, [selectedSender]);
+  const draftSaveFailedRef = useRef(false);
+  useEffect(() => {
+    const room = selectedSender;
+    if (!room || draftReadyRoom !== room) return;
+    // 打つたびに書き込まないよう、少し待ってからまとめて保存する
+    const timer = setTimeout(() => {
+      void saveDraft(room, { subject: replySubject, body: replyBody, replyToMessage, attachments: replyAttachments, updatedAt: Date.now() }).then(ok => {
+        if (!ok && !draftSaveFailedRef.current) {
+          draftSaveFailedRef.current = true;
+          showErrorToast("入力中の内容を端末に保存できませんでした。再読み込みすると消えるので、送信するまで画面を閉じないでください。");
+        }
+      });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [selectedSender, draftReadyRoom, replySubject, replyBody, replyToMessage, replyAttachments]);
+
   const [hasMouse, setHasMouse] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [selectionMode, setSelectionMode] = useState<SelectionMode>("none");
@@ -472,9 +509,7 @@ export function useMailApp() {
         modal,
         renameInput,
         moveDestination,
-        replySubject,
-        replyBody,
-        replyToMessage: replyToMessage ?? null,
+        // 入力中の返信はチャットごとの下書き（app/lib/drafts.ts）に保存するので、ここには入れない
         emailModalEmail: emailModal?.email ?? null,
         attachmentModal: attachmentModal ? {
           filename: attachmentModal.filename,
@@ -1143,9 +1178,6 @@ export function useMailApp() {
               if (ui.modal) setModal(ui.modal);
               if (ui.renameInput) setRenameInput(ui.renameInput);
               if (ui.moveDestination) setMoveDestination(ui.moveDestination);
-              if (ui.replySubject) setReplySubject(ui.replySubject);
-              if (ui.replyBody) setReplyBody(ui.replyBody);
-              if (ui.replyToMessage) setReplyToMessage(ui.replyToMessage);
               if (ui.emailModalEmail) openEmailModal(ui.emailModalEmail);
               if (ui.attachmentModal) openAttachmentModal(ui.attachmentModal);
             }
@@ -2367,7 +2399,12 @@ export function useMailApp() {
         sentAttachmentsData.forEach((a, idx) => {
           setCachedAttachment(attachmentCacheKey(sendAccountEmail, sentId, idx, a.filename, a.size), a.data);
         });
-        setEmails(prev => [sentFake, ...prev]); setReplySubject(""); setReplyBody(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null); setReplyAllKey(null);
+        setEmails(prev => [sentFake, ...prev]);
+        // 送れた分の下書きを消す。送信中に別のチャットへ移っていたら、そちらの入力欄は消さない
+        void removeDraft(sentRoom);
+        if (selectedSenderRef.current === sentRoom) {
+          setReplySubject(""); setReplyBody(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null); setReplyAllKey(null);
+        }
         // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）
         if (sentRoom && draftChatsRef.current.includes(sentRoom)) removeDraftChat(sentRoom);
         // 署名・送信元の設定が読めなかった場合は、純正と違う形（署名なし・既定の送信元）で送ったことを伝える
@@ -3140,6 +3177,7 @@ export function useMailApp() {
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
       replyNotFoundToast, errorToast, sendConfirm, replyAll, draftChats, activeChatTab,
+      isDraftReady: draftReadyRoom === selectedSender,
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
     actions: {

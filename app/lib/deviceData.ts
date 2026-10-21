@@ -3,6 +3,7 @@
 import localforage from "localforage";
 import { clearAttachmentCaches, removeAccountAttachmentCaches } from "./attachmentCache";
 import { clearPinnedCache, removePinnedCache } from "./pinnedCache";
+import { clearDrafts, removeAccountDrafts } from "./drafts";
 import { decodeRoomKey } from "./roomKey";
 
 // 個人の情報を含まない見た目の設定だけは、ログアウトしても残す
@@ -27,6 +28,7 @@ export async function clearDeviceData(): Promise<void> {
   await Promise.all([
     clearAttachmentCaches(),
     clearPinnedCache(),
+    clearDrafts(),
     localforage.clear().catch(() => {}),
   ]);
 }
@@ -49,8 +51,8 @@ export async function clearAccountDeviceData(account: string): Promise<void> {
       localStorage.removeItem("remail_selected_sender");
       localStorage.removeItem("remail_scroll_main");
     }
-    // 開いていた画面の状態（入力中の返信など）は、そのアカウントのものかを見分けにくいので丸ごと消す
+    // 開いていた画面の状態（開いていたメール・選択など）は、そのアカウントのものかを見分けにくいので丸ごと消す
     localStorage.removeItem("remail_ui_state");
   } catch { /* 読めない・壊れた値は無視する */ }
-  await Promise.all([removeAccountAttachmentCaches(account), removePinnedCache(account)]);
+  await Promise.all([removeAccountAttachmentCaches(account), removePinnedCache(account), removeAccountDrafts(account)]);
 }
