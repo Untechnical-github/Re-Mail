@@ -1069,6 +1069,7 @@ export function useMailApp() {
           // signOut のサーバー側処理（セッションCookie破棄）が終わる前に遷移すると、
           // 古いセッションが残ったままリロードされ無限ループになるため必ず完了を待つ
           await signOut({ redirect: false });
+          // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- ログアウト後は画面の状態を残さないよう、ページを読み込み直す必要がある
           window.location.href = "/";
         }
         return { success: false, emails: currentEmailsState };

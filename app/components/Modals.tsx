@@ -1420,6 +1420,7 @@ export function Modals({ app }: { app: MailAppHook }) {
                           <div className="flex items-center gap-2 flex-shrink-0">
                             {needsReauth && (
                               <button
+                                // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- API ルートが Google のログイン画面へ転送するので、ページごと移動する必要がある
                                 onClick={() => { window.location.href = "/api/accounts/connect"; }}
                                 className="text-xs font-bold text-[#FEE75C] hover:text-white px-2 flex items-center gap-1"
                                 title="連携が切れています。再連携してください"
@@ -1449,6 +1450,7 @@ export function Modals({ app }: { app: MailAppHook }) {
 
             <div className="flex flex-col gap-2">
               <button
+                // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- API ルートが Google のログイン画面へ転送するので、ページごと移動する必要がある
                 onClick={() => { window.location.href = "/api/accounts/connect"; }}
                 className="w-full text-left px-3 py-2.5 rounded bg-[#2B2D31] text-sm text-gray-200 hover:bg-[#35373C] transition font-bold"
               >

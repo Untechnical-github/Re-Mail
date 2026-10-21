@@ -2,10 +2,8 @@ import type { NextConfig } from "next";
 import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
 
 const nextConfig: NextConfig = {
-  // デプロイ時の厳格チェックをパスする設定
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
+  // 型チェックは CI で npx tsc --noEmit として別に行うので、ビルドでは止めない
+  // （Next.js 16 で eslint の設定はなくなった。Lint も CI で npm run lint として別に行う）
   typescript: {
     ignoreBuildErrors: true,
   },
