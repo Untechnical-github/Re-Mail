@@ -3,6 +3,8 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { errorMessage } from "../../lib/errorMessage";
 import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせる
 import { logError } from "../../lib/safeLog";
+import { decryptSecret } from "../../lib/tokenCrypto";
+import { revealConfigName } from "../../lib/configCrypto";
 
 
 export async function GET(request: Request) {
@@ -16,7 +18,12 @@ export async function GET(request: Request) {
     const { results } = accountEmail
       ? await db.prepare("SELECT * FROM chat_configs WHERE user_email = ? AND account_email = ?").bind(session.user.email, accountEmail).all()
       : await db.prepare("SELECT * FROM chat_configs WHERE user_email = ?").bind(session.user.email).all();
-    return NextResponse.json({ configs: results });
+    // 暗号化して保存した値（相手の名前を含む roomId など）を、画面に返す前に復号する
+    const configs = await Promise.all((results as { custom_name?: string | null }[]).map(async (row) => ({
+      ...row,
+      custom_name: await revealConfigName(row.custom_name, decryptSecret),
+    })));
+    return NextResponse.json({ configs });
   } catch (error: unknown) {
     logError("config.get", {}, error);
     return NextResponse.json({ error: "Database Error", details: errorMessage(error) }, { status: 500 });
