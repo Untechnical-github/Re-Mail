@@ -2256,19 +2256,22 @@ export function useMailApp() {
 
   // 返信・転送で引用するために、元のメールの HTML 本文を取り直す（画面用のテキストは整形済みで情報が欠けるため）。
   // 取れなければ null を返し、呼び出し側はテキスト版を使う
-  const fetchOriginalHtml = async (message: Email, account: string): Promise<string | null> => {
-    if (typeof message.id !== "string" || message.id.startsWith("fake-") || message.isMissing) return null;
+  // 引用・転送に使う元のメールの全体（HTML とテキスト。どちらも引用部分を含み、画面用の整形をしていないもの）
+  const fetchOriginalFull = async (message: Email, account: string): Promise<{ html: string | null; text: string | null }> => {
+    if (typeof message.id !== "string" || message.id.startsWith("fake-") || message.isMissing) return { html: null, text: null };
     try {
-      const params = new URLSearchParams({ messageId: message.id, html: "true" });
+      const params = new URLSearchParams({ messageId: message.id, html: "true", full: "true" });
       if (account !== (session?.user?.email || "")) params.append("accountEmail", account);
       // 古い応答を使わないよう、ブラウザのキャッシュを通さない
       const res = await fetch(`/api/emails?${params.toString()}`, { cache: "no-store" });
-      if (!res.ok) return null;
-      const data = (await res.json()) as { htmlBody?: string | null };
-      return data.htmlBody || null;
+      if (!res.ok) return { html: null, text: null };
+      const data = (await res.json()) as { htmlBody?: string | null; textBody?: string | null };
+      // HTML しか無いメールでは textBody に HTML が入るので、テキストとしては使わない
+      const text = data.textBody && !/<\/?(html|body|div|p|br)\b/i.test(data.textBody) ? data.textBody : null;
+      return { html: data.htmlBody || null, text };
     } catch (e) {
       logWarn("original.fetchHtml", {}, e);
-      return null;
+      return { html: null, text: null };
     }
   };
   const replyAllScope = `${selectedSender || ""}|${replyToMessage?.id || ""}`;
@@ -2409,10 +2412,12 @@ export function useMailApp() {
 
       let quote: { header: string; originalText: string; originalHtml?: string } | undefined;
       if (replyToMessage) {
-        const originalHtml = await fetchOriginalHtml(replyToMessage, sendAccountEmail);
+        // 純正 Gmail と同じく、元のメールのやり取り全体（さらに前の引用も含む）を引用する
+        const original = await fetchOriginalFull(replyToMessage, sendAccountEmail);
+        const originalHtml = original.html;
         quote = {
           header: formatQuoteHeader(new Date(replyToMessage.date), replyToMessage.from),
-          originalText: replyToMessage.body || "",
+          originalText: original.text || replyToMessage.body || "",
           originalHtml: originalHtml ? extractHtmlBodyInner(originalHtml).inner : undefined,
         };
       }
@@ -2514,10 +2519,11 @@ export function useMailApp() {
     const fromHeader = alias && !alias.isPrimary ? (alias.displayName ? `${alias.displayName} <${alias.sendAsEmail}>` : alias.sendAsEmail) : undefined;
 
     // 画面用のテキストは整形済みで情報が欠けるため、元の HTML 本文を取り直してそのまま使う
-    const originalHtml = await fetchOriginalHtml(message, sendAccountEmail);
+    const originalFull = await fetchOriginalFull(message, sendAccountEmail);
+    const originalHtml = originalFull.html;
     const bodies = composeForwardBodies({
       signatureHtml: alias?.signature,
-      original: { from: message.from || "", date: new Date(message.date), subject: message.subject || "", to: message.to || "", cc: message.cc, text: message.body || "", html: originalHtml || undefined },
+      original: { from: message.from || "", date: new Date(message.date), subject: message.subject || "", to: message.to || "", cc: message.cc, text: originalFull.text || message.body || "", html: originalHtml || undefined },
     });
     const bodyText = bodies.text;
     const bodyHtml = bodies.html;
@@ -2530,7 +2536,8 @@ export function useMailApp() {
       inReplyTo: message.messageIdHeader,
       references: buildReferences(message.references, message.messageIdHeader) || undefined,
       threadId: isRealMessage && message.threadId ? message.threadId : undefined,
-      forwardAttachmentsFrom: hasAttachments ? message.id : undefined,
+      // 本文中の画像（cid:）だけがあるメールでも、サーバーに元のメールから取り直させる
+      forwardAttachmentsFrom: isRealMessage && (hasAttachments || /cid:/i.test(originalHtml || "")) ? message.id : undefined,
     }, "転送", (sentData) => {
       // 転送先が既存の個別チャット1件だけの場合は、そのチャットにすぐ反映されるようローカルにも追加する
       // （複数宛先やグループ・新規アドレスの場合は、対応する単一のルームが存在しないため追加しない）

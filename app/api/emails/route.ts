@@ -5,7 +5,8 @@ import { auth } from "../../../auth";
 import { getValidAccessToken } from "../../lib/googleToken";
 import { encryptSecret, decryptSecret, isEncrypted } from "../../lib/tokenCrypto";
 import { buildMimeSegments, buildGmailUploadBody, decodeMimeHeader } from "../../lib/mime";
-import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, extractAttachments, stripHtmlQuote, looksLikeForward, parseMessageDetail } from "../../lib/messageParse";
+import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, getTextBody, extractAttachments, extractContentIdParts, referencesContentId, stripHtmlQuote, looksLikeForward, parseMessageDetail } from "../../lib/messageParse";
+import type { MimeInlinePart } from "../../lib/mime";
 import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
 import { logError, logWarn, logInfo } from "../../lib/safeLog";
 
@@ -83,12 +84,13 @@ async function postSendOnce(upload: { body: Uint8Array<ArrayBuffer>; contentType
 }
 
 type ForwardAttachmentsResult =
-  | { ok: true; attachments: { filename: string; mimeType: string; data: string }[] }
+  | { ok: true; attachments: { filename: string; mimeType: string; data: string }[]; inline: MimeInlinePart[] }
   // 失敗した段階・HTTP ステータス・Gmail の理由コードだけを持つ（個人情報は入れない）。原因を追えるよう画面側にも返す
   | { ok: false; stage: "list" | "tooLarge" | "get" | "empty" | "exception"; status?: number; reason?: string };
 
-// 転送する元のメールの添付を Gmail から取り直す。合計が 25MB を超える、または1つでも取れない場合は失敗
-async function loadForwardAttachments(accessToken: string, messageId: string): Promise<ForwardAttachmentsResult> {
+// 転送する元のメールの添付を Gmail から取り直す。合計が 25MB を超える、または1つでも取れない場合は失敗。
+// 本文の HTML が cid: で参照している画像（本文中の画像）は、添付ではなくインライン画像として返す（純正 Gmail と同じ）
+async function loadForwardAttachments(accessToken: string, messageId: string, bodyHtml: string): Promise<ForwardAttachmentsResult> {
   const auth = { headers: { Authorization: `Bearer ${accessToken}` } };
   const base = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`;
   const fail = async (stage: "list" | "get", res: Response): Promise<ForwardAttachmentsResult> => {
@@ -99,21 +101,36 @@ async function loadForwardAttachments(accessToken: string, messageId: string): P
   try {
     const msgRes = await fetchWithRetry(`${base}?fields=payload`, auth);
     if (!msgRes.ok) return fail("list", msgRes);
-    const list = extractAttachments(((await msgRes.json()) as GmailMessage).payload);
-    const total = list.reduce((sum, a) => sum + (a.size || 0), 0);
+    const payload = ((await msgRes.json()) as GmailMessage).payload;
+    const inlineList = extractContentIdParts(payload).filter(p => referencesContentId(bodyHtml, p.contentId));
+    const inlineIds = new Set(inlineList.map(p => p.attachmentId));
+    // 本文から参照される画像は、添付の一覧からは外す（同じ画像が添付とインラインに二重に付かないように）
+    const list = extractAttachments(payload).filter(a => !inlineIds.has(a.attachmentId));
+    const total = [...list, ...inlineList].reduce((sum, a) => sum + (a.size || 0), 0);
     if (total > 25 * 1024 * 1024) { logWarn("forward.attachments.tooLarge", { messageId, count: list.length }); return { ok: false, stage: "tooLarge" }; }
-    const out: { filename: string; mimeType: string; data: string }[] = [];
-    // 大きな添付を一度に何本も抱えないよう、1つずつ取る
-    for (const att of list) {
-      const res = await fetchWithRetry(`${base}/attachments/${encodeURIComponent(att.attachmentId)}`, auth);
+    const download = async (attachmentId: string): Promise<string | ForwardAttachmentsResult> => {
+      const res = await fetchWithRetry(`${base}/attachments/${encodeURIComponent(attachmentId)}`, auth);
       if (!res.ok) return fail("get", res);
       const data = ((await res.json()) as { data?: string }).data;
       if (!data) { logWarn("forward.attachments.empty", { messageId }); return { ok: false, stage: "empty" }; }
       // Gmail は base64url で返すので、MIME 用の通常の base64 に直す
       const b64 = data.replace(/-/g, "+").replace(/_/g, "/");
-      out.push({ filename: att.filename, mimeType: att.mimeType, data: b64 + "===".slice((b64.length + 3) % 4) });
+      return b64 + "===".slice((b64.length + 3) % 4);
+    };
+    const out: { filename: string; mimeType: string; data: string }[] = [];
+    // 大きな添付を一度に何本も抱えないよう、1つずつ取る
+    for (const att of list) {
+      const data = await download(att.attachmentId);
+      if (typeof data !== "string") return data;
+      out.push({ filename: att.filename, mimeType: att.mimeType, data });
     }
-    return { ok: true, attachments: out };
+    const inline: MimeInlinePart[] = [];
+    for (const part of inlineList) {
+      const data = await download(part.attachmentId);
+      if (typeof data !== "string") return data;
+      inline.push({ filename: part.filename, mimeType: part.mimeType, data, contentId: part.contentId });
+    }
+    return { ok: true, attachments: out, inline };
   } catch (e) {
     logError("forward.attachments", { messageId }, e);
     return { ok: false, stage: "exception" };
@@ -354,6 +371,12 @@ export async function GET(request: Request) {
       }
       const message = await detailRes.json();
       const rawHtml = getHtmlBody(message.payload);
+      // 返信・転送で引用するときは、元のメールを引用部分も含めて丸ごと返す（純正 Gmail はやり取り全体を入れ子で引用するため）。
+      // テキスト版も、画面用に整形する前のものを返す
+      if (searchParams.get("full") === "true") {
+        const rawText = message.payload ? getTextBody(message.payload) : "";
+        return NextResponse.json({ htmlBody: rawHtml.trim() || null, textBody: rawText || null, hasHtml: !!rawHtml.trim() });
+      }
       const subject = decodeMimeHeader(getHeader(message.payload?.headers || [], "Subject"));
       // HTML側の引用は "> " ではなく <blockquote>/gmail_quote タグで表現されるため、
       // 転送判定は先に引用を取り除いた「自分の文章」だけに対して行う。
@@ -448,22 +471,26 @@ export async function POST(request: Request) {
 
       // 転送: 元のメールの添付も純正 Gmail と同じく一緒に送る。添付の ID は取り直すたびに変わることがあるため、
       // クライアントから受け取らず、ここで元のメールから読み直す。1つでも取れなければ送らない（黙って添付を落とさない）
+      // 転送で、元のメールの本文中の画像（cid: で参照されるもの）
+      const inline: MimeInlinePart[] = [];
       const forwardFrom = bodyData.forwardAttachmentsFrom;
       if (typeof forwardFrom === "string" && forwardFrom) {
         if (!/^[0-9a-f]{6,32}$/i.test(forwardFrom)) return NextResponse.json({ error: "FORWARD_ATTACHMENTS_FAILED" }, { status: 400 });
-        const forwarded = await loadForwardAttachments(accessToken, forwardFrom);
+        const forwarded = await loadForwardAttachments(accessToken, forwardFrom, typeof bodyHtml === "string" ? bodyHtml : "");
         if (!forwarded.ok) {
           const { stage, status, reason } = forwarded;
           return NextResponse.json({ error: "FORWARD_ATTACHMENTS_FAILED", stage, status, reason }, { status: 502 });
         }
         attachments.push(...forwarded.attachments);
+        inline.push(...forwarded.inline);
       }
 
       // 添付ファイルの合計サイズをサーバー側でも検証する（upload エンドポイントの上限はメール全体で
       // 35MB。添付は base64 で約1.37倍に膨らむため、純正 Gmail と同じ 25MB を上限にする）
       const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-      if (attachments.length > 0) {
-        const totalBytes = attachments.reduce((sum, a) => sum + Math.floor(((a.data || "").length * 3) / 4), 0);
+      if (attachments.length > 0 || inline.length > 0) {
+        // 本文中の画像（インライン）も合計に入れる
+        const totalBytes = [...attachments, ...inline].reduce((sum, a) => sum + Math.floor(((a.data || "").length * 3) / 4), 0);
         if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
           return NextResponse.json({ error: "Attachments too large", details: { totalBytes, limit: MAX_TOTAL_ATTACHMENT_BYTES } }, { status: 413 });
         }
@@ -483,6 +510,7 @@ export async function POST(request: Request) {
         text: body || (bodyHtml ? undefined : ""),
         html: bodyHtml || undefined,
         attachments,
+        inline,
         inReplyTo: typeof inReplyTo === "string" ? inReplyTo : undefined,
         references: typeof references === "string" ? references : undefined,
         // エイリアスから送るときだけ From を付ける（付けなければ Gmail が既定の送信元を純正と同じ形で入れる）。

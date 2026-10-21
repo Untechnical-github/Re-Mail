@@ -110,6 +110,26 @@ export function extractAttachments(payload: GmailMessagePart | undefined): Array
   return results;
 }
 
+// Content-ID を持つパート（HTML 本文から cid: で参照される画像など）。転送で本文中の画像を引き継ぐために使う
+export function extractContentIdParts(payload: GmailMessagePart | undefined): Array<{ filename: string; mimeType: string; size: number; attachmentId: string; contentId: string }> {
+  const results: Array<{ filename: string; mimeType: string; size: number; attachmentId: string; contentId: string }> = [];
+  walkParts(payload, (part) => {
+    if (!part.body?.attachmentId) return;
+    const raw = (part.headers || []).find((h) => h.name?.toLowerCase() === "content-id")?.value || "";
+    const contentId = raw.trim().replace(/^<|>$/g, "");
+    if (!contentId) return;
+    results.push({ filename: part.filename || contentId, mimeType: part.mimeType || "application/octet-stream", size: part.body.size || 0, attachmentId: part.body.attachmentId, contentId });
+  });
+  return results;
+}
+
+// HTML が cid: でその画像を参照しているか（大文字小文字は区別しない。URL エンコードされた形も見る）
+export function referencesContentId(html: string, contentId: string): boolean {
+  const h = (html || "").toLowerCase();
+  const id = contentId.toLowerCase();
+  return h.includes(`cid:${id}`) || h.includes(`cid:${encodeURIComponent(id).toLowerCase()}`);
+}
+
 // HTML 本文の <a href="http..."> から「リンクの文字 → URL」を取り出す。
 // 閉じタグの無い <a> が大量にあると正規表現では文末まで何度も探し直して固まるため、indexOf で前から1回なめる
 export function extractHtmlLinks(html: string): Array<{text: string, href: string}> {

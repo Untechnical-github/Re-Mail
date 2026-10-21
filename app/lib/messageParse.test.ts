@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   LIMITS, TRUNCATED_NOTICE, getTextBody, getHtmlBody, extractAttachments, extractHtmlLinks, stripHtmlQuote,
   looksLikeForward, stripLooseCssRules, removeTagBlocks, cleanseBody, parseMessageDetail, type GmailMessagePart,
+  extractContentIdParts, referencesContentId,
 } from "./messageParse";
 
 const b64url = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, "-").replace(/\//g, "_");
@@ -179,5 +180,25 @@ describe("本文の charset（UTF-8 として正しくないときだけ、書�
 
   it("charset が無ければ UTF-8 として読む", () => {
     expect(getTextBody({ mimeType: "text/plain", body: { data: b64url(Array.from(new TextEncoder().encode("あい"))) } })).toBe("あい");
+  });
+});
+
+describe("extractContentIdParts / referencesContentId", () => {
+  const payload = {
+    mimeType: "multipart/related",
+    parts: [
+      { mimeType: "text/html", body: { data: "" } },
+      { mimeType: "image/png", filename: "blue.png", headers: [{ name: "Content-ID", value: "<blue_square@example>" }, { name: "Content-Disposition", value: "inline" }], body: { attachmentId: "att1", size: 10 } },
+      { mimeType: "application/pdf", filename: "a.pdf", headers: [], body: { attachmentId: "att2", size: 20 } },
+    ],
+  };
+
+  it("Content-ID を持つパートだけを、<> を外した ID つきで返す", () => {
+    expect(extractContentIdParts(payload)).toEqual([{ filename: "blue.png", mimeType: "image/png", size: 10, attachmentId: "att1", contentId: "blue_square@example" }]);
+  });
+
+  it("HTML が cid: で参照しているかを見る", () => {
+    expect(referencesContentId('<img src="cid:Blue_Square@example">', "blue_square@example")).toBe(true);
+    expect(referencesContentId('<img src="cid:other">', "blue_square@example")).toBe(false);
   });
 });

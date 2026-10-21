@@ -210,3 +210,22 @@ describe("decodeMimeHeader の charset", () => {
     expect(decodeMimeHeader(`=?x-unknown?B?${b64(Array.from(new TextEncoder().encode("あ")))}?=`)).toBe("あ");
   });
 });
+
+describe("インライン画像（multipart/related）", () => {
+  it("添付が無ければ related の中に本文と画像、添付があれば mixed の中に related を入れる", () => {
+    const inline = [{ filename: "blue.png", mimeType: "image/png", data: "iVBORw0KGgo=", contentId: "<blue_square@example>" }];
+    const a = new TextDecoder().decode(assembleBytes(buildMimeSegments({ to: "a@example.com", subject: "s", text: "t", html: '<img src="cid:blue_square@example">', inline })));
+    expect(a).toMatch(/^Content-Type: multipart\/related; boundary=/m);
+    expect(a).toContain("Content-ID: <blue_square@example>");
+    expect(a).toContain("Content-Disposition: inline;");
+    const b = new TextDecoder().decode(assembleBytes(buildMimeSegments({ to: "a@example.com", subject: "s", text: "t", html: "x", inline, attachments: [{ filename: "a.pdf", mimeType: "application/pdf", data: "QQ==" }] })));
+    expect(b.indexOf("multipart/mixed")).toBeLessThan(b.indexOf("multipart/related"));
+    expect(b.indexOf("multipart/related")).toBeLessThan(b.indexOf("multipart/alternative"));
+  });
+
+  it("Content-ID に改行や記号を入れられてもヘッダーを壊さない", () => {
+    const inline = [{ filename: "x.png", mimeType: "image/png", data: "QQ==", contentId: "a>\r\nBcc: evil@example.com" }];
+    const t = new TextDecoder().decode(assembleBytes(buildMimeSegments({ to: "a@example.com", subject: "s", html: "x", inline })));
+    expect(t).not.toMatch(/^Bcc:/m);
+  });
+});

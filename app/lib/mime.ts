@@ -3,6 +3,8 @@
 // ここで作るメールは全体を 7bit の ASCII だけにする（日本語はヘッダーは RFC 2047、本文は base64）。
 
 export type MimeAttachment = { filename: string; mimeType: string; data: string /* base64 */ };
+// HTML 本文から cid: で参照する画像（転送で元のメールの本文中の画像を引き継ぐときに使う）
+export type MimeInlinePart = MimeAttachment & { contentId: string /* <> なし */ };
 
 export type MimeInput = {
   // 省略すると Gmail がアカウントの既定の送信元を入れる（純正と同じ）。エイリアスから送るときだけ指定する
@@ -15,6 +17,7 @@ export type MimeInput = {
   text?: string;
   html?: string;
   attachments?: MimeAttachment[];
+  inline?: MimeInlinePart[];
   inReplyTo?: string;
   references?: string;
   messageId?: string;
@@ -163,6 +166,38 @@ function bodySegments(text: string | undefined, html: string | undefined): MimeS
   return textPart("text/plain", text || "");
 }
 
+// Content-ID として安全な文字だけにする（ヘッダーを壊されないように）
+function safeContentId(id: string): string {
+  return stripLineBreaks(id).replace(/^<|>$/g, "").replace(/[^\w.@+-]/g, "");
+}
+
+// 本文と、本文から参照されるインライン画像（multipart/related）。純正 Gmail が本文中に画像のあるメールを送るときと同じ形
+function bodyWithInlineSegments(text: string | undefined, html: string | undefined, inline: MimeInlinePart[]): MimeSegment[] {
+  if (inline.length === 0 || !html) return bodySegments(text, html);
+  const b = newBoundary();
+  const segments: MimeSegment[] = [
+    `Content-Type: multipart/related; boundary="${b}"${CRLF}${CRLF}`,
+    `--${b}${CRLF}`,
+    ...bodySegments(text, html),
+  ];
+  for (const part of inline) {
+    const { typeParam, dispositionParam } = attachmentNameParams(part.filename);
+    const cid = safeContentId(part.contentId);
+    segments.push(
+      `--${b}${CRLF}`,
+      `Content-Type: ${safeMimeType(part.mimeType)}; ${typeParam}${CRLF}`,
+      `Content-Disposition: inline; ${dispositionParam}${CRLF}`,
+      `Content-Transfer-Encoding: base64${CRLF}`,
+      `Content-ID: <${cid}>${CRLF}`,
+      `X-Attachment-Id: ${cid}${CRLF}${CRLF}`,
+      { base64: cleanBase64(part.data || "") },
+      CRLF,
+    );
+  }
+  segments.push(`--${b}--${CRLF}`);
+  return segments;
+}
+
 export function buildMimeSegments(input: MimeInput): MimeSegment[] {
   const headers: string[] = [];
   // Date は付けない。純正 Gmail と同じ形式（送信者のタイムゾーン）で Gmail 側が付ける
@@ -182,8 +217,9 @@ export function buildMimeSegments(input: MimeInput): MimeSegment[] {
   if (input.replyTo && input.replyTo.trim()) headers.push(`Reply-To: ${formatAddressHeader(input.replyTo)}`);
 
   const attachments = input.attachments || [];
+  const inline = input.inline || [];
   if (attachments.length === 0) {
-    return [headers.join(CRLF) + CRLF, ...bodySegments(input.text, input.html)];
+    return [headers.join(CRLF) + CRLF, ...bodyWithInlineSegments(input.text, input.html, inline)];
   }
 
   const b = newBoundary();
@@ -191,7 +227,7 @@ export function buildMimeSegments(input: MimeInput): MimeSegment[] {
     headers.join(CRLF) + CRLF,
     `Content-Type: multipart/mixed; boundary="${b}"${CRLF}${CRLF}`,
     `--${b}${CRLF}`,
-    ...bodySegments(input.text, input.html),
+    ...bodyWithInlineSegments(input.text, input.html, inline),
   ];
   for (const att of attachments) {
     const { typeParam, dispositionParam } = attachmentNameParams(att.filename);
