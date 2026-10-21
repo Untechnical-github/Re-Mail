@@ -4,6 +4,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { auth } from "../../../auth";
 import { getValidAccessToken } from "../../lib/googleToken";
 import { encryptSecret, decryptSecret, isEncrypted } from "../../lib/tokenCrypto";
+import { buildMimeSegments, buildGmailUploadBody } from "../../lib/mime";
 
 
 // Gmail API の生データ（必要なフィールドだけ）
@@ -114,34 +115,6 @@ function decodeBase64Url(base64Url: string) {
   } catch {
     return "";
   }
-}
-
-function encodeBase64(text: string) {
-  const bytes = new TextEncoder().encode(text);
-  // 添付ファイル同梱時はメッセージ全体が数MB〜十数MBになりうるため、1バイトずつ
-  // 文字列連結するのではなくチャンク単位でString.fromCharCodeを使う
-  // （前者はCPU時間・メモリの両面で大きな添付に対して非現実的に遅くなる）
-  let binString = "";
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binString += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binString);
-}
-
-// MIME本文中のbase64は1行76文字で折り返すのが仕様（RFC 2045）。折り返さなくても
-// 多くのメールクライアントは許容するが、Gmail自身が送信するメールと同じ形式に揃えておく
-function wrapBase64Lines(base64: string): string {
-  return base64.replace(/(.{76})/g, "$1\r\n");
-}
-
-// 添付ファイル名にASCII外の文字が含まれる場合のためのエンコード。
-// filename="..."（レガシー向けの素朴なフォールバック）と、RFC 2231準拠の
-// filename*=UTF-8''...（正しくUTF-8のファイル名を伝える方）の両方を付与する
-function encodeContentDispositionFilename(filename: string): string {
-  const asciiFallback = filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "'");
-  const encoded = encodeURIComponent(filename).replace(/'/g, "%27");
-  return `filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
 }
 
 // ★追加: Gmail特有の暗号(MIMEエンコード)を綺麗な日本語に解読するデコーダー
@@ -536,8 +509,8 @@ export async function POST(request: Request) {
       const { to, subject, body, bodyHtml, threadId, inReplyTo } = bodyData;
       const attachments = (bodyData.attachments || []) as { filename: string; mimeType: string; data: string }[];
 
-      // 添付ファイルの合計サイズをサーバー側でも検証する（Gmail messages.sendの実質的な上限は
-      // 35MB程度。base64化で約1.37倍に膨らむため、余裕を持って25MBを上限にする）
+      // 添付ファイルの合計サイズをサーバー側でも検証する（upload エンドポイントの上限はメール全体で
+      // 35MB。添付は base64 で約1.37倍に膨らむため、純正 Gmail と同じ 25MB を上限にする）
       const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
       if (attachments.length > 0) {
         const totalBytes = attachments.reduce((sum, a) => sum + Math.floor(((a.data || "").length * 3) / 4), 0);
@@ -546,69 +519,24 @@ export async function POST(request: Request) {
         }
       }
 
-      const formattedTo = (to || "").split(',').map((addr: string) => {
-        const match = addr.match(/^(.*?)(<[^>]+>)$/);
-        if (match) {
-          const namePart = match[1].trim().replace(/^"|"$/g, '').trim();
-          const emailPart = match[2].trim();
-          if (namePart) { return `=?utf-8?B?${encodeBase64(namePart)}?= ${emailPart}`; }
-          return emailPart;
-        }
-        return addr.trim();
-      }).join(', ');
+      // 転送など、元の HTML をそのまま保ちたい場合は bodyHtml を使い、テキスト版と一緒に
+      // multipart/alternative で送る（受信側が HTML を表示できない場合にも読めるように）
+      const segments = buildMimeSegments({
+        to: to || "",
+        subject: subject || "",
+        text: body || (bodyHtml ? undefined : ""),
+        html: bodyHtml || undefined,
+        attachments,
+        inReplyTo: typeof inReplyTo === "string" ? inReplyTo : undefined,
+      });
+      // raw を JSON に入れる通常の send は数MBで失敗するため、上限 35MB の upload エンドポイントに
+      // メール本体をそのまま送る（JSON 用に base64 で包み直さないので、サイズも約 1.37 倍に膨らまない）
+      const upload = buildGmailUploadBody(segments, typeof threadId === "string" && threadId ? threadId : undefined);
 
-      const encodedSubject = subject ? `=?utf-8?B?${encodeBase64(subject)}?=` : "";
-
-      const headerLines = [
-        `To: ${formattedTo || to || ""}`,
-        `Subject: ${encodedSubject}`,
-      ];
-      // In-Reply-To / References を設定しておくことで、返信メールのボディに
-      // 引用文を埋め込まなくても、チャットUI側で「どのメッセージへの返信か」を判定できる
-      const safeInReplyTo = typeof inReplyTo === "string" ? inReplyTo.replace(/[\r\n]/g, "").trim() : "";
-      if (safeInReplyTo) {
-        headerLines.push(`In-Reply-To: ${safeInReplyTo}`);
-        headerLines.push(`References: ${safeInReplyTo}`);
-      }
-
-      const bodyContentType = bodyHtml ? "text/html; charset=utf-8" : "text/plain; charset=utf-8";
-      // 転送メールなど、元のHTMLメールをそのまま保持して送りたい場合は bodyHtml を使う
-      // （Gmail転送と同じく体裁・情報の欠落を防ぐため、cleanseBodyで加工したテキストは使わない）
-      const bodyText = bodyHtml || body || "";
-
-      let rawMessage: string;
-      if (attachments.length > 0) {
-        // 添付ファイルがある場合は multipart/mixed で本文パート＋添付パートを組み立てる
-        const boundary = `remail_${crypto.randomUUID().replace(/-/g, "")}`;
-        headerLines.push("MIME-Version: 1.0", `Content-Type: multipart/mixed; boundary="${boundary}"`, "");
-        headerLines.push(`--${boundary}`, `Content-Type: ${bodyContentType}`, "", bodyText, "");
-        attachments.forEach(att => {
-          const mimeType = att.mimeType || "application/octet-stream";
-          const dispositionName = encodeContentDispositionFilename(att.filename || "attachment");
-          headerLines.push(
-            `--${boundary}`,
-            `Content-Type: ${mimeType}; name="${(att.filename || "attachment").replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "'")}"`,
-            "Content-Transfer-Encoding: base64",
-            `Content-Disposition: attachment; ${dispositionName}`,
-            "",
-            wrapBase64Lines(att.data || ""),
-            ""
-          );
-        });
-        headerLines.push(`--${boundary}--`);
-        rawMessage = headerLines.join("\r\n");
-      } else {
-        headerLines.push("MIME-Version: 1.0", `Content-Type: ${bodyContentType}`, "", bodyText);
-        rawMessage = headerLines.join("\r\n");
-      }
-
-      const encodedMessage = encodeBase64(rawMessage).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-      const requestBody: { raw: string; threadId?: string } = { raw: encodedMessage };
-      if (threadId) requestBody.threadId = threadId;
-
-      const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-        method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(requestBody),
+      const res = await fetchWithRetry("https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=multipart", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": upload.contentType },
+        body: upload.body,
       });
       
       if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

@@ -1,0 +1,142 @@
+import { describe, it, expect } from "vitest";
+import {
+  encodeHeaderText, splitAddressList, parseAddress, formatAddressHeader,
+  buildMimeSegments, assembleBytes, buildGmailUploadBody, cleanBase64, utf8ToBase64,
+} from "./mime";
+
+// テスト用: encoded-word を元の文字列に戻す
+function decodeWords(header: string): string {
+  // 隣り合う encoded-word の間の空白は無視する決まり（RFC 2047）
+  return header.replace(/\r\n /g, " ").replace(/\?=\s+=\?/g, "?==?").replace(/=\?UTF-8\?B\?([^?]+)\?=/g, (_, b64) => {
+    const bin = atob(b64);
+    return new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
+  }).trim();
+}
+
+const toText = (segs: ReturnType<typeof buildMimeSegments>) => new TextDecoder().decode(assembleBytes(segs));
+
+describe("encodeHeaderText", () => {
+  it("ASCII はそのまま", () => {
+    expect(encodeHeaderText("Hello world")).toBe("Hello world");
+  });
+
+  it("日本語の長い件名は 75 文字以内の語に分けて折り返し、元に戻せる", () => {
+    const subject = "【重要】来週の打ち合わせ資料について（第3回プロジェクト定例会議のご案内）🙏";
+    const encoded = encodeHeaderText(subject);
+    for (const line of encoded.split("\r\n")) expect(line.trim().length).toBeLessThanOrEqual(75);
+    expect(decodeWords(encoded)).toBe(subject);
+  });
+
+  it("改行を含む値でヘッダーを差し込ませない", () => {
+    expect(encodeHeaderText("a\r\nBcc: evil@example.com")).not.toMatch(/\r\nBcc/);
+  });
+});
+
+describe("splitAddressList / parseAddress", () => {
+  it("表示名の中のカンマで切らない", () => {
+    expect(splitAddressList('"山田, 太郎" <a@example.com>, b@example.com')).toEqual(['"山田, 太郎" <a@example.com>', "b@example.com"]);
+  });
+
+  it("表示名とアドレスに分ける", () => {
+    expect(parseAddress('"山田 太郎" <a@example.com>')).toEqual({ name: "山田 太郎", address: "a@example.com" });
+    expect(parseAddress("b@example.com")).toEqual({ name: "", address: "b@example.com" });
+  });
+});
+
+describe("formatAddressHeader", () => {
+  it("日本語の表示名は encoded-word、記号入りの英字名は引用符で囲む", () => {
+    const out = formatAddressHeader('"山田 太郎" <a@example.com>, "Doe, John" <j@example.com>, c@example.com');
+    expect(out).toContain("<a@example.com>");
+    expect(out).toContain('"Doe, John" <j@example.com>');
+    expect(out).toContain("c@example.com");
+    expect(decodeWords(out.split(",\r\n ")[0])).toBe("山田 太郎 <a@example.com>");
+  });
+});
+
+describe("buildMimeSegments", () => {
+  it("全体が ASCII だけで、1行 998 バイト以内", () => {
+    const text = toText(buildMimeSegments({
+      to: "相手 <a@example.com>", cc: "b@example.com", subject: "日本語の件名",
+      text: "本文です。".repeat(500),
+      attachments: [{ filename: "見積書.pdf", mimeType: "application/pdf", data: utf8ToBase64("x".repeat(10000)) }],
+    }));
+    expect(/^[\x00-\x7F]*$/.test(text)).toBe(true);
+    for (const line of text.split("\r\n")) expect(line.length).toBeLessThanOrEqual(998);
+  });
+
+  it("Cc・In-Reply-To・References・Message-ID が入る", () => {
+    const text = toText(buildMimeSegments({
+      to: "a@example.com", cc: "b@example.com, c@example.com", subject: "Re: hi", text: "ok",
+      inReplyTo: "<orig@example.com>", messageId: "<new@example.com>",
+    }));
+    expect(text).toMatch(/^Cc: b@example.com,\r\n c@example.com$/m);
+    expect(text).toMatch(/^In-Reply-To: <orig@example.com>$/m);
+    expect(text).toMatch(/^References: <orig@example.com>$/m);
+    expect(text).toMatch(/^Message-ID: <new@example.com>$/m);
+  });
+
+  it("Cc が空なら Cc ヘッダーを出さない", () => {
+    const text = toText(buildMimeSegments({ to: "a@example.com", cc: " ", subject: "s", text: "t" }));
+    expect(text).not.toMatch(/^Cc:/m);
+  });
+
+  it("日本語のファイル名は encoded-word と filename* の両方で入る", () => {
+    const text = toText(buildMimeSegments({
+      to: "a@example.com", subject: "s", text: "t",
+      attachments: [{ filename: "見積書 (最終).pdf", mimeType: "application/pdf", data: "QUJD" }],
+    }));
+    const m = text.match(/filename="(=\?UTF-8\?B\?[^"]+\?=)"; filename\*=UTF-8''(\S+)/);
+    expect(m).not.toBeNull();
+    expect(decodeWords(m![1])).toBe("見積書 (最終).pdf");
+    expect(decodeURIComponent(m![2])).toBe("見積書 (最終).pdf");
+  });
+
+  it("添付の base64 は 76 文字で改行され、混ざった改行で境界を壊させない", () => {
+    const data = utf8ToBase64("y".repeat(300));
+    const text = toText(buildMimeSegments({
+      to: "a@example.com", subject: "s", text: "t",
+      attachments: [{ filename: "a.bin", mimeType: "x\r\nBad: 1", data: data + "\r\n--evil" }],
+    }));
+    expect(text).toContain("Content-Type: application/octet-stream;");
+    expect(text).not.toContain("--evil");
+    const lines = text.split("\r\n");
+    const start = lines.findIndex(l => l.startsWith(data.slice(0, 20)));
+    expect(lines[start].length).toBe(76);
+  });
+
+  it("テキストと HTML の両方があれば multipart/alternative", () => {
+    const text = toText(buildMimeSegments({ to: "a@example.com", subject: "s", text: "t", html: "<p>t</p>" }));
+    expect(text).toMatch(/Content-Type: multipart\/alternative/);
+    expect(text).toMatch(/Content-Type: text\/plain; charset="UTF-8"/);
+    expect(text).toMatch(/Content-Type: text\/html; charset="UTF-8"/);
+  });
+});
+
+describe("assembleBytes", () => {
+  it("計算した長さと実際の書き込み量が一致する（76の倍数ちょうども）", () => {
+    for (const n of [0, 1, 75, 76, 77, 152, 153]) {
+      const b64 = "A".repeat(n);
+      const bytes = assembleBytes(["x", { base64: b64 }, "y"]);
+      const expected = "x" + (b64.match(/.{1,76}/g) || []).join("\r\n") + "y";
+      expect(new TextDecoder().decode(bytes)).toBe(expected);
+    }
+  });
+});
+
+describe("buildGmailUploadBody", () => {
+  it("メタデータに threadId、2つ目のパートにメール本体が入る", () => {
+    const { body, contentType } = buildGmailUploadBody(["Subject: s\r\n\r\nbody"], "thread123");
+    const text = new TextDecoder().decode(body);
+    const boundary = contentType.match(/boundary=(\S+)/)![1];
+    expect(contentType).toMatch(/^multipart\/related; boundary=/);
+    expect(text).toContain('{"threadId":"thread123"}');
+    expect(text).toContain("Content-Type: message/rfc822\r\n\r\nSubject: s\r\n\r\nbody");
+    expect(text.endsWith(`--${boundary}--\r\n`)).toBe(true);
+  });
+});
+
+describe("cleanBase64", () => {
+  it("base64 以外の文字を除く", () => {
+    expect(cleanBase64("QU\r\nJD")).toBe("QUJD");
+  });
+});
