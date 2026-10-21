@@ -149,3 +149,11 @@ describe("composeForwardBodies", () => {
     expect(r.text.endsWith("本文1\n本文2\n\n\n-- \n山田\n")).toBe(true);
   });
 });
+
+describe("composeForwardBodies の元の HTML", () => {
+  it("<body> の無い HTML は div で包まずそのまま入れる（純正と同じ）", () => {
+    const r = composeForwardBodies({ original: { from: "a@example.com", date: new Date(2026, 0, 1), subject: "s", to: "b@example.com", text: "t", html: '<div dir="ltr">元</div>' } });
+    expect(r.html).toContain('<br><br><div dir="ltr">元</div>\n');
+    expect(r.html).not.toContain('<div><div dir="ltr">元</div></div>');
+  });
+});

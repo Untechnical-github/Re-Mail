@@ -181,8 +181,9 @@ export function composeForwardBodies(input: ForwardComposeInput): { text: string
 
   let original: string;
   if (o.html && o.html.trim()) {
+    // <body> があるときだけ、その属性（背景色など）を残すために div で包む。無ければそのまま入れる（純正と同じ）
     const { inner, attrs } = extractHtmlBodyInner(o.html);
-    original = `<div${attrs}>${inner}</div>`;
+    original = /<body[\s>]/i.test(o.html) ? `<div${attrs}>${inner}</div>` : inner;
   } else {
     original = `<div dir="ltr">${textToHtml(o.text)}</div>`;
   }

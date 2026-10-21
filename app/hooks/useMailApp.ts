@@ -367,7 +367,8 @@ export function useMailApp() {
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const errorToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 送信の結果が分からず、送信済みにも見つからなかったときの「再送しますか？」の確認
-  const [sendConfirm, setSendConfirm] = useState<{ message: string; resend: () => Promise<void> } | null>(null);
+  // actionLabel は確認ダイアログの実行ボタンの文字（既定は「再送する」）
+  const [sendConfirm, setSendConfirm] = useState<{ message: string; resend: () => Promise<void>; actionLabel?: string } | null>(null);
   const showErrorToast = (message: string) => {
     if (errorToastTimerRef.current) clearTimeout(errorToastTimerRef.current);
     setErrorToast(message);
@@ -2310,7 +2311,7 @@ export function useMailApp() {
     });
   };
 
-  const handleSend = async () => {
+  const handleSend = async (opts: { allowNoSendAs?: boolean } = {}) => {
     if (!selectedSender || !replyBody.trim()) return;
     const groupCfg = chatConfigs[selectedSender];
     if (groupCfg?.isGroup && (groupCfg.groupMode === "inbound_only" || groupCfg.filterCriteria)) return; // 受信専用・フィルターグループは送信不可
@@ -2355,6 +2356,15 @@ export function useMailApp() {
 
       // 送信元（エイリアス）と署名は Gmail の設定に従う。元のメールが自分のエイリアス宛てなら、そのエイリアスから返す
       const sendAsList = await getSendAs(sendAccountEmail);
+      // 読めなかったときは、純正と違う形（署名なし・既定の送信元）になることを送る前に伝えて確かめる（絶対ルール2）
+      if (sendAsList === null && !opts.allowNoSendAs) {
+        setSendConfirm({
+          message: "署名と送信元の設定を読み込めませんでした。純正 Gmail と違い、署名なし・既定のアドレスで送ることになります。このまま送りますか？",
+          actionLabel: "このまま送る",
+          resend: async () => { setSendConfirm(null); await handleSend({ allowNoSendAs: true }); },
+        });
+        return;
+      }
       const base = getReplyBase(selectedSender);
       const alias = sendAsList ? pickSendAs(sendAsList, base ? `${base.to}, ${base.cc || ""}` : "", sendAccountEmail) : null;
       // 既定のアドレス（primary）から送るときは From を付けず、Gmail に純正と同じ形で入れさせる
@@ -2420,15 +2430,13 @@ export function useMailApp() {
         }
         // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）
         if (sentRoom && draftChatsRef.current.includes(sentRoom)) removeDraftChat(sentRoom);
-        // 署名・送信元の設定が読めなかった場合は、純正と違う形（署名なし・既定の送信元）で送ったことを伝える
-        if (sendAsList === null) showErrorToast("署名と送信元の設定を読み込めなかったため、署名なし・既定のアドレスで送信しました。");
       });
     } catch (error) { logError("send.reply", {}, error); showErrorToast("メールの送信に失敗しました。通信状況を確認してください。"); } finally { setIsSending(false); }
   };
 
   // メッセージを任意の宛先（既存のチャットに限らず、新規アドレスも含む）へ転送する。
   // 現在開いているチャットとは無関係に送信できるようにするため handleSend とは独立させている
-  const forwardMessageTo = async (message: Email, recipientIds: string[]) => {
+  const forwardMessageTo = async (message: Email, recipientIds: string[], opts: { allowNoSendAs?: boolean } = {}) => {
     if (!message || recipientIds.length === 0) return;
     const myEmail = session?.user?.email || "";
     // 転送は元メッセージを受信したのと同じアカウントから送る（reply同様、相手から見て自然な送信元にするため）
@@ -2457,6 +2465,14 @@ export function useMailApp() {
 
     // 送信元と署名は返信と同じく Gmail の設定に従う（元のメールが自分のエイリアス宛てなら、そのエイリアスから送る）
     const sendAsList = await getSendAs(sendAccountEmail);
+    if (sendAsList === null && !opts.allowNoSendAs) {
+      setSendConfirm({
+        message: "署名と送信元の設定を読み込めませんでした。純正 Gmail と違い、署名なし・既定のアドレスで送ることになります。このまま送りますか？",
+        actionLabel: "このまま送る",
+        resend: async () => { setSendConfirm(null); await forwardMessageTo(message, recipientIds, { allowNoSendAs: true }); },
+      });
+      return;
+    }
     const alias = sendAsList ? pickSendAs(sendAsList, `${message.to}, ${message.cc || ""}`, sendAccountEmail) : null;
     const fromHeader = alias && !alias.isPrimary ? (alias.displayName ? `${alias.displayName} <${alias.sendAsEmail}>` : alias.sendAsEmail) : undefined;
 

@@ -218,7 +218,7 @@ export default function Home() {
       </p>
       <div className="flex justify-end gap-3">
         <button onClick={() => actions.setSendConfirm(null)} className="px-4 py-2 hover:underline text-gray-300 text-sm">閉じる</button>
-        <button onClick={() => { void state.sendConfirm?.resend(); }} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">再送する</button>
+        <button onClick={() => { void state.sendConfirm?.resend(); }} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">{state.sendConfirm.actionLabel || "再送する"}</button>
       </div>
     </div>
   </div>
