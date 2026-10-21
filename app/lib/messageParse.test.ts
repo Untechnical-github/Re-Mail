@@ -156,3 +156,24 @@ describe("parseMessageDetail", () => {
     expect(parseMessageDetail({ id: "abc123", threadId: "t1" })).toMatchObject({ subject: "(件名なし)", body: "", attachments: [] });
   });
 });
+
+describe("本文の charset", () => {
+  const b64url = (bytes: number[]) => Buffer.from(bytes).toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+  const jis = [0x1b, 0x24, 0x42, 0x46, 0x7c, 0x4b, 0x5c, 0x38, 0x6c, 0x1b, 0x28, 0x42];
+  const sjis = [0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea];
+  const part = (mimeType: string, charset: string, bytes: number[]) => ({ mimeType, headers: [{ name: "Content-Type", value: `${mimeType}; charset="${charset}"` }], body: { data: b64url(bytes) } });
+
+  it("ISO-2022-JP の text/plain を文字化けさせずに読む", () => {
+    expect(getTextBody(part("text/plain", "ISO-2022-JP", jis))).toBe("日本語");
+  });
+
+  it("multipart の中の Shift_JIS のテキストと HTML も、それぞれの charset で読む", () => {
+    const payload = { mimeType: "multipart/alternative", parts: [part("text/plain", "Shift_JIS", sjis), part("text/html", "Shift_JIS", [0x3c, 0x70, 0x3e, ...sjis, 0x3c, 0x2f, 0x70, 0x3e])] };
+    expect(getTextBody(payload)).toBe("日本語");
+    expect(getHtmlBody(payload)).toBe("<p>日本語</p>");
+  });
+
+  it("charset が無ければ UTF-8 として読む", () => {
+    expect(getTextBody({ mimeType: "text/plain", body: { data: b64url(Array.from(new TextEncoder().encode("あい"))) } })).toBe("あい");
+  });
+});

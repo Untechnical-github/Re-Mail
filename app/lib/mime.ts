@@ -251,32 +251,85 @@ export function buildGmailUploadBody(message: MimeSegment[], threadId?: string):
   return { body: assembleBytes(segments), contentType: `multipart/related; boundary=${b}` };
 }
 
-// 受信したヘッダーの encoded-word（=?UTF-8?B?...?= など）を日本語に戻す
+// メールの charset 名を、TextDecoder が受け付ける名前にそろえる。日本語のメールで使われる別名
+// （cp932 など）は Workers の TextDecoder が知らないので、同じ文字の集まりの名前に置き換える
+const CHARSET_ALIASES: Record<string, string> = {
+  "cp932": "shift_jis", "ms932": "shift_jis", "windows-31j": "shift_jis", "x-sjis": "shift_jis", "sjis": "shift_jis", "shift-jis": "shift_jis", "x-ms-cp932": "shift_jis",
+  "x-euc-jp": "euc-jp", "eucjp": "euc-jp",
+  "iso-2022-jp-ms": "iso-2022-jp", "iso-2022-jp-1": "iso-2022-jp", "iso-2022-jp-2": "iso-2022-jp", "csiso2022jp": "iso-2022-jp",
+  "utf8": "utf-8", "us-ascii": "utf-8", "ascii": "utf-8",
+};
+
+export function normalizeCharset(charset: string | undefined): string {
+  const c = (charset || "").trim().replace(/^"|"$/g, "").toLowerCase();
+  if (!c) return "utf-8";
+  return CHARSET_ALIASES[c] || c;
+}
+
+// バイト列を指定の charset で文字にする。知らない charset なら UTF-8 として読む（壊れた入力でも例外にしない）
+export function decodeBytes(bytes: Uint8Array, charset: string | undefined): string {
+  try {
+    return new TextDecoder(normalizeCharset(charset)).decode(bytes);
+  } catch {
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+}
+
+// Content-Type の値から charset を取り出す（無ければ undefined）
+export function charsetOf(contentType: string | undefined): string | undefined {
+  const m = (contentType || "").match(/charset\s*=\s*"?([^";\s]+)"?/i);
+  return m ? m[1] : undefined;
+}
+
+function binaryToBytes(bin: string): Uint8Array {
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+  return bytes;
+}
+
+// 受信したヘッダーの encoded-word（=?UTF-8?B?...?= / =?ISO-2022-JP?B?...?= など）を日本語に戻す。
+// 長い件名は複数の語に分けて折り返されていて、送り手によっては1文字の途中で語が切れていることがあるため、
+// 続いている同じ charset の語はバイト列をつなげてから1回で文字にする
 export function decodeMimeHeader(header: string): string {
   if (!header) return "";
-  const regex = /=\?([^?]+)\?([BQbq])\?([^?]+)\?=/g;
-  // 長い件名は複数の encoded-word に分けて折り返されている。語と語の間の空白・改行は
-  // 文字ではなく区切りなので取り除く（RFC 2047。残すと日本語の途中に空白が入る）
-  return header.replace(/(\?=)\s+(?==\?)/g, "$1").replace(regex, (match, charset, encoding, text) => {
+  // 語と語の間の空白・改行は文字ではなく区切りなので取り除く（RFC 2047）
+  const src = header.replace(/(\?=)\s+(?==\?)/g, "$1");
+  const re = /=\?([^?]+)\?([BQbq])\?([^?]*)\?=/g;
+  let out = "";
+  let last = 0;
+  let pending: { charset: string; parts: Uint8Array[] } | null = null;
+  const flush = () => {
+    if (!pending) return;
+    const total = pending.parts.reduce((n, b) => n + b.length, 0);
+    const all = new Uint8Array(total);
+    let off = 0;
+    for (const b of pending.parts) { all.set(b, off); off += b.length; }
+    out += decodeBytes(all, pending.charset);
+    pending = null;
+  };
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    const [whole, rawCharset, encoding, text] = m;
+    // 「charset*言語」の形（RFC 2231）は言語の部分を捨てる
+    const charset = normalizeCharset(rawCharset.split("*")[0]);
+    let bytes: Uint8Array;
     try {
-      if (encoding.toUpperCase() === 'B') {
-        const binaryString = atob(text);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        return new TextDecoder(charset.toLowerCase() === 'shift_jis' ? 'shift_jis' : 'utf-8').decode(bytes);
-      } else if (encoding.toUpperCase() === 'Q') {
-        const qDecoded = text.replace(/_/g, ' ').replace(/=([a-fA-F0-9]{2})/g, (_: string, hex: string) => String.fromCharCode(parseInt(hex, 16)));
-        const bytes = new Uint8Array(qDecoded.length);
-        for (let i = 0; i < qDecoded.length; i++) {
-          bytes[i] = qDecoded.charCodeAt(i);
-        }
-        return new TextDecoder(charset.toLowerCase() === 'shift_jis' ? 'shift_jis' : 'utf-8').decode(bytes);
-      }
+      bytes = encoding.toUpperCase() === "B"
+        ? binaryToBytes(atob(text))
+        : binaryToBytes(text.replace(/_/g, " ").replace(/=([a-fA-F0-9]{2})/g, (_: string, hex: string) => String.fromCharCode(parseInt(hex, 16))));
     } catch {
-      return match;
+      // 壊れた語はそのまま残す
+      flush();
+      out += src.slice(last, m.index) + whole;
+      last = m.index + whole.length;
+      continue;
     }
-    return match;
-  });
+    if (m.index !== last) { flush(); out += src.slice(last, m.index); }
+    if (pending && pending.charset !== charset) flush();
+    if (!pending) pending = { charset, parts: [] };
+    pending.parts.push(bytes);
+    last = m.index + whole.length;
+  }
+  flush();
+  return out + src.slice(last);
 }

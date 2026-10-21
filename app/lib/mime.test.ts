@@ -185,3 +185,28 @@ describe("ヘッダーの並び", () => {
     expect(names.slice(0, 7)).toEqual(["MIME-Version", "References", "In-Reply-To", "Message-ID", "Subject", "To", "Cc"]);
   });
 });
+
+describe("decodeMimeHeader の charset", () => {
+  const b64 = (bytes: number[]) => Buffer.from(bytes).toString("base64");
+  // 「日本語」の ISO-2022-JP と Shift_JIS のバイト列
+  const jis = [0x1b, 0x24, 0x42, 0x46, 0x7c, 0x4b, 0x5c, 0x38, 0x6c, 0x1b, 0x28, 0x42];
+  const sjis = [0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea];
+
+  it("ISO-2022-JP・Shift_JIS・cp932（別名）の件名を戻す", () => {
+    expect(decodeMimeHeader(`=?ISO-2022-JP?B?${b64(jis)}?=`)).toBe("日本語");
+    expect(decodeMimeHeader(`=?Shift_JIS?B?${b64(sjis)}?=`)).toBe("日本語");
+    expect(decodeMimeHeader(`=?cp932?B?${b64(sjis)}?=`)).toBe("日本語");
+    expect(decodeMimeHeader(`Re: =?iso-2022-jp?B?${b64(jis)}?= です`)).toBe("Re: 日本語 です");
+  });
+
+  it("1文字の途中で語が分かれていても、つなげてから戻す", () => {
+    const bytes = Array.from(new TextEncoder().encode("見積"));
+    const w1 = `=?UTF-8?B?${b64(bytes.slice(0, 4))}?=`;
+    const w2 = `=?UTF-8?B?${b64(bytes.slice(4))}?=`;
+    expect(decodeMimeHeader(`${w1}\r\n ${w2}`)).toBe("見積");
+  });
+
+  it("知らない charset は UTF-8 として読み、例外にしない", () => {
+    expect(decodeMimeHeader(`=?x-unknown?B?${b64(Array.from(new TextEncoder().encode("あ")))}?=`)).toBe("あ");
+  });
+});

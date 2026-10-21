@@ -2,7 +2,7 @@
 // 長さや入れ子の深さが決まっていない入力を扱うので、どれも上限を設けて、超えたら処理を打ち切る（絶対ルール3）。
 // Cloudflare Workers では処理中に時計が進まないため「○ミリ秒で打ち切る」はできない。代わりに、
 // 後戻りが爆発する正規表現を使わず（indexOf で前から1回なめる）、入力の長さと数に上限を設ける
-import { decodeMimeHeader } from "./mime";
+import { decodeMimeHeader, decodeBytes, charsetOf } from "./mime";
 
 // Gmail API の生データ（必要なフィールドだけ）
 export type GmailHeader = { name: string; value: string };
@@ -32,15 +32,23 @@ export function getHeader(headers: GmailHeader[], name: string): string {
   return header ? header.value : "";
 }
 
-export function decodeBase64Url(base64Url: string) {
+// Gmail の body.data（base64url）を文字にする。本文は元のメールの charset のまま入っているので、
+// パートの Content-Type の charset で読む（ISO-2022-JP や Shift_JIS のメールを UTF-8 として読むと文字化けする）
+export function decodeBase64Url(base64Url: string, charset?: string) {
   try {
     const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
     const binString = atob(base64);
-    const bytes = Uint8Array.from(binString, (m) => m.codePointAt(0)!);
-    return new TextDecoder().decode(bytes);
+    const bytes = Uint8Array.from(binString, (m) => m.charCodeAt(0) & 0xff);
+    return decodeBytes(bytes, charset);
   } catch {
     return "";
   }
+}
+
+// パートの Content-Type ヘッダーにある charset
+export function partCharset(part: GmailMessagePart): string | undefined {
+  const ct = (part.headers || []).find((h) => h.name.toLowerCase() === "content-type")?.value;
+  return charsetOf(ct);
 }
 
 // MIME の木を、深さとパート数の上限つきでたどる（深すぎる入れ子でスタックを使い切らないように）
@@ -57,16 +65,16 @@ export function walkParts(root: GmailMessagePart | undefined, visit: (part: Gmai
 
 // テキスト本文。単一パートならその中身、複数パートなら木の順で最初の text/plain、無ければ最初の text/html
 export function getTextBody(payload: GmailMessagePart): string {
-  if (payload.body && payload.body.data) return decodeBase64Url(payload.body.data);
-  let plain: string | null = null;
-  let html: string | null = null;
+  if (payload.body && payload.body.data) return decodeBase64Url(payload.body.data, partCharset(payload));
+  // コールバックの中で代入すると型の絞り込みが効かないので、入れ物に入れて受け取る
+  const found: { plain?: GmailMessagePart; html?: GmailMessagePart } = {};
   walkParts(payload, (part) => {
     if (part === payload || !part.body?.data) return;
-    if (plain === null && part.mimeType === "text/plain") plain = part.body.data;
-    else if (html === null && part.mimeType === "text/html") html = part.body.data;
+    if (!found.plain && part.mimeType === "text/plain") found.plain = part;
+    else if (!found.html && part.mimeType === "text/html") found.html = part;
   });
-  if (plain !== null) return decodeBase64Url(plain);
-  if (html !== null) return decodeBase64Url(html);
+  const picked = found.plain || found.html;
+  if (picked && picked.body?.data) return decodeBase64Url(picked.body.data, partCharset(picked));
   return "";
 }
 
@@ -133,7 +141,7 @@ export function getHtmlBody(payload: GmailMessagePart | undefined): string {
   const candidates: string[] = [];
   walkParts(payload, (part) => {
     if (part.mimeType === "text/html" && part.body?.data) {
-      const decoded = decodeBase64Url(part.body.data);
+      const decoded = decodeBase64Url(part.body.data, partCharset(part));
       if (decoded) candidates.push(decoded);
     }
   });
