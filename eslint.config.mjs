@@ -15,7 +15,14 @@ const eslintConfig = defineConfig([
       "react-hooks/refs": "warn",
       "react-hooks/purity": "warn",
       "react-hooks/immutability": "warn",
+      // ログにメールアドレスや本文を出さないよう、console は直接使わず app/lib/safeLog.ts を通す
+      "no-console": "error",
     },
+  },
+  {
+    // safeLog だけは、形を確かめた項目を console に書き出す役目なので console を使ってよい
+    files: ["app/lib/safeLog.ts"],
+    rules: { "no-console": "off" },
   },
   // Override default ignores of eslint-config-next.
   globalIgnores([

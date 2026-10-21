@@ -3,6 +3,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { auth } from "../../../../auth";
 import { encryptSecret } from "../../../lib/tokenCrypto";
 import type { GoogleTokenResponse } from "../../../lib/googleToken";
+import { logError } from "../../../lib/safeLog";
 
 
 // 追加のGoogleアカウントを連携するための、NextAuth本体のログインとは別系統のOAuthフロー。
@@ -105,7 +106,7 @@ export async function GET(request: NextRequest) {
     res.cookies.delete(STATE_COOKIE);
     return res;
   } catch (error: unknown) {
-    console.error("Account link error:", error);
+    logError("accounts.connect", {}, error);
     return NextResponse.redirect(new URL("/?accountLinkError=1", request.url));
   }
 }

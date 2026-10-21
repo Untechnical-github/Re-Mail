@@ -5,11 +5,13 @@
 //
 // 後方互換のための設計:
 // - TOKEN_ENCRYPTION_KEY が未設定の場合は暗号化せず平文のまま返す（既存の挙動を壊さないが、
-//   本番運用前に必ず設定することを強く推奨する。設定漏れに気づけるようconsole.warnを出す）
+//   本番運用前に必ず設定することを強く推奨する。設定漏れに気づけるよう警告ログ tokenCrypto.keyMissing を出す）
 // - 復号時、値が "encv1:" で始まらない場合は暗号化前の古いデータとみなしてそのまま返す
 //   （鍵導入前に保存された既存の連携アカウントのトークンを引き続き使えるようにするため）
 // - 呼び出し側（resolveAccessToken）は、読み取った値が平文だったときに再暗号化して
 //   書き戻すことで、使われるたびに徐々に暗号化済みへ移行していく
+
+import { logWarn } from "./safeLog";
 
 const ENC_PREFIX = "encv1:";
 let warnedMissingKey = false;
@@ -18,7 +20,8 @@ async function importKey(): Promise<CryptoKey | null> {
   const keyB64 = process.env.TOKEN_ENCRYPTION_KEY;
   if (!keyB64) {
     if (!warnedMissingKey) {
-      console.warn("TOKEN_ENCRYPTION_KEY is not set. linked_accounts の refresh_token/access_token が平文のまま保存されます。運用前に設定してください。");
+      // TOKEN_ENCRYPTION_KEY 未設定。linked_accounts のトークンが平文のまま保存されるので、運用前に設定する
+      logWarn("tokenCrypto.keyMissing");
       warnedMissingKey = true;
     }
     return null;

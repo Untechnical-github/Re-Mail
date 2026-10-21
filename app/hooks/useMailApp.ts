@@ -10,6 +10,7 @@ import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf 
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId } from "../lib/sendVerify";
 import { planReply, type ReplyPlan } from "../lib/recipients";
+import { logError } from "../lib/safeLog";
 
 // /api/emails の送信 API に渡す内容と、その結果
 type SendApiPayload = {
@@ -577,7 +578,7 @@ export function useMailApp() {
         });
         setChatConfigs(formatted); setMessageConfigs(formattedMessages); setPersistedEmails(pMsgs);
       }
-    } catch (e) { console.error(e); }
+    } catch (e) { logError("config.load", {}, e); }
     return { globalSettings, formatted };
   };
 
@@ -608,7 +609,7 @@ export function useMailApp() {
         filterIncludeExisting: nextConfig.filterIncludeExisting,
       });
     }
-    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
+    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { logError("config.save", {}, e); }
   };
 
   // メッセージ単位の設定（ピン留め・非表示）。room単位のupdateChatConfigとはstate/キー空間が別
@@ -623,7 +624,7 @@ export function useMailApp() {
     if (nextConfig.forceFetch || nextConfig.roomId) {
       nameToSave = JSON.stringify({ forceFetch: nextConfig.forceFetch, data: capPersistedDataForStorage(nextConfig.persistedData), roomId: nextConfig.roomId });
     }
-    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { console.error(e); }
+    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }) }); } catch (e) { logError("config.save", {}, e); }
   };
 
   // グループチャットの削除: 設定行そのものを消すだけで、メンバーの個別チャットや実際のメールには一切触れない
@@ -654,7 +655,7 @@ export function useMailApp() {
         localStorage.removeItem("remail_scroll_main");
       }
     }
-    try { await fetch(`/api/config?chat_id=${encodeURIComponent(targetId)}&account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" }); } catch (e) { console.error(e); }
+    try { await fetch(`/api/config?chat_id=${encodeURIComponent(targetId)}&account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" }); } catch (e) { logError("config.delete", {}, e); }
   };
 
   // UI層（Modals.tsx等）はチャットの識別子として常に複合キー（RoomKeyStr、chatConfigsのstateキーと同じもの）
@@ -1040,7 +1041,7 @@ export function useMailApp() {
               if (ui.emailModalEmail) openEmailModal(ui.emailModalEmail);
               if (ui.attachmentModal) openAttachmentModal(ui.attachmentModal);
             }
-          } catch (e) { console.error(e); }
+          } catch (e) { logError("uiState.restore", {}, e); }
 
           setTimeout(() => {
             const asideScroll = localStorage.getItem(`remail_scroll_aside_${activeChatTab}`);
@@ -1051,7 +1052,7 @@ export function useMailApp() {
             if (mainScroll && mainEl) mainEl.scrollTop = parseInt(mainScroll, 10);
           }, 150);
 
-        } catch (err) { console.error(err); } finally { setIsLoading(false); hasLoadedOnceRef.current = true; }
+        } catch (err) { logError("initialLoad", {}, err); } finally { setIsLoading(false); hasLoadedOnceRef.current = true; }
       };
       initLoad();
     }
@@ -1111,7 +1112,7 @@ export function useMailApp() {
 
         return { found: validMessages.length > 0, nextToken, messages: validMessages };
       }
-    } catch(e) { console.error(e); }
+    } catch(e) { logError("chat.fetchPage", {}, e); }
     return { found: false, nextToken: isLoadMore ? currentToken : "FIRST_PAGE", messages: [] };
   };
 
@@ -1372,7 +1373,7 @@ export function useMailApp() {
         }
       } catch { /* 複合キーでない古いデータは無視 */ }
     }
-    try { await fetch(`/api/accounts?account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" }); } catch (e) { console.error(e); }
+    try { await fetch(`/api/accounts?account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" }); } catch (e) { logError("accounts.unlink", {}, e); }
   };
 
   // メッセージID → 所属ルームキーの逆引き。フィルターツールで複数ルームにまたがる
@@ -2186,7 +2187,7 @@ export function useMailApp() {
         // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）
         if (sentRoom && draftChatsRef.current.includes(sentRoom)) removeDraftChat(sentRoom);
       });
-    } catch (error) { console.error(error); showErrorToast("メールの送信に失敗しました。通信状況を確認してください。"); } finally { setIsSending(false); }
+    } catch (error) { logError("send.reply", {}, error); showErrorToast("メールの送信に失敗しました。通信状況を確認してください。"); } finally { setIsSending(false); }
   };
 
   // メッセージを任意の宛先（既存のチャットに限らず、新規アドレスも含む）へ転送する。
@@ -2224,7 +2225,7 @@ export function useMailApp() {
           const data = await htmlRes.json();
           originalHtml = data.htmlBody || null;
         }
-      } catch (e) { console.error(e); }
+      } catch (e) { logError("forward.fetchHtml", {}, e); }
     }
 
     const bodyText = forwardHeaderText + (message.body || "");
@@ -2417,8 +2418,8 @@ export function useMailApp() {
 
       fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", trashIds }) })
         .then(res => { if (!res.ok) showErrorToast("削除がGmail側に反映されなかった可能性があります。時間をおいて再度お試しください。"); })
-        .catch(e => { console.error(e); showErrorToast("削除がGmail側に反映されなかった可能性があります。通信状況を確認してください。"); });
-    } catch (e) { console.error(e); }
+        .catch(e => { logError("delete.request", {}, e); showErrorToast("削除がGmail側に反映されなかった可能性があります。通信状況を確認してください。"); });
+    } catch (e) { logError("delete", {}, e); }
   };
 
   const executeConfirmedAction = async () => {
@@ -2469,8 +2470,8 @@ export function useMailApp() {
 
           fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "move", ids: idsToMove, destination: moveDestination === "ARCHIVE" ? undefined : moveDestination }) })
             .then(res => { if (!res.ok) showErrorToast("移動がGmail側に反映されなかった可能性があります。時間をおいて再度お試しください。"); })
-            .catch(e => { console.error(e); showErrorToast("移動がGmail側に反映されなかった可能性があります。通信状況を確認してください。"); });
-        } catch (e) { console.error(e); }
+            .catch(e => { logError("move.request", {}, e); showErrorToast("移動がGmail側に反映されなかった可能性があります。通信状況を確認してください。"); });
+        } catch (e) { logError("move", {}, e); }
       }
     }
     else if (type === "confirm_hide") {
@@ -2530,7 +2531,7 @@ export function useMailApp() {
         body: JSON.stringify({ action: "move", ids, destination: destination === "ARCHIVE" ? undefined : destination })
       })
         .then(res => { if (!res.ok) showErrorToast("移動がGmail側に反映されなかった可能性があります。時間をおいて再度お試しください。"); })
-        .catch((e: unknown) => { console.error(e); showErrorToast("移動がGmail側に反映されなかった可能性があります。通信状況を確認してください。"); });
+        .catch((e: unknown) => { logError("move.request", {}, e); showErrorToast("移動がGmail側に反映されなかった可能性があります。通信状況を確認してください。"); });
     });
   };
 

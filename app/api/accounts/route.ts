@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { errorMessage } from "../../lib/errorMessage";
 import { auth } from "../../../auth";
+import { logError } from "../../lib/safeLog";
 
 
 export async function GET() {
@@ -13,7 +14,7 @@ export async function GET() {
     const { results } = await db.prepare("SELECT account_email, needs_reauth, name, picture FROM linked_accounts WHERE user_email = ?").bind(session.user.email).all();
     return NextResponse.json({ accounts: results });
   } catch (error: unknown) {
-    console.error("DB GET Error:", error);
+    logError("accounts.list", {}, error);
     return NextResponse.json({ error: "Database Error", details: errorMessage(error) }, { status: 500 });
   }
 }
@@ -34,7 +35,7 @@ export async function DELETE(request: Request) {
 
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
-    console.error("DB DELETE Error:", error);
+    logError("accounts.unlink", {}, error);
     return NextResponse.json({ error: "Database Error", details: errorMessage(error) }, { status: 500 });
   }
 }

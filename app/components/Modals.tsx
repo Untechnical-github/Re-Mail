@@ -7,6 +7,7 @@ import { encodeRoomKey, decodeRoomKey, keysOf, asLocalKey, type RoomKeyStr } fro
 import type { MailAppHook } from "../hooks/useMailApp";
 import type { Email } from "../types/email";
 import type { ChatConfig, ModalState, SelectionMode } from "../types/mail";
+import { logError } from "../lib/safeLog";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: MailAppHook; modal: NonNullable<ModalState> }) {
@@ -723,7 +724,7 @@ export function EmailModal({ app }: { app: MailAppHook }) {
       clamp();
       updateTransform();
     } catch (e) {
-      console.error(e);
+      logError("attachment.imageZoom", {}, e);
     } finally {
       bodyEl.style.opacity = '1'; // ズーム設定の成否に関わらず必ず表示する（flash 防止 兼 フォールバック）
     }

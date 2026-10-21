@@ -2,6 +2,7 @@
 import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 import { getValidAccessToken } from "./app/lib/googleToken";
+import { logError } from "./app/lib/safeLog";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   trustHost: true,
@@ -64,7 +65,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           refreshToken: result.refreshToken ?? token.refreshToken,
         };
       } catch (error: unknown) {
-        console.error("Error refreshing access token", error);
+        logError("token.refresh.main", {}, error);
         // Googleが「リフレッシュトークン自体が無効」と明言した場合のみ致命的エラーにする。
         // ネットワーク瞬断やGoogle側の一時的な障害まで同じ扱いにすると、
         // 一時的な不調のたびにサインアウト＆リロードが走ってしまうため。

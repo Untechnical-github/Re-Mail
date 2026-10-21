@@ -6,6 +6,7 @@ import { getValidAccessToken } from "../../lib/googleToken";
 import { encryptSecret, decryptSecret, isEncrypted } from "../../lib/tokenCrypto";
 import { buildMimeSegments, buildGmailUploadBody, decodeMimeHeader } from "../../lib/mime";
 import { classifySendStatus, makeMessageId, isValidMessageId, matchSentMessage, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
+import { logError, logWarn, logInfo } from "../../lib/safeLog";
 
 
 // Gmail API の生データ（必要なフィールドだけ）
@@ -55,12 +56,14 @@ async function postSendOnce(upload: { body: Uint8Array<ArrayBuffer>; contentType
         body: upload.body,
         signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
       });
-    } catch {
+    } catch (e) {
       // タイムアウト・通信断。Gmail に届いたかどうか分からない
+      logWarn("send.noResponse", {}, e);
       return { outcome: "unknown" };
     }
     const outcome = classifySendStatus(res.status);
     if (outcome !== "retry") return { outcome, res };
+    logWarn("send.rateLimited", { status: res.status, count: attempt });
     if (attempt === maxAttempts) return { outcome: "failed", res };
     const retryAfterSec = Number(res.headers.get("Retry-After"));
     const waitMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? Math.min(retryAfterSec * 1000, 10_000) : 500 * 2 ** attempt + Math.random() * 300;
@@ -139,7 +142,7 @@ async function resolveAccessToken(session: Session, accountEmail: string | null)
     storedRefreshToken = await decryptSecret(row.refresh_token);
     storedAccessToken = row.access_token ? await decryptSecret(row.access_token) : null;
   } catch (error) {
-    console.error(`Failed to decrypt stored tokens for linked account ${accountEmail} (TOKEN_ENCRYPTION_KEY may have changed):`, error);
+    logError("token.decrypt", {}, error);
     return null;
   }
   const wasLegacyPlaintext = !isEncrypted(row.refresh_token) || (row.access_token && !isEncrypted(row.access_token));
@@ -165,7 +168,7 @@ async function resolveAccessToken(session: Session, accountEmail: string | null)
     }
     return result.accessToken;
   } catch (error: unknown) {
-    console.error(`Failed to refresh access token for linked account ${accountEmail}:`, error);
+    logError("token.refresh.linked", {}, error);
     // invalid_grant/invalid_client はリフレッシュトークン自体が失効した恒久的なエラー
     // （auth.tsのメインアカウント側と同じ判定基準）。ネットワーク瞬断等の一時的な失敗まで
     // 再連携要求にしてしまうと、ユーザーに不要な再連携を何度も求めることになるため、
@@ -175,7 +178,7 @@ async function resolveAccessToken(session: Session, accountEmail: string | null)
     if (isPermanent) {
       await db.prepare(
         "UPDATE linked_accounts SET needs_reauth = 1 WHERE user_email = ? AND account_email = ?"
-      ).bind(session.user?.email, accountEmail).run().catch((e: unknown) => console.error("Failed to set needs_reauth:", e));
+      ).bind(session.user?.email, accountEmail).run().catch((e: unknown) => logError("token.markReauth", {}, e));
     }
     return null;
   }
@@ -433,10 +436,14 @@ export async function GET(request: Request) {
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
-      if (!res.ok) return NextResponse.json({ data: null });
+      if (!res.ok) {
+        logWarn("attachments.get", { status: res.status, messageId });
+        return NextResponse.json({ data: null });
+      }
       const json = await res.json();
       return NextResponse.json({ data: json.data ?? null });
-    } catch {
+    } catch (e) {
+      logError("attachments.get", {}, e);
       return NextResponse.json({ data: null });
     }
   }
@@ -463,7 +470,8 @@ export async function GET(request: Request) {
       if (!detailRes.ok) return NextResponse.json({ found: false });
       const message = await detailRes.json();
       return NextResponse.json({ found: true, email: parseMessageDetail(message) });
-    } catch {
+    } catch (e) {
+      logError("emails.lookupByMessageId", {}, e);
       return NextResponse.json({ found: false });
     }
   }
@@ -476,7 +484,10 @@ export async function GET(request: Request) {
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?fields=payload`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
-      if (!detailRes.ok) return NextResponse.json({ htmlBody: null, hasHtml: false });
+      if (!detailRes.ok) {
+        logWarn("emails.html", { status: detailRes.status, messageId });
+        return NextResponse.json({ htmlBody: null, hasHtml: false });
+      }
       const message = await detailRes.json();
       const rawHtml = getHtmlBody(message.payload);
       const subject = decodeMimeHeader(getHeader(message.payload?.headers || [], "Subject"));
@@ -487,7 +498,8 @@ export async function GET(request: Request) {
       const htmlOwnContent = stripHtmlQuote(rawHtml);
       const htmlBody = looksLikeForward(subject, htmlOwnContent) ? rawHtml.trim() : htmlOwnContent;
       return NextResponse.json({ htmlBody: htmlBody || null, hasHtml: !!htmlBody });
-    } catch {
+    } catch (e) {
+      logError("emails.html", {}, e);
       return NextResponse.json({ htmlBody: null, hasHtml: false });
     }
   }
@@ -508,7 +520,10 @@ export async function GET(request: Request) {
     const listRes = await fetchWithRetry(apiUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (listRes.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (listRes.status === 429) return NextResponse.json({ error: "Rate limited" }, { status: 429 });
-    if (!listRes.ok) throw new Error("Failed to fetch messages list");
+    if (!listRes.ok) {
+      logError("emails.list", { status: listRes.status });
+      throw new Error("Failed to fetch messages list");
+    }
     
     const listData = await listRes.json();
     const messages = listData.messages || [];
@@ -531,7 +546,10 @@ export async function GET(request: Request) {
           // レート制限等で最終的に失敗した場合、エラーレスポンスのJSONを本物のメッセージとして
           // 誤ってパースしてしまわないよう、ここで弾く（そのメッセージ1件だけ今回は諦める。
           // 次回のポーリング/追加読み込みで再取得を試みる）
-          if (!detailRes.ok) return null;
+          if (!detailRes.ok) {
+            logWarn("emails.detail", { status: detailRes.status, messageId: msg.id });
+            return null;
+          }
           return (detailRes.json() as Promise<GmailMessage>).catch(() => null);
         })
       );
@@ -541,7 +559,8 @@ export async function GET(request: Request) {
     const parsedMessages = detailedMessages.map(parseMessageDetail);
 
     return NextResponse.json({ messages: parsedMessages, topIds, nextPageToken });
-  } catch {
+  } catch (e) {
+    logError("emails.get", {}, e);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
@@ -601,11 +620,17 @@ export async function POST(request: Request) {
         const errorData = (await res?.json().catch(() => ({}))) as { error?: { errors?: { reason?: string }[] } } | undefined;
         // Gmail の生の応答は宛先などを含みうるので、理由コードだけを返す
         const reason = errorData?.error?.errors?.[0]?.reason;
+        logError("send.failed", { status: res?.status, reason });
         return NextResponse.json({ error: "Failed to send email", reason, messageId }, { status: res?.status || 500 });
       }
       if (outcome === "unknown") {
+        if (res) logWarn("send.serverError", { status: res.status });
         const found = await findSentMessage(accessToken, { messageId, subject: subject || "", to: to || "", cc: typeof cc === "string" ? cc : "", body: body || "", sentAfterMs });
-        if (found) return NextResponse.json({ success: true, id: found.id, threadId: found.threadId, messageId, verified: true });
+        if (found) {
+          logInfo("send.verifiedSent", { messageId: found.id, threadId: found.threadId });
+          return NextResponse.json({ success: true, id: found.id, threadId: found.threadId, messageId, verified: true });
+        }
+        logError("send.unconfirmed");
         // 自動では再送しない。送れていないことを伝え、再送するかは利用者に決めてもらう
         return NextResponse.json({ error: "SEND_UNCONFIRMED", messageId }, { status: 502 });
       }
@@ -699,7 +724,8 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
-  } catch {
+  } catch (e) {
+    logError("emails.post", {}, e);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
