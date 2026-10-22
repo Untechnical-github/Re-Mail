@@ -2680,6 +2680,18 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     return app.computed.allUniqueEmails.filter(e => messageMatchesFilter(e, criteria, myEmail)).length;
   }, [isCriteriaEmpty, criteria, app.computed.allUniqueEmails, myEmail]);
 
+  // 実行したとき今あるメールのうち何件に効くか（プレビュー）。削除は送信済み・自分が送ったメール・ゴミ箱のメールを
+  // 対象にしない（applyDeleteToIds と同じ）ので、その分を除いて数える
+  const affectedNowCount = useMemo(() => {
+    if (isCriteriaEmpty || action === "group") return 0;
+    if (continuous && !includeExisting) return 0;
+    return app.computed.allUniqueEmails.filter(e => {
+      if (!messageMatchesFilter(e, criteria, myEmail)) return false;
+      if (action === "delete" && (e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe)) return false;
+      return true;
+    }).length;
+  }, [isCriteriaEmpty, action, continuous, includeExisting, criteria, app.computed.allUniqueEmails, myEmail]);
+
   const handleClose = () => app.actions.safeBack();
 
   const applyNonGroupAction = (ids: string[]) => {
@@ -3008,8 +3020,19 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
                   </div>
                 </div>
 
-                <div className="text-xs text-gray-500 pt-1">
-                  {isNonGroupBoxesEmpty ? "保存場所を選択してください" : `合計${matchCount}件を${FILTER_ACTION_VERB[action]}`}
+                {/* 実行前のプレビュー。「含めない」なら今あるメールには何もしないことを、継続なら新着にも効くことを書く */}
+                <div className="text-xs text-gray-500 pt-1 space-y-0.5">
+                  {isNonGroupBoxesEmpty ? "保存場所を選択してください" : (
+                    <>
+                      <div className={affectedNowCount > 0 && action === "delete" ? "text-red-400 font-bold" : ""}>
+                        {continuous && !includeExisting
+                          ? `今あるメールには何もしません（条件に合うもの: ${matchCount}件）`
+                          : `読み込み済みのメールのうち${affectedNowCount}件を${action === "move" ? `${MOVE_DEST_LABELS[destination]}へ` : ""}${FILTER_ACTION_VERB[action]}`}
+                      </div>
+                      {action === "delete" && <div>削除したメールはゴミ箱へ移ります（送信済みのメールは対象外）</div>}
+                      {continuous && <div>これから届く、条件に合うメールも自動で{action === "move" ? `${MOVE_DEST_LABELS[destination]}へ` : ""}{FILTER_ACTION_VERB[action]}</div>}
+                    </>
+                  )}
                 </div>
               </>
             )}
