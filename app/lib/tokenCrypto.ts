@@ -68,3 +68,35 @@ export async function decryptSecret(stored: string | null | undefined): Promise<
 export function isEncrypted(stored: string | null | undefined): boolean {
   return !!stored && stored.startsWith(ENC_PREFIX);
 }
+
+// D1 の chat_id（相手の名前やアドレス）を、元に戻せない決まった値に置き換えるための HMAC。
+// 同じ相手なら同じ値になるので、行を探す・上書きする・消すことはこれまでどおりできる。
+// 鍵は TOKEN_ENCRYPTION_KEY から HKDF で別の用途の鍵を作って使う（新しいシークレットを増やさないため）。
+// TOKEN_ENCRYPTION_KEY が無ければ null を返す（呼び出し側は平文のまま扱う）
+let hmacKeyPromise: Promise<CryptoKey | null> | null = null;
+function importHmacKey(): Promise<CryptoKey | null> {
+  if (!hmacKeyPromise) {
+    hmacKeyPromise = (async () => {
+      const keyB64 = process.env.TOKEN_ENCRYPTION_KEY;
+      if (!keyB64) return null;
+      const raw = Uint8Array.from(atob(keyB64), (c) => c.charCodeAt(0));
+      const base = await crypto.subtle.importKey("raw", raw, "HKDF", false, ["deriveKey"]);
+      return crypto.subtle.deriveKey(
+        { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: new TextEncoder().encode("remail-chat-id-hmac-v1") },
+        base,
+        { name: "HMAC", hash: "SHA-256", length: 256 },
+        false,
+        ["sign"],
+      );
+    })();
+  }
+  return hmacKeyPromise;
+}
+
+export async function hmacId(value: string): Promise<string | null> {
+  const key = await importHmacKey();
+  if (!key) return null;
+  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
+  // 行のキーに使うので、URL でも安全な文字だけにする（43文字）
+  return toBase64(sig).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}

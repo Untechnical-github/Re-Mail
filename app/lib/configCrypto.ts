@@ -42,3 +42,46 @@ export function hasPlainRoomId(customName: string | null | undefined): boolean {
   const obj = parseObject(customName);
   return !!obj && typeof obj.roomId === "string" && !!obj.roomId;
 }
+
+// ---- 行ごとの暗号化（chat_id と custom_name をまとめて隠す） ----
+// D1 の chat_id（相手の名前・アドレス、またはメッセージ ID）を「h1:」＋HMAC に置き換え、
+// 元の chat_id と custom_name（自分で付けた名前・グループのメンバー・フィルターの語など）は
+// まとめて暗号化して custom_name に入れる。画面とのやり取りは、これまでどおり元の chat_id と custom_name で行う
+
+export const SEALED_CHAT_ID_PREFIX = "h1:";
+
+export type RowCrypto = {
+  hmac: (value: string) => Promise<string | null>;
+  encrypt: Crypt;
+  decrypt: Crypt;
+};
+
+// account_email が空の行は __GLOBAL_SETTINGS__ などの予約行（個人情報を含まない）なので、そのまま扱う
+export function isReservedRow(accountEmail: string | null | undefined): boolean {
+  return !accountEmail;
+}
+
+export function isSealedChatId(chatId: string | null | undefined): boolean {
+  return !!chatId && chatId.startsWith(SEALED_CHAT_ID_PREFIX);
+}
+
+// 保存する形にする。鍵が無い（HMAC が作れない）ときは null（呼び出し側は平文のまま保存する）
+export async function sealRow(chatId: string, customName: string | null | undefined, c: RowCrypto): Promise<{ chatId: string; customName: string } | null> {
+  const hashed = await c.hmac(chatId);
+  if (!hashed) return null;
+  const envelope = JSON.stringify({ c: chatId, n: customName ?? null });
+  return { chatId: SEALED_CHAT_ID_PREFIX + hashed, customName: await c.encrypt(envelope) };
+}
+
+// D1 の行を、画面に返す形（元の chat_id と custom_name）に戻す。暗号化していない行はそのまま。
+// 復号できない行は null（その行は返さない。ほかの行の表示は止めない）
+export async function openRow(chatId: string, customName: string | null | undefined, c: RowCrypto): Promise<{ chatId: string; customName: string | null } | null> {
+  if (!isSealedChatId(chatId)) return { chatId, customName: customName ?? null };
+  try {
+    const env = JSON.parse(await c.decrypt(customName || "")) as { c?: unknown; n?: unknown };
+    if (typeof env.c !== "string" || !env.c) return null;
+    return { chatId: env.c, customName: typeof env.n === "string" ? env.n : null };
+  } catch {
+    return null;
+  }
+}
