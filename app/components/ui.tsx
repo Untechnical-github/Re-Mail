@@ -645,7 +645,7 @@ export function ActionBar({ app, isChat }: { app: MailAppHook, isChat: boolean }
         onClick={() => { if (readTargets.length > 0) handleMenuBarClick(`${modePrefix}_${allRead ? "unread" : "read"}`); }}
         className={`${getBtnClass("read")} ${readTargets.length === 0 ? "opacity-30 pointer-events-none grayscale" : ""}`}
       >
-        {renderLabel(allRead ? "未読にする" : "既読", <ReadIcon className="w-4 h-4" />, true)}
+        {renderLabel(allRead ? "未読にする" : "既読にする", <ReadIcon className="w-4 h-4" />, true)}
       </button>
 
       {/* ピン留め / ピン解除 */}

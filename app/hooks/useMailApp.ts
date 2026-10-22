@@ -26,7 +26,6 @@ import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
 import { logError, logWarn } from "../lib/safeLog";
 import { createSaveQueue, type SaveQueue } from "../lib/configSaveQueue";
 import { groupIdsByAccount, type MoveDestination } from "../lib/mailboxOps";
-import { isSharedConfig } from "../lib/configScope";
 
 const CONFIG_SAVE_FAILED = "設定（ピン留め・名前変更など）を保存できませんでした。再読み込みすると元に戻ります。通信状況を確認して、もう一度お試しください。";
 const CONFIG_SAVE_RETRYING = "設定（ピン留め・名前変更など）を保存できませんでした。通信が戻りしだい自動でもう一度保存します。保存できるまでページを閉じないでください。";
@@ -744,10 +743,9 @@ export function useMailApp() {
     };
   }, []);
 
-  // ピン留め・非表示・名前変更・グループなどの設定を D1 に保存する
-  // scope が "shared" なら、ログイン中の全アカウントに保存する（すべてのアカウントが対象のフィルター）
-  const saveConfigRow = async (row: { chat_id: string; account_email: string; custom_name: string; is_pinned?: boolean; is_hidden?: boolean; hidden_at_date?: string; unhide_on_new?: boolean }, scope?: "shared") => {
-    const body = JSON.stringify(scope ? { ...row, scope } : row);
+  // ピン留め・非表示・名前変更・グループ・フィルターなどの設定を、そのアカウントの置き場所に保存する
+  const saveConfigRow = async (row: { chat_id: string; account_email: string; custom_name: string; is_pinned?: boolean; is_hidden?: boolean; hidden_at_date?: string; unhide_on_new?: boolean }) => {
+    const body = JSON.stringify(row);
     await getSaveQueue().save(encodeRoomKey(row.account_email, asLocalKey(row.chat_id)), () =>
       sendConfigRequest("config.save", "/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body }));
   };
@@ -907,12 +905,11 @@ export function useMailApp() {
     const nextConfig = { ...chatConfigsRef.current[stateKey], ...updates };
     setChatConfigs(prev => ({ ...prev, [stateKey]: nextConfig }));
     let nameToSave = nextConfig.customName || "";
-    const shared = isSharedConfig(nextConfig);
     if (nextConfig.forceFetch || nextConfig.isGroup || nextConfig.filterAction) {
       nameToSave = JSON.stringify({
-        // すべてのアカウントが対象のフィルターは全アカウントに写しを持つので、どれが新しいかを時刻で決める
+        // 最後に保存した時刻（以前の写しが残っていたときに、どれが新しいかを決めるのに使う）
         // eslint-disable-next-line react-hooks/purity -- 描画中ではなく、保存するとき（操作のたび）に呼ばれる関数の中なので問題ない
-        shared: shared || undefined, updatedAt: Date.now(),
+        updatedAt: Date.now(),
         // ピン留めはメールの中身を保存せず、Gmail のメッセージ ID だけを保存する（絶対ルール1）
         name: nextConfig.customName, forceFetch: nextConfig.forceFetch, ids: nextConfig.persistedIds ? capPinnedIds(nextConfig.persistedIds) : undefined,
         isGroup: nextConfig.isGroup, groupMembers: nextConfig.groupMembers, groupMemberAddresses: nextConfig.groupMemberAddresses, groupMode: nextConfig.groupMode,
@@ -923,7 +920,7 @@ export function useMailApp() {
         filterIncludeExisting: nextConfig.filterIncludeExisting,
       });
     }
-    await saveConfigRow({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }, shared ? "shared" : undefined);
+    await saveConfigRow({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew });
   };
 
   // メッセージ単位の設定（ピン留め・非表示）。room単位のupdateChatConfigとはstate/キー空間が別
@@ -971,7 +968,7 @@ export function useMailApp() {
       }
     }
     // 削除も同じ行の保存として扱う（削除の後に古い値の送り直しで行が戻らないように。削除は何度送っても同じ）
-    const url = `/api/config?chat_id=${encodeURIComponent(targetId)}&account_email=${encodeURIComponent(accountEmail)}${cfg && isSharedConfig(cfg) ? "&scope=shared" : ""}`;
+    const url = `/api/config?chat_id=${encodeURIComponent(targetId)}&account_email=${encodeURIComponent(accountEmail)}`;
     await getSaveQueue().save(stateKey, () => sendConfigRequest("config.delete", url, { method: "DELETE" }));
   };
 
@@ -2676,6 +2673,29 @@ export function useMailApp() {
     return promise;
   };
 
+  // 返信欄に出す「送信元」：送るときと同じ決め方（元のメールが自分のエイリアス宛てならそのエイリアス）で、実際の From を出す。
+  // 送信元の設定はアカウントごとに10分に1回だけ取る（getSendAs のキャッシュ）。開いた直後の一括取得とぶつからないよう少し待つ
+  const [sendAsByAccount, setSendAsByAccount] = useState<Record<string, SendAsInfo[]>>({});
+  const openRoomAccount = selectedSender ? roomAccountEmail(selectedSender) : "";
+  useEffect(() => {
+    if (!openRoomAccount || sendAsByAccount[openRoomAccount]) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void getSendAs(openRoomAccount).then(list => { if (!cancelled && list) setSendAsByAccount(prev => ({ ...prev, [openRoomAccount]: list })); });
+    }, 1500);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 開いているチャットのアカウントが変わったときだけ取りにいく（関数は描画ごとに作り直されるため入れない）
+  }, [openRoomAccount]);
+  const getSendFrom = (room: RoomKeyStr | null): { account: string; address: string; displayName?: string; isAlias: boolean } | null => {
+    if (!room || chatConfigs[room]?.isGroup) return null;
+    const account = roomAccountEmail(room);
+    const list = sendAsByAccount[account];
+    const base = getReplyBase(room);
+    const alias = list ? pickSendAs(list, base ? `${base.to}, ${base.cc || ""}` : "", account) : null;
+    const address = alias?.sendAsEmail || account;
+    return { account, address, displayName: alias?.displayName || undefined, isAlias: address.toLowerCase() !== account.toLowerCase() };
+  };
+
   // 返信・転送で引用するために、元のメールの HTML 本文を取り直す（画面用のテキストは整形済みで情報が欠けるため）。
   // 取れなければ null を返し、呼び出し側はテキスト版を使う
   // 引用・転送に使う元のメールの全体（HTML とテキスト。どちらも引用部分を含み、画面用の整形をしていないもの）
@@ -3135,7 +3155,10 @@ export function useMailApp() {
           logWarn(`${kind}.request`, { status: res.status, count: accountIds.length });
           showErrorToast(res.status === 401
             ? `${label}がGmailに反映されませんでした（ログインが切れています）。プロフィールのボタンから再ログインしてから、もう一度お試しください。`
-            : `${label}がGmailに反映されませんでした。再読み込みすると元の場所に戻ります。時間をおいてもう一度お試しいただくか、純正 Gmail で操作してください。`);
+            : kind === "read" || kind === "unread"
+              // 既読・未読は場所を変えないので、「元の状態に戻る」と伝える
+              ? `${label}がGmailに反映されませんでした。再読み込みすると元の既読・未読の状態に戻ります。時間をおいてもう一度お試しいただくか、純正 Gmail で操作してください。`
+              : `${label}がGmailに反映されませんでした。再読み込みすると元の場所に戻ります。時間をおいてもう一度お試しいただくか、純正 Gmail で操作してください。`);
         })
         .catch(e => {
           logError(`${kind}.request`, {}, e);
@@ -3756,7 +3779,7 @@ export function useMailApp() {
       updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail, switchSendAccount, logoutAccount,
       unlinkAccount, isAccountVisible, setSendConfirm, setReplyAll, retryUnloaded,
     },
-    computed: { replyPlan: getReplyPlan(selectedSender), allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
+    computed: { replyPlan: getReplyPlan(selectedSender), sendFrom: getSendFrom(selectedSender), allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
     refs: { touchTimer, hasPushedSelectRef, activeLoadRef, searchTimeoutRef }
   };
 }

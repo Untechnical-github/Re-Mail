@@ -98,3 +98,17 @@ describe("promoteLinkedAccount（1つのアカウントだけログアウトし�
     expect((await store.listLinkedAccounts(db, ME)).length).toBe(1);
   });
 });
+
+describe("listLinkedAccountEmails（設定の読み書きのたびに使う、アドレスだけの一覧）", () => {
+  it("平文の行・置き換えた行のどちらも、アドレスだけを重複なく返す", async () => {
+    const fake = createFakeD1();
+    const db = fake as unknown as Db;
+    stage.hashed = false;
+    await store.saveLinkedAccount(db, ME, LINKED, tokens);
+    stage.hashed = true;
+    await store.saveLinkedAccount(db, ME, "third@example.com", tokens);
+    const emails = await store.listLinkedAccountEmails(db, ME);
+    expect(emails.map(e => e.toLowerCase()).sort()).toEqual([LINKED.toLowerCase(), "third@example.com"].sort());
+    expect(await store.listLinkedAccountEmails(db, "nobody@example.com")).toEqual([]);
+  });
+});

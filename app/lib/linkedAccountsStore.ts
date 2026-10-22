@@ -184,3 +184,21 @@ export async function promoteLinkedAccount(db: Db, from: string, to: string): Pr
   };
 }
 
+
+// 一緒にログインしているアカウントのアドレスだけ（設定の読み書きのたびに使う）。
+// listLinkedAccounts と違い、表示名・画像は復号せず、行の書き直しもしない（アドレスの列だけを読む）
+export async function listLinkedAccountEmails(db: Db, userEmail: string): Promise<string[]> {
+  const [u1, u2] = await keysOf(userEmail);
+  const { results } = await db.prepare("SELECT account_email, account_enc FROM linked_accounts WHERE user_email IN (?, ?)").bind(u1, u2).all();
+  const out: string[] = [];
+  for (const row of (results || []) as { account_email: string; account_enc: string | null }[]) {
+    try {
+      const email = isAddressKey(row.account_email) ? (row.account_enc ? await decryptSecret(row.account_enc) : "") : row.account_email;
+      if (email && !out.some(e => normalizeAddress(e) === normalizeAddress(email))) out.push(email);
+    } catch (e) {
+      // 開けない行は飛ばす（ほかのアカウントの設定は読めるように）
+      logError("accounts.listEmails", {}, e);
+    }
+  }
+  return out;
+}

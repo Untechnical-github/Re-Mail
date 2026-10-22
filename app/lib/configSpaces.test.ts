@@ -61,6 +61,29 @@ describe("アカウントごとの置き場所", () => {
     expect(find(await store.openAndMigrateConfigs(db, L), L, "Carol")).toMatchObject({ custom_name: "C", is_hidden: 1 });
   });
 
+  it("段階2では、以前の置き場所の古い写しを、写し終えたら消す（自分の置き場所にすでにあるものも消す）", async () => {
+    const fake = createFakeD1(); const db = fake as unknown as Db;
+    stage.legacy = false;
+    // 以前の置き場所だけにある設定と、両方にある設定
+    await store.saveConfig(db, P, input(L, "OnlyLegacy", "旧"));
+    await store.saveConfig(db, P, input(L, "Both", "旧の写し"));
+    await store.saveConfig(db, L, input(L, "Both", "新"));
+    const both = await store.openSessionConfigs(db, P, [L]);
+    expect(find(both.configs, L, "OnlyLegacy")?.custom_name).toBe("旧");
+    expect(find(both.configs, L, "Both")?.custom_name).toBe("新");
+    // 以前の置き場所（メインアカウントの user_email）には、連携アカウントの行が残っていない
+    const legacyLeft = (await store.openAndMigrateConfigs(db, P)).filter(r => r.account_email.toLowerCase() === L.toLowerCase());
+    expect(legacyLeft).toEqual([]);
+    // 自分の置き場所には両方ある（失われていない）
+    const own = await store.openAndMigrateConfigs(db, L);
+    expect(find(own, L, "OnlyLegacy")?.custom_name).toBe("旧");
+    expect(find(own, L, "Both")?.custom_name).toBe("新");
+    // 連携アカウントだけでログインして消した設定は、もう戻ってこない
+    await store.deleteSessionConfig(db, L, [], "Both", L);
+    expect(find((await store.openSessionConfigs(db, P, [L])).configs, L, "Both")).toBeUndefined();
+    stage.legacy = true;
+  });
+
   it("自分の置き場所の値が、以前の置き場所の値より優先される", async () => {
     const fake = createFakeD1(); const db = fake as unknown as Db;
     await store.saveConfig(db, P, input(L, "Dan", "古い名前"));

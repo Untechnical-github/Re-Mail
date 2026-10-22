@@ -330,7 +330,9 @@ export async function openSessionConfigs(db: Db, primary: string, linked: string
       result.set(key(owner, o.chat_id), { ...o, account_email: owner });
     }
   }
-  // 2. 以前の置き場所（ほかのアカウントの置き場所）にある、このアカウントのチャットの設定。自分の置き場所に無いものだけ使い、写す
+  // 2. 以前の置き場所（ほかのアカウントの置き場所）にある、このアカウントのチャットの設定。自分の置き場所に無いものだけ使い、写す。
+  //    段階2（configStage.ts）では、写し終えた（または自分の置き場所にすでにある）以前の行は消す（D1 に同じ設定を2つ置かない）。
+  //    消すのは書き足しのあと（同じ try の中で、書き足しが失敗したら消さない）
   for (const [space, rows] of spaces) {
     for (const o of rows) {
       if (isReservedRow(o.account_email) || sameAddress(o.account_email, space) || configMeta(o.custom_name).shared) continue;
@@ -340,6 +342,7 @@ export async function openSessionConfigs(db: Db, primary: string, linked: string
         if (space === primary && !result.has(key(o.account_email, o.chat_id))) result.set(key(o.account_email, o.chat_id), o);
         continue;
       }
+      if (!WRITE_LEGACY_LINKED_COPY) deletes.push({ owner: space, chatId: o.chat_id, accountEmail: o.account_email });
       if (result.has(key(owner, o.chat_id))) continue;
       result.set(key(owner, o.chat_id), { ...o, account_email: owner });
       writes.push({ owner, input: toInput(o, owner) });

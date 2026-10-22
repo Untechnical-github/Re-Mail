@@ -168,6 +168,10 @@ export default function Home() {
   // Shift+クリック範囲選択用の最終クリックインデックス
   const lastChatIdxRef = useRef<number>(-1);
   const lastMsgIdxRef = useRef<number>(-1);
+  // 返信欄のどこかにキャレット（フォーカス）があるか。スマホでは、本文が空でフォーカスも無いときは
+  // 件名・返信先・送信元を隠して、メッセージを読む場所を広くとる
+  const composeRef = useRef<HTMLDivElement>(null);
+  const [composeFocused, setComposeFocused] = useState(false);
 
   if (auth.status === "loading") return <div className="flex h-screen items-center justify-center bg-[#313338] text-gray-400 font-bold">読み込み中...</div>;
   if (!auth.session || auth.session.error === "RefreshAccessTokenError") return (
@@ -186,6 +190,8 @@ export default function Home() {
   const isInboundOnlyGroup = !!(selectedGroupConfig?.isGroup && (selectedGroupConfig.groupMode === "inbound_only" || isFilterGroup));
   const isOutboundOnlyGroup = !!(selectedGroupConfig?.isGroup && !isFilterGroup && selectedGroupConfig.groupMode === "outbound_only");
   const isSendDisabled = isInboundOnlyGroup || isFilterGroup;
+  // スマホでは、本文に何か書いてあるか、返信欄にキャレットがあるときだけ、件名・返信先・送信元を出す（パソコンでは常に出す）
+  const showComposeExtras = !state.isMobile || !!state.replyBody.trim() || composeFocused;
   const subjectFindHighlight = state.findBarOpen && state.findBarSearchSubject ? state.findBarKeyword : "";
   const bodyFindHighlight = state.findBarOpen && state.findBarSearchBody ? state.findBarKeyword : "";
 
@@ -953,27 +959,47 @@ export default function Home() {
               </div>
 
               <div className="p-4 bg-[#313338] cursor-default" onClick={(e) => e.stopPropagation()}>
-                <div className={`bg-[#383A40] rounded-lg p-3 border border-[#1E1F22] ${isSendDisabled ? "opacity-40 pointer-events-none grayscale" : ""}`}>
+                <div
+                  ref={composeRef}
+                  onFocus={() => setComposeFocused(true)}
+                  onBlur={() => {
+                    // 返信欄の中のボタン（返信先を選択など）を押す途中で消えないよう、少し待ってからフォーカスが外に出たかを見る
+                    setTimeout(() => {
+                      if (!composeRef.current?.contains(document.activeElement)) setComposeFocused(false);
+                    }, 400);
+                  }}
+                  className={`bg-[#383A40] rounded-lg p-3 border border-[#1E1F22] ${isSendDisabled ? "opacity-40 pointer-events-none grayscale" : ""}`}
+                >
                   {isSendDisabled && (
                     <div className="text-[11px] text-gray-400 mb-2">{isFilterGroup ? "フィルターグループのため、送信・返信はできません" : "受信専用のグループチャットのため、送信・返信はできません"}</div>
                   )}
-                  {/* アカウントが2つ以上あるときは、どのアカウントから送るかを返信先の上に出す（送り間違えを防ぐ）。押すと切り替えられる */}
-                  {((state.linkedAccounts as string[]) || []).length > 0 && !state.chatConfigs[state.selectedSender!]?.isGroup && (
-                    <button
-                      type="button"
-                      disabled={isSendDisabled}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        actions.setModal({ type: "select_send_account", targetMode: "current_chat", targets: [] });
-                        window.history.pushState({ action: "modal" }, "", window.location.href);
-                      }}
-                      className="w-full flex items-center gap-2 bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2] text-left hover:bg-[#35373C] transition"
-                    >
-                      <span className="text-gray-400 flex-shrink-0">送信元:</span>
-                      <span className="truncate flex-1">{actions.roomAccountEmail(state.selectedSender!)}</span>
-                      <span className="font-bold px-2 text-[#5865F2] flex-shrink-0">切り替え</span>
-                    </button>
-                  )}
+                  {/* 送信元：実際に使う From（元のメールが自分のエイリアス宛てなら、そのエイリアス）を返信先の上に出す（送り間違えを防ぐ）。
+                      アカウントが2つ以上あるときは押すと切り替えられる。エイリアスから送るときは、アカウントが1つでも出す */}
+                  {showComposeExtras && computed.sendFrom && (((state.linkedAccounts as string[]) || []).length > 0 || computed.sendFrom.isAlias) && (() => {
+                    const from = computed.sendFrom!;
+                    const canSwitch = ((state.linkedAccounts as string[]) || []).length > 0;
+                    return (
+                      <button
+                        type="button"
+                        disabled={isSendDisabled || !canSwitch}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!canSwitch) return;
+                          actions.setModal({ type: "select_send_account", targetMode: "current_chat", targets: [] });
+                          window.history.pushState({ action: "modal" }, "", window.location.href);
+                        }}
+                        className={`w-full flex items-center gap-2 bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2] text-left transition ${canSwitch ? "hover:bg-[#35373C]" : "cursor-default"}`}
+                      >
+                        <span className="text-gray-400 flex-shrink-0">送信元:</span>
+                        <span className="truncate flex-1" title={from.address}>
+                          {from.displayName ? `${from.displayName} <${from.address}>` : from.address}
+                          {from.isAlias && <span className="text-gray-500">（{from.account} のエイリアス）</span>}
+                        </span>
+                        {canSwitch && <span className="font-bold px-2 text-[#5865F2] flex-shrink-0">切り替え</span>}
+                      </button>
+                    );
+                  })()}
+                  {showComposeExtras && (
                   <div className="flex items-center gap-2 bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">
                     <span className="text-gray-400 flex-shrink-0">返信先:</span>
                     <span className={`truncate flex-1 ${state.replyToMessage ? "" : "text-gray-500"}`}>
@@ -994,6 +1020,7 @@ export default function Home() {
                       <button onClick={(e) => { e.stopPropagation(); actions.setReplyToMessage(null); }} className="font-bold px-1 hover:text-white flex-shrink-0">×</button>
                     )}
                   </div>
+                  )}
                   {/* Cc や複数の To があるメールへの返信のときだけ出す（既定は純正 Gmail と同じく相手のみ） */}
                   {computed.replyPlan && computed.replyPlan.extra.length > 0 && (
                     <div className="flex items-center gap-2 text-xs mb-2 px-2 text-gray-400">
@@ -1008,7 +1035,7 @@ export default function Home() {
                       </button>
                     </div>
                   )}
-                  <input disabled={isSendDisabled || !!state.replyToMessage} title={state.replyToMessage ? "返信の件名は、スレッドが分かれないよう元の件名に揃えます" : undefined} type="text" placeholder="件名 (省略可)" value={state.replyToMessage ? replySubjectFor(state.replyToMessage.subject) : state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />
+                  {showComposeExtras && <input disabled={isSendDisabled || !!state.replyToMessage} title={state.replyToMessage ? "返信の件名は、スレッドが分かれないよう元の件名に揃えます" : undefined} type="text" placeholder="件名 (省略可)" value={state.replyToMessage ? replySubjectFor(state.replyToMessage.subject) : state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />}
                   {state.replyAttachments.length > 0 && (
                     <div className="flex flex-wrap gap-2 mb-2">
                       {state.replyAttachments.map((att, idx) => (
