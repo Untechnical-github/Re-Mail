@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "re-mail",
-  "main": ".open-next/worker.js",
+  "main": "worker.ts",
   "compatibility_date": "2025-09-01",
   "compatibility_flags": [
     "nodejs_compat",
@@ -27,5 +27,10 @@
       "database_id": "f3e2ba87-ef1e-4a51-9054-b1add1cad95e",
       "migrations_dir": "migrations"
     }
-  ]
+  ],
+  "triggers": {
+    "crons": [
+      "23 * * * *"
+    ]
+  }
 }
