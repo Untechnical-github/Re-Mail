@@ -482,6 +482,8 @@ export async function GET(request: Request) {
 
     const chunkSize = 20;
     const detailedMessages: GmailMessage[] = [];
+    // 詳細を取れなかった（レート制限・一時的な障害など）メールの数
+    let failed = 0;
     for (let i = 0; i < messagesToFetch.length; i += chunkSize) {
       const chunk = messagesToFetch.slice(i, i + chunkSize);
       const chunkResults = await Promise.all(
@@ -494,6 +496,8 @@ export async function GET(request: Request) {
           // 次回のポーリング/追加読み込みで再取得を試みる）
           if (!detailRes.ok) {
             logWarn("emails.detail", { status: detailRes.status, messageId: msg.id });
+            // 消えたメール（404）以外は「読み込めなかった」として数え、画面で知らせる（黙って欠けさせない）
+            if (detailRes.status !== 404) failed++;
             return null;
           }
           return (detailRes.json() as Promise<GmailMessage>).catch(() => null);
@@ -504,7 +508,7 @@ export async function GET(request: Request) {
 
     const parsedMessages = detailedMessages.map(parseMessageDetail);
 
-    return NextResponse.json({ messages: parsedMessages, topIds, nextPageToken });
+    return NextResponse.json({ messages: parsedMessages, topIds, nextPageToken, failed });
   } catch (e) {
     logError("emails.get", {}, e);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

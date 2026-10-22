@@ -12,6 +12,7 @@ import { chatConfigTab, isMineEmail } from "./lib/filterMatch";
 import type { Email } from "./types/email";
 import { describeExtraRecipients } from "./lib/recipients";
 import { replySubjectFor } from "./lib/replyCompose";
+import { gmailOpenUrl } from "./lib/gmailLink";
 
 function InlineAttachmentImage({ attachment, messageId, accountId, cacheKey, onOpen }: {
   attachment: { filename: string; mimeType: string; size: number; attachmentId?: string };
@@ -311,6 +312,16 @@ export default function Home() {
           </div>
 
           <ActionBar app={app} isChat={true} />
+
+          {/* 一覧の取得で詳細を読み込めなかったメールがあるとき（レート制限など）。黙って欠けさせずに知らせる */}
+          {state.unloadedCount > 0 && (
+            <div role="status" className="flex items-center gap-2 px-3 py-2 text-xs text-gray-300 bg-[#232428] border-b border-[#1E1F22] cursor-default" onClick={(e) => e.stopPropagation()}>
+              <WarningIcon className="w-3.5 h-3.5 flex-shrink-0 text-[#FEE75C]" />
+              <span className="flex-1 min-w-0">{state.unloadedCount} 件のメールを読み込めませんでした</span>
+              <button onClick={() => actions.retryUnloaded()} className="flex-shrink-0 font-bold text-[#5865F2] hover:text-white">再試行</button>
+              <a href={gmailOpenUrl(auth.session?.user?.email)} target="_blank" rel="noopener noreferrer" className="flex-shrink-0 font-bold text-[#5865F2] hover:text-white">Gmail で開く</a>
+            </div>
+          )}
 
           <div
             className="flex-1 overflow-y-auto p-2 space-y-0.5 min-h-0 cursor-default"

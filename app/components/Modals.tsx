@@ -10,6 +10,7 @@ import type { ChatConfig, ModalState, SelectionMode } from "../types/mail";
 import { logError } from "../lib/safeLog";
 import { prepareEmailHtml, hasRemoteContent } from "../lib/emailHtml";
 import { clearDeviceData } from "../lib/deviceData";
+import { gmailOpenUrl } from "../lib/gmailLink";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: MailAppHook; modal: NonNullable<ModalState> }) {
@@ -885,6 +886,15 @@ export function EmailModal({ app }: { app: MailAppHook }) {
               {new Date(email.date).toLocaleString("ja-JP")}
             </div>
           </div>
+          {/* Re:Mail の表示で足りないとき（崩れる・添付が見られない など）に、純正 Gmail で同じメールを開けるようにする */}
+          <a
+            href={gmailOpenUrl(email.accountId || app.auth.session?.user?.email, email.threadId)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs font-bold text-[#5865F2] hover:text-white flex-shrink-0 px-1 pt-0.5"
+          >
+            Gmail で開く
+          </a>
           <button
             onClick={closeEmailModal}
             className="text-gray-400 hover:text-white text-xl font-bold flex-shrink-0 leading-none"

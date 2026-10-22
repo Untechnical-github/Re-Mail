@@ -302,6 +302,8 @@ export function useMailApp() {
   // トークンリフレッシュに失敗しても連携アカウントのフェッチは黙ってスキップされるだけなので、
   // ここに載っているアカウントはUI側で警告バッジ等を出し、再連携（/api/accounts/connect）へ誘導する
   const [reauthNeededAccounts, setReauthNeededAccounts] = useState<string[]>([]);
+  // 一覧の取得で、詳細を読み込めなかったメールの数（レート制限など）。0 より大きければ画面で知らせる
+  const [unloadedCount, setUnloadedCount] = useState(0);
   // 連携アカウントの表示専用プロフィール（名前・アバター画像）。認証・照合ロジックには一切使わず、
   // アカウントメニューやアイコン表示設定でのアバター表示だけに使う。連携済みでも古いデータや
   // 未再連携のアカウントはキーが無い場合があり、その時はメールアドレスから生成したアバターにフォールバックする
@@ -1115,6 +1117,7 @@ export function useMailApp() {
       const newMessages: Email[] = [];
       const nextTokens: Record<string, string | null> = {};
       let anyOk = false;
+      let failedCount = 0;
       for (const { accountEmail, res } of results) {
         if (!res || !res.ok) continue;
         const data = await res.json();
@@ -1124,8 +1127,11 @@ export function useMailApp() {
         anyOk = true;
         ((data.messages || []) as Email[]).forEach((m) => newMessages.push({ ...m, accountId: accountEmail }));
         nextTokens[accountEmail] = data.nextPageToken || null;
+        failedCount += typeof data.failed === "number" ? data.failed : 0;
       }
       if (!anyOk) return { success: false, emails: currentEmailsState };
+      // 読み込めなかったメールがあれば、黙って欠けさせずに画面で知らせる（取り直せたら消す）
+      setUnloadedCount(failedCount);
       // 一覧を取れたアカウントだけ、差分の起点を更新する
       const baselines = await baselinePromise;
       for (const { accountEmail, res } of results) {
@@ -1509,6 +1515,11 @@ export function useMailApp() {
       const rows = (data.accounts || []) as LinkedAccountRow[];
       setReauthNeededAccounts(rows.filter((a) => a.needs_reauth === 1).map((a) => a.account_email).filter(Boolean));
     } catch { /* 一時的な取得失敗は無視し、次回のポーリングに任せる */ }
+  };
+
+  // 読み込めなかったメールを取り直す（一覧を裏で取り直す。取り直せれば「読み込めなかった」の表示は消える）
+  const retryUnloaded = () => {
+    fetchEmails(100, "", { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, true, emailsRef.current, () => false, false);
   };
 
   // 自動更新。前回からの変化（新着・削除・ラベルの変化）だけを取り、新着メールの詳細だけを取りにいく。
@@ -3406,7 +3417,7 @@ export function useMailApp() {
       moveDestination, revealedCrossPrompts, boxColors,
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
-      replyNotFoundToast, errorToast, infoToast, sendConfirm, replyAll, draftChats, activeChatTab,
+      replyNotFoundToast, errorToast, infoToast, sendConfirm, unloadedCount, replyAll, draftChats, activeChatTab,
       isDraftReady: draftReadyRoom === selectedSender,
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
@@ -3424,7 +3435,7 @@ export function useMailApp() {
       openAttachmentModal, closeAttachmentModal,
       jumpToReplyTarget, createOrOpenChat, createGroupChat, createFilterGroup, deleteChatConfig, forwardMessageTo,
       updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail,
-      unlinkAccount, isAccountVisible, setSendConfirm, setReplyAll,
+      unlinkAccount, isAccountVisible, setSendConfirm, setReplyAll, retryUnloaded,
     },
     computed: { replyPlan: getReplyPlan(selectedSender), allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
     refs: { touchTimer, hasPushedSelectRef, activeLoadRef, searchTimeoutRef }
