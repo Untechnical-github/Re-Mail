@@ -388,6 +388,18 @@ export function useMailApp() {
     errorToastTimerRef.current = setTimeout(() => setErrorToast(null), 4000);
   };
 
+  // 連携アカウントの連携が切れたら、黙らずに知らせる（絶対ルール3）。メールが出ないだけでは気づけないため。
+  // 同じアカウントは一度だけ知らせ、再連携して直ったあとにまた切れたら、もう一度知らせる
+  const reauthNotifiedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const now = new Set(reauthNeededAccounts);
+    for (const a of Array.from(reauthNotifiedRef.current)) if (!now.has(a)) reauthNotifiedRef.current.delete(a);
+    const fresh = reauthNeededAccounts.filter(a => !reauthNotifiedRef.current.has(a));
+    if (fresh.length === 0) return;
+    fresh.forEach(a => reauthNotifiedRef.current.add(a));
+    showErrorToast(`${fresh.join("、")} の連携が切れているため、メールを読み込めません。プロフィールのボタンから「再連携」してください。`);
+  }, [reauthNeededAccounts]);
+
   // メッセージ折りたたみ・モーダル関連
   // collapseLinesCount: null = 折りたたまない（設定画面から変更予定）
   const [collapseLinesCount] = useState<number | null>(null);
