@@ -862,7 +862,8 @@ export function EmailModal({ app }: { app: MailAppHook }) {
   const { email, htmlBody, isLoading } = emailModal;
   const showHtml = !isLoading && !!htmlBody;
   const showText = !isLoading && !htmlBody;
-  const allowRemote = app.state.alwaysLoadImages || remoteAllowedFor === email.id;
+  // 外部の画像を毎回読み込むかは、そのメールのアカウントの設定に従う
+  const allowRemote = app.actions.alwaysLoadImagesFor(email.accountId) || remoteAllowedFor === email.id;
   const remoteBlocked = showHtml && !allowRemote && hasRemoteContent(htmlBody!);
 
   return (
@@ -1480,52 +1481,63 @@ export function Modals({ app }: { app: MailAppHook }) {
           </div>
         )}
 
-        {modal.type === "settings" && (
-          <div className="p-5">
+        {modal.type === "settings" && (() => {
+          const me = app.auth?.session?.user?.email || "";
+          const accounts = [me, ...((app.state.linkedAccounts as string[]) || [])].filter(Boolean);
+          const profiles = app.state.linkedAccountProfiles as Record<string, { name?: string; picture?: string }>;
+          const toggleClass = (on: boolean) => `flex-1 py-2 rounded text-sm font-bold transition ${on ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#35373C]"}`;
+          return (
+          <div className="p-5 overflow-y-auto" style={{ maxHeight: "85dvh" }}>
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-lg font-bold text-white">設定</h2>
               <button onClick={() => safeBack()} className="text-gray-400 hover:text-white font-bold text-lg px-1 transition flex-shrink-0">×</button>
             </div>
 
-            <div className="mb-1">
+            {/* 共通設定：どのアカウントでログインしても同じ（あとから追加したアカウントにも使われる） */}
+            <div className="text-xs font-bold text-gray-400 mb-1">共通設定</div>
+            <div className="text-[11px] text-gray-500 mb-3">どのアカウントでログインしても同じ設定になります。あとから追加したアカウントにも使われます。一覧の上の受信箱〜ゴミ箱・アカウントの表示のチェックも共通設定です</div>
+            <div className="bg-[#2B2D31] rounded p-3 mb-5">
               <div className="text-sm font-bold text-gray-200 mb-1">送信ボタン・アクションバー・場所の表示</div>
               <div className="text-xs text-gray-500 mb-3">送信ボタンや移動・削除などのボタン、受信箱〜ゴミ箱の表示を、文字ラベルとシンプルなアイコンのどちらで表示するか選べます（実験的な機能です）</div>
               <div className="flex gap-2">
-                <button
-                  onClick={() => app.actions.setUseIconLabels(false)}
-                  className={`flex-1 py-2 rounded text-sm font-bold transition ${!app.state.useIconLabels ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#35373C]"}`}
-                >
-                  文字
-                </button>
-                <button
-                  onClick={() => app.actions.setUseIconLabels(true)}
-                  className={`flex-1 py-2 rounded text-sm font-bold transition ${app.state.useIconLabels ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#35373C]"}`}
-                >
-                  アイコン
-                </button>
+                <button onClick={() => app.actions.setUseIconLabels(false)} className={toggleClass(!app.state.useIconLabels)}>文字</button>
+                <button onClick={() => app.actions.setUseIconLabels(true)} className={toggleClass(app.state.useIconLabels)}>アイコン</button>
               </div>
             </div>
 
-            <div className="mt-5">
-              <div className="text-sm font-bold text-gray-200 mb-1">メールの外部の画像</div>
-              <div className="text-xs text-gray-500 mb-3">「毎回読み込む」にすると、メールを開くたびに「画像を表示」を押さなくても画像が出ます。ただし画像を読み込んだ時点で、送り手に「メールを開いたこと・開いた日時・おおよその場所（IP アドレス）」が伝わることがあります。設定はどの端末でも共通です</div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => { void app.actions.setAlwaysLoadImages(false); }}
-                  className={`flex-1 py-2 rounded text-sm font-bold transition ${!app.state.alwaysLoadImages ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#35373C]"}`}
-                >
-                  押したときだけ
-                </button>
-                <button
-                  onClick={() => { void app.actions.setAlwaysLoadImages(true); }}
-                  className={`flex-1 py-2 rounded text-sm font-bold transition ${app.state.alwaysLoadImages ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#35373C]"}`}
-                >
-                  毎回読み込む
-                </button>
-              </div>
-            </div>
+            {/* アカウントごとの設定：そのアカウントのメールにだけ使われる。そのアカウントだけでログインしたときも同じ */}
+            {accounts.map((a) => {
+              const profile = a === me ? { name: app.auth?.session?.user?.name || undefined, picture: app.auth?.session?.user?.image || undefined } : profiles?.[a];
+              const always = app.actions.alwaysLoadImagesFor(a);
+              return (
+                <div key={a} className="mb-5">
+                  <div className="flex items-center gap-2 mb-2 min-w-0">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- アカウントの小さなプロフィール画像。next/image の最適化は Worker の中継が増えるので使わない（ほかのアカウント画像と同じ） */}
+                    <img
+                      src={profile?.picture || `/api/avatar?name=${encodeURIComponent(profile?.name || a)}`}
+                      alt=""
+                      referrerPolicy="no-referrer"
+                      className="w-6 h-6 rounded-full flex-shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-gray-400">アカウントの設定</div>
+                      <div className="text-[11px] text-gray-500 truncate">{a}</div>
+                    </div>
+                  </div>
+                  <div className="bg-[#2B2D31] rounded p-3">
+                    <div className="text-sm font-bold text-gray-200 mb-1">メールの外部の画像</div>
+                    <div className="text-xs text-gray-500 mb-3">「毎回読み込む」にすると、このアカウントのメールを開くたびに「画像を表示」を押さなくても画像が出ます。ただし画像を読み込んだ時点で、送り手に「メールを開いたこと・開いた日時・おおよその場所（IP アドレス）」が伝わることがあります</div>
+                    <div className="flex gap-2">
+                      <button onClick={() => app.actions.setAccountSetting(a, { alwaysLoadImages: false })} className={toggleClass(!always)}>押したときだけ</button>
+                      <button onClick={() => app.actions.setAccountSetting(a, { alwaysLoadImages: true })} className={toggleClass(always)}>毎回読み込む</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        )}
+          );
+        })()}
 
         {modal.type === "confirm_pin" && (() => {
           const isChatMode = modal.targetMode === "chat";
@@ -1661,6 +1673,45 @@ export function Modals({ app }: { app: MailAppHook }) {
                 <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
                 <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">非表示にする</button>
               </div>
+            </div>
+          );
+        })()}
+
+        {modal.type === "select_send_account" && (() => {
+          // 返信欄の「送信元」の切り替え。選んだアカウントで、同じ相手とのチャットを開く
+          const me = app.auth?.session?.user?.email || "";
+          const accounts = [me, ...((app.state.linkedAccounts as string[]) || [])].filter(Boolean);
+          const current = selectedSender ? app.actions.roomAccountEmail(selectedSender) : "";
+          const profiles = app.state.linkedAccountProfiles as Record<string, { name?: string; picture?: string }>;
+          const reauth = (app.state.reauthNeededAccounts as string[]) || [];
+          return (
+            <div className="p-5">
+              <h2 className="text-lg font-bold text-white mb-1">送信元のアカウント</h2>
+              <div className="text-xs text-gray-500 mb-4">選んだアカウントで、この相手とのチャットを開きます（やり取りが無ければ新しいチャットになります）。入力中の本文と添付は引き継ぎます</div>
+              <div className="flex flex-col gap-1 mb-4">
+                {accounts.map((a) => {
+                  const isCurrent = a.toLowerCase() === current.toLowerCase();
+                  const needsReauth = reauth.includes(a);
+                  const profile = a === me ? { name: app.auth?.session?.user?.name || undefined, picture: app.auth?.session?.user?.image || undefined } : profiles?.[a];
+                  return (
+                    <button
+                      key={a}
+                      disabled={isCurrent || needsReauth}
+                      onClick={() => { void app.actions.switchSendAccount(a); }}
+                      className={`w-full flex items-center gap-2 px-3 py-2 rounded text-left transition ${isCurrent ? "bg-[#5865F2]/20 border border-[#5865F2]" : needsReauth ? "bg-[#1E1F22] opacity-50 cursor-not-allowed" : "bg-[#2B2D31] hover:bg-[#35373C]"}`}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element -- アカウントの小さなプロフィール画像。next/image の最適化は Worker の中継が増えるので使わない（ほかのアカウント画像と同じ） */}
+                      <img src={profile?.picture || `/api/avatar?name=${encodeURIComponent(profile?.name || a)}`} alt="" referrerPolicy="no-referrer" className="w-7 h-7 rounded-full flex-shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        {profile?.name && <div className="text-sm font-bold text-gray-200 truncate">{profile.name}</div>}
+                        <div className={`truncate ${profile?.name ? "text-[11px] text-gray-400" : "text-sm text-gray-200"}`}>{a}</div>
+                      </div>
+                      <span className="text-[11px] font-bold flex-shrink-0 text-gray-400">{isCurrent ? "使用中" : needsReauth ? "再連携が必要" : ""}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <button onClick={() => safeBack()} className="w-full py-2 hover:underline text-gray-400 text-sm">キャンセル</button>
             </div>
           );
         })()}
@@ -2617,9 +2668,11 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     if (!canExecute) return;
     const name = filterName.trim();
     const existingKind = editingId ? filterKindOf(chatConfigs[editingId]) : null;
+    // 対象アカウントを変えたら、保存する置き場所（そのアカウント／全アカウント）が変わるので、作り直す
+    const accountChanged = !!editingId && (chatConfigs[editingId]?.filterCriteria?.accountEmail || "") !== (filterAccountEmail || "");
 
     if (action === "group") {
-      if (editingId && existingKind === "group") {
+      if (editingId && existingKind === "group" && !accountChanged) {
         app.actions.updateChatConfigByRoomKey(editingId, { customName: name, filterCriteria: criteria, filterHideOriginal: hideOriginal, filterIncludeExisting: includeExisting, groupMode: "inbound_only" });
       } else {
         if (editingId) app.actions.deleteChatConfigByRoomKey(editingId);
@@ -2632,7 +2685,7 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     const matchedIds = app.computed.allUniqueEmails.filter(e => messageMatchesFilter(e, criteria, myEmail)).map(e => e.id);
 
     if (continuous) {
-      const reuseId = !!editingId && existingKind === action;
+      const reuseId = !!editingId && existingKind === action && !accountChanged;
       if (editingId && !reuseId) app.actions.deleteChatConfigByRoomKey(editingId);
       const now = new Date().toISOString();
       const createdAt = reuseId ? (chatConfigs[editingId!]?.filterCreatedAt || now) : now;
@@ -2645,9 +2698,10 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
         // 既存フィルターの編集: chatConfigs のキーと同じ複合キー（editingId）をそのまま使う
         app.actions.updateChatConfigByRoomKey(editingId!, updates);
       } else {
-        // 新規のローカルキーを自分のアカウント名義で作成する（既存の複合キーではないため直接updateChatConfigを使う）
+        // 新規のローカルキーで作る。1つのアカウントだけが対象ならそのアカウント名義（そのアカウントだけでログインしても使える）、
+        // すべてのアカウントが対象なら自分の名義で作り、全アカウントに写しを保存する（既存の複合キーではないため直接updateChatConfigを使う）
         const localId = `filter:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        app.actions.updateChatConfig(asLocalKey(localId), updates, myEmail);
+        app.actions.updateChatConfig(asLocalKey(localId), updates, filterAccountEmail || myEmail);
       }
       // 「これまでのメールを含める」がONの時だけ、保存時点で既に一致しているメールに即座に適用する。
       // OFFなら以降に届く新着メールだけが自動適用エンジン（filterLastAppliedAt=now）の対象になる

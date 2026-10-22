@@ -951,6 +951,23 @@ export default function Home() {
                   {isSendDisabled && (
                     <div className="text-[11px] text-gray-400 mb-2">{isFilterGroup ? "フィルターグループのため、送信・返信はできません" : "受信専用のグループチャットのため、送信・返信はできません"}</div>
                   )}
+                  {/* アカウントが2つ以上あるときは、どのアカウントから送るかを返信先の上に出す（送り間違えを防ぐ）。押すと切り替えられる */}
+                  {((state.linkedAccounts as string[]) || []).length > 0 && !state.chatConfigs[state.selectedSender!]?.isGroup && (
+                    <button
+                      type="button"
+                      disabled={isSendDisabled}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        actions.setModal({ type: "select_send_account", targetMode: "current_chat", targets: [] });
+                        window.history.pushState({ action: "modal" }, "", window.location.href);
+                      }}
+                      className="w-full flex items-center gap-2 bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2] text-left hover:bg-[#35373C] transition"
+                    >
+                      <span className="text-gray-400 flex-shrink-0">送信元:</span>
+                      <span className="truncate flex-1">{actions.roomAccountEmail(state.selectedSender!)}</span>
+                      <span className="font-bold px-2 text-[#5865F2] flex-shrink-0">切り替え</span>
+                    </button>
+                  )}
                   <div className="flex items-center gap-2 bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">
                     <span className="text-gray-400 flex-shrink-0">返信先:</span>
                     <span className={`truncate flex-1 ${state.replyToMessage ? "" : "text-gray-500"}`}>

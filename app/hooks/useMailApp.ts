@@ -12,7 +12,7 @@ import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId, isRateLimitReason } from "../lib/sendVerify";
 import { applySyncResult, idsToFetchForLabelChanges, type BoxFlags, type SyncResult } from "../lib/historySync";
 import { replaceCidImages } from "../lib/emailHtml";
-import { sanitizeSyncedSettings, syncedSettingsKey, type SyncedSettings } from "../lib/syncedSettings";
+import { sanitizeSyncedSettings, sanitizeAccountSettings, syncedSettingsKey, pickCommonSettings, type SyncedSettings, type AccountSettings } from "../lib/syncedSettings";
 
 // メールの本文中の画像（cid: で参照されるもの）
 type InlineImageRef = { contentId: string; attachmentId: string; mimeType: string; size: number };
@@ -26,10 +26,12 @@ import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
 import { logError, logWarn } from "../lib/safeLog";
 import { createSaveQueue, type SaveQueue } from "../lib/configSaveQueue";
 import { groupIdsByAccount, type MoveDestination } from "../lib/mailboxOps";
+import { isSharedConfig } from "../lib/configScope";
 
 const CONFIG_SAVE_FAILED = "設定（ピン留め・名前変更など）を保存できませんでした。再読み込みすると元に戻ります。通信状況を確認して、もう一度お試しください。";
 const CONFIG_SAVE_RETRYING = "設定（ピン留め・名前変更など）を保存できませんでした。通信が戻りしだい自動でもう一度保存します。保存できるまでページを閉じないでください。";
 const SYNCED_SETTINGS_KEY = "__synced_settings__";
+const ACCOUNT_SETTINGS_KEY_PREFIX = "__account_settings__:";
 
 // /api/emails の送信 API に渡す内容と、その結果
 type SendApiPayload = {
@@ -234,9 +236,10 @@ export function useMailApp() {
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("remail_use_icon_labels", String(useIconLabels));
   }, [useIconLabels]);
-  // メールの外部の画像を、「画像を表示」を押さずに毎回読み込むか（既定はオフ。読み込むと送り手に開封が伝わる）。
-  // どの端末でも共通にするため D1 の共通設定に持ち、ログアウトしても変えない。読み込むまでは既定（オフ）のまま
-  const [alwaysLoadImages, setAlwaysLoadImages] = useState(false);
+  // アカウント設定（アカウントごと。名前と型は app/lib/syncedSettings.ts の ACCOUNT_SETTING_TYPES）。
+  // 今は「メールの外部の画像を、押さずに毎回読み込むか」だけ（既定はオフ。読み込むと送り手に開封が伝わる）。
+  // そのアカウントの D1 の置き場所に持ち、ログアウトしても変えない。読み込むまでは既定（オフ）のまま
+  const [accountSettings, setAccountSettings] = useState<Record<string, AccountSettings>>({});
   const [checkInbox, setCheckInbox] = useState<boolean>(() => getSavedBoxSettings()?.inbox ?? true);
   const [checkArchive, setCheckArchive] = useState<boolean>(() => getSavedBoxSettings()?.archive ?? true);
   const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
@@ -341,11 +344,25 @@ export function useMailApp() {
   const [draftReadyRoom, setDraftReadyRoom] = useState<string | null>(null);
   const selectedSenderRef = useRef(selectedSender);
   useEffect(() => { selectedSenderRef.current = selectedSender; }, [selectedSender]);
+  // 送信元のアカウントを切り替えたときに、切り替え先のチャットへ持っていく入力中の内容
+  const carryDraftRef = useRef<{ room: string; subject: string; body: string; attachments: { filename: string; mimeType: string; size: number; data: string }[] } | null>(null);
   useEffect(() => {
     const room = selectedSender;
     let cancelled = false;
     void (room ? loadDraft(room) : Promise.resolve(null)).then(d => {
       if (cancelled) return;
+      // 切り替え先に下書きが無ければ、切り替え元で入力していた内容を使う（返信先は元のアカウントのメールなので持ってこない）
+      const carry = carryDraftRef.current && carryDraftRef.current.room === room ? carryDraftRef.current : null;
+      if (carry) carryDraftRef.current = null;
+      if (carry && !d?.body && !d?.subject && !d?.attachments?.length) {
+        setReplySubject(carry.subject);
+        setReplyBody(carry.body);
+        setReplyToMessage(null);
+        setReplyAttachments(carry.attachments);
+        setAttachError(null);
+        setDraftReadyRoom(room);
+        return;
+      }
       setReplySubject(d?.subject || "");
       setReplyBody(d?.body || "");
       setReplyToMessage(d?.replyToMessage || null);
@@ -692,7 +709,7 @@ export function useMailApp() {
       saveQueueRef.current = createSaveQueue({
         onRetrying: () => showErrorToast(CONFIG_SAVE_RETRYING),
         onRecovered: () => showInfoToast("設定を保存しました", 2500),
-        onGaveUp: (key) => showErrorToast(key === SYNCED_SETTINGS_KEY
+        onGaveUp: (key) => showErrorToast(key === SYNCED_SETTINGS_KEY || key.startsWith(ACCOUNT_SETTINGS_KEY_PREFIX)
           ? "設定をほかの端末と同期できませんでした。この端末では変えたとおりに動きます。通信状況を確認して、もう一度設定を変えてください。"
           : CONFIG_SAVE_FAILED),
       });
@@ -728,14 +745,16 @@ export function useMailApp() {
   }, []);
 
   // ピン留め・非表示・名前変更・グループなどの設定を D1 に保存する
-  const saveConfigRow = async (row: { chat_id: string; account_email: string; custom_name: string; is_pinned?: boolean; is_hidden?: boolean; hidden_at_date?: string; unhide_on_new?: boolean }) => {
-    const body = JSON.stringify(row);
+  // scope が "shared" なら、ログイン中の全アカウントに保存する（すべてのアカウントが対象のフィルター）
+  const saveConfigRow = async (row: { chat_id: string; account_email: string; custom_name: string; is_pinned?: boolean; is_hidden?: boolean; hidden_at_date?: string; unhide_on_new?: boolean }, scope?: "shared") => {
+    const body = JSON.stringify(scope ? { ...row, scope } : row);
     await getSaveQueue().save(encodeRoomKey(row.account_email, asLocalKey(row.chat_id)), () =>
       sendConfigRequest("config.save", "/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body }));
   };
 
   const loadD1Configs = async (): Promise<{ globalSettings: SyncedSettings | null; formatted: Record<RoomKeyStr, ChatConfig> }> => {
     let globalSettings: SyncedSettings | null = null;
+    let loadedAccountSettings: Record<string, AccountSettings> | null = null;
     const formatted: Record<RoomKeyStr, ChatConfig> = {} as Record<RoomKeyStr, ChatConfig>;
     const formattedMessages: Record<RoomKeyStr, MessageConfig> = {} as Record<RoomKeyStr, MessageConfig>;
     try {
@@ -743,6 +762,10 @@ export function useMailApp() {
       if (res.ok) {
         const data = await res.json();
         const pMsgs: Email[] = [];
+        if (data.accountSettings && typeof data.accountSettings === "object") {
+          loadedAccountSettings = {};
+          for (const [acc, v] of Object.entries(data.accountSettings as Record<string, unknown>)) loadedAccountSettings[acc] = sanitizeAccountSettings(v);
+        }
         (data.configs as D1ConfigRow[] | undefined)?.forEach((c) => {
           if (c.chat_id === "__GLOBAL_SETTINGS__" && c.custom_name) {
             try { globalSettings = sanitizeSyncedSettings(JSON.parse(c.custom_name)); } catch { /* 壊れた設定は無視して既定値を使う */ } return;
@@ -814,14 +837,16 @@ export function useMailApp() {
       logError("config.load", {}, e);
       showErrorToast("ピン留め・名前変更などの設定を読み込めませんでした。通信状況を確認して再読み込みしてください。");
     }
+    if (loadedAccountSettings) setAccountSettings(loadedAccountSettings);
     return { globalSettings, formatted };
   };
 
-  // どの端末でも共通の設定（名前と型は app/lib/syncedSettings.ts）。新しい設定を足すときは、ここと下の applySyncedSettings にも足す
+  // 共通設定（どのアカウントでログインしても同じ。名前と型は app/lib/syncedSettings.ts の COMMON_SETTING_KEYS）。
+  // 新しい共通設定を足すときは、ここと下の applySyncedSettings にも足す。アカウントごとの設定は accountSettings に持つ
   const syncedSettings: SyncedSettings = useMemo(() => ({
     inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent,
-    iconLabels: useIconLabels, alwaysLoadImages, accounts: checkAccounts,
-  }), [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, alwaysLoadImages, checkAccounts]);
+    iconLabels: useIconLabels, accounts: checkAccounts,
+  }), [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, checkAccounts]);
   // D1 から読んだ設定を画面に反映する（D1 に無い設定は、この端末の今の値のまま）
   const applySyncedSettings = (s: SyncedSettings) => {
     if (s.inbox !== undefined) setCheckInbox(s.inbox);
@@ -830,7 +855,6 @@ export function useMailApp() {
     if (s.trash !== undefined) setCheckTrash(s.trash);
     if (s.sent !== undefined) setCheckSent(s.sent);
     if (s.iconLabels !== undefined) setUseIconLabels(s.iconLabels);
-    if (s.alwaysLoadImages !== undefined) setAlwaysLoadImages(s.alwaysLoadImages);
     if (s.accounts !== undefined) setCheckAccounts(s.accounts);
   };
   // D1 から読み終えるまでは保存しない（読む前のこの端末の値で、ほかの端末で変えた設定を上書きしないため）
@@ -855,6 +879,18 @@ export function useMailApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- getSaveQueue は ref から同じキューを返すだけで、描画ごとに作り直されるため入れると毎回保存が走る
   }, [syncedSettings, syncedSettingsReady]);
 
+  // アカウント設定を1つ変えて、そのアカウントの置き場所に保存する（失敗したら自動で送り直す）
+  const setAccountSetting = (account: string, updates: AccountSettings) => {
+    if (!account) return;
+    setAccountSettings(prev => ({ ...prev, [account]: { ...prev[account], ...updates } }));
+    const body = JSON.stringify({ account_settings: updates, account_email: account });
+    void getSaveQueue().save(`${ACCOUNT_SETTINGS_KEY_PREFIX}${account}`, () =>
+      sendConfigRequest("config.saveAccount", "/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body }));
+  };
+  // そのアカウントのメールで、外部の画像を押さずに読み込むか
+  const alwaysLoadImagesFor = (account: string | undefined): boolean =>
+    !!accountSettings[account || session?.user?.email || ""]?.alwaysLoadImages;
+
   const saveGlobalSettings = async (inbox: boolean, archive: boolean, spam: boolean, trash: boolean, sent: boolean) => {
     if (typeof window !== "undefined") {
       localStorage.setItem("remail_box_settings", JSON.stringify({ inbox, archive, spam, trash, sent }));
@@ -871,8 +907,12 @@ export function useMailApp() {
     const nextConfig = { ...chatConfigsRef.current[stateKey], ...updates };
     setChatConfigs(prev => ({ ...prev, [stateKey]: nextConfig }));
     let nameToSave = nextConfig.customName || "";
+    const shared = isSharedConfig(nextConfig);
     if (nextConfig.forceFetch || nextConfig.isGroup || nextConfig.filterAction) {
       nameToSave = JSON.stringify({
+        // すべてのアカウントが対象のフィルターは全アカウントに写しを持つので、どれが新しいかを時刻で決める
+        // eslint-disable-next-line react-hooks/purity -- 描画中ではなく、保存するとき（操作のたび）に呼ばれる関数の中なので問題ない
+        shared: shared || undefined, updatedAt: Date.now(),
         // ピン留めはメールの中身を保存せず、Gmail のメッセージ ID だけを保存する（絶対ルール1）
         name: nextConfig.customName, forceFetch: nextConfig.forceFetch, ids: nextConfig.persistedIds ? capPinnedIds(nextConfig.persistedIds) : undefined,
         isGroup: nextConfig.isGroup, groupMembers: nextConfig.groupMembers, groupMemberAddresses: nextConfig.groupMemberAddresses, groupMode: nextConfig.groupMode,
@@ -883,7 +923,7 @@ export function useMailApp() {
         filterIncludeExisting: nextConfig.filterIncludeExisting,
       });
     }
-    await saveConfigRow({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew });
+    await saveConfigRow({ chat_id: targetId, account_email: accountEmail, custom_name: nameToSave, is_pinned: nextConfig.isPinned, is_hidden: nextConfig.isHidden, hidden_at_date: nextConfig.hiddenAtDate, unhide_on_new: nextConfig.unhideOnNew }, shared ? "shared" : undefined);
   };
 
   // メッセージ単位の設定（ピン留め・非表示）。room単位のupdateChatConfigとはstate/キー空間が別
@@ -931,7 +971,7 @@ export function useMailApp() {
       }
     }
     // 削除も同じ行の保存として扱う（削除の後に古い値の送り直しで行が戻らないように。削除は何度送っても同じ）
-    const url = `/api/config?chat_id=${encodeURIComponent(targetId)}&account_email=${encodeURIComponent(accountEmail)}`;
+    const url = `/api/config?chat_id=${encodeURIComponent(targetId)}&account_email=${encodeURIComponent(accountEmail)}${cfg && isSharedConfig(cfg) ? "&scope=shared" : ""}`;
     await getSaveQueue().save(stateKey, () => sendConfigRequest("config.delete", url, { method: "DELETE" }));
   };
 
@@ -1297,7 +1337,8 @@ export function useMailApp() {
           // どの端末でも共通の設定を反映する。D1 に無い設定（初めて同期する端末の値）は、このあと D1 に保存される
           const remoteSettings: SyncedSettings = globalSettings || {};
           applySyncedSettings(remoteSettings);
-          savedSyncedKeyRef.current = syncedSettingsKey(remoteSettings);
+          // updatedAt と、アカウント設定に移した alwaysLoadImages は画面が持たないので、比べるときは外す
+          savedSyncedKeyRef.current = syncedSettingsKey(pickCommonSettings(remoteSettings));
           setSyncedSettingsReady(true);
           // fetchEmails等が読む前に、ref側は同期的に確定させておく（state更新の再レンダリングを待たない）
           const linkedAccountRows = (linkedAccountsRes.accounts || []) as LinkedAccountRow[];
@@ -2154,9 +2195,10 @@ export function useMailApp() {
   // accountEmail は新規アドレスを複合化する際にだけ使う（「作成」モーダルのアカウント選択UIから渡される。
   // 未指定時はメインアカウント）。既存の宛先（contactDirectory由来の複合キー）を選んだ場合は
   // そのままそのアカウントで開くため、accountEmailは無視される
-  const createOrOpenChat = async (identifier: string, accountEmail?: string) => {
+  // 宛先とアカウントから、開くチャット（既存ならそのチャット、無ければ新しいチャットのキー）を決める
+  const resolveDirectRoom = (identifier: string, accountEmail?: string): { room: RoomKeyStr; existing: boolean } | null => {
     const trimmed = identifier.trim();
-    if (!trimmed) return;
+    if (!trimmed) return null;
     const myEmail = session?.user?.email || "";
     const targetAccountEmail = accountEmail || myEmail;
     // contactDirectory の候補選択は既に複合キー（room）そのものが渡ってくる。
@@ -2184,12 +2226,40 @@ export function useMailApp() {
       ) || null;
     }
 
-    if (existingRoom) {
-      await openChat(existingRoom);
-    } else {
-      addDraftChat(directKey);
-      await openChat(directKey);
-    }
+    return existingRoom ? { room: existingRoom, existing: true } : { room: directKey, existing: false };
+  };
+
+  const createOrOpenChat = async (identifier: string, accountEmail?: string, opts?: { replaceHistory?: boolean }): Promise<RoomKeyStr | null> => {
+    const target = resolveDirectRoom(identifier, accountEmail);
+    if (!target) return null;
+    if (!target.existing) addDraftChat(target.room);
+    await openChat(target.room, opts);
+    return target.room;
+  };
+
+  // 返信欄の「送信元」を別のアカウントに切り替える。切り替え先のアカウントで、同じ相手との既存のチャット
+  // （無ければ新しいチャット）を開く。入力中の本文・添付は切り替え先へ持っていく（送り間違えないよう、送信元は返信欄に常に出す）
+  const switchSendAccount = async (target: string) => {
+    const room = selectedSender;
+    setModal(null);
+    const cameFromModal = typeof window !== "undefined" && window.history.state?.action === "modal";
+    const closeModalEntry = () => { if (cameFromModal) window.history.replaceState(isMobile && room ? { chat: room } : {}, "", window.location.href); };
+    if (!room) { closeModalEntry(); return; }
+    const { accountEmail: current, localKey } = decodeRoomKey(room);
+    if (current.toLowerCase() === target.toLowerCase()) { closeModalEntry(); return; }
+    const address = getRoomAddress(room) || localKey;
+    const hasInput = !!(replyBody || replyAttachments.length || (!replyToMessage && replySubject));
+    const carried = { subject: replyToMessage ? "" : replySubject, body: replyBody, attachments: replyAttachments };
+    const dest = resolveDirectRoom(address, target);
+    if (!dest) { closeModalEntry(); return; }
+    // 開く前に決めておく（開いた直後に下書きの読み戻しが走るため）
+    if (hasInput) carryDraftRef.current = { room: dest.room, ...carried };
+    if (!dest.existing) addDraftChat(dest.room);
+    await openChat(dest.room, { replaceHistory: cameFromModal });
+    if (!isMobile && cameFromModal) window.history.replaceState({}, "", window.location.href);
+    // 持っていった内容は切り替え元の下書きから消す（両方に残って二重に送られないように）
+    if (hasInput) void removeDraft(room);
+    showInfoToast(`送信元を ${target} に切り替えました`, 2500);
   };
 
   // 「作成」モーダルで複数の宛先を選んだ場合のグループチャット作成。
@@ -2238,7 +2308,9 @@ export function useMailApp() {
   // フィルターツールで作成するグループ。宛先の集合ではなく条件（FilterCriteria）でメッセージを
   // 動的に集約する。新着メールも条件に合えば自動的に含まれ続ける。常に受信専用チャットとして扱う
   const createFilterGroup = async (name: string, filterCriteria: FilterCriteria, hideOriginal: boolean, includeExisting: boolean = true) => {
-    const myEmail = session?.user?.email || "";
+    // 1つのアカウントだけが対象なら、そのアカウントの名義で作る（そのアカウントだけでログインしても使えるように）。
+    // すべてのアカウントが対象なら、ログイン中の全アカウントに写しを保存する（updateChatConfig が shared で保存する）
+    const myEmail = filterCriteria.accountEmail || session?.user?.email || "";
     const groupRoomLocal = asLocalKey(`group:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
     const groupRoom = encodeRoomKey(myEmail, groupRoomLocal);
     await updateChatConfig(groupRoomLocal, {
@@ -3551,7 +3623,7 @@ export function useMailApp() {
     auth: { session, status },
     state: {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
-      isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, useIconLabels, alwaysLoadImages,
+      isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, useIconLabels, accountSettings,
       currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts, linkedAccountProfiles,
       replySubject, replyBody, isSending, replyToMessage, replyAttachments, attachError,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
@@ -3563,7 +3635,7 @@ export function useMailApp() {
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
     actions: {
-      setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setCheckAccounts, setUseIconLabels, setAlwaysLoadImages, changeChatTab,
+      setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setCheckAccounts, setUseIconLabels, setAccountSetting, alwaysLoadImagesFor, changeChatTab,
       setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
       setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleMenuBarClick, handleBackgroundClick, toggleSelection,
@@ -3575,7 +3647,7 @@ export function useMailApp() {
       openEmailModal, closeEmailModal, toggleMsgExpand,
       openAttachmentModal, closeAttachmentModal,
       jumpToReplyTarget, createOrOpenChat, createGroupChat, createFilterGroup, deleteChatConfig, forwardMessageTo,
-      updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail,
+      updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail, switchSendAccount,
       unlinkAccount, isAccountVisible, setSendConfirm, setReplyAll, retryUnloaded,
     },
     computed: { replyPlan: getReplyPlan(selectedSender), allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },

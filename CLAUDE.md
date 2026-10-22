@@ -90,7 +90,7 @@ Gmail をチャット風 UI（相手ごとのトークルーム）で読み書�
 - スキーマは `migrations/` の連番ファイル（`0002_xxx.sql` …）で管理し、デプロイ時に GitHub Actions が `wrangler d1 migrations apply` で本番に当てる。適用済みのファイルは書き換えず、変更は必ず新しいファイルとして足す。
 - スキーマ変更は非破壊にする。`DROP TABLE` を書かない。列の追加は `ALTER TABLE ... ADD COLUMN` で行う。新しいコードより先にスキーマが当たるので、古いコード（ロールバック先）が壊れない変更にする。列を消す・データを消す必要があるときは、まず使わなくなるコードを出し、次の段階で消す（2段階）。
 - この環境からは本番 D1 を直接操作しない（ローカルの wrangler は本番の認証が通らない）。スキーマ変更は migrations ファイルを足して push し、Actions に当てさせる。
-- `chat_configs` の `account_email` が空文字 `""` の行は、`__GLOBAL_SETTINGS__` / `__KNOWN_BOXES__` 用に予約している。
+- `chat_configs` の `account_email` が空文字 `""` の行は、`__GLOBAL_SETTINGS__`（共通設定）/ `__ACCOUNT_SETTINGS__`（アカウント設定）/ `__KNOWN_BOXES__` 用に予約している。
 - `linked_accounts` のトークンは必ず `app/lib/tokenCrypto.ts` の `encryptSecret` / `decryptSecret` を通して読み書きする。
 
 ## コードの約束
@@ -98,7 +98,13 @@ Gmail をチャット風 UI（相手ごとのトークルーム）で読み書�
 - API ルートに `export const runtime = 'edge'` を書かない（OpenNext が対応していない）。D1 などのバインディングは `@opennextjs/cloudflare` の `getCloudflareContext().env` から取る。Node 専用 API は `nodejs_compat` で動く範囲に限り、なるべく fetch・Web Crypto・TextEncoder などの Web 標準で書く。
 - roomKey（アカウント＋相手の複合キー）の組み立て・分解は `app/lib/roomKey.ts` の `encodeRoomKey` / `decodeRoomKey` だけで行う。区切り文字を直接 `split` しない。D1 の `chat_id` はローカルキー、画面の state は複合キー、と使い分ける。
 - チャットは連携アカウントごとに分離する。同じ相手でもアカウントが違えば別チャット。ピン留め・非表示・永続データ・送信元の処理でアカウントを取り違えない（取り違えは誤送信元＝ビジネス上の事故になる）。
-- 利用者が選ぶ設定（設定画面の項目・場所やアカウントのチェックボックスなど）は、どの端末でも共通にする。新しい設定は `app/lib/syncedSettings.ts` の一覧に名前と型を足し、`useMailApp.ts` の `syncedSettings` と `applySyncedSettings` にも足す（D1 の共通設定の行に暗号化して保存され、ログアウトしても変わらない）。端末に置くのは画面の状態（開いているタブ・スクロール位置）と下書きだけにする。
+- 複数のアカウントは「同時にログインしている別々のアカウント」として扱う（ログインできた＝同じ人）。メールの表示はまとめて出すが、設定はそのアカウント自身の置き場所（D1 の user_email がそのアカウント）に保存し、そのアカウントだけでログインしても同じ設定で使えるようにする（`app/lib/configStore.ts` の `openSessionConfigs` / `saveSessionConfig`）。
+  - チャットの設定（ピン留め・非表示・名前変更・宛先で作るグループ・1つのアカウントだけのフィルター）：そのアカウントの置き場所
+  - すべてのアカウントが対象のフィルター（`app/lib/configScope.ts` の `isSharedConfig`）：ログイン中の全アカウントに同じ写しを置き、`updatedAt` が一番新しいものを使う
+- 利用者が選ぶ設定は、どの端末でも共通にする（D1 に暗号化して保存され、ログアウトしても変わらない）。設定は2種類あり、新しい設定はどちらかに足す。
+  - 共通設定（どのアカウントでログインしても同じ。場所・アカウントのチェックボックス、文字／アイコン）：`app/lib/syncedSettings.ts` の `SYNCED_SETTING_TYPES` と `COMMON_SETTING_KEYS` に足し、`useMailApp.ts` の `syncedSettings` と `applySyncedSettings` にも足す。全アカウントの `__GLOBAL_SETTINGS__` に同じものを書き、あとから追加したアカウントにも写す
+  - アカウント設定（アカウントごと。今は「メールの外部の画像」）：`ACCOUNT_SETTING_TYPES` に足し、`useMailApp.ts` の `setAccountSetting` で保存する（そのアカウントの `__ACCOUNT_SETTINGS__`）。設定画面では「アカウントの設定」の欄に出す
+  - 端末に置くのは画面の状態（開いているタブ・スクロール位置）と下書きだけにする。
 - 「自分が送ったメールか」の判定は共通の `isMineEmail`（アドレス完全一致）を使う。`.includes` で部分一致させない。
 - Gmail API の**読み取り・ラベル操作**は `fetchWithRetry` を通す。**送信は通さない**（絶対ルール2）。アクセストークンは `getValidAccessToken` で取る（リフレッシュの二重実行を防ぐため）。
 - 送信直後の仮 ID は `fake-` で始まる。Gmail 側に存在しないので API に渡さない。
