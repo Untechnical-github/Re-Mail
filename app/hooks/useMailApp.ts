@@ -24,8 +24,11 @@ import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, compos
 import { readPinnedField, capPinnedIds, mergePinnedIds, missingPinnedEmail } from "../lib/pinnedIds";
 import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
 import { logError, logWarn } from "../lib/safeLog";
+import { createSaveQueue, type SaveQueue } from "../lib/configSaveQueue";
 
 const CONFIG_SAVE_FAILED = "設定（ピン留め・名前変更など）を保存できませんでした。再読み込みすると元に戻ります。通信状況を確認して、もう一度お試しください。";
+const CONFIG_SAVE_RETRYING = "設定（ピン留め・名前変更など）を保存できませんでした。通信が戻りしだい自動でもう一度保存します。保存できるまでページを閉じないでください。";
+const SYNCED_SETTINGS_KEY = "__synced_settings__";
 
 // /api/emails の送信 API に渡す内容と、その結果
 type SendApiPayload = {
@@ -682,16 +685,54 @@ export function useMailApp() {
     byAccount.forEach((list, account) => { void savePinnedCache(account, list); });
   }, [persistedEmails, linkedAccounts, session?.user?.email]);
 
-  // ピン留め・非表示・名前変更・グループなどの設定を D1 に保存する。失敗したら黙らずに伝える（絶対ルール3）。
-  // 画面の表示はもう変わっているので、保存されていないこと（再読み込みで元に戻ること）を伝える
-  const saveConfigRow = async (row: { chat_id: string; account_email: string; custom_name: string; is_pinned?: boolean; is_hidden?: boolean; hidden_at_date?: string; unhide_on_new?: boolean }) => {
-    try {
-      const res = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(row) });
-      if (!res.ok) { logWarn("config.save", { status: res.status }); showErrorToast(CONFIG_SAVE_FAILED); }
-    } catch (e) {
-      logError("config.save", {}, e);
-      showErrorToast(CONFIG_SAVE_FAILED);
+  // 設定の保存は、失敗したら自動で送り直す（中身は app/lib/configSaveQueue.ts）。同じ行への保存は新しい値だけを送る。
+  // 送り直してもだめなら、画面の表示はもう変わっているので、保存されていないこと（再読み込みで元に戻ること）を伝える（絶対ルール3）
+  const saveQueueRef = useRef<SaveQueue | null>(null);
+  const getSaveQueue = (): SaveQueue => {
+    if (!saveQueueRef.current) {
+      saveQueueRef.current = createSaveQueue({
+        onRetrying: () => showErrorToast(CONFIG_SAVE_RETRYING),
+        onRecovered: () => showInfoToast("設定を保存しました", 2500),
+        onGaveUp: (key) => showErrorToast(key === SYNCED_SETTINGS_KEY
+          ? "設定をほかの端末と同期できませんでした。この端末では変えたとおりに動きます。通信状況を確認して、もう一度設定を変えてください。"
+          : CONFIG_SAVE_FAILED),
+      });
     }
+    return saveQueueRef.current;
+  };
+  // 失敗した保存を送るときのステータスをログに残す（ステータスだけ。中身は出さない）
+  const sendConfigRequest = async (op: string, input: string, init?: RequestInit): Promise<Response> => {
+    try {
+      const res = await fetch(input, init);
+      if (!res.ok) logWarn(op, { status: res.status });
+      return res;
+    } catch (e) {
+      logError(op, {}, e);
+      throw e;
+    }
+  };
+  useEffect(() => {
+    // 通信が戻ったら、待たずに送り直す
+    const onOnline = () => saveQueueRef.current?.flush();
+    // まだ保存できていない設定があるときは、ページを閉じる前に確かめる（閉じると変更が消えるため）
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!saveQueueRef.current?.hasPending()) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("online", onOnline);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, []);
+
+  // ピン留め・非表示・名前変更・グループなどの設定を D1 に保存する
+  const saveConfigRow = async (row: { chat_id: string; account_email: string; custom_name: string; is_pinned?: boolean; is_hidden?: boolean; hidden_at_date?: string; unhide_on_new?: boolean }) => {
+    const body = JSON.stringify(row);
+    await getSaveQueue().save(encodeRoomKey(row.account_email, asLocalKey(row.chat_id)), () =>
+      sendConfigRequest("config.save", "/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body }));
   };
 
   const loadD1Configs = async (): Promise<{ globalSettings: SyncedSettings | null; formatted: Record<RoomKeyStr, ChatConfig> }> => {
@@ -802,16 +843,17 @@ export function useMailApp() {
     const key = syncedSettingsKey(syncedSettings);
     if (key === savedSyncedKeyRef.current) return;
     // 続けて切り替えたときに何度も保存しないよう、少し待ってからまとめて保存する
-    const timer = setTimeout(async () => {
-      try {
-        const res = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ global_settings: syncedSettings }) });
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        savedSyncedKeyRef.current = key;
-      } catch {
-        showErrorToast("設定をほかの端末と同期できませんでした。この端末では変えたとおりに動きます。通信状況を確認して、もう一度設定を変えてください。");
-      }
+    // 失敗したら、ほかの設定と同じく自動で送り直す
+    const body = JSON.stringify({ global_settings: syncedSettings });
+    const timer = setTimeout(() => {
+      void getSaveQueue().save(SYNCED_SETTINGS_KEY, async () => {
+        const res = await sendConfigRequest("config.saveSynced", "/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+        if (res.ok) savedSyncedKeyRef.current = key;
+        return res;
+      });
     }, 800);
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getSaveQueue は ref から同じキューを返すだけで、描画ごとに作り直されるため入れると毎回保存が走る
   }, [syncedSettings, syncedSettingsReady]);
 
   const saveGlobalSettings = async (inbox: boolean, archive: boolean, spam: boolean, trash: boolean, sent: boolean) => {
@@ -889,10 +931,9 @@ export function useMailApp() {
         localStorage.removeItem("remail_scroll_main");
       }
     }
-    try {
-      const res = await fetch(`/api/config?chat_id=${encodeURIComponent(targetId)}&account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" });
-      if (!res.ok) { logWarn("config.delete", { status: res.status }); showErrorToast(CONFIG_SAVE_FAILED); }
-    } catch (e) { logError("config.delete", {}, e); showErrorToast(CONFIG_SAVE_FAILED); }
+    // 削除も同じ行の保存として扱う（削除の後に古い値の送り直しで行が戻らないように。削除は何度送っても同じ）
+    const url = `/api/config?chat_id=${encodeURIComponent(targetId)}&account_email=${encodeURIComponent(accountEmail)}`;
+    await getSaveQueue().save(stateKey, () => sendConfigRequest("config.delete", url, { method: "DELETE" }));
   };
 
   // UI層（Modals.tsx等）はチャットの識別子として常に複合キー（RoomKeyStr、chatConfigsのstateキーと同じもの）
