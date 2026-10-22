@@ -1348,9 +1348,34 @@ export function AttachmentModal({ app }: { app: MailAppHook }) {
   );
 }
 
+// 設定・フィルターの画面のタブ。見た目はチャット一覧のタブ（個人チャット／グループチャット／フィルター）と同じ
+function ModalTabs({ tabs, active, onChange }: { tabs: { key: string; label: string; title?: string }[]; active: string; onChange: (key: string) => void }) {
+  return (
+    <div className="flex gap-1 overflow-x-auto mb-4">
+      {tabs.map(t => (
+        <button
+          key={t.key}
+          title={t.title}
+          onClick={() => onChange(t.key)}
+          className={`flex-1 min-w-[5rem] px-2 py-1.5 rounded text-xs font-bold transition truncate ${active === t.key ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#3f4147]"}`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// タブに出すアカウントの短い名前（名前があれば名前、無ければアドレスの @ より前）
+function accountTabLabel(account: string, name?: string): string {
+  return name || account.split("@")[0] || account;
+}
+
 export function Modals({ app }: { app: MailAppHook }) {
   // アカウントメニューで「ログアウト」を押したアカウント（確認を出している間だけ）
   const [logoutConfirm, setLogoutConfirm] = useState<string | null>(null);
+  // 設定画面で開いているタブ（"common" か、アカウントのアドレス）
+  const [settingsTab, setSettingsTab] = useState<string>("common");
   const { modal, renameInput, chatConfigs, messageConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
   const { executeConfirmedAction, executePin, setRenameInput, updateChatConfigByRoomKey, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats } = app.computed;
@@ -1488,33 +1513,46 @@ export function Modals({ app }: { app: MailAppHook }) {
           const me = app.auth?.session?.user?.email || "";
           const accounts = [me, ...((app.state.linkedAccounts as string[]) || [])].filter(Boolean);
           const profiles = app.state.linkedAccountProfiles as Record<string, { name?: string; picture?: string }>;
+          const profileOf = (a: string) => a === me ? { name: app.auth?.session?.user?.name || undefined, picture: app.auth?.session?.user?.image || undefined } : profiles?.[a];
           const toggleClass = (on: boolean) => `flex-1 py-2 rounded text-sm font-bold transition ${on ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#35373C]"}`;
+          // ログアウトしたアカウントのタブを開いたままにしない
+          const tab = settingsTab === "common" || accounts.includes(settingsTab) ? settingsTab : "common";
+          const tabs = [
+            { key: "common", label: "共通", title: "どのアカウントでも同じ設定" },
+            ...accounts.map(a => ({ key: a, label: accountTabLabel(a, profileOf(a)?.name), title: a })),
+          ];
           return (
           <div className="p-5 overflow-y-auto" style={{ maxHeight: "85dvh" }}>
-            <div className="flex items-center justify-between mb-5">
+            <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-bold text-white">設定</h2>
               <button onClick={() => safeBack()} className="text-gray-400 hover:text-white font-bold text-lg px-1 transition flex-shrink-0">×</button>
             </div>
 
+            <ModalTabs tabs={tabs} active={tab} onChange={setSettingsTab} />
+
             {/* 共通設定：どのアカウントでログインしても同じ（あとから追加したアカウントにも使われる） */}
-            <div className="text-xs font-bold text-gray-400 mb-1">共通設定</div>
-            <div className="text-[11px] text-gray-500 mb-3">どのアカウントでログインしても同じ設定になります。あとから追加したアカウントにも使われます。一覧の上の受信箱〜ゴミ箱・アカウントの表示のチェックも共通設定です</div>
-            <div className="bg-[#2B2D31] rounded p-3 mb-5">
-              <div className="text-sm font-bold text-gray-200 mb-1">送信ボタン・アクションバー・場所の表示</div>
-              <div className="text-xs text-gray-500 mb-3">送信ボタンや移動・削除などのボタン、受信箱〜ゴミ箱の表示を、文字ラベルとシンプルなアイコンのどちらで表示するか選べます（実験的な機能です）</div>
-              <div className="flex gap-2">
-                <button onClick={() => app.actions.setUseIconLabels(false)} className={toggleClass(!app.state.useIconLabels)}>文字</button>
-                <button onClick={() => app.actions.setUseIconLabels(true)} className={toggleClass(app.state.useIconLabels)}>アイコン</button>
-              </div>
-            </div>
+            {tab === "common" && (
+              <>
+                <div className="text-[11px] text-gray-500 mb-3">どのアカウントでログインしても同じ設定になります。あとから追加したアカウントにも使われます。一覧の上の受信箱〜ゴミ箱・アカウントの表示のチェックも共通設定です</div>
+                <div className="bg-[#2B2D31] rounded p-3">
+                  <div className="text-sm font-bold text-gray-200 mb-1">送信ボタン・アクションバー・場所の表示</div>
+                  <div className="text-xs text-gray-500 mb-3">送信ボタンや移動・削除などのボタン、受信箱〜ゴミ箱の表示を、文字ラベルとシンプルなアイコンのどちらで表示するか選べます（実験的な機能です）</div>
+                  <div className="flex gap-2">
+                    <button onClick={() => app.actions.setUseIconLabels(false)} className={toggleClass(!app.state.useIconLabels)}>文字</button>
+                    <button onClick={() => app.actions.setUseIconLabels(true)} className={toggleClass(app.state.useIconLabels)}>アイコン</button>
+                  </div>
+                </div>
+              </>
+            )}
 
             {/* アカウントごとの設定：そのアカウントのメールにだけ使われる。そのアカウントだけでログインしたときも同じ */}
-            {accounts.map((a) => {
-              const profile = a === me ? { name: app.auth?.session?.user?.name || undefined, picture: app.auth?.session?.user?.image || undefined } : profiles?.[a];
+            {tab !== "common" && (() => {
+              const a = tab;
+              const profile = profileOf(a);
               const always = app.actions.alwaysLoadImagesFor(a);
               return (
-                <div key={a} className="mb-5">
-                  <div className="flex items-center gap-2 mb-2 min-w-0">
+                <>
+                  <div className="flex items-center gap-2 mb-3 min-w-0">
                     {/* eslint-disable-next-line @next/next/no-img-element -- アカウントの小さなプロフィール画像。next/image の最適化は Worker の中継が増えるので使わない（ほかのアカウント画像と同じ） */}
                     <img
                       src={profile?.picture || `/api/avatar?name=${encodeURIComponent(profile?.name || a)}`}
@@ -1523,8 +1561,8 @@ export function Modals({ app }: { app: MailAppHook }) {
                       className="w-6 h-6 rounded-full flex-shrink-0"
                     />
                     <div className="min-w-0">
-                      <div className="text-xs font-bold text-gray-400">アカウントの設定</div>
-                      <div className="text-[11px] text-gray-500 truncate">{a}</div>
+                      {profile?.name && <div className="text-xs font-bold text-gray-300 truncate">{profile.name}</div>}
+                      <div className="text-[11px] text-gray-500 truncate">{a} の設定（このアカウントのメールにだけ使われます）</div>
                     </div>
                   </div>
                   <div className="bg-[#2B2D31] rounded p-3">
@@ -1535,9 +1573,9 @@ export function Modals({ app }: { app: MailAppHook }) {
                       <button onClick={() => app.actions.setAccountSetting(a, { alwaysLoadImages: true })} className={toggleClass(always)}>毎回読み込む</button>
                     </div>
                   </div>
-                </div>
+                </>
               );
-            })}
+            })()}
           </div>
           );
         })()}
@@ -2463,6 +2501,8 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
   const [includeExisting, setIncludeExisting] = useState(true);
   // このフィルターのアカウント。フィルターはアカウントごとに分けて保存し、そのアカウントのメールにだけ効く
   const [filterAccountEmail, setFilterAccountEmail] = useState("");
+  // フィルターの一覧で開いているアカウントのタブ（空なら最初のアカウント）
+  const [filterTab, setFilterTab] = useState("");
 
   const myEmail = app.auth?.session?.user?.email || "";
   const linkedAccounts: string[] = app.state.linkedAccounts || [];
@@ -2729,17 +2769,24 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
             <h2 className="text-lg font-bold text-white">フィルター</h2>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
-            {/* ログインしているアカウントごとに欄を分ける。フィルターはアカウントごとに別々に保存し、そのアカウントのメールにだけ効く */}
+            {/* ログインしているアカウントごとにタブで分ける。フィルターはアカウントごとに別々に保存し、そのアカウントのメールにだけ効く */}
             {(() => {
               const accounts = [myEmail, ...linkedAccounts].filter(Boolean);
               const sameAcc = (x: string, y: string) => x.toLowerCase() === y.toLowerCase();
-              const sections = accounts.map(acc => ({ acc, filters: existingFilters.filter(f => sameAcc(app.actions.roomAccountEmail(f.id), acc)) }));
-              // ログアウトしたアカウントなどに残っているフィルターは、最初のアカウントの欄に出す（消せるように）
-              const orphans = existingFilters.filter(f => !accounts.some(acc => sameAcc(app.actions.roomAccountEmail(f.id), acc)));
-              if (sections[0]) sections[0].filters.push(...orphans);
-              return sections.map(({ acc, filters }) => (
-                <div key={acc} className="space-y-2">
-                  {accounts.length > 1 && <div className="text-xs font-bold text-gray-400 pt-2 truncate">{acc} のフィルター</div>}
+              const acc = accounts.find(a => sameAcc(a, filterTab)) || accounts[0] || "";
+              const filters = existingFilters.filter(f => sameAcc(app.actions.roomAccountEmail(f.id), acc));
+              // ログアウトしたアカウントなどに残っているフィルターは、最初のアカウントのタブに出す（消せるように）
+              if (acc === accounts[0]) filters.push(...existingFilters.filter(f => !accounts.some(a => sameAcc(app.actions.roomAccountEmail(f.id), a))));
+              const profiles = app.state.linkedAccountProfiles as Record<string, { name?: string }>;
+              const nameOf = (a: string) => a === myEmail ? (app.auth?.session?.user?.name || undefined) : profiles?.[a]?.name;
+              return (
+                <>
+                  {accounts.length > 1 && (
+                    <>
+                      <ModalTabs tabs={accounts.map(a => ({ key: a, label: accountTabLabel(a, nameOf(a)), title: a }))} active={acc} onChange={setFilterTab} />
+                      <div className="text-[11px] text-gray-500 truncate">{acc} のフィルター（このアカウントのメールにだけ効きます）</div>
+                    </>
+                  )}
                   <button
                     onClick={() => openCreate(acc)}
                     className="w-full text-left px-3 py-2.5 rounded bg-[#2B2D31] text-sm text-white hover:bg-[#35373C] transition font-bold"
@@ -2747,7 +2794,7 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
                     ＋ 新しいフィルターを作成
                   </button>
                   {filters.length === 0 && (
-                    <div className="text-xs text-gray-500 text-center py-3">保存されたフィルターはありません</div>
+                    <div className="text-xs text-gray-500 text-center py-6">保存されたフィルターはありません</div>
                   )}
                   {filters.map(({ id, cfg, kind }) => (
                     <div key={id} className="flex items-center justify-between gap-2 bg-[#232428] rounded p-2.5">
@@ -2769,8 +2816,8 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
                       )}
                     </div>
                   ))}
-                </div>
-              ));
+                </>
+              );
             })()}
           </div>
           <div className="p-4 border-t border-[#1E1F22] flex justify-end flex-shrink-0">
