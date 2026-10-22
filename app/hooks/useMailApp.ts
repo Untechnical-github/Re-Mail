@@ -230,14 +230,8 @@ export function useMailApp() {
     if (typeof window !== "undefined") localStorage.setItem("remail_use_icon_labels", String(useIconLabels));
   }, [useIconLabels]);
   // メールの外部の画像を、「画像を表示」を押さずに毎回読み込むか（既定はオフ。読み込むと送り手に開封が伝わる）。
-  // この端末にだけ保存し、ログアウトで消す（共有の端末で、次の人に設定が引き継がれないように）
-  const [alwaysLoadImages, setAlwaysLoadImages] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    try { return localStorage.getItem("remail_always_load_images") === "true"; } catch { return false; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem("remail_always_load_images", String(alwaysLoadImages)); } catch { /* 保存できなくても動作は続ける */ }
-  }, [alwaysLoadImages]);
+  // どの端末でも共通にするため D1 の共通設定に持ち、ログアウトしても変えない。読み込むまでは既定（オフ）のまま
+  const [alwaysLoadImages, setAlwaysLoadImagesState] = useState(false);
   const [checkInbox, setCheckInbox] = useState<boolean>(() => getSavedBoxSettings()?.inbox ?? true);
   const [checkArchive, setCheckArchive] = useState<boolean>(() => getSavedBoxSettings()?.archive ?? true);
   const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
@@ -699,8 +693,8 @@ export function useMailApp() {
     }
   };
 
-  const loadD1Configs = async (): Promise<{ globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean } | null; formatted: Record<RoomKeyStr, ChatConfig> }> => {
-    let globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean } | null = null;
+  const loadD1Configs = async (): Promise<{ globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; alwaysLoadImages?: boolean } | null; formatted: Record<RoomKeyStr, ChatConfig> }> => {
+    let globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; alwaysLoadImages?: boolean } | null = null;
     const formatted: Record<RoomKeyStr, ChatConfig> = {} as Record<RoomKeyStr, ChatConfig>;
     const formattedMessages: Record<RoomKeyStr, MessageConfig> = {} as Record<RoomKeyStr, MessageConfig>;
     try {
@@ -780,6 +774,19 @@ export function useMailApp() {
       showErrorToast("ピン留め・名前変更などの設定を読み込めませんでした。通信状況を確認して再読み込みしてください。");
     }
     return { globalSettings, formatted };
+  };
+
+  // 「メールの外部の画像」の設定を変えて、D1 の共通設定に保存する。保存できなければ元に戻して知らせる
+  const setAlwaysLoadImages = async (value: boolean) => {
+    const prev = alwaysLoadImages;
+    setAlwaysLoadImagesState(value);
+    try {
+      const res = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ global_settings: { alwaysLoadImages: value } }) });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+    } catch {
+      setAlwaysLoadImagesState(prev);
+      showErrorToast("設定を保存できませんでした。通信状況を確認して、もう一度お試しください。");
+    }
   };
 
   const saveGlobalSettings = async (inbox: boolean, archive: boolean, spam: boolean, trash: boolean, sent: boolean) => {
@@ -1218,10 +1225,11 @@ export function useMailApp() {
       const initLoad = async () => {
         try {
           setIsLoading(true);
-          const [{ formatted: loadedConfigs }, linkedAccountsRes] = await Promise.all([
+          const [{ formatted: loadedConfigs, globalSettings }, linkedAccountsRes] = await Promise.all([
             loadD1Configs(),
             fetch("/api/accounts").then(r => r.ok ? r.json() : { accounts: [] }).catch(() => ({ accounts: [] })),
           ]);
+          setAlwaysLoadImagesState(globalSettings?.alwaysLoadImages === true);
           // fetchEmails等が読む前に、ref側は同期的に確定させておく（state更新の再レンダリングを待たない）
           const linkedAccountRows = (linkedAccountsRes.accounts || []) as LinkedAccountRow[];
           const linkedEmails: string[] = linkedAccountRows.map((a) => a.account_email).filter(Boolean);

@@ -190,3 +190,45 @@ export async function deleteConfig(db: Db, userEmail: string, chatId: string, ac
   await db.prepare("DELETE FROM chat_configs WHERE user_email IN (?, ?) AND account_email IN (?, ?) AND chat_id IN (?, ?)")
     .bind(...userKeysList, ...accountKeys, ...chatKeys).run();
 }
+
+// どの端末でも共通の設定（account_email が空の予約行 __GLOBAL_SETTINGS__ に持つ）。
+// この行は暗号化しないので、決まった名前の数値・真偽値だけを入れる（個人情報や自由な文字列を入れない）
+export const GLOBAL_SETTINGS_CHAT_ID = "__GLOBAL_SETTINGS__";
+const GLOBAL_SETTING_TYPES = {
+  limit: "number", inbox: "boolean", archive: "boolean", spam: "boolean", trash: "boolean", sent: "boolean",
+  // メールの外部の画像を、押さずに毎回読み込むか
+  alwaysLoadImages: "boolean",
+} as const;
+export type GlobalSettings = { [K in keyof typeof GLOBAL_SETTING_TYPES]?: (typeof GLOBAL_SETTING_TYPES)[K] extends "number" ? number : boolean };
+
+// 決まった名前・型の値だけを残す（それ以外は捨てる）
+export function sanitizeGlobalSettings(value: unknown): GlobalSettings {
+  const out: Record<string, number | boolean> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+  for (const [key, type] of Object.entries(GLOBAL_SETTING_TYPES)) {
+    const v = (value as Record<string, unknown>)[key];
+    if (type === "boolean" && typeof v === "boolean") out[key] = v;
+    if (type === "number" && typeof v === "number" && Number.isFinite(v)) out[key] = v;
+  }
+  return out as GlobalSettings;
+}
+
+// 共通の設定の一部を書き換える。ほかの値は残す。古い形（平文のアドレス）の行があれば今の形に移して消す
+export async function saveGlobalSettings(db: Db, userEmail: string, updates: unknown): Promise<GlobalSettings> {
+  const user = await userKeys(userEmail);
+  const targetUser = WRITE_HASHED_ADDRESS && user.hashed ? user.hashed : user.plain;
+  const { results } = await db.prepare("SELECT user_email, custom_name FROM chat_configs WHERE user_email IN (?, ?) AND account_email = '' AND chat_id = ?")
+    .bind(user.plain, user.hashed || user.plain, GLOBAL_SETTINGS_CHAT_ID).all();
+  const rows = results as { user_email: string; custom_name: string | null }[];
+  // 今の形の行を優先して、いまの値を読む
+  const current = rows.find(r => r.user_email === targetUser) || rows[0];
+  let base: GlobalSettings = {};
+  try { base = sanitizeGlobalSettings(current?.custom_name ? JSON.parse(current.custom_name) : null); } catch { /* 壊れた値は捨てて作り直す */ }
+  const merged = { ...base, ...sanitizeGlobalSettings(updates) };
+  const stmts = [db.prepare(UPSERT_SQL).bind(targetUser, "", GLOBAL_SETTINGS_CHAT_ID, JSON.stringify(merged), 0, 0, null, 0)];
+  for (const r of rows) {
+    if (r.user_email !== targetUser) stmts.push(db.prepare(DELETE_ROW_SQL).bind(r.user_email, "", GLOBAL_SETTINGS_CHAT_ID));
+  }
+  await db.batch(stmts);
+  return merged;
+}

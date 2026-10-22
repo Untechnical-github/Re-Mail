@@ -5,7 +5,7 @@ import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせる
 import { logError } from "../../lib/safeLog";
 import { decryptSecret } from "../../lib/tokenCrypto";
 import { revealConfigName } from "../../lib/configCrypto";
-import { openAndMigrateConfigs, saveConfig, deleteConfig } from "../../lib/configStore";
+import { openAndMigrateConfigs, saveConfig, deleteConfig, saveGlobalSettings } from "../../lib/configStore";
 
 // 設定の保存の形（暗号化・アドレスの置き換え）と移行は app/lib/configStore.ts にまとめてある
 
@@ -35,6 +35,11 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
+    // どの端末でも共通の設定（外部の画像を毎回読み込むか など）
+    if (body.global_settings !== undefined) {
+      const settings = await saveGlobalSettings(getCloudflareContext().env.DB, session.user.email, body.global_settings);
+      return NextResponse.json({ success: true, settings });
+    }
     if (!body.account_email) return NextResponse.json({ error: "account_email is required" }, { status: 400 });
     if (typeof body.chat_id !== "string" || !body.chat_id) return NextResponse.json({ error: "chat_id is required" }, { status: 400 });
     const db = getCloudflareContext().env.DB;
