@@ -96,16 +96,28 @@ export function isSmimeSignaturePart(mimeType: string, filename: string): boolea
   return /^smime\.p7[sm]$/i.test(filename.trim());
 }
 
-export function extractAttachments(payload: GmailMessagePart | undefined): Array<{ filename: string; mimeType: string; size: number; attachmentId: string }> {
+// 添付として並べるパート。
+// html を渡したときは純正 Gmail と同じく、本文の HTML から cid: で参照されている画像は本文の中に出すので並べず、
+// 参照されていないインラインのパート（Content-Disposition: inline）は添付として並べる（どこにも出ずに消えないように）。
+// html を渡さないときは、これまでどおりインラインのパートを並べない
+export function extractAttachments(payload: GmailMessagePart | undefined, html?: string): Array<{ filename: string; mimeType: string; size: number; attachmentId: string }> {
   const results: Array<{ filename: string; mimeType: string; size: number; attachmentId: string }> = [];
   walkParts(payload, (part) => {
-    if (part.body?.attachmentId && part.filename?.trim()) {
-      const disp = (part.headers || []).find((h) => h.name?.toLowerCase() === 'content-disposition')?.value?.toLowerCase() ?? '';
-      const mimeType = part.mimeType || 'application/octet-stream';
-      if (!disp.startsWith('inline') && !isSmimeSignaturePart(mimeType, part.filename!)) {
-        results.push({ filename: part.filename!, mimeType, size: part.body.size || 0, attachmentId: part.body.attachmentId });
-      }
+    if (!part.body?.attachmentId) return;
+    const headers = part.headers || [];
+    const disp = headers.find((h) => h.name?.toLowerCase() === 'content-disposition')?.value?.toLowerCase() ?? '';
+    const mimeType = part.mimeType || 'application/octet-stream';
+    const contentId = (headers.find((h) => h.name?.toLowerCase() === 'content-id')?.value || '').trim().replace(/^<|>$/g, '');
+    const name = part.filename?.trim() || '';
+    if (isSmimeSignaturePart(mimeType, name)) return;
+    if (html === undefined) {
+      if (name && !disp.startsWith('inline')) results.push({ filename: name, mimeType, size: part.body.size || 0, attachmentId: part.body.attachmentId });
+      return;
     }
+    if (contentId && referencesContentId(html, contentId)) return;
+    // 名前のない画像（iPhone のメールの本文中の写真など）も、消さずに添付として並べる
+    const filename = name || (mimeType.startsWith('image/') && (disp.startsWith('inline') || contentId) ? `image.${mimeType.slice(6).replace(/[^a-z0-9]/gi, '') || 'img'}` : '');
+    if (filename) results.push({ filename, mimeType, size: part.body.size || 0, attachmentId: part.body.attachmentId });
   });
   return results;
 }
@@ -352,7 +364,7 @@ export function parseMessageDetail(message: GmailMessage) {
   const htmlBodyForLinks = isForward ? rawHtmlForCheck.trim() : htmlOwnContent;
   const htmlLinks = htmlBodyForLinks ? extractHtmlLinks(htmlBodyForLinks) : [];
 
-  const attachments = extractAttachments(payload);
+  const attachments = extractAttachments(payload, rawHtmlForCheck);
   const hasHtml = !!htmlBodyForLinks;
   return { id: message.id, threadId: message.threadId, subject, from, to, cc, replyTo, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, references, inReplyTo, isForward, hasHtml };
 }

@@ -18,6 +18,20 @@ export function hasRemoteContent(html: string): boolean {
     || /<link\b[^>]*?\bhref\s*=\s*["']?\s*(?:https?:)?\/\//i.test(s);
 }
 
+// 本文の cid: の参照を、取得した画像（data: URL）に置き換える。
+// images のキーは Content-ID を小文字にしたもの。見つからない参照はそのまま残す。
+// cid: の後ろは引用符・空白・括弧・> までを1回なめるだけなので、巨大な入力でも後戻りしない
+export function replaceCidImages(html: string, images: Record<string, string>): string {
+  if (Object.keys(images).length === 0) return html;
+  return html.replace(/cid:([^"'\s)>]{1,500})/gi, (whole, id: string) => {
+    let key = id.toLowerCase();
+    if (!(key in images)) {
+      try { key = decodeURIComponent(id).toLowerCase(); } catch { return whole; }
+    }
+    return images[key] ?? whole;
+  });
+}
+
 const BASE_STYLE =
   '<style>*{box-sizing:border-box;}img{max-width:100%;height:auto;}body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;word-break:break-word;opacity:0;transform-origin:0 0;will-change:transform;}</style>';
 

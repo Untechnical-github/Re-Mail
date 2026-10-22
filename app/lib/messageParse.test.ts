@@ -202,3 +202,44 @@ describe("extractContentIdParts / referencesContentId", () => {
     expect(referencesContentId('<img src="cid:other">', "blue_square@example")).toBe(false);
   });
 });
+
+describe("extractAttachments（本文の HTML を渡したとき）", () => {
+  const part = (over: Partial<GmailMessagePart> & { cid?: string; disp?: string }): GmailMessagePart => ({
+    mimeType: over.mimeType || "image/png",
+    filename: over.filename ?? "",
+    headers: [
+      ...(over.cid ? [{ name: "Content-ID", value: `<${over.cid}>` }] : []),
+      ...(over.disp ? [{ name: "Content-Disposition", value: over.disp }] : []),
+    ],
+    body: { attachmentId: over.body?.attachmentId || "x", size: 5 },
+  });
+
+  it("本文から cid: で参照される画像は並べず、参照されていないインラインの画像は添付として並べる（純正 Gmail と同じ）", () => {
+    const payload: GmailMessagePart = { mimeType: "multipart/mixed", parts: [
+      part({ filename: "shown.png", cid: "a@example.com", disp: "inline", body: { attachmentId: "A" } }),
+      part({ filename: "photo.jpg", mimeType: "image/jpeg", disp: "inline", body: { attachmentId: "B" } }),
+      part({ filename: "doc.pdf", mimeType: "application/pdf", disp: "attachment", body: { attachmentId: "C" } }),
+    ] };
+    const html = '<p>本文</p><img src="cid:a@example.com">';
+    expect(extractAttachments(payload, html).map(a => a.attachmentId)).toEqual(["B", "C"]);
+    // HTML を渡さないときはこれまでどおり（インラインは並べない）
+    expect(extractAttachments(payload).map(a => a.attachmentId)).toEqual(["C"]);
+  });
+
+  it("名前のない本文中の写真も、参照されていなければ消さずに並べる。画像でない名前なしのパートは並べない", () => {
+    const payload: GmailMessagePart = { mimeType: "multipart/mixed", parts: [
+      part({ mimeType: "image/jpeg", disp: "inline", body: { attachmentId: "P" } }),
+      part({ mimeType: "text/calendar", body: { attachmentId: "Q" } }),
+      part({ mimeType: "application/pkcs7-signature", filename: "smime.p7s", body: { attachmentId: "S" } }),
+    ] };
+    expect(extractAttachments(payload, "")).toEqual([{ filename: "image.jpeg", mimeType: "image/jpeg", size: 5, attachmentId: "P" }]);
+  });
+
+  it("parseMessageDetail でも、参照されていないインラインの画像が添付に出る", () => {
+    const parsed = parseMessageDetail({ id: "m1", threadId: "t1", payload: { mimeType: "multipart/mixed", headers: [{ name: "From", value: "user@example.com" }], parts: [
+      { mimeType: "text/html", body: { data: b64url("<p>写真です</p>") } },
+      part({ filename: "IMG_0001.HEIC", mimeType: "image/heic", disp: "inline", body: { attachmentId: "H" } }),
+    ] } });
+    expect(parsed.attachments.map(a => a.filename)).toEqual(["IMG_0001.HEIC"]);
+  });
+});

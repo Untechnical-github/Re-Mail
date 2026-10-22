@@ -11,6 +11,12 @@ import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf 
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId, isRateLimitReason } from "../lib/sendVerify";
 import { applySyncResult, idsToFetchForLabelChanges, type BoxFlags, type SyncResult } from "../lib/historySync";
+import { replaceCidImages } from "../lib/emailHtml";
+
+// メールの本文中の画像（cid: で参照されるもの）
+type InlineImageRef = { contentId: string; attachmentId: string; mimeType: string; size: number };
+// 本文中に出す画像の1枚あたりの上限。これより大きいものは出さず、Gmail で開く案内にする（端末のメモリを守るため）
+const INLINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 import { planReply, type ReplyPlan } from "../lib/recipients";
 import { parseAddress } from "../lib/mime";
 import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, composeReplyBodies, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, type SendAsInfo } from "../lib/replyCompose";
@@ -2250,6 +2256,37 @@ export function useMailApp() {
     }
   };
 
+  // 本文中の画像を1枚ずつ取りにいき、取れたものを本文に差し込む（本文は先に出しておき、あとから画像を足す）。
+  // 取りにいくのは画像の数だけ（同時に3枚まで）。サーバーにもこの端末にも保存しない
+  const loadInlineImages = async (email: Email, html: string, refs: InlineImageRef[], accountParam: string | null) => {
+    const images: Record<string, string> = {};
+    let failed = 0;
+    const queue = [...refs];
+    const worker = async () => {
+      for (let ref = queue.shift(); ref; ref = queue.shift()) {
+        if (ref.size > INLINE_IMAGE_MAX_BYTES) { failed++; continue; }
+        try {
+          const params = new URLSearchParams({ messageId: email.id, attachmentId: ref.attachmentId });
+          if (accountParam) params.append("accountEmail", accountParam);
+          const res = await fetch(`/api/emails?${params.toString()}`);
+          const data = res.ok ? ((await res.json()) as { data?: string | null }) : null;
+          if (!data?.data) { failed++; continue; }
+          // data: URL に入れる種類は、形の正しいものだけにする（属性を壊す文字を入れない）
+          const mime = /^image\/[\w.+-]{1,50}$/i.test(ref.mimeType) ? ref.mimeType : "image/png";
+          images[ref.contentId.toLowerCase()] = `data:${mime};base64,${data.data.replace(/-/g, "+").replace(/_/g, "/")}`;
+        } catch {
+          failed++;
+        }
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    // 待っているあいだに別のメールを開いていたら差し込まない
+    if (Object.keys(images).length > 0) {
+      setEmailModal(prev => prev && prev.email.id === email.id && prev.htmlBody === html ? { ...prev, htmlBody: replaceCidImages(html, images) } : prev);
+    }
+    if (failed > 0) showErrorToast(`本文中の画像を ${failed} 枚表示できませんでした。「Gmail で開く」から純正 Gmail で確認できます。`);
+  };
+
   const openEmailModal = async (email: Email) => {
     // メッセージをクリックした瞬間にブラウザのピンチズームを無効化（useLayoutEffect より前に実行）
     const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
@@ -2268,8 +2305,11 @@ export function useMailApp() {
       if (emailAccountEmail !== (session?.user?.email || "")) htmlParams.append("accountEmail", emailAccountEmail);
       const res = await fetch(`/api/emails?${htmlParams.toString()}`);
       if (res.ok) {
-        const data = await res.json();
+        const data = (await res.json()) as { htmlBody?: string | null; inlineImages?: InlineImageRef[] };
         setEmailModal(prev => prev ? { ...prev, htmlBody: data.htmlBody || null, isLoading: false } : null);
+        if (data.htmlBody && data.inlineImages?.length) {
+          void loadInlineImages(email, data.htmlBody, data.inlineImages, htmlParams.get("accountEmail"));
+        }
       } else {
         setEmailModal(prev => prev ? { ...prev, isLoading: false } : null);
       }

@@ -1,5 +1,25 @@
 import { describe, it, expect } from "vitest";
-import { emailCsp, hasRemoteContent, prepareEmailHtml } from "./emailHtml";
+import { emailCsp, hasRemoteContent, prepareEmailHtml, replaceCidImages } from "./emailHtml";
+
+describe("replaceCidImages", () => {
+  const img = "data:image/png;base64,AAAA";
+  it("cid: の参照を、大文字小文字・URL エンコードの違いを無視して置き換える", () => {
+    const html = '<img src="cid:Logo@Example.com"><img src=cid:logo%40example.com><div style="background:url(cid:logo@example.com)">';
+    expect(replaceCidImages(html, { "logo@example.com": img })).toBe(`<img src="${img}"><img src=${img}><div style="background:url(${img})">`);
+  });
+
+  it("取れなかった画像・壊れた URL エンコードの参照はそのまま残す", () => {
+    expect(replaceCidImages('<img src="cid:none@example.com">', { "logo@example.com": img })).toBe('<img src="cid:none@example.com">');
+    expect(replaceCidImages('<img src="cid:%E0%A4%A">', { x: img })).toBe('<img src="cid:%E0%A4%A">');
+  });
+
+  it("巨大な入力でも固まらない", () => {
+    const big = "cid:" + "a".repeat(2_000_000);
+    const start = performance.now();
+    replaceCidImages(big, { a: img });
+    expect(performance.now() - start).toBeLessThan(1500);
+  });
+});
 
 describe("emailCsp", () => {
   it("既定ではリモートの画像・CSS・フォントを読み込ませない", () => {

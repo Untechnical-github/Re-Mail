@@ -53,6 +53,8 @@ const GMAIL_SEND_URL ="https://gmail.googleapis.com/upload/gmail/v1/users/me/mes
 const SEND_TIMEOUT_MS = 90_000;
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+// メールの詳細表示で、本文中に出す画像の上限（1通あたり。超えた分は表示せず、Gmail で開く案内を出す）
+const INLINE_IMAGE_LIMIT = 30;
 
 // 送信は fetchWithRetry を通さない（5xx やタイムアウトでも Gmail 側では送れていることがあり、
 // 再試行すると二重送信になる）。再試行するのは、Gmail が受け付けを断った（＝送られていない）429 とレート制限の 403 だけ
@@ -106,7 +108,8 @@ async function loadForwardAttachments(accessToken: string, messageId: string, bo
     const inlineList = extractContentIdParts(payload).filter(p => referencesContentId(bodyHtml, p.contentId));
     const inlineIds = new Set(inlineList.map(p => p.attachmentId));
     // 本文から参照される画像は、添付の一覧からは外す（同じ画像が添付とインラインに二重に付かないように）
-    const list = extractAttachments(payload).filter(a => !inlineIds.has(a.attachmentId));
+    // 本文から参照されていないインラインの画像も、画面と同じく添付として引き継ぐ（黙って落とさない）
+    const list = extractAttachments(payload, bodyHtml).filter(a => !inlineIds.has(a.attachmentId));
     const total = [...list, ...inlineList].reduce((sum, a) => sum + (a.size || 0), 0);
     if (total > 25 * 1024 * 1024) { logWarn("forward.attachments.tooLarge", { messageId, count: list.length }); return { ok: false, stage: "tooLarge" }; }
     const download = async (attachmentId: string): Promise<string | ForwardAttachmentsResult> => {
@@ -446,7 +449,14 @@ export async function GET(request: Request) {
       // 「転送への返信」まで転送メール扱いされ、引用が丸ごと表示されてしまう
       const htmlOwnContent = stripHtmlQuote(rawHtml);
       const htmlBody = looksLikeForward(subject, htmlOwnContent) ? rawHtml.trim() : htmlOwnContent;
-      return NextResponse.json({ htmlBody: htmlBody || null, hasHtml: !!htmlBody });
+      // 本文が cid: で参照している画像（本文中の画像）。中身は画面が1枚ずつ取りにいく（ここで全部を待つと本文の表示が遅れるため）
+      const inlineImages = htmlBody
+        ? extractContentIdParts(message.payload)
+            .filter(p => p.mimeType.toLowerCase().startsWith("image/") && referencesContentId(htmlBody, p.contentId))
+            .slice(0, INLINE_IMAGE_LIMIT)
+            .map(p => ({ contentId: p.contentId, attachmentId: p.attachmentId, mimeType: p.mimeType, size: p.size }))
+        : [];
+      return NextResponse.json({ htmlBody: htmlBody || null, hasHtml: !!htmlBody, inlineImages });
     } catch (e) {
       logError("emails.html", {}, e);
       return NextResponse.json({ htmlBody: null, hasHtml: false });
