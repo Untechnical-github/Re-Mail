@@ -157,8 +157,10 @@ function matchesTextRule(email: MatchableEmail, rule: TextRule, myEmail: string,
   } else if (rule.field === "subject") target = email.subject || "";
   else target = email.body || "";
 
+  // 保存データが壊れていて語が無い条件は、どのメールにも一致させない（画面全体を落とさないため）
+  if (typeof rule?.keyword !== "string" || !rule.keyword) return false;
   const contains = target.toLowerCase().includes(rule.keyword.toLowerCase());
-  return rule.mode === "contains" ? contains : !contains;
+  return rule.mode === "not_contains" ? !contains : contains;
 }
 
 function matchesConditionSet(email: MatchableEmail, set: ConditionSet, myEmail: string): boolean {
@@ -204,6 +206,15 @@ function matchesConditionSet(email: MatchableEmail, set: ConditionSet, myEmail: 
 }
 
 export function messageMatchesFilter(email: MatchableEmail, criteria: FilterCriteria, myEmail: string): boolean {
+  // 保存データが壊れたフィルターが1つあっても、ほかのメールやチャット一覧の表示は止めない（絶対ルール3）
+  try {
+    return messageMatchesFilterUnsafe(email, criteria, myEmail);
+  } catch {
+    return false;
+  }
+}
+
+function messageMatchesFilterUnsafe(email: MatchableEmail, criteria: FilterCriteria, myEmail: string): boolean {
   // email.accountId が無い（accountId導入前のデータ・ローカルfake等）場合は myEmail 名義として扱う。
   // このメール自身が実際に属するアカウントを、以降の受信/送信（isMineEmail）判定にも使う。
   // myEmailを呼び出し元がメインアカウント固定で渡していても、連携アカウントのメールに対して

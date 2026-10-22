@@ -46,3 +46,15 @@ describe("messageMatchesFilter の方向（sent/received）判定", () => {
     expect(matches).toBe(false);
   });
 });
+
+describe("壊れたフィルターの保存データ", () => {
+  const email = { id: "1", from: "a@example.com", to: "me@example.com", subject: "テスト語", body: "", labelIds: ["INBOX"] };
+
+  it("語の無い条件や形の違う条件でも例外にせず、一致しない扱いにする", () => {
+    const broken = { conditionSets: [{ textRules: [{ field: "subject", text: "テスト語" }] }] } as unknown as Parameters<typeof messageMatchesFilter>[1];
+    expect(() => messageMatchesFilter(email, broken, "me@example.com")).not.toThrow();
+    expect(messageMatchesFilter(email, broken, "me@example.com")).toBe(false);
+    const weird = { conditionSets: "x" } as unknown as Parameters<typeof messageMatchesFilter>[1];
+    expect(messageMatchesFilter(email, weird, "me@example.com")).toBe(false);
+  });
+});
