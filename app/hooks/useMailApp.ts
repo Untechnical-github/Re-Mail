@@ -2420,6 +2420,11 @@ export function useMailApp() {
       }
     } else if (act === "move") {
       setModal({ type: "categorized_action_select", targetMode: targetMode as ModalTargetMode, targets: [...selectedIds], action: "move" });
+    } else if (act === "read" || act === "unread") {
+      // 確認の画面は出さずにすぐ行う（いつでも戻せる操作のため）。チャットなら、そのチャットに表示されているメールすべて
+      applyReadToIds(getActionableEmails([...selectedIds], targetMode).map(e => e.id), act === "read");
+      exitAfterAction();
+      return;
     }
     window.history.pushState({ action: "modal" }, "", window.location.href);
   };
@@ -3109,18 +3114,20 @@ export function useMailApp() {
   // メールの移動・削除（ゴミ箱へ）を Gmail に反映する。連携アカウントのメールは、そのアカウントとして送る
   // （accountEmail を付けないとメインアカウントのトークンが使われ、連携アカウントのメールには効かないため）。
   // 画面はもう移した表示になっているので、失敗したら再読み込みで元に戻ることと次の行動を伝える（絶対ルール3）
-  const postMailboxChange = (kind: "move" | "delete", ids: string[], destination?: MoveDestination) => {
+  const postMailboxChange = (kind: "move" | "delete" | "read" | "unread", ids: string[], destination?: MoveDestination) => {
     const myEmail = session?.user?.email || "";
     const owner = new Map<string, string>();
     persistedEmails.forEach(e => { if (e.accountId) owner.set(e.id, e.accountId); });
     emails.forEach(e => { if (e.accountId) owner.set(e.id, e.accountId); });
     // 送信直後の仮 ID は Gmail に無いので送らない
     const groups = groupIdsByAccount(ids.filter(id => !id.startsWith("fake-")), id => owner.get(id), myEmail);
-    const label = kind === "delete" ? "削除" : "移動";
+    const label = kind === "delete" ? "削除" : kind === "move" ? "移動" : kind === "read" ? "既読" : "未読";
     groups.forEach((accountIds, accountEmail) => {
       const payload = kind === "delete"
         ? { action: "delete", accountEmail, trashIds: accountIds }
-        : { action: "move", accountEmail, ids: accountIds, destination };
+        : kind === "move"
+          ? { action: "move", accountEmail, ids: accountIds, destination }
+          : { action: "markRead", accountEmail, ids: accountIds, read: kind === "read" };
       fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
         .then(res => {
           if (res.ok) return;
@@ -3134,6 +3141,29 @@ export function useMailApp() {
           showErrorToast(`${label}がGmailに反映されなかった可能性があります。通信状況を確認し、再読み込みして確かめてください。`);
         });
     });
+  };
+
+  // 既読・未読にする（Gmail の UNREAD ラベルの付け外し）。画面はすぐに変え、Gmail にはアカウントごとに1回だけ送る。
+  // すでにその状態のメール・送信直後の仮 ID は送らない（Gmail の呼び出しを増やさないため）
+  const readInFlightRef = useRef<Set<string>>(new Set());
+  const applyReadToIds = (ids: string[], read: boolean) => {
+    const wanted = new Set(ids);
+    const changed = allUniqueEmails
+      .filter(e => wanted.has(e.id) && !e.id.startsWith("fake-") && !!e.labelIds?.includes("UNREAD") === read)
+      .map(e => e.id);
+    if (changed.length === 0) return;
+    const changedSet = new Set(changed);
+    const update = (e: Email): Email => {
+      if (!changedSet.has(e.id)) return e;
+      const labels = (e.labelIds || []).filter(l => l !== "UNREAD");
+      return { ...e, labelIds: read ? labels : [...labels, "UNREAD"] };
+    };
+    setEmails(prev => prev.map(update));
+    setPersistedEmails(prev => prev.map(update));
+    changed.forEach(id => readInFlightRef.current.add(id));
+    postMailboxChange(read ? "read" : "unread", changed);
+    // 送り終わったら、自動の既読でもう一度送れるようにする
+    setTimeout(() => changed.forEach(id => readInFlightRef.current.delete(id)), 5000);
   };
 
   // 削除のコア処理（TRASH・SENT以外の「移動可能なメール」のみをゴミ箱へ移動）。modal状態に依存しないため、
@@ -3239,6 +3269,36 @@ export function useMailApp() {
     exitAfterAction();
   };
 
+  // アカウントの設定で「チャットを開いたら既読にする」がオンなら、開いているチャットに表示されている未読メールを既読にする。
+  // 開いている間に届いたメールも既読にする（純正 Gmail でスレッドを開いているときと同じ）。
+  // 画面が裏にあるときは既読にしない（見ていないメールを既読にしないため）
+  const [pageVisible, setPageVisible] = useState(true);
+  useEffect(() => {
+    const onVis = () => setPageVisible(document.visibilityState === "visible");
+    onVis();
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+  useEffect(() => {
+    if (!selectedSender || !pageVisible) return;
+    const me = session?.user?.email || "";
+    const unread = getActionableEmails([selectedSender], "chat").filter(e =>
+      e.labelIds?.includes("UNREAD") && !readInFlightRef.current.has(e.id) &&
+      !!accountSettings[e.accountId || me]?.autoReadOnOpenChat);
+    if (unread.length > 0) applyReadToIds(unread.map(e => e.id), true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 開いているチャット・届いたメール・設定・画面の表示が変わったときだけ確かめる（関数は描画ごとに作り直されるため入れない）
+  }, [selectedSender, groupedEmails, accountSettings, pageVisible, checkInbox, checkArchive, checkSpam, checkTrash, checkSent]);
+
+  // アカウントの設定で「メールを開いたら既読にする」がオンなら、詳細を開いたメールを既読にする
+  const openedMailId = emailModal?.email?.id;
+  useEffect(() => {
+    if (!openedMailId) return;
+    const mail = allUniqueEmails.find(e => e.id === openedMailId);
+    if (!mail?.labelIds?.includes("UNREAD") || readInFlightRef.current.has(mail.id)) return;
+    if (accountSettings[mail.accountId || session?.user?.email || ""]?.autoReadOnOpenMail) applyReadToIds([mail.id], true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 開いたメールと設定が変わったときだけ確かめる（関数は描画ごとに作り直されるため入れない）
+  }, [openedMailId, accountSettings]);
+
   // 継続フィルター（非表示/ピン留め/移動/削除）の自動適用エンジン。
   // allUniqueEmails が更新される（新着メール取得・タブ復帰時の再取得など）たびに、各継続フィルターの
   // filterLastAppliedAt より新しい日時のメールだけを対象に、1回だけ自動的にアクションを適用する
@@ -3266,6 +3326,8 @@ export function useMailApp() {
         applyMoveToIds([{ ids, destination: cfg.filterDestination! }]);
       } else if (cfg.filterAction === "delete") {
         applyDeleteToIds(ids);
+      } else if (cfg.filterAction === "read" || cfg.filterAction === "unread") {
+        applyReadToIds(ids, cfg.filterAction === "read");
       }
       updateChatConfig(localKey, { filterLastAppliedAt: new Date().toISOString() }, accountEmail);
     });
@@ -3681,7 +3743,7 @@ export function useMailApp() {
       handleSend, addReplyAttachments, removeReplyAttachment, searchServerSide, executePin, executeConfirmedAction, executeResetSelection, applyPinToIds, applyDeleteToIds, applyMoveToIds, applyHideToIds,
       openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, exitAfterAction, enterSelectionMode, executeBatchMove,
       setChatCacheLimit,
-      openEmailModal, closeEmailModal, toggleMsgExpand,
+      openEmailModal, closeEmailModal, toggleMsgExpand, applyReadToIds, getActionableEmails,
       openAttachmentModal, closeAttachmentModal,
       jumpToReplyTarget, createOrOpenChat, createGroupChat, createFilterGroup, deleteChatConfig, forwardMessageTo,
       updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail, switchSendAccount, logoutAccount,

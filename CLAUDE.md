@@ -103,7 +103,7 @@ Gmail をチャット風 UI（相手ごとのトークルーム）で読み書�
   - 内部ではログインのセッションを持つアカウントが1つあり、ほかのアカウントは D1 の `linked_accounts` に付いている。そのアカウントだけをログアウトするときは、ほかのアカウントにセッションを引き継ぐ（`auth.ts` の jwt コールバックと `linkedAccountsStore.ts` の `promoteLinkedAccount`）。以前の「すべてのアカウントが対象のフィルター（shared）」は、読んだときにアカウントごとのフィルターに分ける
 - 利用者が選ぶ設定は、どの端末でも共通にする（D1 に暗号化して保存され、ログアウトしても変わらない）。設定は2種類あり、新しい設定はどちらかに足す。
   - 共通設定（どのアカウントでログインしても同じ。場所・アカウントのチェックボックス、文字／アイコン）：`app/lib/syncedSettings.ts` の `SYNCED_SETTING_TYPES` と `COMMON_SETTING_KEYS` に足し、`useMailApp.ts` の `syncedSettings` と `applySyncedSettings` にも足す。全アカウントの `__GLOBAL_SETTINGS__` に同じものを書き、あとから追加したアカウントにも写す
-  - アカウント設定（アカウントごと。今は「メールの外部の画像」）：`ACCOUNT_SETTING_TYPES` に足し、`useMailApp.ts` の `setAccountSetting` で保存する（そのアカウントの `__ACCOUNT_SETTINGS__`）。設定画面では「アカウントの設定」の欄に出す
+  - アカウント設定（アカウントごと。今は「メールの外部の画像」「チャットを開いたら既読にする」「メールを開いたら既読にする」）：`ACCOUNT_SETTING_TYPES` に足し、`useMailApp.ts` の `setAccountSetting` で保存する（そのアカウントの `__ACCOUNT_SETTINGS__`）。設定画面では「アカウントの設定」の欄に出す
   - 端末に置くのは画面の状態（開いているタブ・スクロール位置）と下書きだけにする。
 - 「自分が送ったメールか」の判定は共通の `isMineEmail`（アドレス完全一致）を使う。`.includes` で部分一致させない。
 - Gmail API の**読み取り・ラベル操作**は `fetchWithRetry` を通す。**送信は通さない**（絶対ルール2）。アクセストークンは `getValidAccessToken` で取る（リフレッシュの二重実行を防ぐため）。

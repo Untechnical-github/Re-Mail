@@ -38,7 +38,7 @@ export type ChatConfig = {
   filterIncludeExisting?: boolean;
   // フィルターツールの非グループ系アクション（非表示/ピン留め/移動/削除）を「継続」で保存した場合のみ設定される。
   // isGroup とは排他的に使う（filterAction が設定されている行はグループではない）
-  filterAction?: "hide" | "pin" | "move" | "delete";
+  filterAction?: "hide" | "pin" | "move" | "delete" | "read" | "unread";
   // true = 継続（新着メールにも自動適用され続ける）。継続のフィルターのみこの行自体が永続化される
   filterContinuous?: boolean;
   // move専用: 移動先のGmailラベル（INBOX/ARCHIVE/SPAM/TRASH）

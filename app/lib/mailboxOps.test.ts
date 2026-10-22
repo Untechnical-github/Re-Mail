@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { labelChangeFor, sanitizeMessageIds, chunkIds, groupIdsByAccount, BATCH_MODIFY_LIMIT } from "./mailboxOps";
+import { labelChangeFor, readLabelChange, sanitizeMessageIds, chunkIds, groupIdsByAccount, BATCH_MODIFY_LIMIT } from "./mailboxOps";
 
 describe("labelChangeFor", () => {
   it("アーカイブは受信箱・ゴミ箱・迷惑メールから外すだけ（付けるラベルは無い）", () => {
@@ -46,5 +46,12 @@ describe("groupIdsByAccount", () => {
     const owner: Record<string, string> = { a: "linked@example.com", b: "main@example.com", c: "linked@example.com" };
     const groups = groupIdsByAccount(["a", "b", "c", "d"], (id) => owner[id], "main@example.com");
     expect(Object.fromEntries(groups)).toEqual({ "linked@example.com": ["a", "c"], "main@example.com": ["b", "d"] });
+  });
+});
+
+describe("readLabelChange", () => {
+  it("既読は UNREAD を外し、未読は UNREAD を付ける（ほかのラベルには触れない）", () => {
+    expect(readLabelChange(true)).toEqual({ addLabelIds: [], removeLabelIds: ["UNREAD"] });
+    expect(readLabelChange(false)).toEqual({ addLabelIds: ["UNREAD"], removeLabelIds: [] });
   });
 });

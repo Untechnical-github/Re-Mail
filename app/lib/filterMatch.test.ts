@@ -58,3 +58,30 @@ describe("壊れたフィルターの保存データ", () => {
     expect(messageMatchesFilter(email, weird, "me@example.com")).toBe(false);
   });
 });
+
+describe("未読・既読の条件", () => {
+  const base = { id: "u1", from: "田中 <tanaka@example.com>", to: "me@example.com", subject: "件名", body: "本文", date: "2026-10-01T00:00:00Z" };
+  it("isUnread=true は UNREAD ラベルのあるメールだけ、false は無いメールだけに一致する", async () => {
+    const { messageMatchesFilter } = await import("./filterMatch");
+    const unread = { ...base, labelIds: ["INBOX", "UNREAD"] };
+    const read = { ...base, labelIds: ["INBOX"] };
+    const noLabels = { ...base };
+    expect(messageMatchesFilter(unread, { conditionSets: [{ isUnread: true }] }, "me@example.com")).toBe(true);
+    expect(messageMatchesFilter(read, { conditionSets: [{ isUnread: true }] }, "me@example.com")).toBe(false);
+    expect(messageMatchesFilter(read, { conditionSets: [{ isUnread: false }] }, "me@example.com")).toBe(true);
+    expect(messageMatchesFilter(unread, { conditionSets: [{ isUnread: false }] }, "me@example.com")).toBe(false);
+    // ラベルが無い（読み込み途中など）メールは既読とみなす
+    expect(messageMatchesFilter(noLabels, { conditionSets: [{ isUnread: false }] }, "me@example.com")).toBe(true);
+  });
+  it("未読の条件だけのセットも「条件あり」として扱う", async () => {
+    const { isEmptyFilterCriteria } = await import("./filterMatch");
+    expect(isEmptyFilterCriteria({ conditionSets: [{ isUnread: true }] })).toBe(false);
+  });
+  it("既読・未読にするアクションは、どの場所のメールにも使える", async () => {
+    const { isActionBoxRestricted } = await import("./filterMatch");
+    for (const box of ["inbox", "archive", "sent", "spam", "trash"] as const) {
+      expect(isActionBoxRestricted("read", box)).toBe(false);
+      expect(isActionBoxRestricted("unread", box)).toBe(false);
+    }
+  });
+});

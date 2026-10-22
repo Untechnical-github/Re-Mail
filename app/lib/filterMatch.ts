@@ -47,7 +47,7 @@ export const BOX_KEY_TO_LABEL: Record<FindBarBoxKey, string> = {
   inbox: "INBOX", archive: "ARCHIVE", sent: "SENT", spam: "SPAM", trash: "TRASH",
 };
 
-export type FilterAction = "hide" | "pin" | "move" | "delete";
+export type FilterAction = "hide" | "pin" | "move" | "delete" | "read" | "unread";
 
 // フィルターツールの非グループアクションにおける場所ごとの対象外ルール。
 // 既存の選択モード（CategorizedActionSelect）の isBoxRestricted と同じルールを、
@@ -56,6 +56,7 @@ export function isActionBoxRestricted(action: FilterAction, box: FindBarBoxKey):
   if (action === "pin" || action === "hide") return box === "trash" || box === "spam";
   if (action === "delete") return box === "trash" || box === "sent";
   if (action === "move") return box === "sent";
+  // 既読・未読にするは、どの場所のメールにも使える
   return false;
 }
 
@@ -80,6 +81,8 @@ export type ConditionSet = {
   isReply?: boolean;
   isForward?: boolean;
   format?: "html" | "text";
+  // 未読（true）か既読（false）か。未指定は問わない（Gmail の UNREAD ラベルで判断する）
+  isUnread?: boolean;
 };
 
 export type FilterCriteria = {
@@ -106,7 +109,8 @@ function isConditionSetEmpty(set: ConditionSet): boolean {
     set.hasAttachment === undefined &&
     set.isReply === undefined &&
     set.isForward === undefined &&
-    set.format === undefined
+    set.format === undefined &&
+    set.isUnread === undefined
   );
 }
 
@@ -200,6 +204,11 @@ function matchesConditionSet(email: MatchableEmail, set: ConditionSet, myEmail: 
     const isHtml = !!email.hasHtml;
     if (set.format === "html" && !isHtml) return false;
     if (set.format === "text" && isHtml) return false;
+  }
+
+  if (set.isUnread !== undefined) {
+    const unread = !!email.labelIds?.includes("UNREAD");
+    if (unread !== set.isUnread) return false;
   }
 
   return true;

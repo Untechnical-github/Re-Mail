@@ -364,6 +364,8 @@ export default function Home() {
               if (!latestEmail && !isDraft) return null;
 
               const isSelected = state.selectedIds.includes(sender);
+              // 表示されているメールに未読があるチャットは、少し太く・明るく出す（Gmail の未読と同じ）
+              const hasUnread = visibleEmails.some((e) => e.labelIds?.includes("UNREAD"));
               const isOpened = state.selectedSender === sender && !state.isMobile;
               const count = visibleEmails.length;
               const latestDate = latestEmail ? new Date(latestEmail.date).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
@@ -490,7 +492,7 @@ export default function Home() {
                       <div className="flex justify-between items-baseline">
                         <div className="flex items-center gap-1 truncate pr-2">
                           {config?.isPinned && <PinIcon className="w-3 h-3 text-[#FEE75C] flex-shrink-0" />}
-                          <span className="font-bold text-sm truncate">{config?.customName || actions.roomLocalKey(sender)}</span>
+                          <span className={`text-sm truncate ${hasUnread ? "font-bold text-white" : "font-semibold"}`}>{config?.customName || actions.roomLocalKey(sender)}</span>
                           {/* ログインしているアカウントが2つ以上なら、どのアカウントのチャットかを全アカウント同じ形で出す */}
                           {state.linkedAccounts.length > 0 && (() => {
                             const acct = actions.roomAccountEmail(sender);
@@ -508,7 +510,7 @@ export default function Home() {
                         <span className="text-[10px] text-gray-500 flex-shrink-0">{latestDate}</span>
                       </div>
                       <div className="text-[10px] text-[#5865F2] font-bold mt-0.5">{isDraft ? "新規作成中" : `${count}件のメッセージ`}</div>
-                      <div className="text-xs text-gray-500 truncate mt-0.5">
+                      <div className={`text-xs truncate mt-0.5 ${hasUnread ? "font-semibold text-gray-300" : "text-gray-500"}`}>
                         {isDraft ? "まだメッセージがありません" : previewSubject}
                       </div>
                     </div>
@@ -819,7 +821,7 @@ export default function Home() {
                               <span>{new Date(email.date).toLocaleString("ja-JP", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                            </div>
                            <div
-                              className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
+                              className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${email.labelIds?.includes("UNREAD") ? 'font-semibold' : ''} ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
                               style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', border: `2px solid ${msgColor}` }}
                               onClick={(e) => {
                                 e.stopPropagation();

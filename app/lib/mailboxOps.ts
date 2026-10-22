@@ -17,6 +17,11 @@ export function labelChangeFor(destination: unknown): LabelChange | null {
   }
 }
 
+// 既読・未読にする。Gmail の既読は「UNREAD ラベルが無い」こと（純正 Gmail の既読・未読と同じ）
+export function readLabelChange(read: boolean): LabelChange {
+  return read ? { addLabelIds: [], removeLabelIds: ["UNREAD"] } : { addLabelIds: ["UNREAD"], removeLabelIds: [] };
+}
+
 // Gmail のメッセージ ID は英数字。送信直後の仮 ID（fake-）は Gmail に無いので外す。重複も外す
 const GMAIL_ID = /^[A-Za-z0-9]{1,64}$/;
 export function sanitizeMessageIds(ids: unknown): string[] {

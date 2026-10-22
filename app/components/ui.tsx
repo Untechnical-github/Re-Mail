@@ -346,6 +346,15 @@ export function ReplyArrowIcon({ className = "w-4 h-4" }: { className?: string }
   );
 }
 
+// 既読（開いた封筒）
+export function ReadIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M12 2 3 7.5V20a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V7.5L12 2zm0 2.3 6.7 4.1L12 12.6 5.3 8.4 12 4.3zM5 19v-8.4l6.5 4a1 1 0 0 0 1 0l6.5-4V19H5z" />
+    </svg>
+  );
+}
+
 // 非表示（目に斜線）。この1つだけ線画スタイル（斜線が塗りつぶしを突き抜けて見えるようにするため）
 export function HideIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -506,6 +515,10 @@ export function ActionBar({ app, isChat }: { app: MailAppHook, isChat: boolean }
 
   const showBanner = isAnySelection && hasItems;
 
+  // 既読・未読にする対象（チャットなら、そのチャットに表示されているメールすべて）。すべて既読なら「未読にする」になる
+  const readTargets: Email[] = isAnySelection && hasItems ? app.actions.getActionableEmails(selectedIds, isChat ? "chat" : "msg") : [];
+  const allRead = readTargets.length > 0 && readTargets.every((e) => !e.labelIds?.includes("UNREAD"));
+
   // グループは1つのアカウントから送信する前提のため、複数アカウントのチャットを
   // またいで選択している場合は「作成」（選択チャットをメンバーにしたグループ作成）を無効化する
   const selectedSpansMultipleAccounts = isChat && isAnySelection && hasItems &&
@@ -626,6 +639,14 @@ export function ActionBar({ app, isChat }: { app: MailAppHook, isChat: boolean }
           </button>
         </>
       )}
+
+      {/* 既読 / 未読にする（Gmail の既読と同じ） */}
+      <button
+        onClick={() => { if (readTargets.length > 0) handleMenuBarClick(`${modePrefix}_${allRead ? "unread" : "read"}`); }}
+        className={`${getBtnClass("read")} ${readTargets.length === 0 ? "opacity-30 pointer-events-none grayscale" : ""}`}
+      >
+        {renderLabel(allRead ? "未読にする" : "既読", <ReadIcon className="w-4 h-4" />, true)}
+      </button>
 
       {/* ピン留め / ピン解除 */}
       <button onClick={() => handleMenuBarClick(`${modePrefix}_${allPinned ? "unpin" : "pin"}`)} className={getBtnClass("pin")}>

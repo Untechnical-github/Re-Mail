@@ -29,6 +29,10 @@ export const COMMON_SETTING_KEYS = ["inbox", "archive", "spam", "trash", "sent",
 export const ACCOUNT_SETTING_TYPES = {
   // メールの外部の画像を、押さずに毎回読み込むか
   alwaysLoadImages: "boolean",
+  // チャットを開いたら、そのチャットに表示されているメールを既読にするか（既定はオフ）
+  autoReadOnOpenChat: "boolean",
+  // メールを開いたら（詳細を表示したら）、そのメールを既読にするか（既定はオフ）
+  autoReadOnOpenMail: "boolean",
 } as const;
 export type AccountSettings = { -readonly [K in keyof typeof ACCOUNT_SETTING_TYPES]?: boolean };
 

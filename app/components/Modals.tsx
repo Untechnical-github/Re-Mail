@@ -1573,6 +1573,23 @@ export function Modals({ app }: { app: MailAppHook }) {
                       <button onClick={() => app.actions.setAccountSetting(a, { alwaysLoadImages: true })} className={toggleClass(always)}>毎回読み込む</button>
                     </div>
                   </div>
+                  {/* 既読：Gmail の既読と同じ（UNREAD ラベル）。既定はオフ（開いただけでは既読にしない） */}
+                  {([
+                    ["autoReadOnOpenChat", "チャットを開いたら既読にする", "オンにすると、このアカウントのチャットを開いたとき、そのチャットに表示されているメールを Gmail でも既読にします。開いている間に届いたメールも既読にします（画面を見ていないときは既読にしません）"],
+                    ["autoReadOnOpenMail", "メールを開いたら既読にする", "オンにすると、このアカウントのメールを開いて詳細を表示したとき、そのメールを Gmail でも既読にします"],
+                  ] as const).map(([key, title, desc]) => {
+                    const on = !!app.state.accountSettings[a]?.[key];
+                    return (
+                      <div key={key} className="bg-[#2B2D31] rounded p-3 mt-3">
+                        <div className="text-sm font-bold text-gray-200 mb-1">{title}</div>
+                        <div className="text-xs text-gray-500 mb-3">{desc}</div>
+                        <div className="flex gap-2">
+                          <button onClick={() => app.actions.setAccountSetting(a, { [key]: false })} className={toggleClass(!on)}>オフ</button>
+                          <button onClick={() => app.actions.setAccountSetting(a, { [key]: true })} className={toggleClass(on)}>オン</button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </>
               );
             })()}
@@ -2401,7 +2418,7 @@ export function SearchModal({ app }: { app: MailAppHook }) {
   );
 }
 
-type FilterToolAction = "group" | "hide" | "pin" | "move" | "delete";
+type FilterToolAction = "group" | "hide" | "pin" | "move" | "delete" | "read" | "unread";
 type FilterToolScreen = "list" | "conditions" | "orList" | "action" | "confirm";
 type ThreeWay = "any" | "yes" | "no";
 
@@ -2412,11 +2429,11 @@ const FILTER_BOX_LABELS: Record<FindBarBoxKey, string> = {
   inbox: "受信箱", archive: "アーカイブ", sent: "送信済み", spam: "迷惑メール", trash: "ゴミ箱",
 };
 const FILTER_ACTIONS: [FilterToolAction, string][] = [
-  ["group", "作成"], ["hide", "非表示"], ["pin", "ピン留め"], ["move", "移動"], ["delete", "削除"],
+  ["group", "作成"], ["hide", "非表示"], ["pin", "ピン留め"], ["move", "移動"], ["delete", "削除"], ["read", "既読にする"], ["unread", "未読にする"],
 ];
 const MOVE_DEST_LABELS: Record<string, string> = { INBOX: "受信箱", ARCHIVE: "アーカイブ", SPAM: "迷惑メール", TRASH: "ゴミ箱" };
-const FILTER_KIND_LABELS: Record<string, string> = { group: "グループ", hide: "非表示", pin: "ピン留め", move: "移動", delete: "削除" };
-const FILTER_ACTION_VERB: Record<string, string> = { hide: "非表示にする", pin: "ピン留めする", move: "移動する", delete: "削除する" };
+const FILTER_KIND_LABELS: Record<string, string> = { group: "グループ", hide: "非表示", pin: "ピン留め", move: "移動", delete: "削除", read: "既読にする", unread: "未読にする" };
+const FILTER_ACTION_VERB: Record<string, string> = { hide: "非表示にする", pin: "ピン留めする", move: "移動する", delete: "削除する", read: "既読にする", unread: "未読にする" };
 
 // chatConfigs の1行が「グループフィルター」か「アクションフィルター（継続のみ保存される）」かを判定する
 function filterKindOf(cfg: ChatConfig | undefined): FilterToolAction | null {
@@ -2443,6 +2460,7 @@ function summarizeConditionSet(set: ConditionSet): string {
   if (set.isReply !== undefined) parts.push(`返信メール${set.isReply ? "" : "でない"}`);
   if (set.isForward !== undefined) parts.push(`転送メール${set.isForward ? "" : "でない"}`);
   if (set.format !== undefined) parts.push(set.format === "html" ? "HTMLメール" : "テキストメール");
+  if (set.isUnread !== undefined) parts.push(set.isUnread ? "未読" : "既読");
   return parts.length > 0 ? parts.join("、") : "（条件なし＝すべてのメールに一致）";
 }
 
@@ -2491,6 +2509,8 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
   const [replyChoice, setReplyChoice] = useState<ThreeWay>("any");
   const [forwardChoice, setForwardChoice] = useState<ThreeWay>("any");
   const [formatChoice, setFormatChoice] = useState<"any" | "html" | "text">("any");
+  // 未読（yes）か既読（no）か。問わないなら any
+  const [unreadChoice, setUnreadChoice] = useState<ThreeWay>("any");
 
   const [groupBoxEnabled, setGroupBoxEnabled] = useState(false);
   const [groupBoxes, setGroupBoxes] = useState<FindBarBoxKey[]>([]);
@@ -2517,7 +2537,7 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     setDraftDirection("any");
     setTextRules([]);
     setDateEnabled(false); setDateFrom(""); setDateTo("");
-    setAttachmentChoice("any"); setReplyChoice("any"); setForwardChoice("any"); setFormatChoice("any");
+    setAttachmentChoice("any"); setReplyChoice("any"); setForwardChoice("any"); setFormatChoice("any"); setUnreadChoice("any");
   };
 
   const loadDraftFromSet = (set: ConditionSet) => {
@@ -2532,6 +2552,7 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     setReplyChoice(set.isReply === undefined ? "any" : set.isReply ? "yes" : "no");
     setForwardChoice(set.isForward === undefined ? "any" : set.isForward ? "yes" : "no");
     setFormatChoice(set.format || "any");
+    setUnreadChoice(set.isUnread === undefined ? "any" : set.isUnread ? "yes" : "no");
   };
 
   const draftToConditionSet = (): ConditionSet => {
@@ -2544,11 +2565,12 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     if (replyChoice !== "any") s.isReply = replyChoice === "yes";
     if (forwardChoice !== "any") s.isForward = forwardChoice === "yes";
     if (formatChoice !== "any") s.format = formatChoice;
+    if (unreadChoice !== "any") s.isUnread = unreadChoice === "yes";
     return s;
   };
   const isDraftEmpty = () => {
     const s = draftToConditionSet();
-    return !s.direction && !s.textRules && !s.dateRange && s.hasAttachment === undefined && s.isReply === undefined && s.isForward === undefined && s.format === undefined;
+    return !s.direction && !s.textRules && !s.dateRange && s.hasAttachment === undefined && s.isReply === undefined && s.isForward === undefined && s.format === undefined && s.isUnread === undefined;
   };
 
   const resetBuilderFields = () => {
@@ -2696,6 +2718,9 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     return app.computed.allUniqueEmails.filter(e => {
       if (!messageMatchesFilter(e, criteria, myEmail)) return false;
       if (action === "delete" && (e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe)) return false;
+      // 既読・未読にするは、いまと違う状態のメールだけを数える（すでに既読のメールは「既読にする」の対象に入れない）
+      if (action === "read" && !e.labelIds?.includes("UNREAD")) return false;
+      if (action === "unread" && e.labelIds?.includes("UNREAD")) return false;
       return true;
     }).length;
   }, [isCriteriaEmpty, action, continuous, includeExisting, criteria, app.computed.allUniqueEmails, myEmail]);
@@ -2708,6 +2733,7 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     else if (action === "pin") app.actions.applyPinToIds(ids);
     else if (action === "move") app.actions.applyMoveToIds([{ ids, destination }]);
     else if (action === "delete") app.actions.applyDeleteToIds(ids);
+    else if (action === "read" || action === "unread") app.actions.applyReadToIds(ids, action === "read");
   };
 
   const handlePrimary = () => {
@@ -3155,6 +3181,7 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
             <ThreeWayToggle label="添付ファイル" value={attachmentChoice} onChange={setAttachmentChoice} yesLabel="あり" noLabel="なし" />
             <ThreeWayToggle label="返信メール" value={replyChoice} onChange={setReplyChoice} yesLabel="はい" noLabel="いいえ" />
             <ThreeWayToggle label="転送メール" value={forwardChoice} onChange={setForwardChoice} yesLabel="はい" noLabel="いいえ" />
+            <ThreeWayToggle label="未読・既読" value={unreadChoice} onChange={setUnreadChoice} yesLabel="未読" noLabel="既読" />
             <div>
               <div className="text-xs font-bold text-gray-400 mb-1">形式</div>
               <div className="flex gap-1 text-[11px] font-bold">

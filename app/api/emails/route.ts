@@ -11,7 +11,7 @@ import type { MimeInlinePart } from "../../lib/mime";
 import { summarizeHistory, type GmailHistoryRecord } from "../../lib/historySync";
 import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
 import { logError, logWarn, logInfo } from "../../lib/safeLog";
-import { labelChangeFor, sanitizeMessageIds, chunkIds } from "../../lib/mailboxOps";
+import { labelChangeFor, readLabelChange, sanitizeMessageIds, chunkIds } from "../../lib/mailboxOps";
 
 
 // Gmail API の生データ（必要なフィールドだけ）
@@ -644,11 +644,13 @@ export async function POST(request: Request) {
     // メールの移動・削除（ゴミ箱へ）。どちらもラベルの付け外しで、純正 Gmail の「移動」「削除」と同じ。
     // 完全削除（batchDelete）は gmail.modify のスコープでは使えないので扱わない（スコープは増やさない：絶対ルール1）。
     // Gmail が失敗したら、そのステータスと理由コードを返す（成功と返して画面だけ移ったように見せない：絶対ルール3）
-    if (action === "move" || action === "delete") {
+    // 既読・未読にする（read が true なら既読、false なら未読）も、同じくラベルの付け外しで行う
+    if (action === "move" || action === "delete" || action === "markRead") {
       if (action === "delete" && bodyData.permanentIds !== undefined) {
         return NextResponse.json({ error: "Permanent delete is not supported" }, { status: 400 });
       }
-      const change = labelChangeFor(action === "delete" ? "TRASH" : bodyData.destination);
+      if (action === "markRead" && typeof bodyData.read !== "boolean") return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+      const change = action === "markRead" ? readLabelChange(bodyData.read) : labelChangeFor(action === "delete" ? "TRASH" : bodyData.destination);
       if (!change) return NextResponse.json({ error: "Invalid destination" }, { status: 400 });
       const ids = sanitizeMessageIds(action === "delete" ? bodyData.trashIds : bodyData.ids);
       if (ids.length === 0) return NextResponse.json({ success: true, count: 0 });
