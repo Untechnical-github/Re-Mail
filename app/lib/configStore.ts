@@ -12,7 +12,8 @@ import { decryptSecret, encryptSecret, hmacId, isEncrypted } from "./tokenCrypto
 import { stripPinnedBodies } from "./pinnedIds";
 import { addressKeyFor, isAddressKey } from "./addressKey";
 import { WRITE_HASHED_ADDRESS } from "./addressStage";
-import { sanitizeSyncedSettings, type SyncedSettings } from "./syncedSettings";
+import { sanitizeSyncedSettings, sanitizeAccountSettings, newestCommonSettings, syncedSettingsKey, type SyncedSettings, type AccountSettings } from "./syncedSettings";
+import { WRITE_LEGACY_LINKED_COPY } from "./configStage";
 import { sealConfigName, sealRow, openRow, isReservedRow, isSealedChatId, SEALED_CHAT_ID_PREFIX, type RowCrypto } from "./configCrypto";
 
 type Db = CloudflareEnv["DB"];
@@ -208,26 +209,240 @@ export async function openGlobalSettings(customName: string | null | undefined):
   }
 }
 
-// 共通の設定の一部を書き換える。ほかの値は残す。古い形（平文のアドレス）の行があれば今の形に移して消す
-export async function saveGlobalSettings(db: Db, userEmail: string, updates: unknown): Promise<SyncedSettings> {
+// 予約行（account_email が空）の中身を読む。今の形の行を優先する
+async function readReservedRow(db: Db, userEmail: string, chatId: string): Promise<string | null> {
   const user = await userKeys(userEmail);
   const targetUser = WRITE_HASHED_ADDRESS && user.hashed ? user.hashed : user.plain;
   const { results } = await db.prepare("SELECT user_email, custom_name FROM chat_configs WHERE user_email IN (?, ?) AND account_email = '' AND chat_id = ?")
-    .bind(user.plain, user.hashed || user.plain, GLOBAL_SETTINGS_CHAT_ID).all();
+    .bind(user.plain, user.hashed || user.plain, chatId).all();
   const rows = results as { user_email: string; custom_name: string | null }[];
-  // 今の形の行を優先して、いまの値を読む
-  const current = rows.find(r => r.user_email === targetUser) || rows[0];
-  const merged: SyncedSettings = { ...(await openGlobalSettings(current?.custom_name)), ...sanitizeSyncedSettings(updates) };
-  let sealed = await encryptSecret(JSON.stringify(merged));
-  // 鍵が無く暗号化できないとき（ローカルの開発環境など）は、アドレスを含む値を平文で D1 に置かないよう外す
+  return (rows.find(r => r.user_email === targetUser) || rows[0])?.custom_name ?? null;
+}
+
+// 予約行を、渡した値そのもので置き換える（暗号化して書く）。古い形（平文のアドレス）の行があれば消す。
+// 鍵が無く暗号化できないとき（ローカルの開発環境など）は、アドレスを含む値を平文で D1 に置かないよう外して書き、外した値を返す
+async function writeReservedRow(db: Db, userEmail: string, chatId: string, value: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const user = await userKeys(userEmail);
+  const targetUser = WRITE_HASHED_ADDRESS && user.hashed ? user.hashed : user.plain;
+  const out = { ...value };
+  let sealed = await encryptSecret(JSON.stringify(out));
   if (!isEncrypted(sealed)) {
-    delete merged.accounts;
-    sealed = JSON.stringify(merged);
+    delete out.accounts;
+    sealed = JSON.stringify(out);
   }
-  const stmts = [db.prepare(UPSERT_SQL).bind(targetUser, "", GLOBAL_SETTINGS_CHAT_ID, sealed, 0, 0, null, 0)];
-  for (const r of rows) {
-    if (r.user_email !== targetUser) stmts.push(db.prepare(DELETE_ROW_SQL).bind(r.user_email, "", GLOBAL_SETTINGS_CHAT_ID));
+  await db.batch([
+    db.prepare(UPSERT_SQL).bind(targetUser, "", chatId, sealed, 0, 0, null, 0),
+    db.prepare("DELETE FROM chat_configs WHERE user_email IN (?, ?) AND account_email = '' AND chat_id = ? AND user_email <> ?")
+      .bind(user.plain, user.hashed || user.plain, chatId, targetUser),
+  ]);
+  return out;
+}
+
+// 共通の設定の一部を書き換える。ほかの値は残す。古い形（平文のアドレス）の行があれば今の形に移して消す
+export async function saveGlobalSettings(db: Db, userEmail: string, updates: unknown): Promise<SyncedSettings> {
+  const merged: SyncedSettings = { ...(await openGlobalSettings(await readReservedRow(db, userEmail, GLOBAL_SETTINGS_CHAT_ID))), ...sanitizeSyncedSettings(updates) };
+  return (await writeReservedRow(db, userEmail, GLOBAL_SETTINGS_CHAT_ID, merged)) as SyncedSettings;
+}
+
+// ---- アカウントごとの置き場所 ----
+// 設定は「そのアカウント自身」の置き場所（user_email = そのアカウント）に保存する。こうすると、連携アカウントで
+// 直接ログインしても、連携して使っていたときの設定がそのまま使える（ログインできる＝同じ人とみなす）。
+// - アカウント設定・チャットの設定（ピン留め・非表示・名前変更・グループ・そのアカウントだけのフィルター）：そのアカウントの置き場所
+// - 共通設定・すべてのアカウントが対象のフィルター（shared）：ログインしている全アカウントの置き場所に同じものを書く
+// 以前は連携アカウントの設定もメインアカウントの置き場所に書いていた。その行は読んだときに写し、段階1では両方に書く（configStage.ts）
+
+export const ACCOUNT_SETTINGS_CHAT_ID = "__ACCOUNT_SETTINGS__";
+
+const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+// custom_name の JSON から、すべてのアカウントが対象か（shared）・最後に保存した時刻・フィルターの対象アカウントを読む
+export function configMeta(customName: string | null | undefined): { shared: boolean; updatedAt: number; filterAccount?: string } {
+  if (!customName || !customName.startsWith("{")) return { shared: false, updatedAt: 0 };
+  try {
+    const p = JSON.parse(customName) as { shared?: unknown; updatedAt?: unknown; filterCriteria?: { accountEmail?: unknown } };
+    const fa = p.filterCriteria?.accountEmail;
+    return { shared: p.shared === true, updatedAt: typeof p.updatedAt === "number" ? p.updatedAt : 0, filterAccount: typeof fa === "string" && fa ? fa : undefined };
+  } catch {
+    return { shared: false, updatedAt: 0 };
   }
-  await db.batch(stmts);
-  return merged;
+}
+
+const toInput = (o: OpenedConfig, accountEmail: string): ConfigInput => ({
+  chat_id: o.chat_id, account_email: accountEmail, custom_name: o.custom_name ?? null,
+  is_pinned: o.is_pinned === 1, is_hidden: o.is_hidden === 1, hidden_at_date: o.hidden_at_date ?? null, unhide_on_new: o.unhide_on_new === 1,
+});
+// 2つの写しの中身が同じかを比べるための値
+const contentKey = (o: OpenedConfig) => JSON.stringify([o.custom_name ?? null, o.is_pinned ? 1 : 0, o.is_hidden ? 1 : 0, o.hidden_at_date ?? null, o.unhide_on_new ? 1 : 0]);
+
+// ログイン中のアカウント（メイン＋連携）。重複と空を除く
+export function sessionAccountList(primary: string, linked: string[]): string[] {
+  const out = [primary];
+  for (const a of linked) if (a && !out.some(x => sameAddress(x, a))) out.push(a);
+  return out;
+}
+
+export type SessionConfigs = { configs: OpenedConfig[]; accountSettings: Record<string, AccountSettings> };
+
+// ログイン中の全アカウントの設定を読み、画面に返す形にまとめる。足りない写し・以前の置き場所の行は、ここで書き足す
+export async function openSessionConfigs(db: Db, primary: string, linked: string[]): Promise<SessionConfigs> {
+  const accounts = sessionAccountList(primary, linked);
+  const findAccount = (a: string) => accounts.find(x => sameAddress(x, a));
+  const spaces = new Map<string, OpenedConfig[]>();
+  for (const a of accounts) spaces.set(a, await openAndMigrateConfigs(db, a));
+
+  const result = new Map<string, OpenedConfig>();
+  const writes: { owner: string; input: ConfigInput }[] = [];
+  const deletes: { owner: string; chatId: string; accountEmail: string }[] = [];
+  const key = (account: string, chat: string) => `${account.toLowerCase()}\u0000${chat}`;
+
+  // 1. 自分の置き場所にある、自分のチャットの設定
+  for (const [owner, rows] of spaces) {
+    for (const o of rows) {
+      if (isReservedRow(o.account_email) || !sameAddress(o.account_email, owner)) continue;
+      const meta = configMeta(o.custom_name);
+      if (meta.shared) continue;
+      // 以前はほかのアカウントだけが対象のフィルターも、メインアカウント名義で保存していた。対象のアカウントへ移す
+      const target = meta.filterAccount ? findAccount(meta.filterAccount) : undefined;
+      if (target && !sameAddress(target, owner)) {
+        if (!result.has(key(target, o.chat_id))) {
+          result.set(key(target, o.chat_id), { ...o, account_email: target });
+          writes.push({ owner: target, input: toInput(o, target) });
+        }
+        deletes.push({ owner, chatId: o.chat_id, accountEmail: owner });
+        continue;
+      }
+      result.set(key(owner, o.chat_id), { ...o, account_email: owner });
+    }
+  }
+  // 2. 以前の置き場所（ほかのアカウントの置き場所）にある、このアカウントのチャットの設定。自分の置き場所に無いものだけ使い、写す
+  for (const [space, rows] of spaces) {
+    for (const o of rows) {
+      if (isReservedRow(o.account_email) || sameAddress(o.account_email, space) || configMeta(o.custom_name).shared) continue;
+      const owner = findAccount(o.account_email);
+      if (!owner) {
+        // 連携を解除したアカウントなどの行は、これまでどおりメインアカウントの置き場所の分だけ返す
+        if (space === primary && !result.has(key(o.account_email, o.chat_id))) result.set(key(o.account_email, o.chat_id), o);
+        continue;
+      }
+      if (result.has(key(owner, o.chat_id))) continue;
+      result.set(key(owner, o.chat_id), { ...o, account_email: owner });
+      writes.push({ owner, input: toInput(o, owner) });
+    }
+  }
+  // 3. すべてのアカウントが対象のもの（shared）は、一番新しい写しを1つだけ返し、足りない・古い写しを書き直す
+  const best = new Map<string, { o: OpenedConfig; at: number; preferred: boolean }>();
+  const copies = new Map<string, Map<string, OpenedConfig>>();
+  for (const [space, rows] of spaces) {
+    for (const o of rows) {
+      if (isReservedRow(o.account_email)) continue;
+      const meta = configMeta(o.custom_name);
+      if (!meta.shared) continue;
+      if (!copies.has(o.chat_id)) copies.set(o.chat_id, new Map());
+      copies.get(o.chat_id)!.set(space, o);
+      const cur = best.get(o.chat_id);
+      const preferred = space === primary;
+      if (!cur || meta.updatedAt > cur.at || (meta.updatedAt === cur.at && preferred && !cur.preferred)) best.set(o.chat_id, { o, at: meta.updatedAt, preferred });
+    }
+  }
+  for (const [chat, { o }] of best) {
+    result.set(key(primary, chat), { ...o, account_email: primary });
+    for (const a of accounts) {
+      const copy = copies.get(chat)?.get(a);
+      if (!copy || contentKey(copy) !== contentKey(o)) writes.push({ owner: a, input: toInput(o, a) });
+    }
+  }
+
+  // 4. 共通設定：一番新しい写しを使い、違う写し・無い写しを書き直す（あとから足したアカウントにも写す）
+  const reservedOf = (a: string, chatId: string) => spaces.get(a)?.find(o => isReservedRow(o.account_email) && o.chat_id === chatId);
+  const globalCopies = await Promise.all(accounts.map(async (a) => ({ a, settings: await openGlobalSettings(reservedOf(a, GLOBAL_SETTINGS_CHAT_ID)?.custom_name) })));
+  const common = newestCommonSettings(globalCopies.map(c => ({ settings: c.settings, preferred: c.a === primary })));
+  const commonKey = syncedSettingsKey(common);
+  const globalWrites = Object.keys(common).length > 0 ? globalCopies.filter(c => syncedSettingsKey(c.settings) !== commonKey).map(c => c.a) : [];
+
+  // 5. アカウント設定：無ければ、以前の共通設定にあった値を初期値にする（書くのは変えたときだけ）
+  const accountSettings: Record<string, AccountSettings> = {};
+  for (const { a, settings } of globalCopies) {
+    const raw = reservedOf(a, ACCOUNT_SETTINGS_CHAT_ID)?.custom_name;
+    if (raw) { accountSettings[a] = await openAccountSettings(raw); continue; }
+    const legacy = settings.alwaysLoadImages ?? common.alwaysLoadImages;
+    accountSettings[a] = legacy === undefined ? {} : { alwaysLoadImages: legacy };
+  }
+
+  // 書き足しは失敗しても読み込みは止めない（次に読んだときにまた試す）
+  try {
+    for (const w of writes) await saveSessionConfig(db, primary, linked, w.input, undefined, w.owner);
+    for (const d of deletes) await deleteConfig(db, d.owner, d.chatId, d.accountEmail);
+    for (const a of globalWrites) await writeReservedRow(db, a, GLOBAL_SETTINGS_CHAT_ID, common);
+    const n = writes.length + deletes.length + globalWrites.length;
+    if (n > 0) logInfo("config.syncSpaces", { count: n });
+  } catch (e) {
+    logError("config.syncSpaces", {}, e);
+  }
+
+  // 共通設定は1行にまとめて返す（中身は復号した JSON）。そのほかの予約行はメインアカウントの分だけ
+  const reserved: OpenedConfig[] = (spaces.get(primary) || []).filter(o => isReservedRow(o.account_email) && o.chat_id !== GLOBAL_SETTINGS_CHAT_ID && o.chat_id !== ACCOUNT_SETTINGS_CHAT_ID);
+  if (accounts.some(a => reservedOf(a, GLOBAL_SETTINGS_CHAT_ID))) reserved.push({ account_email: "", chat_id: GLOBAL_SETTINGS_CHAT_ID, custom_name: JSON.stringify(common) });
+  return { configs: [...reserved, ...result.values()], accountSettings };
+}
+
+// 1つの設定を、ログイン中のアカウントの置き場所に保存する。
+// scope が "shared" なら全アカウントに、そうでなければそのチャットのアカウント（account_email）の置き場所に書く。
+// ownerOverride は読むときの書き足し用（その置き場所にだけ書く）
+export async function saveSessionConfig(db: Db, primary: string, linked: string[], input: ConfigInput, scope?: "shared", ownerOverride?: string): Promise<void> {
+  const accounts = sessionAccountList(primary, linked);
+  const legacyCopy = (owner: string) => WRITE_LEGACY_LINKED_COPY && !sameAddress(owner, primary) && !configMeta(input.custom_name).shared;
+  if (ownerOverride) {
+    await saveConfig(db, ownerOverride, { ...input, account_email: ownerOverride });
+    if (legacyCopy(ownerOverride)) await saveConfig(db, primary, { ...input, account_email: ownerOverride });
+    return;
+  }
+  if (scope === "shared") {
+    for (const a of accounts) await saveConfig(db, a, { ...input, account_email: a });
+    return;
+  }
+  const owner = accounts.find(a => sameAddress(a, input.account_email));
+  // ログイン中のアカウントでなければ（連携を解除したアカウントなど）、これまでどおりメインアカウントの置き場所に書く
+  if (!owner) { await saveConfig(db, primary, input); return; }
+  await saveConfig(db, owner, { ...input, account_email: owner });
+  // 段階1：古いコードに戻しても見えるよう、以前の置き場所にも書く
+  if (legacyCopy(owner)) await saveConfig(db, primary, { ...input, account_email: owner });
+}
+
+// 1つの設定を消す。shared なら全アカウントの写しを、そうでなければそのアカウントの置き場所と以前の置き場所の行を消す
+export async function deleteSessionConfig(db: Db, primary: string, linked: string[], chatId: string, accountEmail: string, scope?: "shared"): Promise<void> {
+  const accounts = sessionAccountList(primary, linked);
+  if (scope === "shared") {
+    for (const a of accounts) await deleteConfig(db, a, chatId, a);
+    await deleteConfig(db, primary, chatId, accountEmail);
+    return;
+  }
+  const owner = accounts.find(a => sameAddress(a, accountEmail));
+  if (owner && !sameAddress(owner, primary)) await deleteConfig(db, owner, chatId, owner);
+  await deleteConfig(db, primary, chatId, accountEmail);
+}
+
+// 共通設定を書き換え、ログイン中の全アカウントに同じものを書く（一番新しい写しに、変えた値を重ねる）
+export async function saveCommonSettings(db: Db, primary: string, linked: string[], updates: unknown, now = Date.now()): Promise<SyncedSettings> {
+  const accounts = sessionAccountList(primary, linked);
+  const current = await Promise.all(accounts.map(async (a) => ({ settings: await openGlobalSettings(await readReservedRow(db, a, GLOBAL_SETTINGS_CHAT_ID)), preferred: a === primary })));
+  const merged: SyncedSettings = { ...newestCommonSettings(current), ...sanitizeSyncedSettings(updates), updatedAt: now };
+  let out: SyncedSettings = merged;
+  for (const a of accounts) out = (await writeReservedRow(db, a, GLOBAL_SETTINGS_CHAT_ID, merged)) as SyncedSettings;
+  return out;
+}
+
+export async function openAccountSettings(customName: string | null | undefined): Promise<AccountSettings> {
+  if (!customName) return {};
+  try {
+    const json = customName.startsWith("encv1:") ? await decryptSecret(customName) : customName;
+    return sanitizeAccountSettings(JSON.parse(json));
+  } catch {
+    return {};
+  }
+}
+
+// アカウント設定の一部を書き換える（そのアカウントの置き場所に書く）
+export async function saveAccountSettings(db: Db, accountEmail: string, updates: unknown): Promise<AccountSettings> {
+  const merged: AccountSettings = { ...(await openAccountSettings(await readReservedRow(db, accountEmail, ACCOUNT_SETTINGS_CHAT_ID))), ...sanitizeAccountSettings(updates) };
+  return (await writeReservedRow(db, accountEmail, ACCOUNT_SETTINGS_CHAT_ID, merged)) as AccountSettings;
 }

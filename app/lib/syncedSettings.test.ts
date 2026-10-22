@@ -25,3 +25,33 @@ describe("syncedSettingsKey", () => {
     expect(syncedSettingsKey({ inbox: true })).not.toBe(syncedSettingsKey({ inbox: false }));
   });
 });
+
+describe("共通設定とアカウント設定", () => {
+  it("updatedAt は 0 以上の数だけを残す", async () => {
+    const { sanitizeSyncedSettings } = await import("./syncedSettings");
+    expect(sanitizeSyncedSettings({ updatedAt: 5 })).toEqual({ updatedAt: 5 });
+    expect(sanitizeSyncedSettings({ updatedAt: -1 })).toEqual({});
+    expect(sanitizeSyncedSettings({ updatedAt: "5" })).toEqual({});
+    expect(sanitizeSyncedSettings({ updatedAt: Infinity })).toEqual({});
+  });
+
+  it("画面が持つ共通設定だけを取り出す（updatedAt と移した alwaysLoadImages は外す）", async () => {
+    const { pickCommonSettings } = await import("./syncedSettings");
+    expect(pickCommonSettings({ inbox: true, iconLabels: false, alwaysLoadImages: true, updatedAt: 9, accounts: { "a@example.com": true } }))
+      .toEqual({ inbox: true, iconLabels: false, accounts: { "a@example.com": true } });
+  });
+
+  it("アカウント設定は決まった名前の真偽値だけを残す", async () => {
+    const { sanitizeAccountSettings } = await import("./syncedSettings");
+    expect(sanitizeAccountSettings({ alwaysLoadImages: true, inbox: true, note: "x" })).toEqual({ alwaysLoadImages: true });
+    expect(sanitizeAccountSettings({ alwaysLoadImages: "yes" })).toEqual({});
+    expect(sanitizeAccountSettings(null)).toEqual({});
+  });
+
+  it("写しのうち一番新しいものを選び、同じ時刻（古い行どうし）ならログイン中のアカウントの分を選ぶ", async () => {
+    const { newestCommonSettings } = await import("./syncedSettings");
+    expect(newestCommonSettings([{ settings: { inbox: true, updatedAt: 10 }, preferred: true }, { settings: { inbox: false, updatedAt: 20 }, preferred: false }])).toEqual({ inbox: false, updatedAt: 20 });
+    expect(newestCommonSettings([{ settings: { inbox: false }, preferred: false }, { settings: { inbox: true }, preferred: true }])).toEqual({ inbox: true });
+    expect(newestCommonSettings([])).toEqual({});
+  });
+});
