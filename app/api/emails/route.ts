@@ -4,6 +4,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { auth } from "../../../auth";
 import { getValidAccessToken } from "../../lib/googleToken";
 import { encryptSecret, decryptSecret, isEncrypted } from "../../lib/tokenCrypto";
+import { findLinkedAccount } from "../../lib/linkedAccountsStore";
 import { buildMimeSegments, buildGmailUploadBody, decodeMimeHeader } from "../../lib/mime";
 import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, getTextBody, extractAttachments, extractContentIdParts, referencesContentId, stripHtmlQuote, looksLikeForward, parseMessageDetail } from "../../lib/messageParse";
 import type { MimeInlinePart } from "../../lib/mime";
@@ -13,7 +14,6 @@ import { logError, logWarn, logInfo } from "../../lib/safeLog";
 
 
 // Gmail API の生データ（必要なフィールドだけ）
-type LinkedAccountTokenRow = { refresh_token: string; access_token: string | null; expires_at: number | null; needs_reauth: number | null };
 
 // Gmail APIが429（レート制限）や一時的な5xxを返した場合に、指数バックオフ＋ジッターで
 // 数回だけ再試行する。特に多アカウント連携時・大きなメールボックスでの一括取得（メッセージ
@@ -193,10 +193,8 @@ async function resolveAccessToken(session: Session, accountEmail: string | null)
   }
 
   const db = getCloudflareContext().env.DB;
-  const { results } = await db.prepare(
-    "SELECT refresh_token, access_token, expires_at, needs_reauth FROM linked_accounts WHERE user_email = ? AND account_email = ?"
-  ).bind(session.user?.email, accountEmail).all();
-  const row = results?.[0] as LinkedAccountTokenRow | undefined;
+  // D1 ではアドレスを置き換えて保存しているので、平文・置き換えた形のどちらでも探し、更新は見つかった行に対して行う
+  const row = await findLinkedAccount(db, session.user?.email || "", accountEmail);
   if (!row?.refresh_token) return null;
 
   // refresh_token/access_tokenはD1に暗号化して保存している（tokenCrypto.ts参照）。
@@ -230,7 +228,7 @@ async function resolveAccessToken(session: Session, accountEmail: string | null)
       ]);
       await db.prepare(
         "UPDATE linked_accounts SET access_token = ?, expires_at = ?, refresh_token = ?, needs_reauth = 0 WHERE user_email = ? AND account_email = ?"
-      ).bind(encryptedAccessToken, result.expiresAt, encryptedRefreshToken, session.user?.email, accountEmail).run();
+      ).bind(encryptedAccessToken, result.expiresAt, encryptedRefreshToken, row.user_email, row.account_email).run();
     }
     return result.accessToken;
   } catch (error: unknown) {
@@ -244,7 +242,7 @@ async function resolveAccessToken(session: Session, accountEmail: string | null)
     if (isPermanent) {
       await db.prepare(
         "UPDATE linked_accounts SET needs_reauth = 1 WHERE user_email = ? AND account_email = ?"
-      ).bind(session.user?.email, accountEmail).run().catch((e: unknown) => logError("token.markReauth", {}, e));
+      ).bind(row.user_email, row.account_email).run().catch((e: unknown) => logError("token.markReauth", {}, e));
     }
     return null;
   }

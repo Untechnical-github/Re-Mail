@@ -1,7 +1,7 @@
 import { NextResponse, NextRequest } from "next/server";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { auth } from "../../../../auth";
-import { encryptSecret } from "../../../lib/tokenCrypto";
+import { saveLinkedAccount } from "../../../lib/linkedAccountsStore";
 import type { GoogleTokenResponse } from "../../../lib/googleToken";
 import { logError } from "../../../lib/safeLog";
 
@@ -74,33 +74,16 @@ export async function GET(request: NextRequest) {
     // refresh_token/access_tokenはGmailへの継続的なアクセスを許す長期的な資格情報のため、
     // D1に平文では置かず暗号化してから保存する（TOKEN_ENCRYPTION_KEY未設定時は平文のまま。
     // tokenCrypto.ts参照）
-    const [encryptedRefreshToken, encryptedAccessToken] = await Promise.all([
-      encryptSecret(tokens.refresh_token),
-      tokens.access_token ? encryptSecret(tokens.access_token) : Promise.resolve(null),
-    ]);
-
-    const db = getCloudflareContext().env.DB;
+    // トークンの暗号化・アドレスの置き換えは linkedAccountsStore.ts で行う。
     // name/pictureは表示専用（アイコン設定でアバターを出すため）で、認証・照合には一切使わない
-    await db.prepare(
-      `INSERT INTO linked_accounts (user_email, account_email, refresh_token, access_token, expires_at, created_at, needs_reauth, name, picture)
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
-       ON CONFLICT(user_email, account_email) DO UPDATE SET
-       refresh_token=excluded.refresh_token,
-       access_token=excluded.access_token,
-       expires_at=excluded.expires_at,
-       needs_reauth=0,
-       name=excluded.name,
-       picture=excluded.picture`
-    ).bind(
-      session.user.email,
-      accountEmail,
-      encryptedRefreshToken,
-      encryptedAccessToken,
-      tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null,
-      new Date().toISOString(),
-      userInfo.name || null,
-      userInfo.picture || null,
-    ).run();
+    const db = getCloudflareContext().env.DB;
+    await saveLinkedAccount(db, session.user.email, accountEmail, {
+      refreshToken: tokens.refresh_token,
+      accessToken: tokens.access_token || null,
+      expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null,
+      name: userInfo.name || null,
+      picture: userInfo.picture || null,
+    });
 
     const res = NextResponse.redirect(new URL(`/?accountLinked=${encodeURIComponent(accountEmail)}`, request.url));
     res.cookies.delete(STATE_COOKIE);

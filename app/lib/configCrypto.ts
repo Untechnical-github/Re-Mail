@@ -65,22 +65,25 @@ export function isSealedChatId(chatId: string | null | undefined): boolean {
   return !!chatId && chatId.startsWith(SEALED_CHAT_ID_PREFIX);
 }
 
-// 保存する形にする。鍵が無い（HMAC が作れない）ときは null（呼び出し側は平文のまま保存する）
-export async function sealRow(chatId: string, customName: string | null | undefined, c: RowCrypto): Promise<{ chatId: string; customName: string } | null> {
+// 保存する形にする。鍵が無い（HMAC が作れない）ときは null（呼び出し側は平文のまま保存する）。
+// accountEmail を渡すと、元のアカウントのアドレスも一緒に暗号化して持つ（account_email 列を置き換えた後に戻すため）
+export async function sealRow(chatId: string, customName: string | null | undefined, c: RowCrypto, accountEmail?: string): Promise<{ chatId: string; customName: string } | null> {
   const hashed = await c.hmac(chatId);
   if (!hashed) return null;
-  const envelope = JSON.stringify({ c: chatId, n: customName ?? null });
+  const envelope = JSON.stringify(accountEmail ? { c: chatId, n: customName ?? null, a: accountEmail } : { c: chatId, n: customName ?? null });
   return { chatId: SEALED_CHAT_ID_PREFIX + hashed, customName: await c.encrypt(envelope) };
 }
 
 // D1 の行を、画面に返す形（元の chat_id と custom_name）に戻す。暗号化していない行はそのまま。
 // 復号できない行は null（その行は返さない。ほかの行の表示は止めない）
-export async function openRow(chatId: string, customName: string | null | undefined, c: RowCrypto): Promise<{ chatId: string; customName: string | null } | null> {
+export async function openRow(chatId: string, customName: string | null | undefined, c: RowCrypto): Promise<{ chatId: string; customName: string | null; accountEmail?: string } | null> {
   if (!isSealedChatId(chatId)) return { chatId, customName: customName ?? null };
   try {
-    const env = JSON.parse(await c.decrypt(customName || "")) as { c?: unknown; n?: unknown };
+    const env = JSON.parse(await c.decrypt(customName || "")) as { c?: unknown; n?: unknown; a?: unknown };
     if (typeof env.c !== "string" || !env.c) return null;
-    return { chatId: env.c, customName: typeof env.n === "string" ? env.n : null };
+    const out: { chatId: string; customName: string | null; accountEmail?: string } = { chatId: env.c, customName: typeof env.n === "string" ? env.n : null };
+    if (typeof env.a === "string" && env.a) out.accountEmail = env.a;
+    return out;
   } catch {
     return null;
   }

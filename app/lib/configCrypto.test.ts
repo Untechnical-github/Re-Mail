@@ -68,3 +68,14 @@ describe("行ごとの暗号化（chat_id と custom_name）", () => {
     expect(isSealedChatId("__GLOBAL_SETTINGS__")).toBe(false);
   });
 });
+
+describe("アカウントのアドレスも一緒に持つ", () => {
+  const c = { hmac: async (v: string) => Buffer.from(`h(${v})`).toString("base64url"), encrypt: enc, decrypt: dec };
+  it("accountEmail を渡すと、開いたときに元のアドレスが戻る（渡さなければ無い）", async () => {
+    const s1 = (await sealRow("相手", "名前", c, "user@example.com"))!;
+    expect(s1.customName).not.toContain("user@example.com");
+    expect(await openRow(s1.chatId, s1.customName, c)).toEqual({ chatId: "相手", customName: "名前", accountEmail: "user@example.com" });
+    const s2 = (await sealRow("相手", "名前", c))!;
+    expect(await openRow(s2.chatId, s2.customName, c)).toEqual({ chatId: "相手", customName: "名前" });
+  });
+});
