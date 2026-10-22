@@ -9,6 +9,7 @@ on:
       - 'public/**'
       - 'migrations/**'
       - 'auth.ts'
+      - 'worker.ts'
       - 'env.d.ts'
       - 'next.config.ts'
       - 'open-next.config.ts'

@@ -8,8 +8,9 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-  // ページ全体にセキュリティヘッダーを付ける（中身と理由は app/lib/securityHeaders.ts）
-  // 開発サーバー（next dev）は eval を使うので、この CSP を付けると動かなくなる。本番のビルドだけに付ける
+  // ページ全体にセキュリティヘッダーを付ける（中身と理由は app/lib/securityHeaders.ts）。
+  // CSP はここでは付けず worker.ts で付ける（ここに入れると nonce が消える。理由は securityHeaders.ts）。
+  // 開発サーバー（next dev）では付けない（本番と同じにするのは本番のビルドだけ）
   async headers() {
     if (process.env.NODE_ENV !== "production") return [];
     return [{ source: "/:path*", headers: SECURITY_HEADERS }];

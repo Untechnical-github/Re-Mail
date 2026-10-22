@@ -5,12 +5,19 @@
 // @ts-expect-error -- ビルドしたときにできるファイル
 import { default as handler } from "./.open-next/worker.js";
 import { runBackfill } from "./app/lib/backfill";
+import { generateNonce, withNonceRequest, withNonceResponse } from "./app/lib/securityHeaders";
 
 type Env = CloudflareEnv & { TOKEN_ENCRYPTION_KEY?: string };
 type ScheduledCtx = { waitUntil: (p: Promise<unknown>) => void };
 
 const worker = {
-  fetch: handler.fetch,
+  // ページのスクリプトに付ける nonce を毎回作り、Next.js に渡して、同じ nonce の CSP を HTML の応答に付ける
+  // （CSP の script-src から 'unsafe-inline' を外すため。中身は app/lib/securityHeaders.ts）
+  async fetch(request: Request, env: Env, ctx: ScheduledCtx) {
+    const nonce = generateNonce();
+    const res = await handler.fetch(withNonceRequest(request, nonce), env, ctx);
+    return withNonceResponse(res, nonce);
+  },
   // 二度と Re:Mail を開かない利用者の行も、D1 で平文のまま残らないよう置き換える（wrangler.json の triggers.crons）
   async scheduled(_event: unknown, env: Env, ctx: ScheduledCtx) {
     // 暗号化の鍵は process.env から読むので、定期実行のときも入れておく（リクエストのときは OpenNext が入れる）
