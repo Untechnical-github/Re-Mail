@@ -857,6 +857,19 @@ export function EmailModal({ app }: { app: MailAppHook }) {
     };
   }, []);
 
+  // 外部の画像を読み込んだメールは既読にする（画像を読み込むと、送り手に開いたことが伝わるため。
+  // 「画像を表示」を押したときも、設定で毎回読み込むときも同じ）。すでに既読なら Gmail には何も送らない
+  const remoteLoadedMailId = (() => {
+    if (!emailModal || emailModal.isLoading || !emailModal.htmlBody) return null;
+    const m = emailModal.email;
+    const allow = app.actions.alwaysLoadImagesFor(m.accountId) || remoteAllowedFor === m.id;
+    return allow && hasRemoteContent(emailModal.htmlBody) ? m.id : null;
+  })();
+  useEffect(() => {
+    if (remoteLoadedMailId) app.actions.applyReadToIds([remoteLoadedMailId], true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 画像を読み込んだメールが変わったときだけ（関数は描画ごとに作り直されるため入れない）
+  }, [remoteLoadedMailId]);
+
   if (!emailModal) return null;
 
   const { email, htmlBody, isLoading } = emailModal;
@@ -907,7 +920,7 @@ export function EmailModal({ app }: { app: MailAppHook }) {
         {/* 外部の画像は既定で読み込まない（読み込むと送信者に開封が伝わるため） */}
         {remoteBlocked && (
           <div className="flex items-center gap-2 px-4 py-2 text-xs text-gray-300 bg-[#1E1F22] border-b border-[#1E1F22] flex-shrink-0">
-            <span className="flex-1 min-w-0">外部の画像を読み込んでいません</span>
+            <span className="flex-1 min-w-0">外部の画像を読み込んでいません（表示すると送り手に開いたことが伝わるため、このメールは既読になります）</span>
             <button onClick={() => setRemoteAllowedFor(email.id)} className="flex-shrink-0 font-bold px-2 py-0.5 rounded border border-[#4E5058] text-gray-200 hover:text-white">
               画像を表示
             </button>
@@ -1567,7 +1580,7 @@ export function Modals({ app }: { app: MailAppHook }) {
                   </div>
                   <div className="bg-[#2B2D31] rounded p-3">
                     <div className="text-sm font-bold text-gray-200 mb-1">メールの外部の画像</div>
-                    <div className="text-xs text-gray-500 mb-3">「毎回読み込む」にすると、このアカウントのメールを開くたびに「画像を表示」を押さなくても画像が出ます。ただし画像を読み込んだ時点で、送り手に「メールを開いたこと・開いた日時・おおよその場所（IP アドレス）」が伝わることがあります</div>
+                    <div className="text-xs text-gray-500 mb-3">「毎回読み込む」にすると、このアカウントのメールを開くたびに「画像を表示」を押さなくても画像が出ます。ただし画像を読み込んだ時点で、送り手に「メールを開いたこと・開いた日時・おおよその場所（IP アドレス）」が伝わることがあります。画像を読み込んだメールは既読になります</div>
                     <div className="flex gap-2">
                       <button onClick={() => app.actions.setAccountSetting(a, { alwaysLoadImages: false })} className={toggleClass(!always)}>押したときだけ</button>
                       <button onClick={() => app.actions.setAccountSetting(a, { alwaysLoadImages: true })} className={toggleClass(always)}>毎回読み込む</button>
