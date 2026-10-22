@@ -5,7 +5,7 @@ import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせる
 import { logError } from "../../lib/safeLog";
 import { decryptSecret } from "../../lib/tokenCrypto";
 import { revealConfigName } from "../../lib/configCrypto";
-import { openAndMigrateConfigs, saveConfig, deleteConfig, saveGlobalSettings } from "../../lib/configStore";
+import { openAndMigrateConfigs, saveConfig, deleteConfig, saveGlobalSettings, openGlobalSettings, GLOBAL_SETTINGS_CHAT_ID } from "../../lib/configStore";
 
 // 設定の保存の形（暗号化・アドレスの置き換え）と移行は app/lib/configStore.ts にまとめてある
 
@@ -21,7 +21,13 @@ export async function GET(request: Request) {
     // 暗号化して保存した値（相手の名前を含む roomId など）を、画面に返す前に復号する
     const configs = await Promise.all(opened
       .filter(o => !accountFilter || o.account_email === accountFilter)
-      .map(async (o) => ({ ...o, custom_name: await revealConfigName(o.custom_name, decryptSecret) })));
+      .map(async (o) => ({
+        ...o,
+        // 共通の設定は暗号化して保存しているので、復号した JSON を返す
+        custom_name: !o.account_email && o.chat_id === GLOBAL_SETTINGS_CHAT_ID
+          ? JSON.stringify(await openGlobalSettings(o.custom_name))
+          : await revealConfigName(o.custom_name, decryptSecret),
+      })));
     return NextResponse.json({ configs });
   } catch (error: unknown) {
     logError("config.get", {}, error);

@@ -8,10 +8,11 @@
 // 画面とのやり取りは、これまでどおり元のアドレス・chat_id・custom_name で行う。
 // 古いコードに戻しても壊れないよう、段階を分けて入れる（段階は app/lib/addressStage.ts で切り替える）
 import { logError, logInfo } from "./safeLog";
-import { decryptSecret, encryptSecret, hmacId } from "./tokenCrypto";
+import { decryptSecret, encryptSecret, hmacId, isEncrypted } from "./tokenCrypto";
 import { stripPinnedBodies } from "./pinnedIds";
 import { addressKeyFor, isAddressKey } from "./addressKey";
 import { WRITE_HASHED_ADDRESS } from "./addressStage";
+import { sanitizeSyncedSettings, type SyncedSettings } from "./syncedSettings";
 import { sealConfigName, sealRow, openRow, isReservedRow, isSealedChatId, SEALED_CHAT_ID_PREFIX, type RowCrypto } from "./configCrypto";
 
 type Db = CloudflareEnv["DB"];
@@ -192,29 +193,23 @@ export async function deleteConfig(db: Db, userEmail: string, chatId: string, ac
 }
 
 // どの端末でも共通の設定（account_email が空の予約行 __GLOBAL_SETTINGS__ に持つ）。
-// この行は暗号化しないので、決まった名前の数値・真偽値だけを入れる（個人情報や自由な文字列を入れない）
+// 入れてよい設定の名前と型は app/lib/syncedSettings.ts で決め、それ以外は捨てる。
+// アカウントのアドレスを含むので、行の中身はまとめて暗号化して保存する（以前の平文の JSON も読める）
 export const GLOBAL_SETTINGS_CHAT_ID = "__GLOBAL_SETTINGS__";
-const GLOBAL_SETTING_TYPES = {
-  limit: "number", inbox: "boolean", archive: "boolean", spam: "boolean", trash: "boolean", sent: "boolean",
-  // メールの外部の画像を、押さずに毎回読み込むか
-  alwaysLoadImages: "boolean",
-} as const;
-export type GlobalSettings = { [K in keyof typeof GLOBAL_SETTING_TYPES]?: (typeof GLOBAL_SETTING_TYPES)[K] extends "number" ? number : boolean };
 
-// 決まった名前・型の値だけを残す（それ以外は捨てる）
-export function sanitizeGlobalSettings(value: unknown): GlobalSettings {
-  const out: Record<string, number | boolean> = {};
-  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
-  for (const [key, type] of Object.entries(GLOBAL_SETTING_TYPES)) {
-    const v = (value as Record<string, unknown>)[key];
-    if (type === "boolean" && typeof v === "boolean") out[key] = v;
-    if (type === "number" && typeof v === "number" && Number.isFinite(v)) out[key] = v;
+// 保存されている中身を設定に戻す。暗号化したもの・以前の平文の JSON のどちらも読む。読めなければ空
+export async function openGlobalSettings(customName: string | null | undefined): Promise<SyncedSettings> {
+  if (!customName) return {};
+  try {
+    const json = customName.startsWith("encv1:") ? await decryptSecret(customName) : customName;
+    return sanitizeSyncedSettings(JSON.parse(json));
+  } catch {
+    return {};
   }
-  return out as GlobalSettings;
 }
 
 // 共通の設定の一部を書き換える。ほかの値は残す。古い形（平文のアドレス）の行があれば今の形に移して消す
-export async function saveGlobalSettings(db: Db, userEmail: string, updates: unknown): Promise<GlobalSettings> {
+export async function saveGlobalSettings(db: Db, userEmail: string, updates: unknown): Promise<SyncedSettings> {
   const user = await userKeys(userEmail);
   const targetUser = WRITE_HASHED_ADDRESS && user.hashed ? user.hashed : user.plain;
   const { results } = await db.prepare("SELECT user_email, custom_name FROM chat_configs WHERE user_email IN (?, ?) AND account_email = '' AND chat_id = ?")
@@ -222,10 +217,14 @@ export async function saveGlobalSettings(db: Db, userEmail: string, updates: unk
   const rows = results as { user_email: string; custom_name: string | null }[];
   // 今の形の行を優先して、いまの値を読む
   const current = rows.find(r => r.user_email === targetUser) || rows[0];
-  let base: GlobalSettings = {};
-  try { base = sanitizeGlobalSettings(current?.custom_name ? JSON.parse(current.custom_name) : null); } catch { /* 壊れた値は捨てて作り直す */ }
-  const merged = { ...base, ...sanitizeGlobalSettings(updates) };
-  const stmts = [db.prepare(UPSERT_SQL).bind(targetUser, "", GLOBAL_SETTINGS_CHAT_ID, JSON.stringify(merged), 0, 0, null, 0)];
+  const merged: SyncedSettings = { ...(await openGlobalSettings(current?.custom_name)), ...sanitizeSyncedSettings(updates) };
+  let sealed = await encryptSecret(JSON.stringify(merged));
+  // 鍵が無く暗号化できないとき（ローカルの開発環境など）は、アドレスを含む値を平文で D1 に置かないよう外す
+  if (!isEncrypted(sealed)) {
+    delete merged.accounts;
+    sealed = JSON.stringify(merged);
+  }
+  const stmts = [db.prepare(UPSERT_SQL).bind(targetUser, "", GLOBAL_SETTINGS_CHAT_ID, sealed, 0, 0, null, 0)];
   for (const r of rows) {
     if (r.user_email !== targetUser) stmts.push(db.prepare(DELETE_ROW_SQL).bind(r.user_email, "", GLOBAL_SETTINGS_CHAT_ID));
   }

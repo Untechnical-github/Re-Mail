@@ -12,6 +12,7 @@ import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId, isRateLimitReason } from "../lib/sendVerify";
 import { applySyncResult, idsToFetchForLabelChanges, type BoxFlags, type SyncResult } from "../lib/historySync";
 import { replaceCidImages } from "../lib/emailHtml";
+import { sanitizeSyncedSettings, syncedSettingsKey, type SyncedSettings } from "../lib/syncedSettings";
 
 // メールの本文中の画像（cid: で参照されるもの）
 type InlineImageRef = { contentId: string; attachmentId: string; mimeType: string; size: number };
@@ -231,7 +232,7 @@ export function useMailApp() {
   }, [useIconLabels]);
   // メールの外部の画像を、「画像を表示」を押さずに毎回読み込むか（既定はオフ。読み込むと送り手に開封が伝わる）。
   // どの端末でも共通にするため D1 の共通設定に持ち、ログアウトしても変えない。読み込むまでは既定（オフ）のまま
-  const [alwaysLoadImages, setAlwaysLoadImagesState] = useState(false);
+  const [alwaysLoadImages, setAlwaysLoadImages] = useState(false);
   const [checkInbox, setCheckInbox] = useState<boolean>(() => getSavedBoxSettings()?.inbox ?? true);
   const [checkArchive, setCheckArchive] = useState<boolean>(() => getSavedBoxSettings()?.archive ?? true);
   const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
@@ -246,7 +247,7 @@ export function useMailApp() {
   // メールの所属アカウント（e.accountId、未設定ならメインアカウント）がチェックボックスでオフになっていないか判定する。
   // 場所（受信箱/アーカイブ等）のチェックとは独立した、ハードなフィルター（revealedCrossPromptsによる個別解除は無い）
   const isAccountVisible = (accountId?: string) => checkAccounts[accountId || (session?.user?.email || "")] !== false;
-  // チャット画面のタブ（個人チャット / グループチャット / フィルター）。フィルターのチェックボックスと同様、
+  // チャット画面のタブ（個人チャット / グループチャット / フィルター）。設定ではなく画面の状態なので、
   // この端末のブラウザにだけ保存する（D1には保存しない＝他の端末には同期されない）ので、
   // リロード・タブを閉じる・ログアウトをまたいでも維持されるが、別端末には影響しない
   const [activeChatTab, setActiveChatTab] = useState<ChatListTab>(() => {
@@ -693,8 +694,8 @@ export function useMailApp() {
     }
   };
 
-  const loadD1Configs = async (): Promise<{ globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; alwaysLoadImages?: boolean } | null; formatted: Record<RoomKeyStr, ChatConfig> }> => {
-    let globalSettings: { limit?: number; inbox?: boolean; archive?: boolean; spam?: boolean; trash?: boolean; alwaysLoadImages?: boolean } | null = null;
+  const loadD1Configs = async (): Promise<{ globalSettings: SyncedSettings | null; formatted: Record<RoomKeyStr, ChatConfig> }> => {
+    let globalSettings: SyncedSettings | null = null;
     const formatted: Record<RoomKeyStr, ChatConfig> = {} as Record<RoomKeyStr, ChatConfig>;
     const formattedMessages: Record<RoomKeyStr, MessageConfig> = {} as Record<RoomKeyStr, MessageConfig>;
     try {
@@ -704,7 +705,7 @@ export function useMailApp() {
         const pMsgs: Email[] = [];
         (data.configs as D1ConfigRow[] | undefined)?.forEach((c) => {
           if (c.chat_id === "__GLOBAL_SETTINGS__" && c.custom_name) {
-            try { globalSettings = JSON.parse(c.custom_name); } catch { /* 壊れた設定は無視して既定値を使う */ } return;
+            try { globalSettings = sanitizeSyncedSettings(JSON.parse(c.custom_name)); } catch { /* 壊れた設定は無視して既定値を使う */ } return;
           }
           if (c.chat_id === "__KNOWN_BOXES__") { return; }
           let customNameVal = c.custom_name || undefined;
@@ -776,18 +777,42 @@ export function useMailApp() {
     return { globalSettings, formatted };
   };
 
-  // 「メールの外部の画像」の設定を変えて、D1 の共通設定に保存する。保存できなければ元に戻して知らせる
-  const setAlwaysLoadImages = async (value: boolean) => {
-    const prev = alwaysLoadImages;
-    setAlwaysLoadImagesState(value);
-    try {
-      const res = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ global_settings: { alwaysLoadImages: value } }) });
-      if (!res.ok) throw new Error(`status ${res.status}`);
-    } catch {
-      setAlwaysLoadImagesState(prev);
-      showErrorToast("設定を保存できませんでした。通信状況を確認して、もう一度お試しください。");
-    }
+  // どの端末でも共通の設定（名前と型は app/lib/syncedSettings.ts）。新しい設定を足すときは、ここと下の applySyncedSettings にも足す
+  const syncedSettings: SyncedSettings = useMemo(() => ({
+    inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent,
+    iconLabels: useIconLabels, alwaysLoadImages, accounts: checkAccounts,
+  }), [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, alwaysLoadImages, checkAccounts]);
+  // D1 から読んだ設定を画面に反映する（D1 に無い設定は、この端末の今の値のまま）
+  const applySyncedSettings = (s: SyncedSettings) => {
+    if (s.inbox !== undefined) setCheckInbox(s.inbox);
+    if (s.archive !== undefined) setCheckArchive(s.archive);
+    if (s.spam !== undefined) setCheckSpam(s.spam);
+    if (s.trash !== undefined) setCheckTrash(s.trash);
+    if (s.sent !== undefined) setCheckSent(s.sent);
+    if (s.iconLabels !== undefined) setUseIconLabels(s.iconLabels);
+    if (s.alwaysLoadImages !== undefined) setAlwaysLoadImages(s.alwaysLoadImages);
+    if (s.accounts !== undefined) setCheckAccounts(s.accounts);
   };
+  // D1 から読み終えるまでは保存しない（読む前のこの端末の値で、ほかの端末で変えた設定を上書きしないため）
+  const [syncedSettingsReady, setSyncedSettingsReady] = useState(false);
+  // 最後に D1 にあると分かっている設定。今の値と違うときだけ保存する
+  const savedSyncedKeyRef = useRef("");
+  useEffect(() => {
+    if (!syncedSettingsReady) return;
+    const key = syncedSettingsKey(syncedSettings);
+    if (key === savedSyncedKeyRef.current) return;
+    // 続けて切り替えたときに何度も保存しないよう、少し待ってからまとめて保存する
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ global_settings: syncedSettings }) });
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        savedSyncedKeyRef.current = key;
+      } catch {
+        showErrorToast("設定をほかの端末と同期できませんでした。この端末では変えたとおりに動きます。通信状況を確認して、もう一度設定を変えてください。");
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [syncedSettings, syncedSettingsReady]);
 
   const saveGlobalSettings = async (inbox: boolean, archive: boolean, spam: boolean, trash: boolean, sent: boolean) => {
     if (typeof window !== "undefined") {
@@ -1229,7 +1254,11 @@ export function useMailApp() {
             loadD1Configs(),
             fetch("/api/accounts").then(r => r.ok ? r.json() : { accounts: [] }).catch(() => ({ accounts: [] })),
           ]);
-          setAlwaysLoadImagesState(globalSettings?.alwaysLoadImages === true);
+          // どの端末でも共通の設定を反映する。D1 に無い設定（初めて同期する端末の値）は、このあと D1 に保存される
+          const remoteSettings: SyncedSettings = globalSettings || {};
+          applySyncedSettings(remoteSettings);
+          savedSyncedKeyRef.current = syncedSettingsKey(remoteSettings);
+          setSyncedSettingsReady(true);
           // fetchEmails等が読む前に、ref側は同期的に確定させておく（state更新の再レンダリングを待たない）
           const linkedAccountRows = (linkedAccountsRes.accounts || []) as LinkedAccountRow[];
           const linkedEmails: string[] = linkedAccountRows.map((a) => a.account_email).filter(Boolean);
@@ -1244,11 +1273,11 @@ export function useMailApp() {
 
           // チェックボックスの状態はマウント時点で localStorage から同期的に復元済みなので、
           // ここでは読み直さず現在の state をそのまま使う（読み込み中に見た目が切り替わるのを防ぐ）
-          const initInbox = checkInbox;
-          const initArchive = checkArchive;
-          const initSpam = checkSpam;
-          const initTrash = checkTrash;
-          const initSent = checkSent;
+          const initInbox = remoteSettings.inbox ?? checkInbox;
+          const initArchive = remoteSettings.archive ?? checkArchive;
+          const initSpam = remoteSettings.spam ?? checkSpam;
+          const initTrash = remoteSettings.trash ?? checkTrash;
+          const initSent = remoteSettings.sent ?? checkSent;
           filterKeyRef.current = `${initInbox}-${initArchive}-${initSpam}-${initTrash}-${initSent}`;
           isInitialFilterRun.current = false;
 

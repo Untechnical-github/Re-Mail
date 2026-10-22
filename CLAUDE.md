@@ -94,6 +94,7 @@ Gmail をチャット風 UI（相手ごとのトークルーム）で読み書�
 - API ルートに `export const runtime = 'edge'` を書かない（OpenNext が対応していない）。D1 などのバインディングは `@opennextjs/cloudflare` の `getCloudflareContext().env` から取る。Node 専用 API は `nodejs_compat` で動く範囲に限り、なるべく fetch・Web Crypto・TextEncoder などの Web 標準で書く。
 - roomKey（アカウント＋相手の複合キー）の組み立て・分解は `app/lib/roomKey.ts` の `encodeRoomKey` / `decodeRoomKey` だけで行う。区切り文字を直接 `split` しない。D1 の `chat_id` はローカルキー、画面の state は複合キー、と使い分ける。
 - チャットは連携アカウントごとに分離する。同じ相手でもアカウントが違えば別チャット。ピン留め・非表示・永続データ・送信元の処理でアカウントを取り違えない（取り違えは誤送信元＝ビジネス上の事故になる）。
+- 利用者が選ぶ設定（設定画面の項目・場所やアカウントのチェックボックスなど）は、どの端末でも共通にする。新しい設定は `app/lib/syncedSettings.ts` の一覧に名前と型を足し、`useMailApp.ts` の `syncedSettings` と `applySyncedSettings` にも足す（D1 の共通設定の行に暗号化して保存され、ログアウトしても変わらない）。端末に置くのは画面の状態（開いているタブ・スクロール位置）と下書きだけにする。
 - 「自分が送ったメールか」の判定は共通の `isMineEmail`（アドレス完全一致）を使う。`.includes` で部分一致させない。
 - Gmail API の**読み取り・ラベル操作**は `fetchWithRetry` を通す。**送信は通さない**（絶対ルール2）。アクセストークンは `getValidAccessToken` で取る（リフレッシュの二重実行を防ぐため）。
 - 送信直後の仮 ID は `fake-` で始まる。Gmail 側に存在しないので API に渡さない。
