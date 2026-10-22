@@ -256,14 +256,30 @@ export const ACCOUNT_SETTINGS_CHAT_ID = "__ACCOUNT_SETTINGS__";
 const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 // custom_name の JSON から、すべてのアカウントが対象か（shared）・最後に保存した時刻・フィルターの対象アカウントを読む
-export function configMeta(customName: string | null | undefined): { shared: boolean; updatedAt: number; filterAccount?: string } {
+export function configMeta(customName: string | null | undefined): { shared: boolean; updatedAt: number; filterAccount?: string; isFilter?: boolean } {
   if (!customName || !customName.startsWith("{")) return { shared: false, updatedAt: 0 };
   try {
-    const p = JSON.parse(customName) as { shared?: unknown; updatedAt?: unknown; filterCriteria?: { accountEmail?: unknown } };
+    const p = JSON.parse(customName) as { shared?: unknown; updatedAt?: unknown; filterAction?: unknown; isGroup?: unknown; filterCriteria?: { accountEmail?: unknown } };
     const fa = p.filterCriteria?.accountEmail;
-    return { shared: p.shared === true, updatedAt: typeof p.updatedAt === "number" ? p.updatedAt : 0, filterAccount: typeof fa === "string" && fa ? fa : undefined };
+    const meta: { shared: boolean; updatedAt: number; filterAccount?: string; isFilter?: boolean } = { shared: p.shared === true, updatedAt: typeof p.updatedAt === "number" ? p.updatedAt : 0 };
+    if (typeof fa === "string" && fa) meta.filterAccount = fa;
+    if (!!p.filterAction || (!!p.isGroup && !!p.filterCriteria)) meta.isFilter = true;
+    return meta;
   } catch {
     return { shared: false, updatedAt: 0 };
+  }
+}
+
+// フィルターを、指定したアカウントだけのものにする（すべてのアカウントが対象だったものを、アカウントごとに分けるとき）
+export function assignFilterAccount(customName: string | null | undefined, account: string): string | null {
+  if (!customName) return customName ?? null;
+  try {
+    const p = JSON.parse(customName) as Record<string, unknown> & { filterCriteria?: Record<string, unknown> };
+    delete p.shared;
+    p.filterCriteria = { ...(p.filterCriteria || {}), accountEmail: account };
+    return JSON.stringify(p);
+  } catch {
+    return customName;
   }
 }
 
@@ -300,7 +316,7 @@ export async function openSessionConfigs(db: Db, primary: string, linked: string
     for (const o of rows) {
       if (isReservedRow(o.account_email) || !sameAddress(o.account_email, owner)) continue;
       const meta = configMeta(o.custom_name);
-      if (meta.shared) continue;
+      if (meta.shared || (meta.isFilter && !meta.filterAccount && accounts.length > 1)) continue;
       // 以前はほかのアカウントだけが対象のフィルターも、メインアカウント名義で保存していた。対象のアカウントへ移す
       const target = meta.filterAccount ? findAccount(meta.filterAccount) : undefined;
       if (target && !sameAddress(target, owner)) {
@@ -329,26 +345,36 @@ export async function openSessionConfigs(db: Db, primary: string, linked: string
       writes.push({ owner, input: toInput(o, owner) });
     }
   }
-  // 3. すべてのアカウントが対象のもの（shared）は、一番新しい写しを1つだけ返し、足りない・古い写しを書き直す
-  const best = new Map<string, { o: OpenedConfig; at: number; preferred: boolean }>();
-  const copies = new Map<string, Map<string, OpenedConfig>>();
-  for (const [space, rows] of spaces) {
-    for (const o of rows) {
-      if (isReservedRow(o.account_email)) continue;
-      const meta = configMeta(o.custom_name);
-      if (!meta.shared) continue;
-      if (!copies.has(o.chat_id)) copies.set(o.chat_id, new Map());
-      copies.get(o.chat_id)!.set(space, o);
-      const cur = best.get(o.chat_id);
-      const preferred = space === primary;
-      if (!cur || meta.updatedAt > cur.at || (meta.updatedAt === cur.at && preferred && !cur.preferred)) best.set(o.chat_id, { o, at: meta.updatedAt, preferred });
+  // 3. すべてのアカウントが対象のフィルター（shared と、アカウントを決めていない以前のフィルター）は、
+  //    アカウントごとの別々のフィルターに分ける（フィルターはアカウントごとに保存し、そのアカウントのメールにだけ効く）。
+  //    一番新しい写しをもとに、各アカウントの置き場所にそのアカウントだけのフィルターとして書き直す
+  if (accounts.length > 1) {
+    const best = new Map<string, { o: OpenedConfig; at: number; preferred: boolean }>();
+    for (const [space, rows] of spaces) {
+      for (const o of rows) {
+        if (isReservedRow(o.account_email)) continue;
+        const meta = configMeta(o.custom_name);
+        const toSplit = meta.shared || (meta.isFilter && !meta.filterAccount && sameAddress(o.account_email, space));
+        if (!toSplit) continue;
+        const cur = best.get(o.chat_id);
+        const preferred = space === primary;
+        if (!cur || meta.updatedAt > cur.at || (meta.updatedAt === cur.at && preferred && !cur.preferred)) best.set(o.chat_id, { o, at: meta.updatedAt, preferred });
+      }
     }
-  }
-  for (const [chat, { o }] of best) {
-    result.set(key(primary, chat), { ...o, account_email: primary });
-    for (const a of accounts) {
-      const copy = copies.get(chat)?.get(a);
-      if (!copy || contentKey(copy) !== contentKey(o)) writes.push({ owner: a, input: toInput(o, a) });
+    for (const [chat, { o }] of best) {
+      for (const a of accounts) {
+        // 分けたあとにそのアカウントで編集した（アカウントの決まった）フィルターがあれば、そちらを使う
+        if (result.has(key(a, chat))) continue;
+        const own: OpenedConfig = { ...o, account_email: a, custom_name: assignFilterAccount(o.custom_name, a) };
+        result.set(key(a, chat), own);
+        writes.push({ owner: a, input: toInput(own, a) });
+      }
+    }
+  } else {
+    // 1つのアカウントだけでログインしているときは、そのアカウントのフィルターとしてそのまま返す
+    for (const o of spaces.get(primary) || []) {
+      if (isReservedRow(o.account_email) || !configMeta(o.custom_name).shared) continue;
+      result.set(key(primary, o.chat_id), { ...o, account_email: primary });
     }
   }
 

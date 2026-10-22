@@ -69,26 +69,44 @@ describe("アカウントごとの置き場所", () => {
     expect(find(both.configs, L, "Dan")?.custom_name).toBe("新しい名前");
   });
 
-  it("すべてのアカウントが対象のフィルターは全員に保存され、一番新しい写しが1つだけ返る", async () => {
+  it("すべてのアカウントが対象のフィルターは、アカウントごとの別々のフィルターに分かれる（一番新しい写しをもとにする）", async () => {
     const fake = createFakeD1(); const db = fake as unknown as Db;
     const v1 = JSON.stringify({ name: "請求書", shared: true, updatedAt: 100, filterAction: "pin", filterCriteria: { conditionSets: [] } });
     await store.saveSessionConfig(db, P, [L], input(P, "filter:abc", v1), "shared");
-    // それぞれ単独でログインしても見える
-    expect(find((await store.openSessionConfigs(db, L, [])).configs, L, "filter:abc")?.custom_name).toBe(v1);
-    expect(find((await store.openSessionConfigs(db, P, [])).configs, P, "filter:abc")?.custom_name).toBe(v1);
     // 連携アカウントだけでログインして編集した（新しい）写し
     const v2 = JSON.stringify({ name: "請求書2", shared: true, updatedAt: 200, filterAction: "pin", filterCriteria: { conditionSets: [] } });
     await store.saveSessionConfig(db, L, [], input(L, "filter:abc", v2), "shared");
     const both = await store.openSessionConfigs(db, P, [L]);
     const rows = both.configs.filter(r => r.chat_id === "filter:abc");
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ account_email: P, custom_name: v2 });
-    // 古かったメインアカウントの写しも新しいものに直る
-    expect(find(await store.openAndMigrateConfigs(db, P), P, "filter:abc")?.custom_name).toBe(v2);
-    // 削除はすべての写しを消す
-    await store.deleteSessionConfig(db, P, [L], "filter:abc", P, "shared");
-    expect((await store.openSessionConfigs(db, P, [L])).configs.some(r => r.chat_id === "filter:abc")).toBe(false);
-    expect((await store.openSessionConfigs(db, L, [])).configs.some(r => r.chat_id === "filter:abc")).toBe(false);
+    expect(rows).toHaveLength(2);
+    const pRow = JSON.parse(find(rows, P, "filter:abc")!.custom_name!);
+    const lRow = JSON.parse(find(rows, L, "filter:abc")!.custom_name!);
+    expect(pRow).toMatchObject({ name: "請求書2", filterCriteria: { accountEmail: P } });
+    expect(lRow).toMatchObject({ name: "請求書2", filterCriteria: { accountEmail: L } });
+    expect(pRow.shared).toBeUndefined();
+    // 分けたあとは別々：片方だけ変えても、もう片方は変わらない
+    await store.saveSessionConfig(db, P, [L], input(L, "filter:abc", JSON.stringify({ ...lRow, name: "Lだけ" })));
+    const again = await store.openSessionConfigs(db, P, [L]);
+    expect(JSON.parse(find(again.configs, P, "filter:abc")!.custom_name!).name).toBe("請求書2");
+    expect(JSON.parse(find(again.configs, L, "filter:abc")!.custom_name!).name).toBe("Lだけ");
+    // それぞれ単独でログインしても、自分のフィルターとして見える
+    expect(JSON.parse(find((await store.openSessionConfigs(db, L, [])).configs, L, "filter:abc")!.custom_name!).name).toBe("Lだけ");
+    // 片方を消しても、もう片方は残る
+    await store.deleteSessionConfig(db, P, [L], "filter:abc", L);
+    const after = await store.openSessionConfigs(db, P, [L]);
+    expect(find(after.configs, L, "filter:abc")).toBeUndefined();
+    expect(find(after.configs, P, "filter:abc")).toBeDefined();
+  });
+
+  it("アカウントを決めていない以前のフィルターも、アカウントが2つ以上ならアカウントごとに分ける", async () => {
+    const fake = createFakeD1(); const db = fake as unknown as Db;
+    const f = JSON.stringify({ name: "古い", isGroup: true, filterCriteria: { conditionSets: [] } });
+    await store.saveConfig(db, P, input(P, "group:old", f));
+    // 1つのアカウントだけなら、そのまま
+    expect(JSON.parse(find((await store.openSessionConfigs(db, P, [])).configs, P, "group:old")!.custom_name!).filterCriteria.accountEmail).toBeUndefined();
+    const both = await store.openSessionConfigs(db, P, [L]);
+    expect(JSON.parse(find(both.configs, P, "group:old")!.custom_name!).filterCriteria.accountEmail).toBe(P);
+    expect(JSON.parse(find(both.configs, L, "group:old")!.custom_name!).filterCriteria.accountEmail).toBe(L);
   });
 
   it("以前メインアカウント名義で保存した「連携アカウントだけが対象のフィルター」は、そのアカウントへ移す", async () => {

@@ -65,3 +65,36 @@ describe("linkedAccountsStore（連携アカウントのアドレスを D1 の�
     expect(await store.listLinkedAccounts(db, "other@example.com")).toHaveLength(1);
   });
 });
+
+describe("promoteLinkedAccount（1つのアカウントだけログアウトし、残りのアカウントに引き継ぐ）", () => {
+  const THIRD = "third@example.com";
+  it("引き継ぐアカウントのトークンを返し、ほかのアカウントを付け替え、ログアウトしたアカウントの行を消す", async () => {
+    const fake = createFakeD1();
+    const db = fake as unknown as Db;
+    stage.hashed = true;
+    await store.saveLinkedAccount(db, ME, LINKED, tokens);
+    await store.saveLinkedAccount(db, ME, THIRD, { ...tokens, refreshToken: "rt-3", name: "サード" });
+    const got = await store.promoteLinkedAccount(db, ME, LINKED);
+    expect(got).toEqual({ refreshToken: "rt-1", accessToken: "at-1", expiresAt: 1, name: "セカンド", picture: "https://example.com/p.png" });
+    // ログアウトしたアカウントには何も残らない
+    expect(await store.listLinkedAccounts(db, ME)).toEqual([]);
+    // 3つ目のアカウントは、引き継いだアカウントに付いている（トークンもそのまま使える）
+    const list = await store.listLinkedAccounts(db, LINKED);
+    expect(list.map(a => a.account_email)).toEqual([THIRD]);
+    expect(list[0].name).toBe("サード");
+    const third = await store.findLinkedAccount(db, LINKED, THIRD);
+    expect(third).not.toBeNull();
+    expect(JSON.stringify(fake.dump("linked_accounts"))).not.toMatch(/example\.com|rt-3|サード/);
+  });
+
+  it("付いていないアカウント・再ログインが必要なアカウントには引き継がない（何も変えない）", async () => {
+    const fake = createFakeD1();
+    const db = fake as unknown as Db;
+    stage.hashed = true;
+    await store.saveLinkedAccount(db, ME, LINKED, tokens);
+    expect(await store.promoteLinkedAccount(db, ME, THIRD)).toBeNull();
+    fake.prepare("UPDATE linked_accounts SET needs_reauth = 1").exec();
+    expect(await store.promoteLinkedAccount(db, ME, LINKED)).toBeNull();
+    expect((await store.listLinkedAccounts(db, ME)).length).toBe(1);
+  });
+});

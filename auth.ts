@@ -3,6 +3,8 @@ import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 import { getValidAccessToken } from "./app/lib/googleToken";
 import { logError } from "./app/lib/safeLog";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { promoteLinkedAccount } from "./app/lib/linkedAccountsStore";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   trustHost: true,
@@ -31,7 +33,32 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     }),
   ],
   callbacks: {
-    async jwt({ token, account }) {
+    async jwt({ token, account, trigger, session }) {
+      // ⓪ ログイン中のアカウントだけをログアウトし、ほかにログインしているアカウントの1つに引き継ぐ（画面の useSession().update から）。
+      // 引き継げるのは、今のアカウントに一緒にログインしているアカウントだけ（D1 に付いているものだけ。ほかの人のアカウントにはなれない）
+      if (trigger === "update" && session && typeof (session as { switchTo?: unknown }).switchTo === "string" && token.email) {
+        const to = (session as { switchTo: string }).switchTo;
+        try {
+          const next = await promoteLinkedAccount(getCloudflareContext().env.DB, token.email, to);
+          if (!next) return token;
+          return {
+            ...token,
+            sub: to,
+            email: to,
+            name: next.name ?? to,
+            picture: next.picture ?? null,
+            accessToken: next.accessToken ?? undefined,
+            // 保存されたアクセストークンが無ければ、次の通信ですぐ取り直させる
+            expiresAt: next.accessToken && next.expiresAt ? next.expiresAt : 0,
+            refreshToken: next.refreshToken,
+            error: undefined,
+          };
+        } catch (error: unknown) {
+          logError("auth.switchAccount", {}, error);
+          return token;
+        }
+      }
+
       // ① 初回ログイン時：Googleから貰った鍵と、その有効期限、そして「更新用のマスターキー（リフレッシュトークン）」を保存する
       if (account) {
         return {

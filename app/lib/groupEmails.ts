@@ -7,7 +7,7 @@
 import { ChatConfig } from "../types/mail";
 import { Email } from "../types/email";
 import { isMineEmail, messageMatchesFilter } from "./filterMatch";
-import { LocalKey, RoomKeyStr, encodeRoomKey, keysOf } from "./roomKey";
+import { LocalKey, RoomKeyStr, encodeRoomKey, decodeRoomKey, keysOf } from "./roomKey";
 
 function parseAddressSet(toHeader: string): Set<string> {
   const set = new Set<string>();
@@ -182,12 +182,16 @@ export function mergeAccountGroups(
 }
 
 // フィルターツールで作成したグループ（filterCriteria持ち）専用の集約。条件に一致すれば
-// 送信済みメールも含まれる（通常のグループのような宛先セット一致は必要ない）ため、
-// 通常のグループ（宛先ベース。1つのアカウントから送信する必要があるためそのアカウント
-// 自身のメールだけに閉じている）と異なり、複数アカウント分のメールをまたいで対象にできる。
-// criteria.accountEmail が指定されていればそのアカウントのメールだけに絞り込む。
+// 送信済みメールも含まれる（通常のグループのような宛先セット一致は必要ない）。
+// フィルターはアカウントごとのものなので、そのグループのアカウント（roomKey のアカウント）のメールだけを集める
+// （ほかのアカウントのメールは混ぜない。通常のグループと同じ）。
 // mergeAccountGroups 済みの複合キー空間に対して、chatConfigs・allEmails も複合キー/全アカウント分の
 // ものをそのまま渡して呼ぶ（groupEmailsByRoom内では意図的にfilterCriteria持ちのroomを扱わない）
+// ルームのアカウント（小文字）。複合キーでない古いキーは空にする（例外で一覧全体を止めないため）
+function accountOfRoom(room: RoomKeyStr): string {
+  try { return decodeRoomKey(room).accountEmail.toLowerCase(); } catch { return ""; }
+}
+
 export function applyFilterGroups(
   merged: Record<RoomKeyStr, Email[]>,
   chatConfigs: Record<RoomKeyStr, ChatConfig>,
@@ -200,9 +204,11 @@ export function applyFilterGroups(
     const cfg = chatConfigs[room];
     if (!cfg?.isGroup || !cfg.filterCriteria) return;
     const createdAtMs = cfg.filterCreatedAt ? new Date(cfg.filterCreatedAt).getTime() : 0;
+    const roomAccount = accountOfRoom(room);
     next[room] = allEmails.filter((e: Email) => {
       // このメール自身が属するアカウント（未設定＝accountId導入前のデータ等はmyEmail名義とみなす）
       const emailAccount = e.accountId || myEmail;
+      if (emailAccount.toLowerCase() !== roomAccount) return false;
       if (!messageMatchesFilter(e, cfg.filterCriteria!, emailAccount)) return false;
       if (cfg.filterIncludeExisting === false) {
         const t = new Date(e.date).getTime();
@@ -213,7 +219,7 @@ export function applyFilterGroups(
   });
 
   // フィルターグループで「元のメッセージを非表示にする」がONの場合、一致したメッセージを
-  // 他の全ルーム（元の個別チャット等、アカウントをまたいでも）から動的に除外する。
+  // 同じアカウントのほかのルーム（元の個別チャット等）から動的に除外する。
   // chatConfigsやメールが変わるたびに毎回再計算されるため、OFFにすれば次の再計算で自動的に
   // 元のルームへ復元される
   keysOf(chatConfigs).forEach(room => {
@@ -221,8 +227,10 @@ export function applyFilterGroups(
     if (!cfg?.isGroup || !cfg.filterCriteria || !cfg.filterHideOriginal) return;
     const matchedIds = new Set((next[room] || []).map((e: Email) => e.id));
     if (matchedIds.size === 0) return;
+    const roomAccount = accountOfRoom(room);
     keysOf(next).forEach(otherRoom => {
       if (otherRoom === room) return;
+      if (accountOfRoom(otherRoom) !== roomAccount) return;
       next[otherRoom] = next[otherRoom].filter((e: Email) => !matchedIds.has(e.id));
     });
   });

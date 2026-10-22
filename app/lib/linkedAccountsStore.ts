@@ -3,7 +3,7 @@
 // 移行の途中は平文の行と置き換えた行が混ざるので、読むときは両方を探す（app/lib/addressStage.ts）
 import { addressKeyFor, isAddressKey, normalizeAddress } from "./addressKey";
 import { WRITE_HASHED_ADDRESS } from "./addressStage";
-import { decryptSecret, encryptSecret, hmacId } from "./tokenCrypto";
+import { decryptSecret, encryptSecret, hmacId, isEncrypted } from "./tokenCrypto";
 import { logError, logInfo } from "./safeLog";
 
 type Db = CloudflareEnv["DB"];
@@ -142,3 +142,45 @@ export async function deleteLinkedAccount(db: Db, userEmail: string, accountEmai
   const [a1, a2] = await keysOf(accountEmail);
   await db.prepare("DELETE FROM linked_accounts WHERE user_email IN (?, ?) AND account_email IN (?, ?)").bind(u1, u2, a1, a2).run();
 }
+
+// ログイン中のアカウント（from）だけをログアウトし、残りのアカウントの1つ（to）にログインを引き継ぐ。
+// - to のトークン・表示名・画像を返す（ログインのセッションを to のものに置き換えるため）
+// - from に付いていたほかのアカウントは、to に付け替える（暗号化した値は持ち主に関係なく同じ鍵で読めるので、そのまま写す）
+// - from の行はすべて消す（ログアウトしたアカウントのトークンを残さない）
+// to が from に付いていない・再ログインが必要なときは null（何も変えない）
+export async function promoteLinkedAccount(db: Db, from: string, to: string): Promise<{ refreshToken: string; accessToken: string | null; expiresAt: number | null; name: string | null; picture: string | null } | null> {
+  const target = await findLinkedAccount(db, from, to);
+  if (!target || target.needs_reauth) return null;
+  const open = async (v: string | null | undefined) => (v ? (isEncrypted(v) ? await decryptSecret(v) : v) : null);
+  const refreshToken = await open(target.refresh_token);
+  if (!refreshToken) return null;
+
+  const [u1, u2] = await keysOf(from);
+  const { results } = await db.prepare("SELECT * FROM linked_accounts WHERE user_email IN (?, ?)").bind(u1, u2).all();
+  const rows = (results || []) as LinkedAccountRow[];
+  const [t1, t2] = await keysOf(to);
+  const stmts = [];
+  for (const row of rows) {
+    // 引き継ぐアカウント自身の行は写さない（自分自身に自分は付けない）
+    if (row.account_email === t1 || row.account_email === t2) continue;
+    const accountEmail = isAddressKey(row.account_email) ? (row.account_enc ? await decryptSecret(row.account_enc) : null) : row.account_email;
+    if (!accountEmail || normalizeAddress(accountEmail) === normalizeAddress(from)) continue;
+    const k = await targetKeys(to, accountEmail);
+    stmts.push(db.prepare(INSERT_SQL).bind(
+      k.user, k.account, row.account_enc ?? (WRITE_HASHED_ADDRESS ? await encryptSecret(accountEmail) : null), row.refresh_token, row.access_token, row.expires_at,
+      row.created_at ?? new Date().toISOString(), row.needs_reauth ?? 0, row.name ?? null, row.picture ?? null,
+    ));
+  }
+  stmts.push(db.prepare("DELETE FROM linked_accounts WHERE user_email IN (?, ?)").bind(u1, u2));
+  // 写すのと消すのは同じバッチで行う（途中で失われないように）
+  await db.batch(stmts);
+  logInfo("accounts.promote", { count: stmts.length - 1 });
+  return {
+    refreshToken,
+    accessToken: await open(target.access_token),
+    expiresAt: target.expires_at,
+    name: await open(target.name ?? null),
+    picture: await open(target.picture ?? null),
+  };
+}
+
