@@ -11,7 +11,7 @@ import { revealConfigName, sealConfigName, hasPlainRoomId, sealRow, openRow, isR
 // 古いコードに戻しても壊れないよう2段階で入れる:
 //   段階1（WRITE_SEALED = false）: 読むときは暗号化した行も平文の行も読める。保存はまだ平文
 //   段階2（WRITE_SEALED = true）: 保存を暗号化に切り替え、平文の行は読んだときに暗号化して置き換える
-const WRITE_SEALED = false;
+const WRITE_SEALED = true;
 
 const rowCrypto: RowCrypto = { hmac: hmacId, encrypt: encryptSecret, decrypt: decryptSecret };
 
