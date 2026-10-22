@@ -10,6 +10,7 @@ import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "../lib
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId, isRateLimitReason } from "../lib/sendVerify";
+import { applySyncResult, type BoxFlags, type SyncResult } from "../lib/historySync";
 import { planReply, type ReplyPlan } from "../lib/recipients";
 import { parseAddress } from "../lib/mime";
 import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, composeReplyBodies, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, type SendAsInfo } from "../lib/replyCompose";
@@ -989,6 +990,26 @@ export function useMailApp() {
   // メイン+連携済みの全アカウント分を並行して取得し、1つの配列にマージする。
   // pageToken は常にnull（先頭ページ取得専用。追加読み込みはhandleLoadMoreChatsが個別に担う）のため
   // 実質未使用。limitはアカウント数で按分し、合算でおおよそtargetLimit件になるようにする
+  // 各アカウントの「ここから後の変化を取る」起点（Gmail の historyId）。一覧を取り直すたびに更新する
+  const historyIdsRef = useRef<Record<string, string>>({});
+  const syncingRef = useRef(false);
+
+  const captureHistoryBaselines = async (accounts: string[]): Promise<Record<string, string>> => {
+    const myEmail = session?.user?.email || "";
+    const out: Record<string, string> = {};
+    await mapWithConcurrency(accounts, 3, async (account) => {
+      try {
+        const params = new URLSearchParams({ sync: "1" });
+        if (account !== myEmail) params.append("accountEmail", account);
+        const res = await fetch(`/api/emails?${params.toString()}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { historyId?: string | null };
+        if (data.historyId) out[account] = data.historyId;
+      } catch { /* 起点が取れなければ、次の更新で一覧を取り直す */ }
+    });
+    return out;
+  };
+
   const fetchEmails = async (limit = 100, query = "", flags = { inbox: true, archive: true, spam: false, trash: false, sent: false }, _pageToken: string | null = null, _isLoadMore = false, isSilent = false, currentEmailsState = emailsRef.current, getIsCancelled = () => false, _isInitLoad = false) => {
     // ★修正: flags.sent も判定に含めることで、「送信済みのみ」チェック時にAPIが空振りするのを防ぐ
     if (!flags.inbox && !flags.archive && !flags.spam && !flags.trash && !flags.sent) {
@@ -1029,6 +1050,8 @@ export function useMailApp() {
 
       // アカウント数が多い場合にGmail APIのレート制限へ一斉に触れないよう、同時フェッチ数の
       // 上限を設ける（1〜3アカウントなら実質そのまま全並列、それ以上は3アカウントずつ処理する）
+      // 差分の起点（historyId）は一覧より先に取る（間に届いたメールを取りこぼさないため。重なった分は ID で同じものになる）
+      const baselinePromise = captureHistoryBaselines(accounts);
       const results = await mapWithConcurrency(accounts, 3, async (accountEmail) => {
         const params = new URLSearchParams({ maxResults: perAccountLimit.toString(), q, includeTrash: useIncludeTrash });
         if (accountEmail !== myEmail) params.append("accountEmail", accountEmail);
@@ -1091,6 +1114,11 @@ export function useMailApp() {
         nextTokens[accountEmail] = data.nextPageToken || null;
       }
       if (!anyOk) return { success: false, emails: currentEmailsState };
+      // 一覧を取れたアカウントだけ、差分の起点を更新する
+      const baselines = await baselinePromise;
+      for (const { accountEmail, res } of results) {
+        if (res?.ok && baselines[accountEmail]) historyIdsRef.current[accountEmail] = baselines[accountEmail];
+      }
 
       const map = new Map(currentEmailsState.map((e) => [e.id, e]));
       newMessages.forEach((m) => map.set(m.id, m));
@@ -1471,11 +1499,56 @@ export function useMailApp() {
     } catch { /* 一時的な取得失敗は無視し、次回のポーリングに任せる */ }
   };
 
+  // 自動更新。前回からの変化（新着・削除・ラベルの変化）だけを取り、新着メールの詳細だけを取りにいく。
+  // 起点が無い・古すぎるアカウントがあれば、これまでどおり一覧を取り直す（そのとき起点も取り直す）
+  const syncOrRefetch = async () => {
+    if (syncingRef.current) return;
+    const flags: BoxFlags = { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent };
+    const myEmail = session?.user?.email || "";
+    const accounts = [myEmail, ...linkedAccountsRef.current].filter(Boolean);
+    if (accounts.some(a => !historyIdsRef.current[a])) {
+      fetchEmails(100, "", { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, true, emailsRef.current, () => false, false);
+      return;
+    }
+    syncingRef.current = true;
+    try {
+      let needRefetch = false;
+      const results: { account: string; result: SyncResult }[] = [];
+      await mapWithConcurrency(accounts, 3, async (account) => {
+        try {
+          const params = new URLSearchParams({ sync: "1", historyId: historyIdsRef.current[account] });
+          if (account !== myEmail) params.append("accountEmail", account);
+          const res = await fetch(`/api/emails?${params.toString()}`, { cache: "no-store" });
+          if (!res.ok) { logWarn("sync.client", { status: res.status }); return; }
+          const data = (await res.json()) as { reset?: boolean; historyId?: string; messages?: Email[]; labelUpdates?: { id: string; labelIds: string[] }[]; deleted?: string[] };
+          if (data.reset) { delete historyIdsRef.current[account]; needRefetch = true; return; }
+          if (data.historyId) historyIdsRef.current[account] = data.historyId;
+          results.push({ account, result: { messages: (data.messages || []).map(m => ({ ...m, accountId: account })), labelUpdates: data.labelUpdates || [], deleted: data.deleted || [] } });
+        } catch (e) {
+          // 1つのアカウントの失敗で、ほかのアカウントの更新は止めない
+          logWarn("sync.client", {}, e);
+        }
+      });
+      const changed = results.some(r => r.result.messages.length || r.result.labelUpdates.length || r.result.deleted.length);
+      if (changed) {
+        let updated = emailsRef.current;
+        for (const { result } of results) updated = applySyncResult(updated, result, flags);
+        updated = reconcileFakeSentEmails(updated).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        const nextPMsgs = syncConfigs(updated, chatConfigsRef.current, messageConfigsRef.current);
+        applySyncedPersisted(nextPMsgs);
+        setEmails(updated);
+      }
+      if (needRefetch) fetchEmails(100, "", { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, true, emailsRef.current, () => false, false);
+    } finally {
+      syncingRef.current = false;
+    }
+  };
+
   useEffect(() => {
     if (!session) return;
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
-        fetchEmails(100, "", { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, true, emailsRef.current, () => false, false);
+        void syncOrRefetch();
         refreshLinkedAccountsStatus();
       }
     }, 60000);
@@ -1485,12 +1558,12 @@ export function useMailApp() {
         if (emailsRef.current.length === 0) {
           fetchEmails(100, "", { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, false, [], () => false, true);
         } else {
-          fetchEmails(100, "", { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, true, emailsRef.current, () => false, false);
+          void syncOrRefetch();
         }
       }
     };
     const handleOnline = () => {
-      fetchEmails(100, "", { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, true, emailsRef.current, () => false, false);
+      void syncOrRefetch();
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);

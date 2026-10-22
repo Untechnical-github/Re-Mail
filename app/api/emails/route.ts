@@ -7,6 +7,7 @@ import { encryptSecret, decryptSecret, isEncrypted } from "../../lib/tokenCrypto
 import { buildMimeSegments, buildGmailUploadBody, decodeMimeHeader } from "../../lib/mime";
 import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, getTextBody, extractAttachments, extractContentIdParts, referencesContentId, stripHtmlQuote, looksLikeForward, parseMessageDetail } from "../../lib/messageParse";
 import type { MimeInlinePart } from "../../lib/mime";
+import { summarizeHistory, type GmailHistoryRecord } from "../../lib/historySync";
 import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
 import { logError, logWarn, logInfo } from "../../lib/safeLog";
 
@@ -299,6 +300,66 @@ export async function GET(request: Request) {
     } catch (e) {
       logError("sendAs.list", {}, e);
       return NextResponse.json({ error: "Failed to load sendAs" }, { status: 500 });
+    }
+  }
+
+  // 差分の同期。historyId を渡すと、そこから後の変化（新着・削除・ラベルの変化）だけを返す。
+  // 渡さなければ、今の historyId（これから先の変化を取る起点）だけを返す。
+  // 起点が古すぎて Gmail が履歴を持っていなければ reset: true を返し、画面側は一覧を取り直す
+  if (searchParams.get("sync") === "1") {
+    const auth = { headers: { Authorization: `Bearer ${accessToken}` } };
+    const base = "https://gmail.googleapis.com/gmail/v1/users/me";
+    const startHistoryId = searchParams.get("historyId") || "";
+    try {
+      if (!/^\d{1,20}$/.test(startHistoryId)) {
+        const pr = await fetchWithRetry(`${base}/profile?fields=historyId`, auth);
+        if (!pr.ok) { logWarn("sync.profile", { status: pr.status }); return NextResponse.json({ error: "SYNC_FAILED" }, { status: pr.status === 401 ? 401 : 502 }); }
+        return NextResponse.json({ historyId: ((await pr.json()) as { historyId?: string }).historyId || null });
+      }
+      const records: GmailHistoryRecord[] = [];
+      let latestHistoryId = startHistoryId;
+      let pageToken = "";
+      // 長く開いていなかった場合でも、取りにいくのは最大5ページ（2,500件の変化）まで
+      for (let page = 0; page < 5; page++) {
+        const params = new URLSearchParams({ startHistoryId, maxResults: "500" });
+        for (const t of ["messageAdded", "messageDeleted", "labelAdded", "labelRemoved"]) params.append("historyTypes", t);
+        if (pageToken) params.set("pageToken", pageToken);
+        const hr = await fetchWithRetry(`${base}/history?${params.toString()}`, auth);
+        if (hr.status === 404) return NextResponse.json({ reset: true });
+        if (hr.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        if (!hr.ok) { logWarn("sync.history", { status: hr.status }); return NextResponse.json({ error: "SYNC_FAILED" }, { status: 502 }); }
+        const data = (await hr.json()) as { history?: GmailHistoryRecord[]; historyId?: string; nextPageToken?: string };
+        records.push(...(data.history || []));
+        if (data.historyId) latestHistoryId = data.historyId;
+        if (!data.nextPageToken) { pageToken = ""; break; }
+        pageToken = data.nextPageToken;
+      }
+      // 変化が多すぎて最後まで取れなかったときは、取り直してもらう（取りこぼしを残さない）
+      if (pageToken) return NextResponse.json({ reset: true });
+      const summary = summarizeHistory(records);
+      const toFetch = summary.added.slice(0, 100);
+      const messages: ReturnType<typeof parseMessageDetail>[] = [];
+      const missingAdded: string[] = [];
+      // 新しく届いたメールだけ詳細を取る。一度に投げる数は10件まで（レート制限に触れないように）
+      for (let i = 0; i < toFetch.length; i += 10) {
+        await Promise.all(toFetch.slice(i, i + 10).map(async (id) => {
+          const res = await fetchWithRetry(`${base}/messages/${id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`, auth);
+          if (res.status === 404) { missingAdded.push(id); return; }
+          if (!res.ok) { logWarn("sync.detail", { status: res.status, messageId: id }); return; }
+          messages.push(parseMessageDetail((await res.json()) as GmailMessage));
+        }));
+      }
+      // 詳細を取れなかった新着があるときは、次回もう一度その位置から取り直せるよう historyId を進めない
+      const fetchedAll = messages.length + missingAdded.length === toFetch.length && summary.added.length <= 100;
+      return NextResponse.json({
+        historyId: fetchedAll ? latestHistoryId : startHistoryId,
+        messages,
+        labelUpdates: Object.entries(summary.labels).map(([id, labelIds]) => ({ id, labelIds })),
+        deleted: [...summary.deleted, ...missingAdded],
+      });
+    } catch (e) {
+      logError("sync", {}, e);
+      return NextResponse.json({ error: "SYNC_FAILED" }, { status: 500 });
     }
   }
 
