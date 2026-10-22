@@ -4,6 +4,7 @@ import { errorMessage } from "../../lib/errorMessage";
 import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせる
 import { logError, logInfo } from "../../lib/safeLog";
 import { decryptSecret, encryptSecret, hmacId } from "../../lib/tokenCrypto";
+import { stripPinnedBodies } from "../../lib/pinnedIds";
 import { revealConfigName, sealConfigName, hasPlainRoomId, sealRow, openRow, isReservedRow, isSealedChatId, SEALED_CHAT_ID_PREFIX, type RowCrypto } from "../../lib/configCrypto";
 
 // D1 に相手の名前・アドレス・フィルターの語を平文で置かない（絶対ルール1）。
@@ -51,6 +52,8 @@ export async function GET(request: Request) {
     // 暗号化した行を元の形に戻す。同じ設定の暗号化した行と平文の行が両方あれば、暗号化した方（新しい方）を使う
     const opened = new Map<string, Row>();
     const plainRowsToSeal: Row[] = [];
+    // 以前の形式でピン留めのメール本体（data）が残っている、暗号化済みの行（ピン留めの段階2で本体を消して書き戻す）
+    const sealedRowsToStrip: Row[] = [];
     for (const row of rows) {
       if (isReservedRow(row.account_email)) { opened.set(`\u0000${row.chat_id}`, row); continue; }
       const o = await openRow(row.chat_id, row.custom_name, rowCrypto);
@@ -59,7 +62,31 @@ export async function GET(request: Request) {
       const sealed = isSealedChatId(row.chat_id);
       if (!sealed) plainRowsToSeal.push(row);
       if (!sealed && opened.has(key)) continue;
-      opened.set(key, { ...row, chat_id: o.chatId, custom_name: o.customName });
+      // メールの中身を D1 に置かない（絶対ルール1）。以前の形式で残っていた本体は、ここで取り除く
+      const stripped = stripPinnedBodies(o.customName) ?? null;
+      if (sealed && stripped !== o.customName) sealedRowsToStrip.push(row);
+      opened.set(key, { ...row, chat_id: o.chatId, custom_name: stripped });
+    }
+
+    if (WRITE_SEALED && sealedRowsToStrip.length > 0) {
+      try {
+        const stmts = [];
+        for (const row of sealedRowsToStrip) {
+          const o = await openRow(row.chat_id, row.custom_name, rowCrypto);
+          const current = o ? opened.get(`${row.account_email}\u0000${o.chatId}`) : undefined;
+          if (!o || !current) continue;
+          const sealed = await sealRow(o.chatId, current.custom_name, rowCrypto);
+          // 同じ相手なら同じ chat_id になるはずだが、念のため違えば書き戻さない（行を増やさない）
+          if (!sealed || sealed.chatId !== row.chat_id) continue;
+          stmts.push(db.prepare("UPDATE chat_configs SET custom_name = ? WHERE user_email = ? AND account_email = ? AND chat_id = ?").bind(sealed.customName, userEmail, row.account_email, row.chat_id));
+        }
+        if (stmts.length > 0) {
+          await db.batch(stmts);
+          logInfo("config.stripPinnedBodies", { count: stmts.length });
+        }
+      } catch (e) {
+        logError("config.stripPinnedBodies", { count: sealedRowsToStrip.length }, e);
+      }
     }
 
     if (WRITE_SEALED) {
@@ -122,7 +149,8 @@ export async function POST(request: Request) {
     if (!body.account_email) return NextResponse.json({ error: "account_email is required" }, { status: 400 });
     if (typeof body.chat_id !== "string" || !body.chat_id) return NextResponse.json({ error: "chat_id is required" }, { status: 400 });
     const db = getCloudflareContext().env.DB;
-    const customName = typeof body.custom_name === "string" ? body.custom_name : null;
+    // メールの中身（以前の形式のピン留めの本体）は、送られてきても保存しない（絶対ルール1）
+    const customName = stripPinnedBodies(typeof body.custom_name === "string" ? body.custom_name : null) ?? null;
     const flags = [body.is_pinned ? 1 : 0, body.is_hidden ? 1 : 0, body.hidden_at_date || null, body.unhide_on_new ? 1 : 0] as const;
 
     const sealed = WRITE_SEALED ? await sealRow(body.chat_id, customName, rowCrypto) : null;

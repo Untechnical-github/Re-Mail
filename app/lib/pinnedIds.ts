@@ -53,3 +53,27 @@ export function missingPinnedEmail(id: string, roomLocalKey: string | undefined,
     isMissing: true,
   };
 }
+
+// 設定（custom_name の JSON）に以前の形式で残っているメール本体（data）を取り除く（ピン留めの段階2）。
+// チャット単位のピン留め（roomId を持たない）でまだ ids が無ければ、data のメール ID から ids を作ってから消す。
+// メッセージ単位のピン留めは chat_id がメッセージ ID そのものなので、data を消すだけでよい。
+// 変える必要が無ければ、受け取った値をそのまま返す（呼び出し側は「変わったか」で書き戻すかを決める）
+export function stripPinnedBodies(customName: string | null | undefined): string | null | undefined {
+  if (!customName || !customName.startsWith("{")) return customName;
+  let obj: Record<string, unknown>;
+  try {
+    const v = JSON.parse(customName);
+    if (!v || typeof v !== "object" || Array.isArray(v)) return customName;
+    obj = v as Record<string, unknown>;
+  } catch {
+    return customName;
+  }
+  if (!("data" in obj)) return customName;
+  const { data, ...rest } = obj;
+  const isMessageLevel = "roomId" in rest || "roomIdEnc" in rest;
+  if (!isMessageLevel && !Array.isArray(rest.ids)) {
+    const ids = readPinnedField({ data }).legacyEmails.map((e) => e.id).filter(isGmailId);
+    if (ids.length > 0) rest.ids = capPinnedIds(ids);
+  }
+  return JSON.stringify(rest);
+}

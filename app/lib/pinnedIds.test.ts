@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readPinnedField, capPinnedIds, mergePinnedIds, missingPinnedEmail, MAX_PINNED_IDS_PER_CHAT } from "./pinnedIds";
+import { readPinnedField, capPinnedIds, mergePinnedIds, missingPinnedEmail, stripPinnedBodies, MAX_PINNED_IDS_PER_CHAT } from "./pinnedIds";
 
 const mail = (id: string) => ({ id, threadId: "t", subject: "件名", from: "a@example.com", to: "b@example.com", date: "", body: "本文", snippet: "", labelIds: [] });
 
@@ -47,5 +47,31 @@ describe("missingPinnedEmail", () => {
   it("存在しないことが分かる表示用のメールを作る", () => {
     const e = missingPinnedEmail("aaaaaa", "相手", "me@example.com");
     expect(e).toMatchObject({ id: "aaaaaa", isMissing: true, senderRoom: "相手", accountId: "me@example.com", body: "このメールは存在しません" });
+  });
+});
+
+describe("stripPinnedBodies（以前の形式のメール本体を消す）", () => {
+  const mail = (id: string) => ({ id, threadId: id, subject: "件名", from: "a@example.com", to: "b@example.com", date: "", body: "本文".repeat(50), snippet: "", labelIds: [] });
+
+  it("チャット単位：data のメール ID から ids を作り、本体は消す（ほかの値はそのまま）", () => {
+    const out = stripPinnedBodies(JSON.stringify({ name: "A", forceFetch: true, data: [mail("aaa111"), mail("bbb222")] }));
+    expect(JSON.parse(out!)).toEqual({ name: "A", forceFetch: true, ids: ["aaa111", "bbb222"] });
+    expect(out).not.toContain("本文");
+  });
+
+  it("古い1件だけの形や、ids が既にあるものも本体だけ消す", () => {
+    expect(JSON.parse(stripPinnedBodies(JSON.stringify({ forceFetch: true, data: mail("ccc333") }))!)).toEqual({ forceFetch: true, ids: ["ccc333"] });
+    expect(JSON.parse(stripPinnedBodies(JSON.stringify({ forceFetch: true, ids: ["eee555"], data: [mail("zzz999")] }))!)).toEqual({ forceFetch: true, ids: ["eee555"] });
+  });
+
+  it("メッセージ単位（roomId / roomIdEnc を持つ）は ids を作らず、本体だけ消す", () => {
+    expect(JSON.parse(stripPinnedBodies(JSON.stringify({ forceFetch: true, roomId: "x", data: mail("ddd444") }))!)).toEqual({ forceFetch: true, roomId: "x" });
+    expect(JSON.parse(stripPinnedBodies(JSON.stringify({ forceFetch: true, roomIdEnc: "encv1:x", data: mail("ddd444") }))!)).toEqual({ forceFetch: true, roomIdEnc: "encv1:x" });
+  });
+
+  it("data の無い設定・JSON でない名前・壊れた JSON は、受け取った値をそのまま返す", () => {
+    for (const v of [JSON.stringify({ name: "G", isGroup: true }), "山田さん", "{壊れた", "", null, undefined]) {
+      expect(stripPinnedBodies(v)).toBe(v);
+    }
   });
 });
