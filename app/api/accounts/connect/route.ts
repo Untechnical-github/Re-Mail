@@ -4,6 +4,7 @@ import { auth } from "../../../../auth";
 import { saveLinkedAccount } from "../../../lib/linkedAccountsStore";
 import type { GoogleTokenResponse } from "../../../lib/googleToken";
 import { logError } from "../../../lib/safeLog";
+import { GOOGLE_OAUTH_SCOPE } from "../../../lib/googleScopes";
 
 
 // 追加のGoogleアカウントを連携するための、NextAuth本体のログインとは別系統のOAuthフロー。
@@ -28,7 +29,8 @@ export async function GET(request: NextRequest) {
       client_id: process.env.GOOGLE_CLIENT_ID!,
       redirect_uri: redirectUri,
       response_type: "code",
-      scope: "openid email https://www.googleapis.com/auth/gmail.modify",
+      // 最初のログインと同じ権限を求める（名前とプロフィール画像も出せるように）
+      scope: GOOGLE_OAUTH_SCOPE,
       access_type: "offline",
       prompt: "consent select_account", // consent必須: refresh_tokenを毎回確実に受け取るため
       state,

@@ -5,6 +5,7 @@ import { getValidAccessToken } from "./app/lib/googleToken";
 import { logError } from "./app/lib/safeLog";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { promoteLinkedAccount } from "./app/lib/linkedAccountsStore";
+import { GOOGLE_OAUTH_SCOPE } from "./app/lib/googleScopes";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   trustHost: true,
@@ -24,7 +25,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
       authorization: {
         params: {
-          scope: "openid email profile https://www.googleapis.com/auth/gmail.modify",
+          scope: GOOGLE_OAUTH_SCOPE,
           prompt: "consent",
           access_type: "offline", // ★重要: これがあることでリフレッシュトークンがもらえる
           response_type: "code",
