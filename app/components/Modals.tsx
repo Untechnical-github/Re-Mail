@@ -862,7 +862,7 @@ export function EmailModal({ app }: { app: MailAppHook }) {
   const { email, htmlBody, isLoading } = emailModal;
   const showHtml = !isLoading && !!htmlBody;
   const showText = !isLoading && !htmlBody;
-  const allowRemote = remoteAllowedFor === email.id;
+  const allowRemote = app.state.alwaysLoadImages || remoteAllowedFor === email.id;
   const remoteBlocked = showHtml && !allowRemote && hasRemoteContent(htmlBody!);
 
   return (
@@ -1502,6 +1502,25 @@ export function Modals({ app }: { app: MailAppHook }) {
                   className={`flex-1 py-2 rounded text-sm font-bold transition ${app.state.useIconLabels ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#35373C]"}`}
                 >
                   アイコン
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-5">
+              <div className="text-sm font-bold text-gray-200 mb-1">メールの外部の画像</div>
+              <div className="text-xs text-gray-500 mb-3">「毎回読み込む」にすると、メールを開くたびに「画像を表示」を押さなくても画像が出ます。ただし画像を読み込んだ時点で、送り手に「メールを開いたこと・開いた日時・おおよその場所（IP アドレス）」が伝わることがあります。設定はこの端末にだけ保存し、ログアウトすると元に戻ります</div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => app.actions.setAlwaysLoadImages(false)}
+                  className={`flex-1 py-2 rounded text-sm font-bold transition ${!app.state.alwaysLoadImages ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#35373C]"}`}
+                >
+                  押したときだけ
+                </button>
+                <button
+                  onClick={() => app.actions.setAlwaysLoadImages(true)}
+                  className={`flex-1 py-2 rounded text-sm font-bold transition ${app.state.alwaysLoadImages ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#35373C]"}`}
+                >
+                  毎回読み込む
                 </button>
               </div>
             </div>

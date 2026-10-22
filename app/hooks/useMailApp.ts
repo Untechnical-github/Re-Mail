@@ -229,6 +229,15 @@ export function useMailApp() {
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("remail_use_icon_labels", String(useIconLabels));
   }, [useIconLabels]);
+  // メールの外部の画像を、「画像を表示」を押さずに毎回読み込むか（既定はオフ。読み込むと送り手に開封が伝わる）。
+  // この端末にだけ保存し、ログアウトで消す（共有の端末で、次の人に設定が引き継がれないように）
+  const [alwaysLoadImages, setAlwaysLoadImages] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try { return localStorage.getItem("remail_always_load_images") === "true"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("remail_always_load_images", String(alwaysLoadImages)); } catch { /* 保存できなくても動作は続ける */ }
+  }, [alwaysLoadImages]);
   const [checkInbox, setCheckInbox] = useState<boolean>(() => getSavedBoxSettings()?.inbox ?? true);
   const [checkArchive, setCheckArchive] = useState<boolean>(() => getSavedBoxSettings()?.archive ?? true);
   const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
@@ -3486,7 +3495,7 @@ export function useMailApp() {
     auth: { session, status },
     state: {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
-      isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, useIconLabels,
+      isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, useIconLabels, alwaysLoadImages,
       currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts, linkedAccountProfiles,
       replySubject, replyBody, isSending, replyToMessage, replyAttachments, attachError,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
@@ -3498,7 +3507,7 @@ export function useMailApp() {
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
     actions: {
-      setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setCheckAccounts, setUseIconLabels, changeChatTab,
+      setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setCheckAccounts, setUseIconLabels, setAlwaysLoadImages, changeChatTab,
       setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
       setMoveDestination, setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleMenuBarClick, handleBackgroundClick, toggleSelection,
