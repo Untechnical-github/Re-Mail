@@ -1349,6 +1349,8 @@ export function AttachmentModal({ app }: { app: MailAppHook }) {
 }
 
 export function Modals({ app }: { app: MailAppHook }) {
+  // アカウントメニューで「ログアウト」を押したアカウント（確認を出している間だけ）
+  const [logoutConfirm, setLogoutConfirm] = useState<string | null>(null);
   const { modal, renameInput, chatConfigs, messageConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
   const { executeConfirmedAction, executePin, setRenameInput, updateChatConfigByRoomKey, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats } = app.computed;
@@ -1390,74 +1392,74 @@ export function Modals({ app }: { app: MailAppHook }) {
           <ComposeNewChatModal app={app} modal={modal} />
         )}
 
-        {modal.type === "account_menu" && (
+        {modal.type === "account_menu" && (() => {
+          // ログインしているアカウントを、どれも同じ扱いで並べる（最初にログインしたアカウントを特別に見せない）
+          const me = app.auth?.session?.user?.email || "";
+          const accounts = [me, ...((app.state.linkedAccounts as string[]) || [])].filter(Boolean);
+          const profiles = app.state.linkedAccountProfiles as Record<string, { name?: string; picture?: string }>;
+          const reauth = (app.state.reauthNeededAccounts as string[]) || [];
+          return (
           <div className="p-5">
-            <div className="flex items-center gap-3 mb-5">
-              <img
-                src={app.auth?.session?.user?.image || `/api/avatar?name=${encodeURIComponent(app.auth?.session?.user?.name || "U")}`}
-                alt=""
-                referrerPolicy="no-referrer"
-                className="w-12 h-12 rounded-full flex-shrink-0"
-              />
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-bold text-white truncate">{app.auth?.session?.user?.name || "ユーザー"}</div>
-                <div className="text-xs text-gray-400 truncate">{app.auth?.session?.user?.email}</div>
-              </div>
-              <button onClick={() => safeBack()} className="text-gray-400 hover:text-white font-bold text-lg px-1 transition flex-shrink-0">×</button>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold text-white">ログイン中のアカウント</h2>
+              <button onClick={() => { setLogoutConfirm(null); safeBack(); }} className="text-gray-400 hover:text-white font-bold text-lg px-1 transition flex-shrink-0">×</button>
             </div>
 
-            {(app.state.linkedAccounts as string[] || []).length > 0 && (
-              <div className="mb-4">
-                <div className="text-xs font-bold text-gray-400 mb-1.5 px-1">連携中のアカウント</div>
-                <div className="flex flex-col gap-1">
-                  {(app.state.linkedAccounts as string[]).map((a) => {
-                    const needsReauth = (app.state.reauthNeededAccounts as string[] || []).includes(a);
-                    const profile = (app.state.linkedAccountProfiles as Record<string, { name?: string; picture?: string }>)[a];
-                    return (
-                      <div key={a} className="bg-[#2B2D31] rounded px-3 py-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <img
-                              src={profile?.picture || `/api/avatar?name=${encodeURIComponent(profile?.name || a)}`}
-                              alt=""
-                              referrerPolicy="no-referrer"
-                              className="w-7 h-7 rounded-full flex-shrink-0"
-                            />
-                            <div className="min-w-0">
-                              {profile?.name && <div className="text-sm font-bold text-gray-200 truncate">{profile.name}</div>}
-                              <div className={`truncate ${profile?.name ? "text-[11px] text-gray-400" : "text-sm text-gray-200"}`}>{a}</div>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="flex flex-col gap-1 mb-4">
+              {accounts.map((a) => {
+                const needsReauth = reauth.includes(a);
+                const profile = a === me ? { name: app.auth?.session?.user?.name || undefined, picture: app.auth?.session?.user?.image || undefined } : profiles?.[a];
+                return (
+                  <div key={a} className="bg-[#2B2D31] rounded px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {/* eslint-disable-next-line @next/next/no-img-element -- アカウントの小さなプロフィール画像。next/image の最適化は Worker の中継が増えるので使わない（ほかのアカウント画像と同じ） */}
+                        <img
+                          src={profile?.picture || `/api/avatar?name=${encodeURIComponent(profile?.name || a)}`}
+                          alt=""
+                          referrerPolicy="no-referrer"
+                          className="w-8 h-8 rounded-full flex-shrink-0"
+                        />
+                        <div className="min-w-0">
+                          {profile?.name && <div className="text-sm font-bold text-gray-200 truncate">{profile.name}</div>}
+                          <div className={`truncate ${profile?.name ? "text-[11px] text-gray-400" : "text-sm text-gray-200"}`}>{a}</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {logoutConfirm === a ? (
+                          <>
+                            <button onClick={() => { setLogoutConfirm(null); void app.actions.logoutAccount(a); }} className="text-xs font-bold text-red-400 hover:text-red-300 px-1">はい</button>
+                            <button onClick={() => setLogoutConfirm(null)} className="text-xs font-bold text-gray-400 hover:text-white px-1">いいえ</button>
+                          </>
+                        ) : (
+                          <>
                             {needsReauth && (
                               <button
                                 // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- API ルートが Google のログイン画面へ転送するので、ページごと移動する必要がある
                                 onClick={() => { window.location.href = "/api/accounts/connect"; }}
                                 className="text-xs font-bold text-[#FEE75C] hover:text-white px-2 flex items-center gap-1"
-                                title="連携が切れています。再連携してください"
+                                title="ログインが切れています。再ログインしてください"
                               >
-                                <WarningIcon className="w-3.5 h-3.5" /> 再連携
+                                <WarningIcon className="w-3.5 h-3.5" /> 再ログイン
                               </button>
                             )}
-                            <button
-                              onClick={() => app.actions.unlinkAccount(a)}
-                              className="text-xs font-bold text-red-400 hover:text-red-300 px-2"
-                            >
-                              解除
-                            </button>
-                          </div>
-                        </div>
-                        {needsReauth && (
-                          <div className="text-[11px] text-[#FEE75C] mt-1">
-                            連携が切れているため、このアカウントのメールが読み込めていません。「再連携」から連携し直してください。
-                          </div>
+                            <button onClick={() => setLogoutConfirm(a)} className="text-xs font-bold text-red-400 hover:text-red-300 px-2">ログアウト</button>
+                          </>
                         )}
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+                    </div>
+                    {logoutConfirm === a && (
+                      <div className="text-[11px] text-gray-400 mt-1">このアカウントだけログアウトします。ほかのアカウントはそのまま使えます。このアカウントの設定は残り、もう一度ログインすれば元どおりに使えます</div>
+                    )}
+                    {needsReauth && logoutConfirm !== a && (
+                      <div className="text-[11px] text-[#FEE75C] mt-1">
+                        ログインが切れているため、このアカウントのメールが読み込めていません。「再ログイン」からログインし直してください。
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
 
             <div className="flex flex-col gap-2">
               <button
@@ -1465,7 +1467,7 @@ export function Modals({ app }: { app: MailAppHook }) {
                 onClick={() => { window.location.href = "/api/accounts/connect"; }}
                 className="w-full text-left px-3 py-2.5 rounded bg-[#2B2D31] text-sm text-gray-200 hover:bg-[#35373C] transition font-bold"
               >
-                + アカウントを追加
+                + 別のアカウントでもログイン
               </button>
               <button
                 onClick={async () => {
@@ -1475,11 +1477,12 @@ export function Modals({ app }: { app: MailAppHook }) {
                 }}
                 className="w-full text-left px-3 py-2.5 rounded bg-[#2B2D31] text-sm text-red-400 hover:bg-[#35373C] transition font-bold"
               >
-                ログアウト
+                {accounts.length > 1 ? "すべてのアカウントからログアウト" : "ログアウト"}
               </button>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {modal.type === "settings" && (() => {
           const me = app.auth?.session?.user?.email || "";
@@ -1706,7 +1709,7 @@ export function Modals({ app }: { app: MailAppHook }) {
                         {profile?.name && <div className="text-sm font-bold text-gray-200 truncate">{profile.name}</div>}
                         <div className={`truncate ${profile?.name ? "text-[11px] text-gray-400" : "text-sm text-gray-200"}`}>{a}</div>
                       </div>
-                      <span className="text-[11px] font-bold flex-shrink-0 text-gray-400">{isCurrent ? "使用中" : needsReauth ? "再連携が必要" : ""}</span>
+                      <span className="text-[11px] font-bold flex-shrink-0 text-gray-400">{isCurrent ? "使用中" : needsReauth ? "再ログインが必要" : ""}</span>
                     </button>
                   );
                 })}
@@ -2458,7 +2461,7 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
   const [continuous, setContinuous] = useState(false);
   const [destination, setDestination] = useState<string>("INBOX");
   const [includeExisting, setIncludeExisting] = useState(true);
-  // 対象アカウント。空文字列＝アカウントを問わない
+  // このフィルターのアカウント。フィルターはアカウントごとに分けて保存し、そのアカウントのメールにだけ効く
   const [filterAccountEmail, setFilterAccountEmail] = useState("");
 
   const myEmail = app.auth?.session?.user?.email || "";
@@ -2527,9 +2530,11 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     setDeleteConfirmId(null);
   }, [!!active]);
 
-  const openCreate = () => {
+  // account：このフィルターを作るアカウント（フィルターの一覧で、どのアカウントの欄から作ったか）
+  const openCreate = (account: string) => {
     setEditingId(null);
     resetBuilderFields();
+    setFilterAccountEmail(account);
     setScreen("conditions");
   };
 
@@ -2552,7 +2557,8 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     setHideOriginal(!!cfg.filterHideOriginal);
     setContinuous(!!cfg.filterContinuous);
     setDestination(cfg.filterDestination || "INBOX");
-    setFilterAccountEmail(crit.accountEmail || "");
+    // 以前のフィルター（アカウントを決めていないもの）は、保存されているアカウントのフィルターとして扱う
+    setFilterAccountEmail(crit.accountEmail || app.actions.roomAccountEmail(id));
     // 非グループ（1回限り/継続の実行時のみ意味を持つ）は保存していないため常にデフォルトへ戻す。
     // グループは filterIncludeExisting を保存しているのでそれを復元する（未指定なら含める＝デフォルト）
     setIncludeExisting(kind === "group" ? cfg.filterIncludeExisting !== false : true);
@@ -2723,35 +2729,49 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
             <h2 className="text-lg font-bold text-white">フィルター</h2>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
-            <button
-              onClick={openCreate}
-              className="w-full text-left px-3 py-2.5 rounded bg-[#2B2D31] text-sm text-white hover:bg-[#35373C] transition font-bold"
-            >
-              ＋ 新しいフィルターを作成
-            </button>
-            {existingFilters.length === 0 && (
-              <div className="text-xs text-gray-500 text-center py-6">保存されたフィルターはありません</div>
-            )}
-            {existingFilters.map(({ id, cfg, kind }) => (
-              <div key={id} className="flex items-center justify-between gap-2 bg-[#232428] rounded p-2.5">
-                {deleteConfirmId === id ? (
-                  <>
-                    <span className="text-xs text-gray-300 flex-1">本当に削除しますか？</span>
-                    <button onClick={() => { app.actions.deleteChatConfigByRoomKey(id); setDeleteConfirmId(null); }} className="text-xs font-bold text-red-400 hover:text-red-300 px-2 flex-shrink-0">はい</button>
-                    <button onClick={() => setDeleteConfirmId(null)} className="text-xs font-bold text-gray-400 hover:text-white px-2 flex-shrink-0">いいえ</button>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-bold text-white truncate">{cfg.customName || app.actions.roomLocalKey(id)}</div>
-                      <div className="text-[11px] text-gray-500">{kind === "group" ? "グループ" : `${FILTER_KIND_LABELS[kind!]}・継続`}</div>
+            {/* ログインしているアカウントごとに欄を分ける。フィルターはアカウントごとに別々に保存し、そのアカウントのメールにだけ効く */}
+            {(() => {
+              const accounts = [myEmail, ...linkedAccounts].filter(Boolean);
+              const sameAcc = (x: string, y: string) => x.toLowerCase() === y.toLowerCase();
+              const sections = accounts.map(acc => ({ acc, filters: existingFilters.filter(f => sameAcc(app.actions.roomAccountEmail(f.id), acc)) }));
+              // ログアウトしたアカウントなどに残っているフィルターは、最初のアカウントの欄に出す（消せるように）
+              const orphans = existingFilters.filter(f => !accounts.some(acc => sameAcc(app.actions.roomAccountEmail(f.id), acc)));
+              if (sections[0]) sections[0].filters.push(...orphans);
+              return sections.map(({ acc, filters }) => (
+                <div key={acc} className="space-y-2">
+                  {accounts.length > 1 && <div className="text-xs font-bold text-gray-400 pt-2 truncate">{acc} のフィルター</div>}
+                  <button
+                    onClick={() => openCreate(acc)}
+                    className="w-full text-left px-3 py-2.5 rounded bg-[#2B2D31] text-sm text-white hover:bg-[#35373C] transition font-bold"
+                  >
+                    ＋ 新しいフィルターを作成
+                  </button>
+                  {filters.length === 0 && (
+                    <div className="text-xs text-gray-500 text-center py-3">保存されたフィルターはありません</div>
+                  )}
+                  {filters.map(({ id, cfg, kind }) => (
+                    <div key={id} className="flex items-center justify-between gap-2 bg-[#232428] rounded p-2.5">
+                      {deleteConfirmId === id ? (
+                        <>
+                          <span className="text-xs text-gray-300 flex-1">本当に削除しますか？</span>
+                          <button onClick={() => { app.actions.deleteChatConfigByRoomKey(id); setDeleteConfirmId(null); }} className="text-xs font-bold text-red-400 hover:text-red-300 px-2 flex-shrink-0">はい</button>
+                          <button onClick={() => setDeleteConfirmId(null)} className="text-xs font-bold text-gray-400 hover:text-white px-2 flex-shrink-0">いいえ</button>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-bold text-white truncate">{cfg.customName || app.actions.roomLocalKey(id)}</div>
+                            <div className="text-[11px] text-gray-500">{kind === "group" ? "グループ" : `${FILTER_KIND_LABELS[kind!]}・継続`}</div>
+                          </div>
+                          <button onClick={() => openEdit(id)} className="text-xs font-bold text-[#5865F2] hover:text-white px-2 flex-shrink-0">編集</button>
+                          <button onClick={() => setDeleteConfirmId(id)} className="text-xs font-bold text-red-400 hover:text-red-300 px-2 flex-shrink-0">削除</button>
+                        </>
+                      )}
                     </div>
-                    <button onClick={() => openEdit(id)} className="text-xs font-bold text-[#5865F2] hover:text-white px-2 flex-shrink-0">編集</button>
-                    <button onClick={() => setDeleteConfirmId(id)} className="text-xs font-bold text-red-400 hover:text-red-300 px-2 flex-shrink-0">削除</button>
-                  </>
-                )}
-              </div>
-            ))}
+                  ))}
+                </div>
+              ));
+            })()}
           </div>
           <div className="p-4 border-t border-[#1E1F22] flex justify-end flex-shrink-0">
             <button onClick={handleClose} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
@@ -2781,31 +2801,9 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
             />
           </div>
 
-          {/* 対象アカウントは新規作成では「条件」の最初の画面で聞くため、ここは既存フィルターの編集時のみ表示する */}
-          {!!editingId && linkedAccounts.length > 0 && (
-            <div className="px-4 pt-3 flex-shrink-0">
-              <label className="text-xs font-bold text-gray-400 mb-1 block">対象アカウント</label>
-              <div className="flex flex-wrap gap-1.5">
-                <button
-                  onClick={() => setFilterAccountEmail("")}
-                  className={`px-2.5 py-1 rounded-full text-xs font-bold transition ${!filterAccountEmail ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}
-                >
-                  問わない
-                </button>
-                {[myEmail, ...linkedAccounts].map(a => (
-                  <button
-                    key={a}
-                    onClick={() => setFilterAccountEmail(a)}
-                    className={`px-2.5 py-1 rounded-full text-xs font-bold transition truncate max-w-[200px] ${filterAccountEmail === a ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}
-                  >
-                    {a}
-                  </button>
-                ))}
-              </div>
-              {action === "group" && (
-                <div className="text-[11px] text-gray-500 mt-1">グループは複数アカウントのメールをまたいで集約できます（条件に一致すれば送信済みメールも含まれます）</div>
-              )}
-            </div>
+          {/* フィルターはアカウントごと。どのアカウントのフィルターかを出す（アカウントが2つ以上のときだけ） */}
+          {linkedAccounts.length > 0 && (
+            <div className="px-4 pt-3 flex-shrink-0 text-[11px] text-gray-500 truncate">{filterAccountEmail} のフィルター（このアカウントのメールにだけ効きます）</div>
           )}
 
           <div className="flex-1 overflow-y-auto p-4 space-y-2">
@@ -3032,28 +3030,8 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {/* 対象アカウントは新規作成時、一番最初の画面であるここで聞く（編集時はorList画面で調整する） */}
-          {!editingId && linkedAccounts.length > 0 && (
-            <div>
-              <label className="text-xs font-bold text-gray-400 mb-1.5 block">対象アカウント</label>
-              <div className="flex flex-wrap gap-1.5">
-                <button
-                  onClick={() => setFilterAccountEmail("")}
-                  className={`px-2.5 py-1 rounded-full text-xs font-bold transition ${!filterAccountEmail ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}
-                >
-                  問わない
-                </button>
-                {[myEmail, ...linkedAccounts].map(a => (
-                  <button
-                    key={a}
-                    onClick={() => setFilterAccountEmail(a)}
-                    className={`px-2.5 py-1 rounded-full text-xs font-bold transition truncate max-w-[200px] ${filterAccountEmail === a ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#2f3136]"}`}
-                  >
-                    {a}
-                  </button>
-                ))}
-              </div>
-            </div>
+          {linkedAccounts.length > 0 && (
+            <div className="text-[11px] text-gray-500 truncate">{filterAccountEmail} のフィルター（このアカウントのメールにだけ効きます）</div>
           )}
 
           {/* 方向: このセット全体を受信/送信メールに絞り込む（テキスト条件・期間などすべてに共通で適用される） */}

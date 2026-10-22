@@ -491,13 +491,13 @@ export default function Home() {
                         <div className="flex items-center gap-1 truncate pr-2">
                           {config?.isPinned && <PinIcon className="w-3 h-3 text-[#FEE75C] flex-shrink-0" />}
                           <span className="font-bold text-sm truncate">{config?.customName || actions.roomLocalKey(sender)}</span>
+                          {/* ログインしているアカウントが2つ以上なら、どのアカウントのチャットかを全アカウント同じ形で出す */}
                           {state.linkedAccounts.length > 0 && (() => {
                             const acct = actions.roomAccountEmail(sender);
-                            if (acct === (auth.session?.user?.email || "")) return null;
                             const needsReauth = state.reauthNeededAccounts.includes(acct);
                             return (
                               <span
-                                title={needsReauth ? `${acct}（連携が切れています。再連携してください）` : acct}
+                                title={needsReauth ? `${acct}（ログインが切れています。再ログインしてください）` : acct}
                                 className={`text-[9px] font-bold px-1 py-0.5 rounded flex-shrink-0 leading-none flex items-center ${needsReauth ? "bg-red-500/25 text-red-400" : "bg-[#5865F2]/25 text-[#5865F2]"}`}
                               >
                                 {needsReauth ? <WarningIcon className="w-2.5 h-2.5" /> : (acct[0]?.toUpperCase() || "?")}
@@ -543,11 +543,10 @@ export default function Home() {
                   <h2 className="font-bold text-base truncate text-white">{state.chatConfigs[state.selectedSender!]?.customName || actions.roomLocalKey(state.selectedSender!)}</h2>
                   {state.linkedAccounts.length > 0 && (() => {
                     const acct = actions.roomAccountEmail(state.selectedSender!);
-                    if (acct === (auth.session?.user?.email || "")) return null;
                     const needsReauth = state.reauthNeededAccounts.includes(acct);
                     return (
                       <span
-                        title={needsReauth ? `${acct}（連携が切れています。再連携してください）` : acct}
+                        title={needsReauth ? `${acct}（ログインが切れています。再ログインしてください）` : acct}
                         className={`text-[9px] font-bold px-1 py-0.5 rounded flex-shrink-0 leading-none flex items-center ${needsReauth ? "bg-red-500/25 text-red-400" : "bg-[#5865F2]/25 text-[#5865F2]"}`}
                       >
                         {needsReauth ? <WarningIcon className="w-2.5 h-2.5" /> : (acct[0]?.toUpperCase() || "?")}
@@ -725,7 +724,12 @@ export default function Home() {
                             </div>
                             
                             {isMe && !state.selectionMode.startsWith("msg_") && (
-                               <img src={`/api/avatar?name=${encodeURIComponent(auth.session?.user?.name || "Me")}`} alt="" className="w-9 h-9 rounded-full ml-3 flex-shrink-0 mt-1 shadow-sm select-none pointer-events-none opacity-80" />
+                               <img src={`/api/avatar?name=${encodeURIComponent((() => {
+                                 // 自分が送ったメールの頭文字は、そのチャットのアカウントの名前から作る（どのアカウントも同じ扱いにする）
+                                 const acct = actions.roomAccountEmail(state.selectedSender!);
+                                 if (acct === (auth.session?.user?.email || "")) return auth.session?.user?.name || acct || "Me";
+                                 return state.linkedAccountProfiles[acct]?.name || acct || "Me";
+                               })())}`} alt="" className="w-9 h-9 rounded-full ml-3 flex-shrink-0 mt-1 shadow-sm select-none pointer-events-none opacity-80" />
                             )}
                           </div>
                         );

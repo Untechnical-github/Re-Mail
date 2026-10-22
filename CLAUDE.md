@@ -97,10 +97,10 @@ Gmail をチャット風 UI（相手ごとのトークルーム）で読み書�
 
 - API ルートに `export const runtime = 'edge'` を書かない（OpenNext が対応していない）。D1 などのバインディングは `@opennextjs/cloudflare` の `getCloudflareContext().env` から取る。Node 専用 API は `nodejs_compat` で動く範囲に限り、なるべく fetch・Web Crypto・TextEncoder などの Web 標準で書く。
 - roomKey（アカウント＋相手の複合キー）の組み立て・分解は `app/lib/roomKey.ts` の `encodeRoomKey` / `decodeRoomKey` だけで行う。区切り文字を直接 `split` しない。D1 の `chat_id` はローカルキー、画面の state は複合キー、と使い分ける。
-- チャットは連携アカウントごとに分離する。同じ相手でもアカウントが違えば別チャット。ピン留め・非表示・永続データ・送信元の処理でアカウントを取り違えない（取り違えは誤送信元＝ビジネス上の事故になる）。
-- 複数のアカウントは「同時にログインしている別々のアカウント」として扱う（ログインできた＝同じ人）。メールの表示はまとめて出すが、設定はそのアカウント自身の置き場所（D1 の user_email がそのアカウント）に保存し、そのアカウントだけでログインしても同じ設定で使えるようにする（`app/lib/configStore.ts` の `openSessionConfigs` / `saveSessionConfig`）。
-  - チャットの設定（ピン留め・非表示・名前変更・宛先で作るグループ・1つのアカウントだけのフィルター）：そのアカウントの置き場所
-  - すべてのアカウントが対象のフィルター（`app/lib/configScope.ts` の `isSharedConfig`）：ログイン中の全アカウントに同じ写しを置き、`updatedAt` が一番新しいものを使う
+- チャットはアカウントごとに分離する。同じ相手でもアカウントが違えば別チャット。ピン留め・非表示・永続データ・送信元の処理でアカウントを取り違えない（取り違えは誤送信元＝ビジネス上の事故になる）。
+- 複数のアカウントは「同時にログインしている、対等な別々のアカウント」として扱う（ログインできた＝同じ人）。画面に「連携」「メインアカウント」のような区別を出さない。メールの表示はまとめて出すが、設定はそのアカウント自身の置き場所（D1 の user_email がそのアカウント）に保存し、そのアカウントだけでログインしても同じ設定で使えるようにする（`app/lib/configStore.ts` の `openSessionConfigs` / `saveSessionConfig`）。
+  - チャットの設定（ピン留め・非表示・名前変更）・グループ・フィルターは、すべてアカウントごと。フィルターは必ずどれか1つのアカウントのもの（`filterCriteria.accountEmail`）で、そのアカウントのメールにだけ効く。グループ・フィルターグループもほかのアカウントのメールを混ぜない（`groupEmails.ts`）
+  - 内部ではログインのセッションを持つアカウントが1つあり、ほかのアカウントは D1 の `linked_accounts` に付いている。そのアカウントだけをログアウトするときは、ほかのアカウントにセッションを引き継ぐ（`auth.ts` の jwt コールバックと `linkedAccountsStore.ts` の `promoteLinkedAccount`）。以前の「すべてのアカウントが対象のフィルター（shared）」は、読んだときにアカウントごとのフィルターに分ける
 - 利用者が選ぶ設定は、どの端末でも共通にする（D1 に暗号化して保存され、ログアウトしても変わらない）。設定は2種類あり、新しい設定はどちらかに足す。
   - 共通設定（どのアカウントでログインしても同じ。場所・アカウントのチェックボックス、文字／アイコン）：`app/lib/syncedSettings.ts` の `SYNCED_SETTING_TYPES` と `COMMON_SETTING_KEYS` に足し、`useMailApp.ts` の `syncedSettings` と `applySyncedSettings` にも足す。全アカウントの `__GLOBAL_SETTINGS__` に同じものを書き、あとから追加したアカウントにも写す
   - アカウント設定（アカウントごと。今は「メールの外部の画像」）：`ACCOUNT_SETTING_TYPES` に足し、`useMailApp.ts` の `setAccountSetting` で保存する（そのアカウントの `__ACCOUNT_SETTINGS__`）。設定画面では「アカウントの設定」の欄に出す

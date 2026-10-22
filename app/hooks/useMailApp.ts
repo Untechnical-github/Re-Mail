@@ -177,7 +177,7 @@ function countOccurrences(text: string, kwLower: string): number {
 }
 
 export function useMailApp() {
-  const { data: session, status } = useSession();
+  const { data: session, status, update: updateSession } = useSession();
   const [emails, setEmails] = useState<Email[]>([]);
   const [persistedEmails, setPersistedEmails] = useState<Email[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -430,7 +430,7 @@ export function useMailApp() {
     const fresh = reauthNeededAccounts.filter(a => !reauthNotifiedRef.current.has(a));
     if (fresh.length === 0) return;
     fresh.forEach(a => reauthNotifiedRef.current.add(a));
-    showErrorToast(`${fresh.join("、")} の連携が切れているため、メールを読み込めません。プロフィールのボタンから「再連携」してください。`);
+    showErrorToast(`${fresh.join("、")} のログインが切れているため、メールを読み込めません。プロフィールのボタンから「再ログイン」してください。`);
   }, [reauthNeededAccounts]);
 
   // メッセージ折りたたみ・モーダル関連
@@ -1832,6 +1832,41 @@ export function useMailApp() {
   // アカウント連携の解除。D1のlinked_accounts行だけを消す（chat_configsは再連携時に復元できるようあえて残す。
   // /api/accounts のDELETEハンドラ自体の方針と同じ）。ローカル側はそのアカウント分のメールを一覧から
   // 即座に取り除き、開いていたチャットがそのアカウントのものだった場合は閉じる
+  // アカウントを1つだけログアウトする。ほかのアカウントはログインしたまま使える。
+  // ログインのセッションを持っているアカウントをログアウトするときは、ほかのアカウントの1つにセッションを引き継ぐ
+  // （サーバーの auth.ts）。ほかに使えるアカウントが無ければ、すべてログアウトする
+  const logoutAccount = async (account: string) => {
+    const me = session?.user?.email || "";
+    if (account.toLowerCase() !== me.toLowerCase()) {
+      await unlinkAccount(account);
+      showInfoToast(`${account} からログアウトしました`, 2500);
+      return;
+    }
+    const next = linkedAccountsRef.current.find(a => !reauthNeededAccounts.includes(a));
+    if (!next) {
+      await clearDeviceData();
+      await signOut({ callbackUrl: "/" });
+      return;
+    }
+    showInfoToast(`${account} からログアウトしています…`);
+    try {
+      const updated = await updateSession({ switchTo: next });
+      if ((updated?.user?.email || "").toLowerCase() !== next.toLowerCase()) throw new Error("switch failed");
+    } catch (e) {
+      logError("accounts.logoutOne", {}, e);
+      showErrorToast("ログアウトできませんでした。通信状況を確認して、もう一度お試しください。");
+      return;
+    }
+    // ログアウトしたアカウントの端末のデータ（添付・ピン留めの中身・下書き）だけを消し、残りのアカウントの分は残す
+    await clearAccountDeviceData(me);
+    try {
+      localStorage.setItem(DEVICE_OWNER_KEY, next);
+      localStorage.removeItem("remail_selected_sender");
+      localStorage.removeItem("remail_scroll_main");
+    } catch { /* 端末の保存領域が使えなくても続ける */ }
+    window.location.reload();
+  };
+
   const unlinkAccount = async (accountEmail: string) => {
     const myEmail = session?.user?.email || "";
     setLinkedAccounts(prev => prev.filter(a => a !== accountEmail));
@@ -1864,10 +1899,10 @@ export function useMailApp() {
     await clearAccountDeviceData(accountEmail);
     try {
       const res = await fetch(`/api/accounts?account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" });
-      if (!res.ok) showErrorToast("連携の解除がサーバーに反映されなかった可能性があります。再読み込みして確認してください。");
+      if (!res.ok) showErrorToast("ログアウトがサーバーに反映されなかった可能性があります。再読み込みして確認してください。");
     } catch (e) {
       logError("accounts.unlink", {}, e);
-      showErrorToast("連携の解除がサーバーに反映されなかった可能性があります。通信状況を確認してください。");
+      showErrorToast("ログアウトがサーバーに反映されなかった可能性があります。通信状況を確認してください。");
     }
   };
 
@@ -3091,7 +3126,7 @@ export function useMailApp() {
           if (res.ok) return;
           logWarn(`${kind}.request`, { status: res.status, count: accountIds.length });
           showErrorToast(res.status === 401
-            ? `${label}がGmailに反映されませんでした（連携が切れています）。プロフィールのボタンから再連携してから、もう一度お試しください。`
+            ? `${label}がGmailに反映されませんでした（ログインが切れています）。プロフィールのボタンから再ログインしてから、もう一度お試しください。`
             : `${label}がGmailに反映されませんでした。再読み込みすると元の場所に戻ります。時間をおいてもう一度お試しいただくか、純正 Gmail で操作してください。`);
         })
         .catch(e => {
@@ -3216,6 +3251,8 @@ export function useMailApp() {
       const { accountEmail, localKey } = decodeRoomKey(stateKey);
       const cutoff = new Date(cfg.filterLastAppliedAt || cfg.filterCreatedAt || 0).getTime();
       const newMatches = allUniqueEmails.filter((e) => {
+        // フィルターはアカウントごと。そのフィルターのアカウントのメールにだけ効かせる（ほかのアカウントのメールを動かさない）
+        if ((e.accountId || session?.user?.email || "").toLowerCase() !== accountEmail.toLowerCase()) return false;
         const t = new Date(e.date).getTime();
         return !isNaN(t) && t > cutoff && messageMatchesFilter(e, cfg.filterCriteria!, accountEmail);
       });
@@ -3647,7 +3684,7 @@ export function useMailApp() {
       openEmailModal, closeEmailModal, toggleMsgExpand,
       openAttachmentModal, closeAttachmentModal,
       jumpToReplyTarget, createOrOpenChat, createGroupChat, createFilterGroup, deleteChatConfig, forwardMessageTo,
-      updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail, switchSendAccount,
+      updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail, switchSendAccount, logoutAccount,
       unlinkAccount, isAccountVisible, setSendConfirm, setReplyAll, retryUnloaded,
     },
     computed: { replyPlan: getReplyPlan(selectedSender), allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
