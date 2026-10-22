@@ -372,12 +372,8 @@ export default function Home() {
 
               const isChatOnlySent = allEmails.every((e) => (e.labelIds?.includes("SENT") || e.isMe) && !e.labelIds?.includes("TRASH"));
 
-              const isMoveGrayedOut = state.selectionMode === "chat_move" && (
-                 isChatOnlySent ||
-                 (state.moveDestination &&
-                   visibleEmails.length > 0 && visibleEmails.every((e) => e.labelIds?.includes(state.moveDestination!) || (state.moveDestination === "ARCHIVE" && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("SENT") && !e.isMe))
-                 )
-              );
+              // 送信済みだけのチャットは移動できない（移動先は場所ごとの確認画面で選ぶ）
+              const isMoveGrayedOut = state.selectionMode === "chat_move" && isChatOnlySent;
 
               // ★修正: ピン留め/非表示の対象(INBOXかARCHIVE)がいるか判定
               const hasValidFetchedMail = visibleEmails.some((e) => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
@@ -740,7 +736,6 @@ export default function Home() {
                     const activeFindField = isCurrentFindTarget ? currentFindMatch!.field : undefined;
                     const activeFindIndex = isCurrentFindTarget ? currentFindMatch!.fieldIndex : undefined;
 
-                    const isMoveGrayedOut = state.selectionMode === "msg_move" && state.moveDestination && (email.labelIds?.includes(state.moveDestination) || (state.moveDestination === "ARCHIVE" && isArchive));
                     const isSentMailMoveRestricted = state.selectionMode === "msg_move" && isSent;
 
                     // ★追加: 個別メッセージがゴミ箱または迷惑メールにあるか判定
@@ -752,7 +747,7 @@ export default function Home() {
                     // ★追加: 削除モード時、ゴミ箱にあるメールと送信済みメールはグレーアウトして選択不能にする
                     const isDeleteGrayedOut = state.selectionMode === "msg_delete" && (isTrash || isSent);
                     
-                    const isActionGrayedOut = isMoveGrayedOut || isMsgPinGrayedOut || isMsgHideGrayedOut || isSentMailMoveRestricted || isDeleteGrayedOut;
+                    const isActionGrayedOut = isMsgPinGrayedOut || isMsgHideGrayedOut || isSentMailMoveRestricted || isDeleteGrayedOut;
                     
                     // 送信済みを最優先（ゴミ箱内の送信済みも緑で表示）
                     const msgColor = isSent ? state.boxColors.sent : isTrash ? state.boxColors.trash : isSpam ? state.boxColors.spam : isArchive ? state.boxColors.archive : state.boxColors.inbox;

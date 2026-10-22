@@ -6,7 +6,7 @@ import { shouldTriggerServerSearch, markServerSearched } from "../lib/searchFall
 import { encodeRoomKey, decodeRoomKey, keysOf, asLocalKey, type RoomKeyStr } from "../lib/roomKey";
 import type { MailAppHook } from "../hooks/useMailApp";
 import type { Email } from "../types/email";
-import type { ChatConfig, ModalState, SelectionMode } from "../types/mail";
+import type { ChatConfig, ModalState } from "../types/mail";
 import { logError } from "../lib/safeLog";
 import { prepareEmailHtml, hasRemoteContent } from "../lib/emailHtml";
 import { clearDeviceData } from "../lib/deviceData";
@@ -1348,8 +1348,8 @@ export function AttachmentModal({ app }: { app: MailAppHook }) {
 }
 
 export function Modals({ app }: { app: MailAppHook }) {
-  const { modal, renameInput, moveDestination, chatConfigs, messageConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
-  const { setModal, executeConfirmedAction, executePin, setRenameInput, setMoveDestination, setSelectionMode, updateChatConfigByRoomKey, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
+  const { modal, renameInput, chatConfigs, messageConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
+  const { executeConfirmedAction, executePin, setRenameInput, updateChatConfigByRoomKey, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats } = app.computed;
 
   if (!modal || modal.type === "search" || modal.type === "filter_tool") return null;
@@ -1836,95 +1836,6 @@ export function Modals({ app }: { app: MailAppHook }) {
                 >
                   リセットする ({selectedIds.length})
                 </button>
-              </div>
-            </div>
-          );
-        })()}
-
-        {modal.type === "select_move_dest" && (
-          <div className="p-5">
-            <h2 className="text-lg font-bold text-white mb-4">移動先の選択</h2>
-            <div className="flex flex-col gap-2 mb-4">
-              {/* ★追加: アーカイブ移動の選択肢 */}
-              {(["INBOX", "ARCHIVE", "SPAM", "TRASH"] as const).map(dest => {
-                const labels: Record<string, string> = { "INBOX": "受信箱", "ARCHIVE": "アーカイブ", "SPAM": "迷惑メール", "TRASH": "ゴミ箱" };
-                return (
-                  <button 
-                    key={dest} 
-                    onClick={() => { 
-                      setMoveDestination(dest); 
-                      setSelectionMode((modal.targetMode + "_move") as SelectionMode); 
-                      setModal(null); 
-                      window.history.replaceState({ action: "select" }, "", window.location.href);
-                      app.refs.hasPushedSelectRef.current = true;
-                    }} 
-                    className="w-full py-2.5 bg-[#2B2D31] hover:bg-[#3f4147] border border-[#1E1F22] rounded text-white font-bold transition"
-                  >
-                    {labels[dest]}
-                  </button>
-                );
-              })}
-            </div>
-            <button onClick={() => safeBack()} className="w-full py-2 hover:underline text-gray-400 text-sm">キャンセル</button>
-          </div>
-        )}
-
-        {modal.type === "select_move_dest_context" && (() => {
-          const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
-          
-          return (
-            <div className="p-5">
-              <h2 className="text-lg font-bold text-white mb-4">移動先の選択</h2>
-              <div className="flex flex-col gap-2 mb-4">
-                {(["INBOX", "ARCHIVE", "SPAM", "TRASH"] as const).map(dest => {
-                  // ★修正: 以前の if (isMySentMail && ...) のブロックを削除。
-                  // 送信済みメールが含まれていても、他の受信メールを移動できるようにするため。
-
-                  // 「すべてが移動先に存在するか」の判定（送信済みを除外して計算）
-                  const isAllInDest = modal.targetMode === "chat"
-                    ? modal.targets.length > 0 && modal.targets.every((tId: string) => {
-                        const chatEmails = (groupedEmails[tId as RoomKeyStr] || []).filter((e) => !e.labelIds?.includes("SENT") && !e.isMe);
-                        if (chatEmails.length === 0) return false;
-                        if (dest === "ARCHIVE") return chatEmails.every((e) => !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM"));
-                        return chatEmails.every((e) => e.labelIds?.includes(dest));
-                      })
-                    : targetEmails.length > 0 && targetEmails.every((e) => {
-                        if (e.labelIds?.includes("SENT") || e.isMe) return true; // 送信済みは「すでに移動済み」扱いで無視させる
-                        if (dest === "ARCHIVE") return !e.labelIds?.includes("INBOX") && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM");
-                        return e.labelIds?.includes(dest);
-                      });
-
-                  const labels: Record<string, string> = { "INBOX": "受信箱", "ARCHIVE": "アーカイブ", "SPAM": "迷惑メール", "TRASH": "ゴミ箱" };
-                  return (
-                    <button 
-                      key={dest} 
-                      disabled={isAllInDest}
-                      onClick={() => { setMoveDestination(dest); setModal({ type: "confirm_move", targetMode: modal.targetMode, targets: modal.targets }); }} 
-                      className={`w-full py-2.5 border rounded font-bold transition flex justify-between px-4 ${isAllInDest ? 'bg-[#1E1F22] text-gray-600 border-[#1E1F22] cursor-not-allowed' : 'bg-[#2B2D31] hover:bg-[#3f4147] border-[#1E1F22] text-white'}`}
-                    >
-                      <span>{labels[dest]}</span>
-                      <span className="text-xs font-normal opacity-70 mt-0.5">{isAllInDest ? "(既に存在します)" : `選択`}</span>
-                    </button>
-                  );
-                })}
-              </div>
-              <button onClick={() => safeBack()} className="w-full py-2 hover:underline text-gray-400 text-sm">キャンセル</button>
-            </div>
-          );
-        })()}
-
-        {modal.type === "confirm_move" && (() => {
-          const targetEmails = getActionableEmails(modal.targets, modal.targetMode);
-          const destName = moveDestination === "INBOX" ? "受信箱" : moveDestination === "ARCHIVE" ? "アーカイブ" : moveDestination === "SPAM" ? "迷惑メール" : "ゴミ箱";
-          return (
-            <div className="p-5">
-              <h2 className="text-lg font-bold text-white mb-2">移動の確認</h2>
-              <p className="text-sm text-gray-300 mb-6 leading-relaxed">
-                選択したアイテム ({targetEmails.length}件) を「{destName}」へ移動します。
-              </p>
-              <div className="flex justify-end gap-3">
-                <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-                <button onClick={executeConfirmedAction} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">移動する</button>
               </div>
             </div>
           );
