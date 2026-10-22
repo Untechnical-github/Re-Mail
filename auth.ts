@@ -46,7 +46,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             ...token,
             sub: to,
             email: to,
-            name: next.name ?? to,
+            // 名前が取れていないときはアドレスを名前にしない（画面にアドレスが2回出るため。名前なしとして扱う）
+            name: next.name ?? null,
             picture: next.picture ?? null,
             accessToken: next.accessToken ?? undefined,
             // 保存されたアクセストークンが無ければ、次の通信ですぐ取り直させる
