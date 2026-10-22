@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { summarizeHistory, matchesBoxFlags, applySyncResult, type BoxFlags } from "./historySync";
+import { summarizeHistory, matchesBoxFlags, applySyncResult, idsToFetchForLabelChanges, type BoxFlags } from "./historySync";
 import type { Email } from "../types/email";
 
 const mail = (id: string, labelIds: string[], extra: Partial<Email> = {}): Email => ({ id, threadId: id, subject: "s", from: "a@example.com", to: "b@example.com", date: "", body: "", snippet: "", labelIds, ...extra });
@@ -72,5 +72,17 @@ describe("applySyncResult", () => {
     const before = [mail("a", ["INBOX"])];
     applySyncResult(before, { messages: [], labelUpdates: [{ id: "a", labelIds: [] }], deleted: [] }, flags);
     expect(before[0].labelIds).toEqual(["INBOX"]);
+  });
+});
+
+describe("idsToFetchForLabelChanges", () => {
+  it("まだ画面に無く、今の場所に入るようになったメールだけを返す", () => {
+    const flags: BoxFlags = { inbox: true, archive: false, spam: false, trash: false, sent: false };
+    const ids = idsToFetchForLabelChanges(new Set(["known"]), [
+      { id: "known", labelIds: ["INBOX"] },
+      { id: "restored", labelIds: ["INBOX"] },
+      { id: "stillTrash", labelIds: ["TRASH"] },
+    ], flags);
+    expect(ids).toEqual(["restored"]);
   });
 });

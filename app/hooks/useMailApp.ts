@@ -10,7 +10,7 @@ import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "../lib
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId, isRateLimitReason } from "../lib/sendVerify";
-import { applySyncResult, type BoxFlags, type SyncResult } from "../lib/historySync";
+import { applySyncResult, idsToFetchForLabelChanges, type BoxFlags, type SyncResult } from "../lib/historySync";
 import { planReply, type ReplyPlan } from "../lib/recipients";
 import { parseAddress } from "../lib/mime";
 import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, composeReplyBodies, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, type SendAsInfo } from "../lib/replyCompose";
@@ -1529,6 +1529,22 @@ export function useMailApp() {
           logWarn("sync.client", {}, e);
         }
       });
+      // ゴミ箱から戻した・受信箱に戻したなど、まだ画面に無いメールが今の場所に入るようになったら、その詳細を取って足す
+      const knownIds = new Set(emailsRef.current.map(e => e.id));
+      await Promise.all(results.map(async ({ account, result }) => {
+        const ids = idsToFetchForLabelChanges(knownIds, result.labelUpdates, flags).slice(0, 50);
+        if (ids.length === 0) return;
+        try {
+          const params = new URLSearchParams({ ids: ids.join(",") });
+          if (account !== myEmail) params.append("accountEmail", account);
+          const res = await fetch(`/api/emails?${params.toString()}`, { cache: "no-store" });
+          if (!res.ok) { logWarn("sync.fetchMovedIn", { status: res.status }); return; }
+          const data = (await res.json()) as { messages?: Email[] };
+          result.messages.push(...(data.messages || []).map(m => ({ ...m, accountId: account })));
+        } catch (e) {
+          logWarn("sync.fetchMovedIn", {}, e);
+        }
+      }));
       const changed = results.some(r => r.result.messages.length || r.result.labelUpdates.length || r.result.deleted.length);
       if (changed) {
         let updated = emailsRef.current;

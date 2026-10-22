@@ -80,3 +80,9 @@ export function applySyncResult(emails: Email[], result: SyncResult, flags: BoxF
   }
   return Array.from(map.values());
 }
+
+// ラベルが変わったメールのうち、まだ画面に無く、変わった後のラベルが今の場所の条件に合うもの
+// （ゴミ箱から戻した・アーカイブから受信箱に戻した など）。これらは詳細を取りにいって一覧に足す
+export function idsToFetchForLabelChanges(knownIds: Set<string>, labelUpdates: { id: string; labelIds: string[] }[], flags: BoxFlags): string[] {
+  return labelUpdates.filter((u) => !knownIds.has(u.id) && matchesBoxFlags(u.labelIds, flags)).map((u) => u.id);
+}
