@@ -318,7 +318,7 @@ export default function Home() {
             <div role="status" className="flex items-center gap-2 px-3 py-2 text-xs text-gray-300 bg-[#232428] border-b border-[#1E1F22] cursor-default" onClick={(e) => e.stopPropagation()}>
               <WarningIcon className="w-3.5 h-3.5 flex-shrink-0 text-[#FEE75C]" />
               <span className="flex-1 min-w-0">{state.unloadedCount} 件のメールを読み込めませんでした</span>
-              <button onClick={() => actions.retryUnloaded()} className="flex-shrink-0 font-bold text-[#5865F2] hover:text-white">再試行</button>
+              <button onClick={() => { void actions.retryUnloaded(); }} disabled={state.isRetryingUnloaded} className="flex-shrink-0 font-bold text-[#5865F2] hover:text-white disabled:text-gray-500">{state.isRetryingUnloaded ? "取り直し中…" : "再試行"}</button>
               <a href={gmailOpenUrl(auth.session?.user?.email)} target="_blank" rel="noopener noreferrer" className="flex-shrink-0 font-bold text-[#5865F2] hover:text-white">Gmail で開く</a>
             </div>
           )}

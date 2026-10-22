@@ -368,6 +368,8 @@ export async function GET(request: Request) {
     const ids = Array.from(new Set(idsParam.split(",").filter(id => /^[0-9a-f]{6,32}$/i.test(id)))).slice(0, 50);
     const messages: ReturnType<typeof parseMessageDetail>[] = [];
     const missing: string[] = [];
+    // 一時的な理由（レート制限など）で読み込めなかったもの。画面で「読み込めなかった」と知らせ、あとで取り直す
+    const failedIds: string[] = [];
     // 一覧取得と同じく、同時に投げる数を20件までにする（レート制限に触れないように）
     for (let i = 0; i < ids.length; i += 20) {
       await Promise.all(ids.slice(i, i + 20).map(async (id) => {
@@ -377,15 +379,16 @@ export async function GET(request: Request) {
             { headers: { Authorization: `Bearer ${accessToken}` } }
           );
           if (res.status === 404 || res.status === 400) { missing.push(id); return; }
-          if (!res.ok) { logWarn("emails.byId", { status: res.status, messageId: id }); return; }
+          if (!res.ok) { logWarn("emails.byId", { status: res.status, messageId: id }); failedIds.push(id); return; }
           messages.push(parseMessageDetail((await res.json()) as GmailMessage));
         } catch (e) {
           // 1件の失敗でほかのメールまで止めない。取れなかったものは次の読み込みで取り直す
           logWarn("emails.byId", { messageId: id }, e);
+          failedIds.push(id);
         }
       }));
     }
-    return NextResponse.json({ messages, missing });
+    return NextResponse.json({ messages, missing, failedIds });
   }
 
   // 返信元メッセージの単体検索（Discord風の返信チップで、未読み込みの過去メールへジャンプする用）。
@@ -483,7 +486,7 @@ export async function GET(request: Request) {
     const chunkSize = 20;
     const detailedMessages: GmailMessage[] = [];
     // 詳細を取れなかった（レート制限・一時的な障害など）メールの数
-    let failed = 0;
+    const failedIds: string[] = [];
     for (let i = 0; i < messagesToFetch.length; i += chunkSize) {
       const chunk = messagesToFetch.slice(i, i + chunkSize);
       const chunkResults = await Promise.all(
@@ -497,7 +500,7 @@ export async function GET(request: Request) {
           if (!detailRes.ok) {
             logWarn("emails.detail", { status: detailRes.status, messageId: msg.id });
             // 消えたメール（404）以外は「読み込めなかった」として数え、画面で知らせる（黙って欠けさせない）
-            if (detailRes.status !== 404) failed++;
+            if (detailRes.status !== 404) failedIds.push(msg.id);
             return null;
           }
           return (detailRes.json() as Promise<GmailMessage>).catch(() => null);
@@ -508,7 +511,7 @@ export async function GET(request: Request) {
 
     const parsedMessages = detailedMessages.map(parseMessageDetail);
 
-    return NextResponse.json({ messages: parsedMessages, topIds, nextPageToken, failed });
+    return NextResponse.json({ messages: parsedMessages, topIds, nextPageToken, failedIds });
   } catch (e) {
     logError("emails.get", {}, e);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

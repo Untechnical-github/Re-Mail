@@ -302,8 +302,9 @@ export function useMailApp() {
   // トークンリフレッシュに失敗しても連携アカウントのフェッチは黙ってスキップされるだけなので、
   // ここに載っているアカウントはUI側で警告バッジ等を出し、再連携（/api/accounts/connect）へ誘導する
   const [reauthNeededAccounts, setReauthNeededAccounts] = useState<string[]>([]);
-  // 一覧の取得で、詳細を読み込めなかったメールの数（レート制限など）。0 より大きければ画面で知らせる
-  const [unloadedCount, setUnloadedCount] = useState(0);
+  // 一覧の取得で、詳細を読み込めなかったメール（レート制限など）。アカウントごとのメッセージ ID。あれば画面で知らせる
+  const [unloadedIds, setUnloadedIds] = useState<Record<string, string[]>>({});
+  const unloadedCount = Object.values(unloadedIds).reduce((n, ids) => n + ids.length, 0);
   // 連携アカウントの表示専用プロフィール（名前・アバター画像）。認証・照合ロジックには一切使わず、
   // アカウントメニューやアイコン表示設定でのアバター表示だけに使う。連携済みでも古いデータや
   // 未再連携のアカウントはキーが無い場合があり、その時はメールアドレスから生成したアバターにフォールバックする
@@ -1117,7 +1118,7 @@ export function useMailApp() {
       const newMessages: Email[] = [];
       const nextTokens: Record<string, string | null> = {};
       let anyOk = false;
-      let failedCount = 0;
+      const failedByAccount: Record<string, string[]> = {};
       for (const { accountEmail, res } of results) {
         if (!res || !res.ok) continue;
         const data = await res.json();
@@ -1127,11 +1128,11 @@ export function useMailApp() {
         anyOk = true;
         ((data.messages || []) as Email[]).forEach((m) => newMessages.push({ ...m, accountId: accountEmail }));
         nextTokens[accountEmail] = data.nextPageToken || null;
-        failedCount += typeof data.failed === "number" ? data.failed : 0;
+        if (Array.isArray(data.failedIds) && data.failedIds.length > 0) failedByAccount[accountEmail] = data.failedIds as string[];
       }
       if (!anyOk) return { success: false, emails: currentEmailsState };
       // 読み込めなかったメールがあれば、黙って欠けさせずに画面で知らせる（取り直せたら消す）
-      setUnloadedCount(failedCount);
+      setUnloadedIds(failedByAccount);
       // 一覧を取れたアカウントだけ、差分の起点を更新する
       const baselines = await baselinePromise;
       for (const { accountEmail, res } of results) {
@@ -1517,9 +1518,44 @@ export function useMailApp() {
     } catch { /* 一時的な取得失敗は無視し、次回のポーリングに任せる */ }
   };
 
-  // 読み込めなかったメールを取り直す（一覧を裏で取り直す。取り直せれば「読み込めなかった」の表示は消える）
-  const retryUnloaded = () => {
-    fetchEmails(100, "", { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent }, null, false, true, emailsRef.current, () => false, false);
+  // 読み込めなかったメールだけを ID で取り直す（一覧ごと取り直すと Gmail の利用上限にすぐ触れるため）。
+  // 取り直せたものは一覧に足し、まだ読み込めないものだけを残して知らせ続ける
+  const [isRetryingUnloaded, setIsRetryingUnloaded] = useState(false);
+  const retryUnloaded = async () => {
+    if (isRetryingUnloaded) return;
+    setIsRetryingUnloaded(true);
+    const myEmail = session?.user?.email || "";
+    const flags: BoxFlags = { inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent };
+    const stillFailed: Record<string, string[]> = {};
+    const fetched: Email[] = [];
+    try {
+      for (const [account, ids] of Object.entries(unloadedIds)) {
+        for (let i = 0; i < ids.length; i += 50) {
+          const chunk = ids.slice(i, i + 50);
+          try {
+            const params = new URLSearchParams({ ids: chunk.join(",") });
+            if (account !== myEmail) params.append("accountEmail", account);
+            const res = await fetch(`/api/emails?${params.toString()}`, { cache: "no-store" });
+            if (!res.ok) { (stillFailed[account] ||= []).push(...chunk); continue; }
+            const data = (await res.json()) as { messages?: Email[]; failedIds?: string[] };
+            fetched.push(...(data.messages || []).map(m => ({ ...m, accountId: account })));
+            if (data.failedIds?.length) (stillFailed[account] ||= []).push(...data.failedIds);
+          } catch {
+            (stillFailed[account] ||= []).push(...chunk);
+          }
+        }
+      }
+      if (fetched.length > 0) {
+        let updated = applySyncResult(emailsRef.current, { messages: fetched, labelUpdates: [], deleted: [] }, flags);
+        updated = reconcileFakeSentEmails(updated).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        applySyncedPersisted(syncConfigs(updated, chatConfigsRef.current, messageConfigsRef.current));
+        setEmails(updated);
+      }
+      setUnloadedIds(stillFailed);
+      if (Object.keys(stillFailed).length > 0) showErrorToast("まだ読み込めないメールがあります。Gmail の利用上限に触れている可能性があるので、1分ほど待ってからもう一度お試しください。");
+    } finally {
+      setIsRetryingUnloaded(false);
+    }
   };
 
   // 自動更新。前回からの変化（新着・削除・ラベルの変化）だけを取り、新着メールの詳細だけを取りにいく。
@@ -3417,7 +3453,7 @@ export function useMailApp() {
       moveDestination, revealedCrossPrompts, boxColors,
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
-      replyNotFoundToast, errorToast, infoToast, sendConfirm, unloadedCount, replyAll, draftChats, activeChatTab,
+      replyNotFoundToast, errorToast, infoToast, sendConfirm, unloadedCount, isRetryingUnloaded, replyAll, draftChats, activeChatTab,
       isDraftReady: draftReadyRoom === selectedSender,
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
