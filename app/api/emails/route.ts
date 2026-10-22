@@ -11,6 +11,7 @@ import type { MimeInlinePart } from "../../lib/mime";
 import { summarizeHistory, type GmailHistoryRecord } from "../../lib/historySync";
 import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
 import { logError, logWarn, logInfo } from "../../lib/safeLog";
+import { labelChangeFor, sanitizeMessageIds, chunkIds } from "../../lib/mailboxOps";
 
 
 // Gmail API の生データ（必要なフィールドだけ）
@@ -640,72 +641,30 @@ export async function POST(request: Request) {
       return NextResponse.json(found ? { found: true, id: found.id, threadId: found.threadId } : { found: false });
     }
 
-    // ③ メールの削除（完全削除含む）
-    if (action === "delete") {
-      const { permanentIds, trashIds } = bodyData;
-      
-      if (permanentIds && permanentIds.length > 0) {
-        // ★修正: 送信直後のフェイクID (fake-...) はGmailサーバーに存在しないため、確実に除外してエラーを防ぐ
-        const realPermanentIds = permanentIds.filter((id: string) => !id.startsWith("fake-"));
-        
-        if (realPermanentIds.length > 0) {
-          const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
-            method: "POST", 
-            headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ ids: realPermanentIds }),
-          });
-          if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-        }
+    // メールの移動・削除（ゴミ箱へ）。どちらもラベルの付け外しで、純正 Gmail の「移動」「削除」と同じ。
+    // 完全削除（batchDelete）は gmail.modify のスコープでは使えないので扱わない（スコープは増やさない：絶対ルール1）。
+    // Gmail が失敗したら、そのステータスと理由コードを返す（成功と返して画面だけ移ったように見せない：絶対ルール3）
+    if (action === "move" || action === "delete") {
+      if (action === "delete" && bodyData.permanentIds !== undefined) {
+        return NextResponse.json({ error: "Permanent delete is not supported" }, { status: 400 });
       }
-      if (trashIds && trashIds.length > 0) {
-        const realTrashIds = trashIds.filter((id: string) => !id.startsWith("fake-"));
-        if (realTrashIds.length > 0) {
-          const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
-            method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ ids: realTrashIds, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX", "SPAM"] }),
-          });
-          if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-        }
-      }
-      return NextResponse.json({ success: true });
-    }
-
-    if (action === "move") {
-      const { ids, destination } = bodyData;
-      let addLabelIds: string[] = [];
-      let removeLabelIds: string[] = [];
-      
-      if (destination === "INBOX") { addLabelIds = ["INBOX"]; removeLabelIds = ["TRASH", "SPAM"]; }
-      else if (destination === "TRASH") { addLabelIds = ["TRASH"]; removeLabelIds = ["INBOX", "SPAM"]; }
-      else if (destination === "SPAM") { addLabelIds = ["SPAM"]; removeLabelIds = ["INBOX", "TRASH"]; }
-
-      const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
-        method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ ids, addLabelIds, removeLabelIds }),
-      });
-
-      if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      if (!res.ok) throw new Error("Failed to move emails");
-      return NextResponse.json({ success: true });
-    }
-
-    if (action === "delete") {
-      const { permanentIds, trashIds } = bodyData;
-      if (permanentIds && permanentIds.length > 0) {
-        const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete", {
-          method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ ids: permanentIds }),
-        });
-        if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
-      if (trashIds && trashIds.length > 0) {
+      const change = labelChangeFor(action === "delete" ? "TRASH" : bodyData.destination);
+      if (!change) return NextResponse.json({ error: "Invalid destination" }, { status: 400 });
+      const ids = sanitizeMessageIds(action === "delete" ? bodyData.trashIds : bodyData.ids);
+      if (ids.length === 0) return NextResponse.json({ success: true, count: 0 });
+      for (const chunk of chunkIds(ids)) {
         const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
           method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ ids: trashIds, addLabelIds: ["TRASH"], removeLabelIds: ["INBOX", "SPAM"] }),
+          body: JSON.stringify({ ids: chunk, ...change }),
         });
         if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        if (!res.ok) {
+          const reason = gmailErrorReason(await res.json().catch(() => null));
+          logWarn(`${action}.failed`, { status: res.status, reason, count: chunk.length });
+          return NextResponse.json({ error: `Failed to ${action}`, reason }, { status: res.status >= 400 ? res.status : 502 });
+        }
       }
-      return NextResponse.json({ success: true });
+      return NextResponse.json({ success: true, count: ids.length });
     }
 
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });

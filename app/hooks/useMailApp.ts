@@ -25,6 +25,7 @@ import { readPinnedField, capPinnedIds, mergePinnedIds, missingPinnedEmail } fro
 import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
 import { logError, logWarn } from "../lib/safeLog";
 import { createSaveQueue, type SaveQueue } from "../lib/configSaveQueue";
+import { groupIdsByAccount, type MoveDestination } from "../lib/mailboxOps";
 
 const CONFIG_SAVE_FAILED = "設定（ピン留め・名前変更など）を保存できませんでした。再読み込みすると元に戻ります。通信状況を確認して、もう一度お試しください。";
 const CONFIG_SAVE_RETRYING = "設定（ピン留め・名前変更など）を保存できませんでした。通信が戻りしだい自動でもう一度保存します。保存できるまでページを閉じないでください。";
@@ -377,7 +378,6 @@ export function useMailApp() {
   const [modal, setModal] = useState<ModalState>(null);
   const [renameInput, setRenameInput] = useState("");
   const touchTimer = useRef<NodeJS.Timeout | null>(null);
-  const [moveDestination, setMoveDestination] = useState<"INBOX" | "ARCHIVE" | "SPAM" | "TRASH" | null>(null);
   const [revealedCrossPrompts, setRevealedCrossPrompts] = useState<string[]>([]);
   // 返信元メッセージへジャンプしようとして見つからなかった場合のトースト表示
   const [replyNotFoundToast, setReplyNotFoundToast] = useState(false);
@@ -551,7 +551,6 @@ export function useMailApp() {
         selectedIds,
         modal,
         renameInput,
-        moveDestination,
         // 入力中の返信はチャットごとの下書き（app/lib/drafts.ts）に保存するので、ここには入れない
         emailModalEmail: emailModal?.email ?? null,
         attachmentModal: attachmentModal ? {
@@ -579,7 +578,7 @@ export function useMailApp() {
       window.removeEventListener("pagehide", handleStateSave);
       document.removeEventListener("visibilitychange", handleVisibilityHidden);
     };
-  }, [selectedSender, selectionMode, selectedIds, modal, renameInput, moveDestination, replySubject, replyBody, replyToMessage, emailModal, attachmentModal, activeChatTab]);
+  }, [selectedSender, selectionMode, selectedIds, modal, renameInput, replySubject, replyBody, replyToMessage, emailModal, attachmentModal, activeChatTab]);
 
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
@@ -1371,7 +1370,6 @@ export function useMailApp() {
               }
               if (ui.modal) setModal(ui.modal);
               if (ui.renameInput) setRenameInput(ui.renameInput);
-              if (ui.moveDestination) setMoveDestination(ui.moveDestination);
               if (ui.emailModalEmail) openEmailModal(ui.emailModalEmail);
               if (ui.attachmentModal) openAttachmentModal(ui.attachmentModal);
             }
@@ -2597,7 +2595,7 @@ export function useMailApp() {
       try {
         const v = await fetch("/api/emails", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "verifySent", accountEmail: payload.accountEmail, messageId, to: payload.to, subject: payload.subject, body: payload.body, sentAfterMs }),
+          body: JSON.stringify({ action: "verifySent", accountEmail: payload.accountEmail, messageId, to: payload.to, cc: payload.cc, subject: payload.subject, body: payload.body, sentAfterMs }),
         });
         if (!v.ok) return { ok: false, reason: "unverifiable" };
         const d = (await v.json()) as { found?: boolean; id?: string; threadId?: string };
@@ -3001,6 +2999,36 @@ export function useMailApp() {
     return result;
   };
 
+  // メールの移動・削除（ゴミ箱へ）を Gmail に反映する。連携アカウントのメールは、そのアカウントとして送る
+  // （accountEmail を付けないとメインアカウントのトークンが使われ、連携アカウントのメールには効かないため）。
+  // 画面はもう移した表示になっているので、失敗したら再読み込みで元に戻ることと次の行動を伝える（絶対ルール3）
+  const postMailboxChange = (kind: "move" | "delete", ids: string[], destination?: MoveDestination) => {
+    const myEmail = session?.user?.email || "";
+    const owner = new Map<string, string>();
+    persistedEmails.forEach(e => { if (e.accountId) owner.set(e.id, e.accountId); });
+    emails.forEach(e => { if (e.accountId) owner.set(e.id, e.accountId); });
+    // 送信直後の仮 ID は Gmail に無いので送らない
+    const groups = groupIdsByAccount(ids.filter(id => !id.startsWith("fake-")), id => owner.get(id), myEmail);
+    const label = kind === "delete" ? "削除" : "移動";
+    groups.forEach((accountIds, accountEmail) => {
+      const payload = kind === "delete"
+        ? { action: "delete", accountEmail, trashIds: accountIds }
+        : { action: "move", accountEmail, ids: accountIds, destination };
+      fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+        .then(res => {
+          if (res.ok) return;
+          logWarn(`${kind}.request`, { status: res.status, count: accountIds.length });
+          showErrorToast(res.status === 401
+            ? `${label}がGmailに反映されませんでした（連携が切れています）。プロフィールのボタンから再連携してから、もう一度お試しください。`
+            : `${label}がGmailに反映されませんでした。再読み込みすると元の場所に戻ります。時間をおいてもう一度お試しいただくか、純正 Gmail で操作してください。`);
+        })
+        .catch(e => {
+          logError(`${kind}.request`, {}, e);
+          showErrorToast(`${label}がGmailに反映されなかった可能性があります。通信状況を確認し、再読み込みして確かめてください。`);
+        });
+    });
+  };
+
   // 削除のコア処理（TRASH・SENT以外の「移動可能なメール」のみをゴミ箱へ移動）。modal状態に依存しないため、
   // 確認モーダル経由の実行と継続フィルターの自動適用エンジンの両方から呼べる
   const applyDeleteToIds = (ids: string[]) => {
@@ -3030,9 +3058,7 @@ export function useMailApp() {
       applySyncedPersisted(nextPMsgs);
       setRevealedCrossPrompts(prev => prev.filter(id => !trashIds.includes(id)));
 
-      fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", trashIds }) })
-        .then(res => { if (!res.ok) showErrorToast("削除がGmail側に反映されなかった可能性があります。時間をおいて再度お試しください。"); })
-        .catch(e => { logError("delete.request", {}, e); showErrorToast("削除がGmail側に反映されなかった可能性があります。通信状況を確認してください。"); });
+      postMailboxChange("delete", trashIds);
     } catch (e) { logError("delete", {}, e); }
   };
 
@@ -3044,49 +3070,6 @@ export function useMailApp() {
       const deleteEmails = getActionableEmails(targets, targetMode);
       applyDeleteToIds(deleteEmails.map((e) => e.id));
       if (targetMode === "chat" && selectedSender !== null && targets.includes(selectedSender)) setSelectedSender(null);
-    }
-    else if (type === "confirm_move") {
-      let emailsToMove = getActionableEmails(targets, targetMode);
-      
-      if (moveDestination === "SPAM" || moveDestination === "ARCHIVE") {
-        emailsToMove = emailsToMove.filter(e => !e.isMe && !e.labelIds?.includes("SENT"));
-      }
-      
-      const idsToMove = emailsToMove.filter(e => !e.labelIds?.includes(moveDestination!)).map(e => e.id);
-      
-      if (idsToMove.length > 0) {
-        try {
-          const applyNewLabels = (e: Email): Email => {
-            if (idsToMove.includes(e.id)) { 
-              const newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "TRASH" && l !== "SPAM"); 
-              if (moveDestination && moveDestination !== "ARCHIVE") { 
-                newLabels.push(moveDestination); 
-              }
-              return { ...e, labelIds: newLabels }; 
-            }
-            return e;
-          };
-          
-          const nextEmails = emails.map(applyNewLabels);
-          const nextPersisted = persistedEmails.map(applyNewLabels);
-          
-          const combined = new Map();
-          nextPersisted.forEach(e => combined.set(e.id, e));
-          nextEmails.forEach(e => combined.set(e.id, e));
-          
-          const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current, messageConfigsRef.current);
-          
-          setEmails(nextEmails); 
-          applySyncedPersisted(nextPMsgs);
-          setRevealedCrossPrompts(prev => prev.filter(id => !idsToMove.includes(id)));
-
-          if (targetMode === "chat" && selectedSender !== null && targets.includes(selectedSender)) setSelectedSender(null);
-
-          fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "move", ids: idsToMove, destination: moveDestination === "ARCHIVE" ? undefined : moveDestination }) })
-            .then(res => { if (!res.ok) showErrorToast("移動がGmail側に反映されなかった可能性があります。時間をおいて再度お試しください。"); })
-            .catch(e => { logError("move.request", {}, e); showErrorToast("移動がGmail側に反映されなかった可能性があります。通信状況を確認してください。"); });
-        } catch (e) { logError("move", {}, e); }
-      }
     }
     else if (type === "confirm_hide") {
       if (targetMode === "msg") {
@@ -3140,12 +3123,7 @@ export function useMailApp() {
     setRevealedCrossPrompts((prev: string[]) => prev.filter(id => !allIds.includes(id)));
 
     groups.forEach(({ ids, destination }) => {
-      if (ids.length === 0) return;
-      fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "move", ids, destination: destination === "ARCHIVE" ? undefined : destination })
-      })
-        .then(res => { if (!res.ok) showErrorToast("移動がGmail側に反映されなかった可能性があります。時間をおいて再度お試しください。"); })
-        .catch((e: unknown) => { logError("move.request", {}, e); showErrorToast("移動がGmail側に反映されなかった可能性があります。通信状況を確認してください。"); });
+      if (ids.length > 0) postMailboxChange("move", ids, destination as MoveDestination);
     });
   };
 
@@ -3577,7 +3555,7 @@ export function useMailApp() {
       currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts, linkedAccountProfiles,
       replySubject, replyBody, isSending, replyToMessage, replyAttachments, attachError,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
-      moveDestination, revealedCrossPrompts, boxColors,
+      revealedCrossPrompts, boxColors,
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
       replyNotFoundToast, errorToast, infoToast, sendConfirm, unloadedCount, isRetryingUnloaded, replyAll, draftChats, activeChatTab,
@@ -3587,7 +3565,7 @@ export function useMailApp() {
     actions: {
       setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setCheckAccounts, setUseIconLabels, setAlwaysLoadImages, changeChatTab,
       setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
-      setMoveDestination, setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
+      setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleMenuBarClick, handleBackgroundClick, toggleSelection,
       jumpToSearchResult, updateFindBarKeyword, goToNextFindMatch, goToPrevFindMatch, closeFindBar, openFindBar,
       setFindBarSearchSubject, setFindBarSearchBody, setFindBarBox,
