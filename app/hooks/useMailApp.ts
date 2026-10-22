@@ -2423,7 +2423,8 @@ export function useMailApp() {
     } else if (act === "read" || act === "unread") {
       // 確認の画面は出さずにすぐ行う（いつでも戻せる操作のため）。チャットなら、そのチャットに表示されているメールすべて
       applyReadToIds(getActionableEmails([...selectedIds], targetMode).map(e => e.id), act === "read");
-      exitAfterAction();
+      // モーダルを開いていないので、選択の履歴を1つだけ戻して選択を終える（exitAfterAction はモーダルの分まで戻り、ページから出てしまう）
+      safeBack();
       return;
     }
     window.history.pushState({ action: "modal" }, "", window.location.href);
