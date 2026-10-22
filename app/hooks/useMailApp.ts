@@ -3147,6 +3147,9 @@ export function useMailApp() {
   // 既読・未読にする（Gmail の UNREAD ラベルの付け外し）。画面はすぐに変え、Gmail にはアカウントごとに1回だけ送る。
   // すでにその状態のメール・送信直後の仮 ID は送らない（Gmail の呼び出しを増やさないため）
   const readInFlightRef = useRef<Set<string>>(new Set());
+  // 自分で「未読にする」を押したメール。開いているチャットの自動の既読で、すぐに既読へ戻さないために覚えておく
+  // （チャットを開き直したら忘れる）
+  const manualUnreadRef = useRef<Set<string>>(new Set());
   const applyReadToIds = (ids: string[], read: boolean) => {
     const wanted = new Set(ids);
     const changed = allUniqueEmails
@@ -3162,6 +3165,7 @@ export function useMailApp() {
     setEmails(prev => prev.map(update));
     setPersistedEmails(prev => prev.map(update));
     changed.forEach(id => readInFlightRef.current.add(id));
+    if (!read) changed.forEach(id => manualUnreadRef.current.add(id));
     postMailboxChange(read ? "read" : "unread", changed);
     // 送り終わったら、自動の既読でもう一度送れるようにする
     setTimeout(() => changed.forEach(id => readInFlightRef.current.delete(id)), 5000);
@@ -3280,11 +3284,13 @@ export function useMailApp() {
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, []);
+  // 別のチャットを開いたら、「未読にする」を押したメールを忘れる（開き直したときは自動の既読の対象にする）
+  useEffect(() => { manualUnreadRef.current.clear(); }, [selectedSender]);
   useEffect(() => {
     if (!selectedSender || !pageVisible) return;
     const me = session?.user?.email || "";
     const unread = getActionableEmails([selectedSender], "chat").filter(e =>
-      e.labelIds?.includes("UNREAD") && !readInFlightRef.current.has(e.id) &&
+      e.labelIds?.includes("UNREAD") && !readInFlightRef.current.has(e.id) && !manualUnreadRef.current.has(e.id) &&
       !!accountSettings[e.accountId || me]?.autoReadOnOpenChat);
     if (unread.length > 0) applyReadToIds(unread.map(e => e.id), true);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 開いているチャット・届いたメール・設定・画面の表示が変わったときだけ確かめる（関数は描画ごとに作り直されるため入れない）
