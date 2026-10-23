@@ -1,6 +1,5 @@
 // ピン留めの保存データ（D1 の custom_name に入る JSON）の読み書きを助ける純粋関数。
-// D1 にはメールの中身を置かず、Gmail のメッセージ ID だけを保存する（絶対ルール1）。
-// 以前の形式（data にメール本体を丸ごと入れていた）も読めるようにしておく（ロールバックしても壊れないように）
+// D1 にはメールの中身を置かず、Gmail のメッセージ ID だけを保存する（絶対ルール1）
 import type { Email } from "../types/email";
 
 // 1つのピン留めチャットで覚えておく ID の上限（以前の「直近60件」と同じ）
@@ -9,17 +8,9 @@ export const MAX_PINNED_IDS_PER_CHAT = 60;
 const GMAIL_ID_RE = /^[0-9a-f]{6,32}$/i;
 export const isGmailId = (v: unknown): v is string => typeof v === "string" && GMAIL_ID_RE.test(v);
 
-// 保存データの JSON から、ピン留めしたメールの ID と、古い形式で入っていたメール本体を取り出す
-export function readPinnedField(parsed: { ids?: unknown; data?: unknown }): { ids: string[]; legacyEmails: Email[] } {
-  const legacyEmails: Email[] = [];
-  if (parsed.data) {
-    const list = Array.isArray(parsed.data) ? parsed.data : [parsed.data];
-    for (const e of list) {
-      if (e && typeof e === "object" && isGmailId((e as Email).id)) legacyEmails.push(e as Email);
-    }
-  }
-  const ids = Array.isArray(parsed.ids) ? parsed.ids.filter(isGmailId) : legacyEmails.map(e => e.id);
-  return { ids: capPinnedIds(ids), legacyEmails };
+// 保存データの JSON から、ピン留めしたメールの ID を取り出す（ID でない値は捨てる）
+export function readPinnedIds(parsed: { ids?: unknown }): string[] {
+  return Array.isArray(parsed.ids) ? capPinnedIds(parsed.ids.filter(isGmailId)) : [];
 }
 
 // 重複を除き、上限までにする（先頭ほど新しいメールという並びを保つ）
@@ -54,10 +45,9 @@ export function missingPinnedEmail(id: string, roomLocalKey: string | undefined,
   };
 }
 
-// 設定（custom_name の JSON）に以前の形式で残っているメール本体（data）を取り除く（ピン留めの段階2）。
-// チャット単位のピン留め（roomId を持たない）でまだ ids が無ければ、data のメール ID から ids を作ってから消す。
-// メッセージ単位のピン留めは chat_id がメッセージ ID そのものなので、data を消すだけでよい。
-// 変える必要が無ければ、受け取った値をそのまま返す（呼び出し側は「変わったか」で書き戻すかを決める）
+// 保存する設定（custom_name の JSON）からメール本体（data）を取り除く。ピン留めは ids だけを持つ形なので、
+// data は今の画面からは送られないが、送られてきても D1 に書かないための守りとして保存の前に必ず通す（絶対ルール1）。
+// 変える必要が無ければ、受け取った値をそのまま返す
 export function stripPinnedBodies(customName: string | null | undefined): string | null | undefined {
   if (!customName || !customName.startsWith("{")) return customName;
   let obj: Record<string, unknown>;
@@ -69,11 +59,6 @@ export function stripPinnedBodies(customName: string | null | undefined): string
     return customName;
   }
   if (!("data" in obj)) return customName;
-  const { data, ...rest } = obj;
-  const isMessageLevel = "roomId" in rest || "roomIdEnc" in rest;
-  if (!isMessageLevel && !Array.isArray(rest.ids)) {
-    const ids = readPinnedField({ data }).legacyEmails.map((e) => e.id).filter(isGmailId);
-    if (ids.length > 0) rest.ids = capPinnedIds(ids);
-  }
-  return JSON.stringify(rest);
+  delete obj.data;
+  return JSON.stringify(obj);
 }

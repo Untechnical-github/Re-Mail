@@ -3,9 +3,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { errorMessage } from "../../lib/errorMessage";
 import { auth } from "../../../auth"; // ※ auth.ts の場所に合わせる
 import { logError } from "../../lib/safeLog";
-import { decryptSecret } from "../../lib/tokenCrypto";
-import { revealConfigName } from "../../lib/configCrypto";
-import { openSessionConfigs, saveSessionConfig, deleteSessionConfig, saveCommonSettings, saveAccountSettings, sessionAccountList, openGlobalSettings, GLOBAL_SETTINGS_CHAT_ID } from "../../lib/configStore";
+import { openSessionConfigs, saveSessionConfig, deleteSessionConfig, saveCommonSettings, saveAccountSettings, sessionAccountList, UnknownAccountError } from "../../lib/configStore";
 import { listLinkedAccountEmails } from "../../lib/linkedAccountsStore";
 
 // ログイン中のアカウントに連携しているアカウント（ログインできた＝同じ人なので、その設定も読み書きしてよい）
@@ -13,7 +11,13 @@ async function linkedOf(db: CloudflareEnv["DB"], userEmail: string): Promise<str
   return listLinkedAccountEmails(db, userEmail);
 }
 
-// 設定の保存の形（暗号化・アドレスの置き換え）と移行は app/lib/configStore.ts にまとめてある
+// 設定の保存の形（暗号化・アドレスの置き換え）は app/lib/configStore.ts にまとめてある。
+// 暗号化の鍵が無いときは例外になり、500 を返す（平文では保存しない）
+
+// ログイン中でないアカウントの設定は読み書きしない
+function unknownAccount(error: unknown) {
+  return error instanceof UnknownAccountError ? NextResponse.json({ error: "Unknown account" }, { status: 400 }) : null;
+}
 
 export async function GET(request: Request) {
   const session = await auth();
@@ -24,16 +28,8 @@ export async function GET(request: Request) {
     const accountFilter = searchParams.get("account_email");
     const db = getCloudflareContext().env.DB;
     const { configs: opened, accountSettings } = await openSessionConfigs(db, session.user.email, await linkedOf(db, session.user.email));
-    // 暗号化して保存した値（相手の名前を含む roomId など）を、画面に返す前に復号する
-    const configs = await Promise.all(opened
-      .filter(o => !accountFilter || o.account_email === accountFilter)
-      .map(async (o) => ({
-        ...o,
-        // 共通の設定は暗号化して保存しているので、復号した JSON を返す
-        custom_name: !o.account_email && o.chat_id === GLOBAL_SETTINGS_CHAT_ID
-          ? JSON.stringify(await openGlobalSettings(o.custom_name))
-          : await revealConfigName(o.custom_name, decryptSecret),
-      })));
+    // 共通設定の行は、復号した JSON にしてある（configStore.ts）
+    const configs = opened.filter(o => !accountFilter || o.account_email === accountFilter);
     return NextResponse.json({ configs, accountSettings });
   } catch (error: unknown) {
     logError("config.get", {}, error);
@@ -63,7 +59,7 @@ export async function POST(request: Request) {
     }
     if (!body.account_email) return NextResponse.json({ error: "account_email is required" }, { status: 400 });
     if (typeof body.chat_id !== "string" || !body.chat_id) return NextResponse.json({ error: "chat_id is required" }, { status: 400 });
-    // そのチャット（フィルター）のアカウントの置き場所に書く。フィルターもアカウントごとなので、全アカウントに書くものは無い
+    // そのチャット（フィルター）のアカウントの置き場所に書く。ログイン中でないアカウントなら 400
     await saveSessionConfig(db, session.user.email, linked, {
       chat_id: body.chat_id,
       account_email: String(body.account_email),
@@ -75,6 +71,8 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
+    const bad = unknownAccount(error);
+    if (bad) return bad;
     logError("config.save", {}, error);
     return NextResponse.json({ error: "Database Error", details: errorMessage(error) }, { status: 500 });
   }
@@ -94,6 +92,8 @@ export async function DELETE(request: Request) {
     await deleteSessionConfig(db, session.user.email, await linkedOf(db, session.user.email), chatId, accountEmail);
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
+    const bad = unknownAccount(error);
+    if (bad) return bad;
     logError("config.delete", {}, error);
     return NextResponse.json({ error: "Database Error", details: errorMessage(error) }, { status: 500 });
   }

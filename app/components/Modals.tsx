@@ -2619,8 +2619,8 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     setHideOriginal(!!cfg.filterHideOriginal);
     setContinuous(!!cfg.filterContinuous);
     setDestination(cfg.filterDestination || "INBOX");
-    // 以前のフィルター（アカウントを決めていないもの）は、保存されているアカウントのフィルターとして扱う
-    setFilterAccountEmail(crit.accountEmail || app.actions.roomAccountEmail(id));
+    // フィルターは、それを保存しているアカウント（チャットのキーのアカウント）のもの
+    setFilterAccountEmail(app.actions.roomAccountEmail(id));
     // 非グループ（1回限り/継続の実行時のみ意味を持つ）は保存していないため常にデフォルトへ戻す。
     // グループは filterIncludeExisting を保存しているのでそれを復元する（未指定なら含める＝デフォルト）
     setIncludeExisting(kind === "group" ? cfg.filterIncludeExisting !== false : true);
@@ -2740,7 +2740,7 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     if (!canExecute) return;
     const name = filterName.trim();
     const existingKind = editingId ? filterKindOf(chatConfigs[editingId]) : null;
-    // 対象アカウントを変えたら、保存する置き場所（そのアカウント／全アカウント）が変わるので、作り直す
+    // 対象アカウントを変えたら、保存する置き場所（そのアカウント）が変わるので、作り直す
     const accountChanged = !!editingId && (chatConfigs[editingId]?.filterCriteria?.accountEmail || "") !== (filterAccountEmail || "");
 
     if (action === "group") {
@@ -2770,8 +2770,8 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
         // 既存フィルターの編集: chatConfigs のキーと同じ複合キー（editingId）をそのまま使う
         app.actions.updateChatConfigByRoomKey(editingId!, updates);
       } else {
-        // 新規のローカルキーで作る。1つのアカウントだけが対象ならそのアカウント名義（そのアカウントだけでログインしても使える）、
-        // すべてのアカウントが対象なら自分の名義で作り、全アカウントに写しを保存する（既存の複合キーではないため直接updateChatConfigを使う）
+        // 新規のローカルキーで、対象のアカウントの名義で作る（そのアカウントだけでログインしても使える。
+        // 既存の複合キーではないため直接updateChatConfigを使う）
         const localId = `filter:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         app.actions.updateChatConfig(asLocalKey(localId), updates, filterAccountEmail || myEmail);
       }

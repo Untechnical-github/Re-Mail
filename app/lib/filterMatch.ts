@@ -89,43 +89,18 @@ export type FilterCriteria = {
   // OR結合される条件セットの配列。空/未指定は「内容条件なし＝保存場所条件だけで絞り込む」を意味する
   conditionSets?: ConditionSet[];
   boxes?: FindBarBoxKey[];
-  // 対象アカウント（連携アカウントのメールアドレス）。未指定/空文字列＝アカウントを問わない。
-  // グループ化のフィルターは受信専用のため、複数アカウントのメールをまたいで集約できる
+  // 対象アカウント（そのフィルターを持つアカウントのアドレス）。フィルターはアカウントごとで、そのアカウントのメールにだけ効く。
+  // 無いフィルターは壊れた設定として、どのメールにも一致させない
   accountEmail?: string;
-  // 後方互換用: conditionSets 導入前の旧バージョンで保存されたフラットな単一条件データ。
-  // conditionSets が無いときだけ getConditionSets() 経由で読み込まれる
-  textRules?: TextRule[];
-  dateRange?: { from?: string; to?: string };
-  hasAttachment?: boolean;
-  isReply?: boolean;
-  isForward?: boolean;
-  format?: "html" | "text";
 };
 
-function isConditionSetEmpty(set: ConditionSet): boolean {
-  return (
-    !(set.textRules && set.textRules.length > 0) &&
-    !set.dateRange &&
-    set.hasAttachment === undefined &&
-    set.isReply === undefined &&
-    set.isForward === undefined &&
-    set.format === undefined &&
-    set.isUnread === undefined
-  );
-}
-
-// FilterCriteria から、実際にOR評価すべき条件セットの配列を取り出す（新旧データ形式を吸収する）
+// FilterCriteria から、OR評価する条件セットの配列を取り出す（壊れて配列でなければ空）
 export function getConditionSets(criteria: FilterCriteria): ConditionSet[] {
-  if (criteria.conditionSets) return criteria.conditionSets;
-  const legacy: ConditionSet = {
-    textRules: criteria.textRules, dateRange: criteria.dateRange,
-    hasAttachment: criteria.hasAttachment, isReply: criteria.isReply, isForward: criteria.isForward, format: criteria.format,
-  };
-  return isConditionSetEmpty(legacy) ? [] : [legacy];
+  return Array.isArray(criteria.conditionSets) ? criteria.conditionSets : [];
 }
 
 // メッセージの「相手」（自分が送信したなら宛先、受信したなら差出人）の生ヘッダー文字列を返す。
-// TextRule.direction が未指定の古いデータ向けの後方互換フォールバックにのみ使う
+// 条件セットの方向（direction）が「問わない」のときに使う
 function getPartnerRaw(email: MatchableEmail, myEmail: string): string {
   return isMineEmail(email, myEmail) ? (email.to || "") : (email.from || "");
 }
@@ -224,12 +199,14 @@ export function messageMatchesFilter(email: MatchableEmail, criteria: FilterCrit
 }
 
 function messageMatchesFilterUnsafe(email: MatchableEmail, criteria: FilterCriteria, myEmail: string): boolean {
-  // email.accountId が無い（accountId導入前のデータ・ローカルfake等）場合は myEmail 名義として扱う。
-  // このメール自身が実際に属するアカウントを、以降の受信/送信（isMineEmail）判定にも使う。
-  // myEmailを呼び出し元がメインアカウント固定で渡していても、連携アカウントのメールに対して
-  // 正しく「自分＝そのメールの所属アカウント」で送受信判定できるようにするため
+  // アカウントの決まっていないフィルターは壊れた設定なので、どのメールにも一致させない（ほかのアカウントのメールに効かせない）
+  if (!criteria.accountEmail) return false;
+  // email.accountId が無い（送信直後のローカルfake等）場合は myEmail 名義として扱う。
+  // このメール自身が実際に属するアカウントを、以降の受信/送信（isMineEmail）判定にも使う
   const emailAccount = email.accountId || myEmail;
-  if (criteria.accountEmail && emailAccount !== criteria.accountEmail) return false;
+  if (emailAccount !== criteria.accountEmail) return false;
+  // 条件セットが配列でない（壊れた設定）なら一致させない（「条件なし」として全件に効かせない）
+  if (criteria.conditionSets !== undefined && !Array.isArray(criteria.conditionSets)) return false;
 
   if (criteria.boxes && criteria.boxes.length > 0) {
     if (!criteria.boxes.includes(getBoxKey(email))) return false;

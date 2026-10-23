@@ -23,21 +23,13 @@ function sameAddressSet(a: Set<string>, b: Set<string>): boolean {
   return a.size > 0 && a.size === b.size && [...a].every(addr => b.has(addr));
 }
 
-// グループのメンバーの実メールアドレス集合を求める。作成時に確定させて保存した値を正とし、
-// （古い形式のグループ等で）保存が無い場合のみ、そのメンバーの個別チャットの受信メールから推定する
-function resolveGroupMemberAddresses(cfg: ChatConfig, roomLookup: Record<string, Email[]>, myEmail: string): Set<string> {
+// グループのメンバーの実メールアドレス集合。作成時に確定させて保存した値（groupMemberAddresses）だけを使う。
+// 保存が無い・メンバーの数と合わない（壊れた）グループは空にする（受信メールから推定した相手に送らない。送信は呼び出し側で止める）
+export function groupMemberAddresses(cfg: ChatConfig): Set<string> {
   const members = cfg.groupMembers || [];
-  const addresses = (cfg.groupMemberAddresses && cfg.groupMemberAddresses.length === members.length)
-    ? cfg.groupMemberAddresses
-    : members.map((m: string) => {
-        const msgs = roomLookup[m];
-        const partner = msgs?.find((e: Email) => !isMineEmail(e, myEmail));
-        const raw = partner ? partner.from : "";
-        const match = (raw || "").match(/<([^>]+)>/);
-        const resolved = ((match ? match[1] : raw) || "").trim().toLowerCase();
-        return resolved || m.trim().toLowerCase();
-      });
-  return new Set(addresses.map((a: string) => a.toLowerCase()).filter(Boolean));
+  const addresses = cfg.groupMemberAddresses;
+  if (!Array.isArray(addresses) || addresses.length !== members.length) return new Set();
+  return new Set(addresses.filter((a): a is string => typeof a === "string").map(a => a.trim().toLowerCase()).filter(Boolean));
 }
 
 // 1アカウント分のメールを、ローカルなroomキーでグルーピングする（既存のgroupedEmails useMemoと
@@ -125,7 +117,7 @@ export function groupEmailsByRoom(
     if (cfg.filterCriteria) return;
     const mode = cfg.groupMode || "normal";
     const members = cfg.groupMembers || [];
-    const memberAddresses = resolveGroupMemberAddresses(cfg, groups, myAddress);
+    const memberAddresses = groupMemberAddresses(cfg);
 
     // このグループから送信されたメール = 宛先セットがメンバー全員と完全一致する送信済みメール
     const sentViaGroup = emails.filter((e: Email) => isMineEmail(e, myAddress) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));

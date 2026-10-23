@@ -74,8 +74,7 @@ export async function GET(request: NextRequest) {
     if (!accountEmail) throw new Error("Failed to resolve account email from userinfo");
 
     // refresh_token/access_tokenはGmailへの継続的なアクセスを許す長期的な資格情報のため、
-    // D1に平文では置かず暗号化してから保存する（TOKEN_ENCRYPTION_KEY未設定時は平文のまま。
-    // tokenCrypto.ts参照）
+    // D1に平文では置かず暗号化してから保存する（TOKEN_ENCRYPTION_KEY が無ければ例外になり、保存しない）。
     // トークンの暗号化・アドレスの置き換えは linkedAccountsStore.ts で行う。
     // name/pictureは表示専用（アイコン設定でアバターを出すため）で、認証・照合には一切使わない
     const db = getCloudflareContext().env.DB;

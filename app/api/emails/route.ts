@@ -3,7 +3,7 @@ import type { Session } from "next-auth";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { auth } from "../../../auth";
 import { getValidAccessToken } from "../../lib/googleToken";
-import { encryptSecret, decryptSecret, isEncrypted } from "../../lib/tokenCrypto";
+import { encryptSecret, decryptSecret, EncryptionKeyMissingError } from "../../lib/tokenCrypto";
 import { findLinkedAccount } from "../../lib/linkedAccountsStore";
 import { buildMimeSegments, buildGmailUploadBody, decodeMimeHeader } from "../../lib/mime";
 import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, getTextBody, extractAttachments, extractContentIdParts, referencesContentId, stripHtmlQuote, looksLikeForward, parseMessageDetail } from "../../lib/messageParse";
@@ -197,30 +197,28 @@ async function resolveAccessToken(session: Session, accountEmail: string | null)
   }
 
   const db = getCloudflareContext().env.DB;
-  // D1 ではアドレスを置き換えて保存しているので、平文・置き換えた形のどちらでも探し、更新は見つかった行に対して行う
+  // D1 ではアドレスを置き換えて保存している。更新は見つかった行に対して行う。
+  // 暗号化の鍵が無いときは例外のまま上に返す（呼び出し側が 500 にする。再連携の問題ではないため）
   const row = await findLinkedAccount(db, session.user?.email || "", accountEmail);
   if (!row?.refresh_token) return null;
 
-  // refresh_token/access_tokenはD1に暗号化して保存している（tokenCrypto.ts参照）。
-  // TOKEN_ENCRYPTION_KEY未設定のまま暗号化済みデータを復号しようとした場合は例外になるため、
-  // それはGoogle側のトークン失効とは別の運用上の問題として区別する（needs_reauthは立てない）
+  // refresh_token/access_token は D1 に暗号化して保存している（tokenCrypto.ts）。
+  // 壊れて復号できない値は再連携が必要なものとして扱う（null）。鍵が無いのは運用の問題なので例外のまま返す
   let storedRefreshToken: string;
   let storedAccessToken: string | null;
   try {
     storedRefreshToken = await decryptSecret(row.refresh_token);
     storedAccessToken = row.access_token ? await decryptSecret(row.access_token) : null;
   } catch (error) {
+    if (error instanceof EncryptionKeyMissingError) throw error;
     logError("token.decrypt", {}, error);
     return null;
   }
-  const wasLegacyPlaintext = !isEncrypted(row.refresh_token) || (row.access_token && !isEncrypted(row.access_token));
 
   try {
     const result = await getValidAccessToken(accountEmail, storedAccessToken, row.expires_at ?? null, storedRefreshToken);
     const tokenChanged = result.accessToken !== storedAccessToken || result.expiresAt !== row.expires_at || !!result.refreshToken;
-    // 既存データが暗号化前の平文だった場合、他に変化が無くてもここで暗号化済みへ書き戻す
-    // （鍵導入時点の既存連携アカウントを、次にアクセスされたタイミングで自然に移行させるため）
-    if (tokenChanged || row.needs_reauth || wasLegacyPlaintext) {
+    if (tokenChanged || row.needs_reauth) {
       // Googleがリフレッシュトークンをローテーションした場合（result.refreshTokenが返る場合）は
       // 必ずD1側も更新する。ここを怠ると古いrefresh_tokenが残り続け、次回のリフレッシュ時に
       // invalid_grantで失効する（auth.tsのメインアカウント側と同じ理由でrefreshToken ?? 旧値を使う）。
@@ -259,7 +257,14 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url);
-  const accessToken = await resolveAccessToken(session, searchParams.get("accountEmail"));
+  let accessToken: string | null;
+  try {
+    accessToken = await resolveAccessToken(session, searchParams.get("accountEmail"));
+  } catch (e) {
+    // 暗号化の鍵が無いなど、サーバー側の問題（再連携では直らないので 401 にしない）
+    logError("token.resolve", {}, e);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
   if (!accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const messageId = searchParams.get("messageId");

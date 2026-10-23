@@ -13,16 +13,13 @@ export const SYNCED_SETTING_TYPES = {
   sent: "boolean",
   // 送信ボタン・アクションバー・場所の表示を、文字にするかアイコンにするか
   iconLabels: "boolean",
-  // 以前は共通設定だった「メールの外部の画像」。今はアカウント設定に移したので画面からは書かない。
-  // 古い行から各アカウントの初期値を作るのと、古いコードに戻したときに読めるよう、名前だけ残す
-  alwaysLoadImages: "boolean",
   // アカウントごとの表示チェックボックス（キーはアカウントのアドレス。行ごと暗号化するので D1 に平文では残らない）
   accounts: "accountMap",
   // 最後に保存した時刻（ミリ秒）。アカウントごとの写しのうち、どれが一番新しいかを決めるのに使う
   updatedAt: "number",
 } as const;
 
-// 画面が持って保存する共通設定の名前（updatedAt と、移した alwaysLoadImages は含めない）
+// 画面が持って保存する共通設定の名前（updatedAt は含めない）
 export const COMMON_SETTING_KEYS = ["inbox", "archive", "spam", "trash", "sent", "iconLabels", "accounts"] as const;
 
 // アカウント設定の一覧（アカウントごとに保存する）
@@ -90,7 +87,7 @@ export function sanitizeAccountSettings(value: unknown): AccountSettings {
   return out;
 }
 
-// アカウントごとの写しのうち一番新しい共通設定を選ぶ（updatedAt が無い古い行は 0 とみなし、同じならログイン中のアカウントの分）
+// アカウントごとの写しのうち一番新しい共通設定を選ぶ（updatedAt が無ければ 0 とみなし、同じならログインのセッションを持つアカウントの分）
 export function newestCommonSettings(copies: { settings: SyncedSettings; preferred: boolean }[]): SyncedSettings {
   let best: { settings: SyncedSettings; at: number; preferred: boolean } | null = null;
   for (const c of copies) {

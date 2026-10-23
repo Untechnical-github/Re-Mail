@@ -77,7 +77,7 @@ describe("groupEmailsByRoom", () => {
     const chatConfigs: Record<LocalKey, ChatConfig> = {
       [asLocalKey("filter:1")]: {
         isGroup: true,
-        filterCriteria: { conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
+        filterCriteria: { accountEmail: ME, conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
       },
     } as Record<LocalKey, ChatConfig>;
     const emails = [mkEmail({ id: "1", subject: "月次報告", from: "田中太郎 <tanaka@example.com>", to: ME })];
@@ -92,7 +92,7 @@ describe("applyFilterGroups", () => {
     const chatConfigs: Record<RoomKeyStr, ChatConfig> = {
       [room]: {
         isGroup: true,
-        filterCriteria: { conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
+        filterCriteria: { accountEmail: ME, conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
       },
     } as Record<RoomKeyStr, ChatConfig>;
     const emails = [
@@ -109,7 +109,7 @@ describe("applyFilterGroups", () => {
     const chatConfigs: Record<RoomKeyStr, ChatConfig> = {
       [room]: {
         isGroup: true,
-        filterCriteria: { conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
+        filterCriteria: { accountEmail: ME, conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
         filterHideOriginal: true,
       },
     } as Record<RoomKeyStr, ChatConfig>;
@@ -127,7 +127,7 @@ describe("applyFilterGroups", () => {
     const chatConfigs: Record<RoomKeyStr, ChatConfig> = {
       [room]: {
         isGroup: true,
-        filterCriteria: { conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
+        filterCriteria: { accountEmail: ME, conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
       },
     } as Record<RoomKeyStr, ChatConfig>;
     const otherAccount = "me2@example.com";
@@ -165,7 +165,7 @@ describe("applyFilterGroups", () => {
     const chatConfigs: Record<RoomKeyStr, ChatConfig> = {
       [room]: {
         isGroup: true,
-        filterCriteria: { conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
+        filterCriteria: { accountEmail: ME, conditionSets: [{ textRules: [{ field: "subject", mode: "contains", keyword: "報告" }] }] },
         filterHideOriginal: true,
       },
     } as Record<RoomKeyStr, ChatConfig>;
@@ -206,5 +206,20 @@ describe("mergeAccountGroups", () => {
     const [roomB] = Object.keys(merged).filter(k => decodeRoomKey(k).accountEmail === "me@b.example.com");
     expect(merged[roomA as keyof typeof merged].map(e => e.id)).toEqual(["a1"]);
     expect(merged[roomB as keyof typeof merged].map(e => e.id)).toEqual(["b1"]);
+  });
+});
+
+describe("groupMemberAddresses", () => {
+  it("保存したメンバーのアドレスだけを使う（小文字にそろえる）", async () => {
+    const { groupMemberAddresses } = await import("./groupEmails");
+    expect([...groupMemberAddresses({ isGroup: true, groupMembers: ["田中", "鈴木"], groupMemberAddresses: ["Tanaka@Example.com", "suzuki@example.com"] } as ChatConfig)])
+      .toEqual(["tanaka@example.com", "suzuki@example.com"]);
+  });
+
+  it("アドレスが保存されていない・数が合わない（壊れた）グループは空にし、受信メールから推定しない", async () => {
+    const { groupMemberAddresses } = await import("./groupEmails");
+    expect(groupMemberAddresses({ isGroup: true, groupMembers: ["田中"] } as ChatConfig).size).toBe(0);
+    expect(groupMemberAddresses({ isGroup: true, groupMembers: ["田中", "鈴木"], groupMemberAddresses: ["tanaka@example.com"] } as ChatConfig).size).toBe(0);
+    expect(groupMemberAddresses({ isGroup: true, groupMembers: ["田中"], groupMemberAddresses: [5] } as unknown as ChatConfig).size).toBe(0);
   });
 });

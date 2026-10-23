@@ -1,33 +1,29 @@
-// linked_accounts テーブルに保存する refresh_token / access_token を、Cloudflareの環境変数
-// TOKEN_ENCRYPTION_KEY（base64エンコードされた32バイトのAES鍵）でAES-256-GCM暗号化する。
-// これらのトークンはGmailへの継続的なアクセスを許す長期的な資格情報のため、D1へ平文で
-// 置くのはリスクが大きい（D1への読み取りアクセスがあれば誰でもそのアカウントを使えてしまう）。
+// D1 に置く個人情報（linked_accounts のトークン・アドレス・表示名、chat_configs の中身）を、Cloudflare の環境変数
+// TOKEN_ENCRYPTION_KEY（base64 エンコードされた32バイトの AES 鍵）で AES-256-GCM 暗号化する。
+// トークンは Gmail への継続的なアクセスを許す長期的な資格情報のため、D1 へ平文で置かない（絶対ルール1）。
 //
-// 後方互換のための設計:
-// - TOKEN_ENCRYPTION_KEY が未設定の場合は暗号化せず平文のまま返す（既存の挙動を壊さないが、
-//   本番運用前に必ず設定することを強く推奨する。設定漏れに気づけるよう警告ログ tokenCrypto.keyMissing を出す）
-// - 復号時、値が "encv1:" で始まらない場合は暗号化前の古いデータとみなしてそのまま返す
-//   （鍵導入前に保存された既存の連携アカウントのトークンを引き続き使えるようにするため）
-// - 呼び出し側（resolveAccessToken）は、読み取った値が平文だったときに再暗号化して
-//   書き戻すことで、使われるたびに徐々に暗号化済みへ移行していく
-
-import { logWarn } from "./safeLog";
+// - 鍵が無ければ、暗号化・復号・HMAC のどれも例外にする（平文のまま D1 に書く道を作らない。API は 500 を返す）
+// - 復号できるのは「encv1:」で始まる値だけ。それ以外は例外にする（古い平文の値は 2026-10-23 にすべて消した）
+// - TOKEN_ENCRYPTION_KEY を変える・消すと、D1 の暗号化済みの値がすべて読めなくなる。鍵を足すときは新旧どちらも読めるようにする
 
 const ENC_PREFIX = "encv1:";
-let warnedMissingKey = false;
 
-async function importKey(): Promise<CryptoKey | null> {
-  const keyB64 = process.env.TOKEN_ENCRYPTION_KEY;
-  if (!keyB64) {
-    if (!warnedMissingKey) {
-      // TOKEN_ENCRYPTION_KEY 未設定。linked_accounts のトークンが平文のまま保存されるので、運用前に設定する
-      logWarn("tokenCrypto.keyMissing");
-      warnedMissingKey = true;
-    }
-    return null;
+// 鍵が無いことを、ほかの失敗（壊れた値・Google 側の失効など）と見分けるための例外
+export class EncryptionKeyMissingError extends Error {
+  constructor() {
+    super("TOKEN_ENCRYPTION_KEY is not set");
+    this.name = "EncryptionKeyMissingError";
   }
-  const raw = Uint8Array.from(atob(keyB64), (c) => c.charCodeAt(0));
-  return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+function readKeyBytes(): Uint8Array {
+  const keyB64 = process.env.TOKEN_ENCRYPTION_KEY;
+  if (!keyB64) throw new EncryptionKeyMissingError();
+  return Uint8Array.from(atob(keyB64), (c) => c.charCodeAt(0));
+}
+
+async function importKey(): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", readKeyBytes() as BufferSource, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -39,48 +35,36 @@ function fromBase64(b64: string): Uint8Array {
   return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 }
 
+// 空の値は中身が無いので、そのまま返す（呼び出し側は空なら NULL を書く）
 export async function encryptSecret(plain: string): Promise<string> {
   if (!plain) return plain;
   const key = await importKey();
-  if (!key) return plain;
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plain));
   return `${ENC_PREFIX}${toBase64(iv)}:${toBase64(new Uint8Array(ciphertext))}`;
 }
 
 export async function decryptSecret(stored: string | null | undefined): Promise<string> {
-  if (!stored) return stored || "";
-  if (!stored.startsWith(ENC_PREFIX)) return stored; // 鍵導入前の平文データ（後方互換）
+  if (!stored) return "";
+  if (!stored.startsWith(ENC_PREFIX)) throw new Error("Cannot decrypt: value is not encrypted");
   const key = await importKey();
-  if (!key) {
-    // 暗号化済みデータがあるのに鍵が無い（鍵をローテーション/削除してしまった等）場合は
-    // 復号不能なので、呼び出し側がリフレッシュ失敗として扱えるよう例外にする
-    throw new Error("Cannot decrypt: TOKEN_ENCRYPTION_KEY is not set but stored value is encrypted");
-  }
   const [, ivB64, dataB64] = stored.split(":");
-  const iv = fromBase64(ivB64);
-  const ciphertext = fromBase64(dataB64);
+  const iv = fromBase64(ivB64 || "");
+  const ciphertext = fromBase64(dataB64 || "");
   const plainBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv as BufferSource }, key, ciphertext as BufferSource);
   return new TextDecoder().decode(plainBuf);
 }
 
-// 値が既に暗号化済み（＝再暗号化不要）かどうか
-export function isEncrypted(stored: string | null | undefined): boolean {
-  return !!stored && stored.startsWith(ENC_PREFIX);
-}
-
-// D1 の chat_id（相手の名前やアドレス）を、元に戻せない決まった値に置き換えるための HMAC。
-// 同じ相手なら同じ値になるので、行を探す・上書きする・消すことはこれまでどおりできる。
-// 鍵は TOKEN_ENCRYPTION_KEY から HKDF で別の用途の鍵を作って使う（新しいシークレットを増やさないため）。
-// TOKEN_ENCRYPTION_KEY が無ければ null を返す（呼び出し側は平文のまま扱う）
-let hmacKeyPromise: Promise<CryptoKey | null> | null = null;
-function importHmacKey(): Promise<CryptoKey | null> {
+// D1 の chat_id（相手の名前やアドレス）とアドレスのキーを、元に戻せない決まった値に置き換えるための HMAC。
+// 同じ値なら同じ結果になるので、行を探す・上書きする・消すことはできる。
+// 鍵は TOKEN_ENCRYPTION_KEY から HKDF で別の用途の鍵を作って使う（新しいシークレットを増やさないため）
+let hmacKeyPromise: Promise<CryptoKey> | null = null;
+function importHmacKey(): Promise<CryptoKey> {
+  // 鍵が無いときは覚えずに毎回例外にする（あとから鍵を入れたら動くように）
+  const raw = readKeyBytes();
   if (!hmacKeyPromise) {
     hmacKeyPromise = (async () => {
-      const keyB64 = process.env.TOKEN_ENCRYPTION_KEY;
-      if (!keyB64) return null;
-      const raw = Uint8Array.from(atob(keyB64), (c) => c.charCodeAt(0));
-      const base = await crypto.subtle.importKey("raw", raw, "HKDF", false, ["deriveKey"]);
+      const base = await crypto.subtle.importKey("raw", raw as BufferSource, "HKDF", false, ["deriveKey"]);
       return crypto.subtle.deriveKey(
         { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: new TextEncoder().encode("remail-chat-id-hmac-v1") },
         base,
@@ -93,9 +77,8 @@ function importHmacKey(): Promise<CryptoKey | null> {
   return hmacKeyPromise;
 }
 
-export async function hmacId(value: string): Promise<string | null> {
+export async function hmacId(value: string): Promise<string> {
   const key = await importHmacKey();
-  if (!key) return null;
   const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
   // 行のキーに使うので、URL でも安全な文字だけにする（43文字）
   return toBase64(sig).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");

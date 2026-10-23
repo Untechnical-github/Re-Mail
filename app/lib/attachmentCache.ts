@@ -1,16 +1,10 @@
 import localforage from "localforage";
 
-// 添付と動画サムネイルのキャッシュは、ログアウト・連携解除で消せるようアカウントごとにキーを分ける（絶対ルール1）。
-// アカウントを含まない以前の形式（storeName が attachments / video_thumbs）は、どのアカウントのものか分からないので一度だけ捨てる
+// 添付と動画サムネイルのキャッシュは、ログアウト・連携解除で消せるようアカウントごとにキーを分ける（絶対ルール1）
 const _store = localforage.createInstance({
   name: "remail",
   storeName: "attachments_v2",
 });
-
-if (typeof window !== "undefined") {
-  void localforage.dropInstance({ name: "remail", storeName: "attachments" }).catch(() => {});
-  void localforage.dropInstance({ name: "remail", storeName: "video_thumbs" }).catch(() => {});
-}
 
 const accountPrefix = (account: string) => `${account.trim().toLowerCase()}|`;
 

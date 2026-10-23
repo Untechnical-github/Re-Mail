@@ -104,7 +104,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 - インフラは Cloudflare に寄せる。
   - **Workers**：OpenNext 経由で Next.js を動かす。
   - **D1**：チャット設定・共通設定・アカウント設定と、ログインしているアカウントの暗号化したトークンを保存する（キーは HMAC、中身は暗号化）。
-  - **Cron Triggers**：毎時の定期実行で、D1 に古い形式（平文）の行が残らないよう置き換える。有料プランの範囲内。
+  - **Cron Triggers**：使わない（以前は古い形式の行の置き換えに使っていたが、移行を終えたので 2026-10-23 にやめた）。
   - **R2**：**使わない。** 添付は Gmail から端末へ直接流す（一時保管も個人情報の保存にあたるため）。
   - **Workers AI**：有料プランの AI 機能に使う想定で、まだ使っていない。使うときは**オプトイン・保存なし・ログなし**（§20）。
 - 今の対応は Gmail のみ。将来は Outlook・iCloud にも対応したい。Web 版が仕上がったら Android / iOS アプリを作る予定。
@@ -120,7 +120,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 | 言語 | TypeScript 5（`strict`） |
 | 認証 | NextAuth v5（`5.0.0-beta.32`）＋ Google Provider。JWT セッションを400日保持する。トークンは暗号化された Cookie に入る。ブラウザに返すセッションからはアクセストークンを除く |
 | スタイリング | Tailwind CSS v4（`@tailwindcss/postcss`）。色はクラスに直接書く（例：`bg-[#313338]`） |
-| 実行・デプロイ | **`@opennextjs/cloudflare` 1.20.9** で Cloudflare Workers に載せる。入り口は自作の `worker.ts`（OpenNext の Worker に、ページごとの CSP nonce と定期実行 `scheduled` を足したもの）。互換フラグは `nodejs_compat` / `global_fetch_strictly_public` |
+| 実行・デプロイ | **`@opennextjs/cloudflare` 1.20.9** で Cloudflare Workers に載せる。入り口は自作の `worker.ts`（OpenNext の Worker に、ページごとの CSP nonce を足したもの）。互換フラグは `nodejs_compat` / `global_fetch_strictly_public` |
 | DB | Cloudflare D1（バインディング `DB`、DB 名 `re-mail`、`migrations/` で管理）。**メールの中身は置かない** |
 | CI/CD | GitHub Actions（`.github/workflows/deploy-worker.yml`）、Node 24 |
 | テスト | Vitest 4（`app/**/*.test.ts`、Node 環境。jsdom は使わない） |
@@ -174,7 +174,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 4. GitHub の Actions シークレットを登録する：`CLOUDFLARE_API_TOKEN`（権限は Workers の編集と D1 の編集）、`CLOUDFLARE_ACCOUNT_ID`。
 
 ### 3.5 ローカルで動かす
-- `.dev.vars` に4つのシークレットを書く（`.gitignore` 済み。**コミットしない**）。
+- `.dev.vars` に4つのシークレットを書く（`.gitignore` 済み。**コミットしない**）。**ローカルでも `TOKEN_ENCRYPTION_KEY` が要る**（無いと設定・アカウントの API が 500 を返し、D1 には何も書かない。平文で保存する逃げ道は無い）。開発用の鍵は本番と別のものを `openssl rand -base64 32` で作って入れる。
 - `npm run dev`：`next.config.ts` の `initOpenNextCloudflareForDev()` により、`getCloudflareContext()` からローカルの D1（`.wrangler/` 配下、Git の追跡外）が使える。ローカルの D1 には `npx wrangler d1 migrations apply re-mail --local` でスキーマを当てる。
 - 開発サーバーにはセキュリティヘッダーを付けない（本番のビルドだけに付ける）。
 - Workers に近い形で確かめるなら `npm run preview`。
@@ -369,7 +369,7 @@ export default config;
 ```
 
 ### 4.7 `wrangler.json`
-`database_id` は本番の D1 の ID。作り直すときに新しい D1 を作ったなら、その ID に置き換える。cron は毎時23分（ほかの利用者の定期実行が集中する0分を避けている）。
+`database_id` は本番の D1 の ID。作り直すときに新しい D1 を作ったなら、その ID に置き換える。定期実行は使わない。`triggers.crons` を空の配列にしてあるのは、以前登録していた定期実行をデプロイのときに確実に外すため（`triggers` を書かないと、wrangler は登録済みの定期実行をそのまま残す）。
 
 ```json
 {
@@ -403,9 +403,7 @@ export default config;
     }
   ],
   "triggers": {
-    "crons": [
-      "23 * * * *"
-    ]
+    "crons": []
   }
 }
 
@@ -442,30 +440,22 @@ initOpenNextCloudflareForDev();
 ### 4.9 `worker.ts`
 ```ts
 // Cloudflare Worker の入り口。OpenNext が作る Worker（.open-next/worker.js）をそのまま使い、
-// 定期実行（scheduled）だけを足す（OpenNext の「カスタム Worker」の書き方）。
+// ページのスクリプトに付ける nonce の処理だけを足す（OpenNext の「カスタム Worker」の書き方）。
 // .open-next/worker.js はビルドしたときにできるので、このファイルは型チェック（tsc）の対象から外してある。
-// 処理の中身は型チェックされる app/lib/backfill.ts に置き、ここは呼ぶだけにする
+// 処理の中身は型チェックされる app/lib/securityHeaders.ts に置き、ここは呼ぶだけにする
 // @ts-expect-error -- ビルドしたときにできるファイル
 import { default as handler } from "./.open-next/worker.js";
-import { runBackfill } from "./app/lib/backfill";
 import { generateNonce, withNonceRequest, withNonceResponse } from "./app/lib/securityHeaders";
 
-type Env = CloudflareEnv & { TOKEN_ENCRYPTION_KEY?: string };
-type ScheduledCtx = { waitUntil: (p: Promise<unknown>) => void };
+type Ctx = { waitUntil: (p: Promise<unknown>) => void };
 
 const worker = {
   // ページのスクリプトに付ける nonce を毎回作り、Next.js に渡して、同じ nonce の CSP を HTML の応答に付ける
   // （CSP の script-src から 'unsafe-inline' を外すため。中身は app/lib/securityHeaders.ts）
-  async fetch(request: Request, env: Env, ctx: ScheduledCtx) {
+  async fetch(request: Request, env: CloudflareEnv, ctx: Ctx) {
     const nonce = generateNonce();
     const res = await handler.fetch(withNonceRequest(request, nonce), env, ctx);
     return withNonceResponse(res, nonce);
-  },
-  // 二度と Re:Mail を開かない利用者の行も、D1 で平文のまま残らないよう置き換える（wrangler.json の triggers.crons）
-  async scheduled(_event: unknown, env: Env, ctx: ScheduledCtx) {
-    // 暗号化の鍵は process.env から読むので、定期実行のときも入れておく（リクエストのときは OpenNext が入れる）
-    if (env.TOKEN_ENCRYPTION_KEY && !process.env.TOKEN_ENCRYPTION_KEY) process.env.TOKEN_ENCRYPTION_KEY = env.TOKEN_ENCRYPTION_KEY;
-    ctx.waitUntil(runBackfill(env.DB));
   },
 };
 
@@ -478,7 +468,7 @@ export { DOQueueHandler, DOShardedTagCache, BucketCachePurge } from "./.open-nex
 ```
 
 ### 4.10 `env.d.ts`
-`TOKEN_ENCRYPTION_KEY` などのシークレットは `process.env` から読む（OpenNext がリクエストのたびに入れる。定期実行のときだけは `worker.ts` が入れる）。
+`TOKEN_ENCRYPTION_KEY` などのシークレットは `process.env` から読む（OpenNext がリクエストのたびに入れる）。
 
 ```ts
 interface CloudflareEnv {
@@ -596,13 +586,41 @@ CREATE TABLE IF NOT EXISTS linked_accounts (
 
 ```
 
-### 4.14 `migrations/0002_linked_accounts_account_enc.sql`
+### 4.14 `migrations/0002_linked_accounts_account_enc.sql` と `migrations/0003_drop_legacy_rows.sql`
 ```sql
 -- 0002_linked_accounts_account_enc.sql
 -- 連携アカウントのアドレス（account_email）を D1 のキーから外すための列。
 -- キーには「a1:」＋HMAC を入れ、画面に出すための元のアドレスは暗号化してこの列に持つ（app/lib/linkedAccountsStore.ts）。
 -- 列を足すだけなので、この列を知らない古いコードもそのまま動く
 ALTER TABLE linked_accounts ADD COLUMN account_enc TEXT;
+
+```
+
+0003 は保存の形の移行を終えたときに古い形式のデータを消したもの（§6.1）。新しく作る D1 では何も消さない。
+
+```sql
+-- 0003_drop_legacy_rows.sql
+-- 保存の形の移行（アドレスの置き換え・設定の置き場所）を終えるため、古い形式のデータを消す（2026-10-23）。
+-- このあとのコードは今の形式だけを読む。1つ前のコード（段階2）も今の形式だけの D1 で動くので、ロールバックしても壊れない。
+--
+-- chat_configs はすべて消す。暗号化した中身の中に古い形式（ピン留めの本体・平文の roomId・アカウントを決めていない
+-- フィルター・共通設定の alwaysLoadImages など）が残っていても SQL では見分けられないため、全部消して残っていないと言い切る。
+-- 利用者は開発者本人だけで、設定が消えてよいことは本人が決めた。
+DELETE FROM chat_configs;
+
+-- linked_accounts は、今の形式でない行だけを消す（今の形式の行は残すので、再ログインしなくて済む）。
+-- 今の形式：user_email・account_email が「a1:」で始まり、account_enc・refresh_token が「encv1:」で始まり、
+-- access_token・name・picture は NULL か「encv1:」で始まる。
+-- LIKE は大文字小文字を区別しないので、substr で先頭を正確に比べる
+DELETE FROM linked_accounts
+WHERE substr(user_email, 1, 3) <> 'a1:'
+   OR substr(account_email, 1, 3) <> 'a1:'
+   OR account_enc IS NULL
+   OR substr(account_enc, 1, 6) <> 'encv1:'
+   OR substr(refresh_token, 1, 6) <> 'encv1:'
+   OR (access_token IS NOT NULL AND substr(access_token, 1, 6) <> 'encv1:')
+   OR (name IS NOT NULL AND substr(name, 1, 6) <> 'encv1:')
+   OR (picture IS NOT NULL AND substr(picture, 1, 6) <> 'encv1:');
 
 ```
 
@@ -981,7 +999,7 @@ Re-Mail/
 │   │   ├── accounts/route.ts             # セッションを持たないアカウントの一覧（GET）・ログアウト（DELETE）
 │   │   ├── accounts/connect/route.ts     # 別のアカウントでもログインするための独自 OAuth（リダイレクトとコールバックを兼ねる）
 │   │   ├── avatar/route.ts               # イニシャルの SVG アバター
-│   │   ├── config/route.ts               # D1 の設定の読み書き（HMAC＋暗号化。読んだときに古い形式を置き換える）
+│   │   ├── config/route.ts               # D1 の設定の読み書き（HMAC＋暗号化。鍵が無ければ 500）
 │   │   ├── config/route.test.ts
 │   │   └── emails/route.ts               # Gmail の取得・差分同期・送信・送信確認・移動・削除・添付・HTML 本文・sendAs（保存せず中継だけ）
 │   ├── components/
@@ -1030,12 +1048,13 @@ Re-Mail/
 ### 6.1 データ移行は2段階で行う
 ロールバックでコードだけが戻っても壊れないようにするため（ルール3-5）。
 - **段階1**：新しい形式も古い形式も**読める**コードを出す。保存はまだ古い形式のまま。
-- **段階2**：保存を新しい形式に切り替え、古い形式の行は**読んだときに**新しい形式に書き換える。段階1のコードは新しい形式も読めるので、段階2から1つ戻しても壊れない。
-- D1 の中身を暗号化しているので、データの書き換えは SQL ではなく Worker の中で行う。
-- 今のアドレスの移行は段階2（`app/lib/addressStage.ts` の `WRITE_HASHED_ADDRESS = true`）。
+- **段階2**：保存を新しい形式に切り替える。段階1のコードは新しい形式も読めるので、段階2から1つ戻しても壊れない。
+- **終わったら**：古い形式のデータを migrations で消し、古い形式を読むコードを消す。段階2のコードは新しい形式だけの D1 でも動くので、「データの削除」と「コードの削除」は1回の push でよい（マイグレーションはデプロイより先に当たる）。
+- **今の状態**：アドレスの置き換え（`a1:`）と設定の置き場所の移行（そのアカウント自身の置き場所）は、**2026-10-23 にすべて終えた。** 古い形式のデータは `migrations/0003_drop_legacy_rows.sql` で消した（`chat_configs` はすべて、`linked_accounts` は今の形式でない行だけ。§4.14）。段階のフラグ（`addressStage.ts` / `configStage.ts`）、定期実行での書き直し（`backfill.ts`）、平文の値を読む処理も消した。今のコードは今の形式だけを読み、鍵が無ければ平文で書かずに例外にする。
+- 今後また保存の形を変えるときは、この段階1・段階2で入れ、終わったら古い形式のデータと読むコードを消す。
 
 ### 6.2 スキーマ変更の決まり
-- 新しいファイル（`0003_xxx.sql` …）を足す。適用済みのファイルは書き換えない。
+- 新しいファイル（`0004_xxx.sql` …）を足す。適用済みのファイルは書き換えない。
 - 非破壊にする：`DROP TABLE` は書かない。列は `ALTER TABLE ... ADD COLUMN` で足す。列やデータを消すときは、まず使わなくなるコードを出し、次の段階で消す。
 - 本番の D1 を手で操作しない。migrations を足して push し、Actions に当てさせる。
 
@@ -1068,7 +1087,7 @@ Re-Mail/
 - トークンは D1 の `linked_accounts` に**暗号化して**（`encv1:`）保存する。暗号化 Cookie に移す案は**見送った**（理由は §19）。
 - 行のキーにしている自分のアドレス（`user_email`・`account_email`）は `a1:`＋HMAC に置き換える。そのアカウントの元のアドレス（`account_enc`）・表示名（`name`）・プロフィール画像の URL（`picture`）は暗号化して持つ。名前が取れなかったときは、アドレスを名前の代わりにしない（画面にアドレスが2回出るため。名前なしとして扱う）。
 - リフレッシュトークンが失効したら（`invalid_grant` / `invalid_client`）`needs_reauth=1` を立てる。画面にはトーストで「ログインが切れた」ことと再ログインの方法を伝え、アカウントの一覧に「再ログインが必要」と出す。ほかのアカウントは動き続ける（ルール3-3）。リフレッシュに成功したら `needs_reauth=0` に戻す。
-- Google がリフレッシュトークンを新しくした（ローテーションした）場合は、新しいものを必ず書き戻す。平文で残っていた古いトークンは、使われたときに暗号化して書き戻す。
+- Google がリフレッシュトークンを新しくした（ローテーションした）場合は、新しいものを必ず書き戻す。暗号化の鍵が無いときは 401（再ログイン）ではなく 500 を返す（再ログインでは直らないため）。
 
 ### 7.4 アカウントを1つだけログアウトする（`logoutAccount`）
 アカウントの一覧（`account_menu`）で、アカウントごとに「ログアウト」できる。確認の文言は「このアカウントだけログアウトします。ほかのアカウントはそのまま使えます。このアカウントの設定は残り、もう一度ログインすれば元どおりに使えます」。「すべてのアカウントからログアウト」もある。
@@ -1109,7 +1128,7 @@ Re-Mail/
 | 端末（IndexedDB / localStorage） | 画面の状態・下書き・キャッシュ（アカウント別） | 設定（D1 に置く） |
 | R2 / KV | **使わない** | — |
 
-### 8.2 D1 の値の形（段階2）
+### 8.2 D1 の値の形
 
 | 値 | D1 での形 |
 | --- | --- |
@@ -1123,22 +1142,23 @@ Re-Mail/
 
 - **暗号文の形**：`encv1:` ＋ base64(IV 12バイト) ＋ `:` ＋ base64(暗号文＋タグ)。鍵は `TOKEN_ENCRYPTION_KEY`（base64 の32バイト）を AES-GCM の raw 鍵として読み込む。
 - **HMAC**：`TOKEN_ENCRYPTION_KEY` を HKDF（SHA-256、salt は空、info は `remail-chat-id-hmac-v1`）にかけて HMAC-SHA256 の鍵を派生させる。出力は base64url（`+`→`-`、`/`→`_`、末尾の `=` を除く。43文字）。
-- 鍵が設定されていなければ、暗号化も HMAC もせずに平文のまま扱う（ローカル開発用）。本番では必ず設定されている前提。暗号化した値があるのに鍵が無いときは、復号で例外にする。
+- **鍵が設定されていなければ、暗号化・復号・HMAC のどれも例外にする**（`EncryptionKeyMissingError`）。API は 500 を返し、D1 には何も書かない。平文で保存する逃げ道は無い（ローカル開発でも `.dev.vars` に鍵を入れる。§3.5）。
+- 復号できるのは `encv1:` で始まる値だけ。それ以外（以前の平文の値）は例外にする。
 - 実装の全文は付録 A（`tokenCrypto.ts`・`addressKey.ts`・`configCrypto.ts`）。**既存の D1 のデータを読めるようにするには、ここを1文字も変えずに作り直すこと。**
 
 ### 8.3 `chat_configs`（主キー `user_email, account_email, chat_id`）
 列：`user_email` / `account_email` / `chat_id` / `custom_name` / `is_pinned` / `is_hidden` / `hidden_at_date` / `unhide_on_new`（DDL は §4.13）。
 
-- `account_email = ""` の行は予約行。`chat_id` が `__GLOBAL_SETTINGS__`（共通設定）・`__ACCOUNT_SETTINGS__`（アカウント設定）・`__KNOWN_BOXES__`（以前の版の名残）。予約行は `chat_id` を HMAC にせず、中身をまるごと暗号化する。
+- `account_email = ""` の行は予約行。`chat_id` が `__GLOBAL_SETTINGS__`（共通設定）・`__ACCOUNT_SETTINGS__`（アカウント設定）。予約行は `chat_id` を HMAC にせず、中身をまるごと暗号化する。
 - **`custom_name` の中身（復号したあと）**：
   - ただの文字列なら、チャットの表示名（名前変更）。
   - `{` で始まれば JSON。チャット単位なら `ChatConfig`（§8.6）の一部。グループのメンバー・フィルターの条件・ピン留めの ID 一覧などがここに入る。
-  - メッセージ単位の設定（ピン留め・非表示）は、`chat_id` を Gmail のメッセージ ID にした行で、JSON に `roomId`（複合キー）を持つ。段階2では `roomId` も暗号化（`roomIdEnc`）されるが、封筒ごと暗号化するので外からは見えない。
-  - ピン留めの JSON は `ids`（Gmail のメッセージ ID の配列、新しい順、**チャットあたり最大60件**）だけを持つ。以前の形式（`data` にメール本体を入れていた）は、読んだときに本体から ID を取り出して `ids` に移し、本体を取り除いて書き戻す（`pinnedIds.ts`）。
-- **読み込み（`openAndMigrateConfigs`）**：`user_email` が平文の行と `a1:` の行の両方を読み、封筒を開けて元の形に戻す。同じ設定が古い形と新しい形の両方にあれば新しい方を使い（優先度：`user_email` が `a1:` で +4、`account_email` が `a1:` で +2、`chat_id` が `h1:` で +1）、使わなかった方は消す。開けない行はログを出して飛ばすが、**消さずに残す**（鍵の問題なら直せばまた読めるため）。古い形の行や本体の残っている行は、同じ `db.batch` の中で「新しい形で書いてから古い行を消す」ので、途中で失われない。
-- **保存（`saveConfig`）**：UPSERT し、同じ設定の古い形の行（平文のアドレス・平文の chat_id の組み合わせ）を同じバッチで消す。送られてきた `custom_name` にメール本体が入っていても取り除く。
-- **削除（`deleteConfig`）**：古い形・新しい形のどれで保存されていても消す。
-- **予約行の読み書き（`readReservedRow` / `writeReservedRow`）**：今の形の行を優先して読む。書くときはまるごと暗号化し、古い形（平文のアドレス）の行を同じバッチで消す。鍵が無く暗号化できないときは、アドレスを含む `accounts` を外してから平文で置く。
+  - メッセージ単位の設定（ピン留め・非表示）は、`chat_id` を Gmail のメッセージ ID にした行で、JSON に `roomId`（複合キー）を持つ。封筒ごと暗号化するので外からは見えない。
+  - ピン留めの JSON は `ids`（Gmail のメッセージ ID の配列、新しい順、**チャットあたり最大60件**）だけを持つ。保存の前に必ず `stripPinnedBodies` を通し、メール本体（`data`）が送られてきても書かない（`pinnedIds.ts`）。
+- **読み込み（`openConfigs(db, アカウント)`）**：`user_email` が `a1:`（そのアカウント）の行を読み、封筒を開けて元の形に戻す。`h1:` でない行・復号できない行・封筒にアカウント（`a`）が無い行は、ログ（`config.openRow`）を出して返さない（ほかの行の表示は止めない）。
+- **保存（`saveConfig`）**：`a1:` のキー・`h1:` の chat_id・暗号化した封筒で UPSERT する。
+- **削除（`deleteConfig`）**：`a1:` のキーと `h1:` の chat_id で消す。
+- **予約行の読み書き（`readReservedRow` / `writeReservedRow`）**：中身はまるごと暗号化して書く。読むときは `encv1:` の値だけを復号し、読めなければ空の設定として扱う。
 - 壊れた設定（例：壊れたフィルター定義）が1つあっても、その条件は「一致しない」扱いにして画面全体を落とさない（ルール3-3）。
 
 #### 8.3.1 アカウントごとの置き場所（`openSessionConfigs` / `saveSessionConfig`）
@@ -1151,29 +1171,26 @@ Re-Mail/
 | 共通設定（`__GLOBAL_SETTINGS__`） | ログインしている**全アカウント**の置き場所に同じものを書く。読むときは `updatedAt` が一番新しいものを使う（同じならセッションを持つアカウントの分）。あとから足したアカウントにも写す |
 
 - 「ログインしているアカウント」は、セッションのアカウントと、その `linked_accounts` に付いているアカウント（`sessionAccountList`）。API はリクエストのたびに `listLinkedAccountEmails` でこれを求める（アドレスの列だけを読んで復号する。表示名・画像は復号せず、行の書き直しもしない）。
-- **読み込み（`openSessionConfigs(db, セッションのアカウント, 付いているアカウント)`）**：全アカウントの置き場所を `openAndMigrateConfigs` で読み、次の順でまとめる。
-  1. 自分の置き場所にある自分のチャットの設定を使う。以前、ほかのアカウントだけが対象のフィルターをセッションのアカウント名義で保存していたものは、対象のアカウントの置き場所へ移す。
-  2. **以前の置き場所**（以前はほかのアカウントの設定も、セッションのアカウントの置き場所に書いていた）にあって、自分の置き場所に無いものは使い、自分の置き場所へ写す。段階2では、写し終えた（または自分の置き場所にすでにある）以前の行を**消す**（D1 に同じ設定を2つ置かない）。消すのは書き足しのあとで、書き足しが失敗したら消さない。ログインしていないアカウント（ログアウトしたアカウントなど）の行は、セッションのアカウントの置き場所の分だけ、これまでどおり返す（消さない）。
-  3. **すべてのアカウントが対象だった以前のフィルター**（`shared: true` か、`filterCriteria.accountEmail` が無いもの）は、一番新しい写しをもとに、**アカウントごとの別々のフィルター**に分けて各アカウントの置き場所に書き直す（`assignFilterAccount`）。アカウントが1つだけのときは、そのアカウントのフィルターとしてそのまま返す。
-  4. 共通設定の写しが食い違っていれば、一番新しいもので書き直す。
-  5. アカウント設定が無ければ、以前の共通設定にあった `alwaysLoadImages` を初期値にする（書くのは変えたときだけ）。
-  - 書き足し・書き直しは失敗しても読み込みを止めない（次に読んだときにまた試す）。
-  - 応答は、予約行（共通設定は1行にまとめて復号した JSON）とまとめた設定の一覧、それにアカウントごとのアカウント設定。
-- **保存（`saveSessionConfig`）**：そのチャット（フィルター）のアカウントの置き場所に書く。フィルターもアカウントごとなので、全アカウントに書く設定は無い（API の `scope=shared` はやめた。関数の引数には読むときの互換のために残っている）。ログインしていないアカウントのものは、これまでどおりセッションのアカウントの置き場所に書く。保存する JSON には `updatedAt`（最後に保存した時刻）を入れる（以前の写しが残っていたとき、どれが新しいかを決めるため）。
-- **移行の段階（`app/lib/configStage.ts` の `WRITE_LEGACY_LINKED_COPY`）**：**2026-10-23 に `false`（段階2）へ切り替えた。** 段階1（`true`）では、セッションのアカウント以外の設定を、そのアカウントの置き場所に加えて以前の置き場所（セッションのアカウントの `user_email`）にも書いていた（古いコードに戻しても設定が見えるように）。段階2では以前の置き場所には書かず、残っている古い写しは読んだときに消す。
-- **削除（`deleteSessionConfig`）**：そのアカウントの置き場所と以前の置き場所の両方から消す。
+- **読み込み（`openSessionConfigs(db, セッションのアカウント, 付いているアカウント)`）**：全アカウントの置き場所を `openConfigs` で読み、次のようにまとめる。
+  - チャットの設定は、**その置き場所のアカウントのものだけ**を返す（ある置き場所に別のアカウントの行があっても返さない。アカウントを取り違えない）。
+  - 共通設定の写しのうち `updatedAt` が一番新しいものを使い、違う写し・無い写しを書き直す（あとから足したアカウントにも写す）。書き直しは失敗しても読み込みを止めない（次に読んだときにまた試す）。
+  - アカウント設定は、そのアカウントの置き場所のもの（無ければ空）。
+  - 応答は、共通設定の行（1行にまとめて復号した JSON。共通設定が無ければ出さない）とチャットの設定の一覧、それにアカウントごとのアカウント設定。
+- **保存（`saveSessionConfig`）**：そのチャット（フィルター）のアカウントの置き場所に書く。フィルターもアカウントごとなので、全アカウントに書く設定は無い。**ログインしていないアカウントのものは書かない**（`UnknownAccountError`。API は 400）。
+- **削除（`deleteSessionConfig`）**：そのアカウントの置き場所から消す。ログインしていないアカウントのものは 400。
 - **共通設定の保存（`saveCommonSettings`）**：全アカウントの写しのうち一番新しいものに、変えた値を重ね、`updatedAt` を今の時刻にして、全アカウントの置き場所に書く。
 - **アカウント設定の保存（`saveAccountSettings`）**：そのアカウントの置き場所の `__ACCOUNT_SETTINGS__` に、`sanitizeAccountSettings` を通した値を重ねて書く。
 
 ### 8.4 `linked_accounts`（主キー `user_email, account_email`）
 列：`user_email` / `account_email` / `account_enc`（0002 で追加）/ `refresh_token` / `access_token` / `expires_at`（ミリ秒）/ `created_at`（ISO）/ `needs_reauth` / `name` / `picture`。
 
-- 読み書きは必ず `linkedAccountsStore.ts` を通す。
-  - `findLinkedAccount`：平文と `a1:` の両方のキーで探し、新しい形の行（`user_email` が `a1:` で +2、`account_email` が `a1:` で +1）を優先する。返した行のキーのまま更新する。
-  - `listLinkedAccounts`：画面用にアドレス・名前・画像を復号して返す。段階2では、古い形の行をここで新しい形に置き換え、重複を消す。
-  - `saveLinkedAccount`：新しい形で INSERT（衝突時は UPDATE）し、同じアカウントの古い形の行を消す。
-  - `deleteLinkedAccount`：どの形で保存されていても消す。
+- 読み書きは必ず `linkedAccountsStore.ts` を通す。今の形式（`user_email`・`account_email` が `a1:`、`account_enc`・`refresh_token` が `encv1:`、`access_token`・`name`・`picture` は NULL か `encv1:`）だけを読む。
+  - `findLinkedAccount`：`a1:` のキーで1行を探す。返した行のキーのまま更新する。
+  - `listLinkedAccounts`：画面用にアドレス・名前・画像を復号して返す。開けない行はログを出して飛ばす（ほかのアカウントは使える）。
+  - `saveLinkedAccount`：INSERT（衝突時は UPDATE）する。トークン・アドレス・名前・画像はすべて暗号化する。
+  - `deleteLinkedAccount`：`a1:` のキーで消す。
   - `promoteLinkedAccount(db, from, to)`：セッションを持つアカウント（from）だけをログアウトし、to に引き継ぐ（§7.4）。to が from に付いていない・再ログインが必要なら `null`（何も変えない）。
+  - `listLinkedAccountEmails`：設定の読み書きのたびに使う、アドレスだけの一覧（`account_enc` だけを復号する）。
 
 ### 8.5 鍵の扱い
 - 鍵は **`TOKEN_ENCRYPTION_KEY` の1本だけ**。HMAC の鍵はそこから HKDF で用途別に派生させる（シークレットを増やさないため）。
@@ -1186,12 +1203,7 @@ Re-Mail/
 - `MessageConfig`：`isPinned` / `isHidden` / `hiddenAtDate` / `unhideOnNew` / `forceFetch` / `roomId`（複合キー）。
 - チャット単位とメッセージ単位は、画面では**別のマップ**（`chatConfigs` / `messageConfigs`）に持つ。
 
-### 8.7 定期実行による古い行の置き換え（`backfill.ts`）
-- 設定は「その人が Re:Mail を開いたとき」に今の形へ置き換わる。二度と開かない人の行は、平文（本文入りのピン留めを含む）のまま残ってしまう。
-- それを残さないよう、`worker.ts` の `scheduled`（毎時23分）から `runBackfill(db, 20)` を呼ぶ。`user_email NOT LIKE 'a1:%'` の利用者を `ORDER BY random()` で最大20人選び、開いたときと同じ処理（`openAndMigrateConfigs`・`listLinkedAccounts`）で置き換える。開けない行がある人で毎回つまらないよう、順番はばらばらにする。1人の失敗で、ほかの人の処理は止めない。
-- 段階1（`WRITE_HASHED_ADDRESS = false`）のときは何もしない。
-
-### 8.8 端末内の保存
+### 8.7 端末内の保存
 
 **localStorage**（画面の状態。ログアウトで消す。ただし ⭐ はログアウトでも残す）
 
@@ -1217,7 +1229,8 @@ Re-Mail/
 | `attachments_v2` | `<アカウント(小文字)>\|<メッセージID>:<添付の番号>:<ファイル名>:<サイズ>`（attachmentId は取り直すたびに変わることがあるのでキーにしない）。画面のキーが無いときは `<アカウント>\|<メッセージID>:<attachmentId>` | 添付の base64 |
 | `video_thumbs_v2` | 同上 | 動画のサムネイル（data URL と縦横比） |
 
-- どれも localforage の `name: "remail"`。添付とサムネイルは、メモリのキャッシュ（`Map`）と IndexedDB の2段。アカウントを含まない以前の形式のストア（`attachments` / `video_thumbs`）は、どのアカウントのものか分からないので起動時に捨てる。
+- どれも localforage の `name: "remail"`。添付とサムネイルは、メモリのキャッシュ（`Map`）と IndexedDB の2段。
+- localStorage の値が読めない（壊れている・複合キーでない）ときは無視して、既定の状態で動く（止めない）。
 - **消す仕組み（`deviceData.ts`）**：すべてのアカウントからのログアウト（自分で押した・認証切れ）で、上のすべて（⭐ を除く）を消す。別の人がログインしたら、前の人のデータを消す。1つのアカウントだけをログアウトしたら、そのアカウントの分だけを消す。設定は D1 にあるので、ログアウトしても変わらない。
 - 端末に新しく何かを置くときは、アカウント別のキーにし、`deviceData.ts` の消す対象に必ず足す。
 
@@ -1241,13 +1254,13 @@ Re-Mail/
 
 ### 9.5 `/api/config`
 すべて「ログインしているアカウント」（§8.3.1）を対象にする。
-- `GET [?account_email=]`：`{ configs: [...], accountSettings: { <アカウント>: { alwaysLoadImages?, autoReadOnOpenChat?, autoReadOnOpenMail? } } }`。`openSessionConfigs` の結果を返す。共通設定の行は `custom_name` を復号した JSON 文字列にして返す。メッセージ単位の行の `custom_name` は `revealConfigName` で `roomId` を戻して返す。`account_email` を付けると、そのアカウントの行と予約行だけに絞る。
+- `GET [?account_email=]`：`{ configs: [...], accountSettings: { <アカウント>: { alwaysLoadImages?, autoReadOnOpenChat?, autoReadOnOpenMail? } } }`。`openSessionConfigs` の結果を返す。共通設定の行は `custom_name` を復号した JSON 文字列にして返す。`account_email` を付けると、そのアカウントの行と予約行だけに絞る。
 - `POST`：
   - `{ global_settings: {...} }` → `saveCommonSettings`（全アカウントに書く）。`{ success: true, settings }`。
   - `{ account_settings: {...}, account_email }` → `saveAccountSettings`。`account_email` がログインしているアカウントでなければ `400 { error: "Unknown account" }`。`{ success: true, settings }`。
-  - `{ account_email, chat_id, custom_name, is_pinned, is_hidden, hidden_at_date, unhide_on_new }` → `saveSessionConfig`（そのアカウントの置き場所に書く）。`account_email` と `chat_id` が無ければ 400。
-- `DELETE ?chat_id=&account_email=`（クエリ。どちらも必須）→ `deleteSessionConfig`。
-- D1 の失敗は `500 { error: "Database Error", details }` を返し、画面は `configSaveQueue` で送り直す（§12.6）。`/api/accounts` も同じ形で失敗を返す。
+  - `{ account_email, chat_id, custom_name, is_pinned, is_hidden, hidden_at_date, unhide_on_new }` → `saveSessionConfig`（そのアカウントの置き場所に書く）。`account_email` と `chat_id` が無ければ 400。`account_email` がログインしているアカウントでなければ `400 { error: "Unknown account" }`。
+- `DELETE ?chat_id=&account_email=`（クエリ。どちらも必須）→ `deleteSessionConfig`。ログインしているアカウントでなければ 400。
+- D1 の失敗・暗号化の鍵が無いときは `500 { error: "Database Error", details }` を返し、画面は `configSaveQueue` で送り直す（§12.6）。`/api/accounts` も同じ形で失敗を返す。
 
 ### 9.6 `GET /api/emails`（読み取り。パラメータで動きを切り替える。上から順に判定）
 共通パラメータ `accountEmail`：どのアカウントのトークンを使うか。省略、またはセッションのアカウントならセッションのトークンを、それ以外は `linked_accounts` のトークンを使う（§7.3）。トークンが取れなければ 401。
@@ -1405,7 +1418,7 @@ React に依存しない純粋関数を置く。ほぼすべてに `*.test.ts` �
 | ファイル | 役割 |
 | --- | --- |
 | ★`roomKey.ts` | `encodeRoomKey(account, localKey)` / `decodeRoomKey(roomKey)`。区切りは `\u0000`（表示名やアドレスに絶対に出てこない文字）。`LocalKey` / `RoomKeyStr` の branded type、`asLocalKey`、`keysOf`。**区切り文字で直接 `split` してはいけない** |
-| `groupEmails.ts` | `groupEmailsByRoom(emails, myAddress, chatConfigs)`：1アカウント分をローカルキーでまとめる。`mergeAccountGroups`：アカウントごとの結果を複合キーにして合体する。`applyFilterGroups`：フィルターで作ったグループを、全アカウントのメールから組み立てる（下記） |
+| `groupEmails.ts` | `groupEmailsByRoom(emails, myAddress, chatConfigs)`：1アカウント分をローカルキーでまとめる。`mergeAccountGroups`：アカウントごとの結果を複合キーにして合体する。`applyFilterGroups`：フィルターで作ったグループを、全アカウントのメールから組み立てる（下記）。`groupMemberAddresses`：グループのメンバーの保存したアドレス |
 | `filterMatch.ts` | `isMineEmail`・`getFindBarBoxKey`・`BOX_KEY_TO_LABEL`・`isActionBoxRestricted`・`messageMatchesFilter`・`getConditionSets`・`chatConfigTab`・`isEmptyFilterCriteria`（下記） |
 | `mailboxOps.ts` | 移動・削除・既読／未読のラベル（`labelChangeFor`：`INBOX` は INBOX を付け TRASH・SPAM を外す／`ARCHIVE` は INBOX・TRASH・SPAM を外すだけ（Gmail にアーカイブのラベルは無い）／`SPAM` は SPAM を付け INBOX・TRASH を外す／`TRASH` は TRASH を付け INBOX・SPAM を外す。`readLabelChange`）、`sanitizeMessageIds`、`chunkIds`（`BATCH_MODIFY_LIMIT = 1000`）、`groupIdsByAccount`。サーバーと画面の両方で使う |
 | `groupPaging.ts` | グループチャットの、メンバーごとのページトークンの状態をまとめる。`PAGING_DONE_STATES = ["END_ALL", "END_LIMIT"]`、`pendingMembers`、`aggregateGroupPagingState`（まだ読める人がいれば `MORE`） |
@@ -1422,7 +1435,7 @@ React に依存しない純粋関数を置く。ほぼすべてに `*.test.ts` �
 2. 自分のメールでなければ、From の表示名（`<` の前、`"` を除いて trim。空なら `Unknown`）をルーム名にする。
 3. 自分が送ったメールは、まずメモリ上で `INBOX` ラベルを外す。To（小文字）にルーム名か、そのルームの相手のアドレスが含まれていれば、そのルームに入れる。無ければ To の最初の宛先の表示名（無ければアドレス）で新しいルームを作る。`isMe: true` を付ける。
 4. まだ返信が無くアドレスそのものがルーム名になっているルームは、同じアドレスの表示名ルーム（グループではないもの）があれば、そちらに統合する（同じ相手のチャットが2つに分かれないように）。
-5. グループ（`isGroup` かつ `filterCriteria` が無いもの）：メンバーの実アドレスは `groupMemberAddresses`（作成時に確定。数がメンバーと合うときだけ使う）、無ければメンバーの個別チャットの受信メールから推定する。**グループから送ったメール＝To の宛先の集合がメンバー全員と完全に一致する自分のメール**（D1 には何も残さず、毎回 To から判定する）。それを各メンバーの個別チャットにも入れる。モードが `outbound_only` なら送ったメールだけ、`inbound_only` ならメンバーから届いたメールだけ、`normal` なら両方。
+5. グループ（`isGroup` かつ `filterCriteria` が無いもの）：メンバーの実アドレスは `groupMemberAddresses`（作成時に確定した値。関数 `groupMemberAddresses(cfg)` で読む）だけを使う。保存が無い・数がメンバーと合わない（壊れた）グループは空にし、受信メールから推定しない（そのグループには送信もしない。§13.8）。**グループから送ったメール＝To の宛先の集合がメンバー全員と完全に一致する自分のメール**（D1 には何も残さず、毎回 To から判定する）。それを各メンバーの個別チャットにも入れる。モードが `outbound_only` なら送ったメールだけ、`inbound_only` ならメンバーから届いたメールだけ、`normal` なら両方。
 6. 各ルームを日時の新しい順に並べる。
 
 **フィルターグループ（`applyFilterGroups`）**：`filterCriteria` を持つグループは、**そのグループのアカウント（roomKey のアカウント）のメールだけ**から `messageMatchesFilter` で一致するものを集める（ほかのアカウントのメールは混ぜない）。`filterIncludeExisting === false` なら `filterCreatedAt` より後のメールだけ。`filterHideOriginal` なら、一致したメールを**同じアカウントの**ほかのルームから除く（毎回計算し直すので、オフにすれば元に戻る）。
@@ -1443,13 +1456,11 @@ type ConditionSet = {            // セットの中は AND
 type FilterCriteria = {
   conditionSets?: ConditionSet[]; // セットどうしは OR。空なら場所とアカウントだけで絞る
   boxes?: ("inbox" | "archive" | "sent" | "spam" | "trash")[];
-  accountEmail?: string;          // このフィルターのアカウント。今は必ず入る（以前の、空＝全アカウントのものは読んだときにアカウントごとに分ける。§8.3.1）
-  // 以前の版のデータ（conditionSets が無いときだけ読む）
-  textRules?: TextRule[]; dateRange?: { from?: string; to?: string }; hasAttachment?: boolean; isReply?: boolean; isForward?: boolean; format?: "html" | "text";
+  accountEmail?: string;          // このフィルターのアカウント。必ず入る。無いフィルターは壊れた設定として、どのメールにも一致させない
 };
 ```
 - 相手の名前・アドレスの条件は、`direction` が `sent` なら To、`received` なら From、未指定なら「自分でない方」を見る。比較は小文字にした部分一致。
-- 語が空・壊れている条件はどのメールにも一致させない。`messageMatchesFilter` 全体を `try/catch` で囲み、例外なら「一致しない」にする（壊れた設定で画面を落とさない）。
+- 語が空・壊れている条件、`accountEmail` の無いフィルター、`conditionSets` が配列でないフィルターはどのメールにも一致させない。`messageMatchesFilter` 全体を `try/catch` で囲み、例外なら「一致しない」にする（壊れた設定で画面を落とさない）。
 - `isEmptyFilterCriteria`：条件セットも場所もアカウントも無いフィルターは、誤って全件に効かないよう弾く。
 
 ### 12.2 同期・解析・送信
@@ -1466,21 +1477,18 @@ type FilterCriteria = {
 ### 12.3 暗号・保存
 | ファイル | 役割 |
 | --- | --- |
-| ★`tokenCrypto.ts` | `encryptSecret` / `decryptSecret` / `isEncrypted` / `hmacId`（§8.2） |
-| ★`addressKey.ts` | `normalizeAddress` / `isAddressKey` / `addressKeyFor` / `lookupKeysFor`（`a1:`） |
-| ★`configCrypto.ts` | `sealRow` / `openRow`（`h1:` と封筒）、`sealConfigName` / `revealConfigName`（`roomIdEnc`）、`isReservedRow`、`isSealedChatId` |
-| `addressStage.ts` | `export const WRITE_HASHED_ADDRESS = true;`（段階2） |
-| `configStore.ts` | §8.3・§8.3.1 |
-| `configStage.ts` | `export const WRITE_LEGACY_LINKED_COPY = false;`（設定の置き場所の移行の段階2。§8.3.1） |
+| ★`tokenCrypto.ts` | `encryptSecret` / `decryptSecret` / `hmacId` / `EncryptionKeyMissingError`（§8.2。鍵が無ければどれも例外） |
+| ★`addressKey.ts` | `normalizeAddress` / `isAddressKey` / `addressKeyFor`（`a1:`。空のアドレスは例外） |
+| ★`configCrypto.ts` | `sealRow` / `openRow`（`h1:` と封筒。`openRow` は `sealRow` の形でない行を `null` にする）、`isReservedRow`、`isSealedChatId` |
+| ★`configStore.ts` | §8.3・§8.3.1（`openConfigs`・`openSessionConfigs`・`saveSessionConfig`・`deleteSessionConfig`・`saveCommonSettings`・`saveAccountSettings`・`UnknownAccountError`） |
 | `googleScopes.ts` | `GOOGLE_OAUTH_SCOPE`（§7.1） |
 | `linkedAccountsStore.ts` | §8.4（`promoteLinkedAccount`、設定の読み書きで使う軽い `listLinkedAccountEmails` を含む） |
-| `backfill.ts` | §8.7 |
-| ★`syncedSettings.ts` | **共通設定**（`SYNCED_SETTING_TYPES`）：`inbox` / `archive` / `spam` / `trash` / `sent` / `iconLabels`（boolean）、`accounts`（アドレス → boolean、最大50件、アドレスは320文字以内で `^[^\s@]{1,64}@[^\s@]{1,255}$`）、`updatedAt`（ミリ秒。写しのどれが新しいかを決める）、`alwaysLoadImages`（以前の名残。今はアカウント設定なので画面からは書かない）。画面が持つのは `COMMON_SETTING_KEYS`（`updatedAt` と `alwaysLoadImages` を除く）。**アカウント設定**（`ACCOUNT_SETTING_TYPES`）：`alwaysLoadImages` / `autoReadOnOpenChat` / `autoReadOnOpenMail`（boolean）。`sanitizeSyncedSettings` / `sanitizeAccountSettings` は一覧に無いものを捨てる。`syncedSettingsKey`（名前の順番に左右されない比較用の文字列）・`pickCommonSettings`・`newestCommonSettings` |
-| `pinnedIds.ts` | `MAX_PINNED_IDS_PER_CHAT = 60`、`isGmailId`（16進6〜32文字）、`readPinnedField`（`ids` と以前の `data` の両方を読む）、`capPinnedIds`、`mergePinnedIds`、`missingPinnedEmail`（消えていたメールの代わりに置く「このメールは存在しません」の仮のメール。`isMissing: true`）、`stripPinnedBodies`（JSON から `data` を取り除き、ID だけ残す） |
+| ★`syncedSettings.ts` | **共通設定**（`SYNCED_SETTING_TYPES`）：`inbox` / `archive` / `spam` / `trash` / `sent` / `iconLabels`（boolean）、`accounts`（アドレス → boolean、最大50件、アドレスは320文字以内で `^[^\s@]{1,64}@[^\s@]{1,255}$`）、`updatedAt`（ミリ秒。写しのどれが新しいかを決める）。画面が持つのは `COMMON_SETTING_KEYS`（`updatedAt` を除く）。**アカウント設定**（`ACCOUNT_SETTING_TYPES`）：`alwaysLoadImages` / `autoReadOnOpenChat` / `autoReadOnOpenMail`（boolean）。`sanitizeSyncedSettings` / `sanitizeAccountSettings` は一覧に無いものを捨てる。`syncedSettingsKey`（名前の順番に左右されない比較用の文字列）・`pickCommonSettings`・`newestCommonSettings` |
+| `pinnedIds.ts` | `MAX_PINNED_IDS_PER_CHAT = 60`、`isGmailId`（16進6〜32文字）、`readPinnedIds`（`ids` だけを読む）、`capPinnedIds`、`mergePinnedIds`、`missingPinnedEmail`（消えていたメールの代わりに置く「このメールは存在しません」の仮のメール。`isMissing: true`）、`stripPinnedBodies`（保存の前に JSON から `data` を取り除く守り） |
 | `pinnedCache.ts` | ピン留めの中身の端末キャッシュ（ストア `pinned`、キーはアカウント） |
 | `drafts.ts` | `loadDraft` / `saveDraft`（空なら消す）/ `removeDraft` / `removeAccountDrafts` / `clearDrafts`。`ComposeDraft = { subject, body, replyToMessage, attachments[{filename,mimeType,size,data}], updatedAt }` |
-| `attachmentCache.ts` | §8.8 |
-| `deviceData.ts` | §8.8。`clearDeviceData()`（ログアウト：`remail_` で始まる localStorage のキーを `KEEP_ON_LOGOUT` 以外すべて、sessionStorage の `remail_` のキーすべて、添付・ピン留め・下書きのストア、`localforage.clear()`）。`clearAccountDeviceData(account)`（1つのアカウントだけのログアウト：`remail_account_settings` と `remail_draft_chats` からそのアカウントの分を除き、開いていたのがそのアカウントのチャットなら `remail_selected_sender` と `remail_scroll_main` を消し、`remail_ui_state` は丸ごと消す。添付・ピン留め・下書きはそのアカウントの分だけ消す）。`DEVICE_OWNER_KEY = "remail_device_owner"` |
+| `attachmentCache.ts` | §8.7 |
+| `deviceData.ts` | §8.7。`clearDeviceData()`（ログアウト：`remail_` で始まる localStorage のキーを `KEEP_ON_LOGOUT` 以外すべて、sessionStorage の `remail_` のキーすべて、添付・ピン留め・下書きのストア、`localforage.clear()`）。`clearAccountDeviceData(account)`（1つのアカウントだけのログアウト：`remail_account_settings` と `remail_draft_chats` からそのアカウントの分を除き、開いていたのがそのアカウントのチャットなら `remail_selected_sender` と `remail_scroll_main` を消し、`remail_ui_state` は丸ごと消す。添付・ピン留め・下書きはそのアカウントの分だけ消す）。`DEVICE_OWNER_KEY = "remail_device_owner"` |
 
 ### 12.4 トークン・ログ・そのほか
 | ファイル | 役割 |
@@ -1492,7 +1500,7 @@ type FilterCriteria = {
 | `gmailLink.ts` | `gmailOpenUrl(account, threadId)` → `https://mail.google.com/mail/?authuser=<アカウント>#all/<スレッドID>`（スレッド ID が16進でなければ `#inbox`） |
 | `videoThumbnail.ts` | 動画の Blob から `<video>` でサムネイルを作る。0.3秒の位置に移動して canvas に描き、JPEG（品質0.7）の data URL と縦横比を返す。8秒で諦める |
 | `errorMessage.ts` | `unknown` のエラーから文字列を取り出す（画面の表示用。ログには使わない） |
-| `fakeD1.testutil.ts` | テスト用の D1 の偽物 |
+| `fakeD1.testutil.ts` | テスト用の D1 の偽物（`migrations/` を本物の SQLite に当てる。途中まで当ててから `applyMigration` で残りを当てることもできる） |
 | `publicSession.ts` | §7.2 |
 
 ### 12.5 型（`app/types/email.ts`）
@@ -1555,7 +1563,7 @@ type FilterCriteria = {
 
 ### 13.8 送信（`handleSend`）
 1. 受信専用のグループ・フィルターグループからは送れない（入力欄の上に理由を出す）。
-2. グループからは、メンバー全員のアドレスを To に入れて1通で送る。
+2. グループからは、メンバー全員のアドレス（保存した `groupMemberAddresses`）を To に入れて1通で送る。アドレスが読めない（壊れた）グループには送らず、「このグループはメンバーのアドレスが読めないため送信できません。グループを作り直してください。本文は入力欄に残っています。」と伝える。
 3. 返信なら `planReply` で宛先を決め（相手のみ／全員に返信）、`fetchOriginalFull`（`html=true&full=true`）で引用の元を取る。
 4. sendAs を取り（10分キャッシュ、失敗したら4秒後に1回だけ）、`pickSendAs` で送信元を決める。読めなければ「このまま送る」で確かめる。既定ではない送信元のときだけ From を付ける。
 5. 添付の合計が25MB を超えていたら送らずに伝える。
@@ -1782,10 +1790,10 @@ frame-ancestors 'none'
 
 ## 16. テスト
 
-- `npm test`（Vitest、`app/**/*.test.ts`、Node 環境）。今あるテストは29ファイル・約270件。
-- テストのあるファイル：`roomKey` `groupEmails` `filterMatch` `groupPaging` `searchFallback` `historySync` `messageParse` `mime` `replyCompose` `recipients` `sendVerify` `emailHtml` `safeLog` `tokenCrypto` `addressKey` `configCrypto` `configStore` `linkedAccountsStore` `backfill` `syncedSettings` `securityHeaders` `configSaveQueue` `pinnedIds` `drafts` `gmailLink` `publicSession`、`mailboxOps`、`configSpaces`（アカウントごとの置き場所）、`app/api/config/route.test.ts`。
+- `npm test`（Vitest、`app/**/*.test.ts`、Node 環境）。今あるテストは29ファイル・約260件。
+- テストのあるファイル：`roomKey` `groupEmails` `filterMatch` `groupPaging` `searchFallback` `historySync` `messageParse` `mime` `replyCompose` `recipients` `sendVerify` `emailHtml` `safeLog` `tokenCrypto` `addressKey` `configCrypto` `configStore` `linkedAccountsStore` `migrations`（0003 が古い形式の行だけを消すか） `syncedSettings` `securityHeaders` `configSaveQueue` `pinnedIds` `drafts` `gmailLink` `publicSession`、`mailboxOps`、`configSpaces`（アカウントごとの置き場所）、`app/api/config/route.test.ts`。
 - D1 は `fakeD1.testutil.ts` の偽物で試す。暗号は、テスト用に作った鍵を `process.env.TOKEN_ENCRYPTION_KEY` に入れて試す（本物の鍵は使わない）。
-- **必ず境界値のテストを書くもの**（壊れると絶対ルールに直結する）：送信の MIME の組み立て（日本語の件名、長い件名、絵文字、Cc あり、日本語のファイル名、ヘッダーへの改行の差し込み）、宛先の計算（Reply-To、自分が送ったメールへの返信、全員に返信で自分を除く）、暗号化と HMAC（古い形式を読める・鍵が無いとき）、入力の上限（巨大な入力・深い入れ子・壊れた MIME）、ログの伏せ字、送信結果の分類。
+- **必ず境界値のテストを書くもの**（壊れると絶対ルールに直結する）：送信の MIME の組み立て（日本語の件名、長い件名、絵文字、Cc あり、日本語のファイル名、ヘッダーへの改行の差し込み）、宛先の計算（Reply-To、自分が送ったメールへの返信、全員に返信で自分を除く）、暗号化と HMAC（古い形式の値は読まずに例外で止まらない・鍵が無いと平文で保存しない）、入力の上限（巨大な入力・深い入れ子・壊れた MIME）、ログの伏せ字、送信結果の分類。
 - `npm test`・`npm run lint`・`npx tsc --noEmit` の3つがすべて通ってから push する（CI でも確かめ、どれか失敗するとデプロイされない）。
 - Lint のエラーは0に保つ。React Compiler 向けの4つのルールは誤検知が多いので警告にしてある。その行だけルールを外すときは `// eslint-disable-next-line <ルール> -- <理由>` と必ず理由を書く。`any` を使わない。
 
@@ -1801,7 +1809,7 @@ frame-ancestors 'none'
 - [ ] 宛先（To / Cc）・件名・スレッド・添付・署名が落ちる経路はないか
 - [ ] 失敗したとき、画面に見える表示と次の行動があるか
 - [ ] 異常に大きい・壊れた入力で固まらないか（上限があるか）
-- [ ] D1 の変更は2段階で、古いコードでも壊れないか
+- [ ] D1 の変更は2段階で、古いコードでも壊れないか（移行が終わったら古い形式のデータと読むコードを消す。§6.1）
 - [ ] Gmail API・Workers の呼び出し回数を増やしていないか（増やしたなら量と理由）
 - [ ] 端末に新しく保存するものは、アカウント別で、ログアウト（1つだけのログアウトを含む）で消えるか
 - [ ] 新しい設定は、共通設定（`SYNCED_SETTING_TYPES` / `COMMON_SETTING_KEYS`）かアカウント設定（`ACCOUNT_SETTING_TYPES`）のどちらかに足して D1 に置いたか（端末だけに置いていないか）
@@ -1846,6 +1854,7 @@ README 作成時のコード確認で見つかった不具合は、すべて直�
 | 既読・未読の失敗の文言が移動・削除向けだった | 「元の既読・未読の状態に戻ります」にした |
 | アクションバーの文言がそろっていなかった | 「既読」「未読」にそろえた |
 | API が `scope=shared` を受け付けていた | やめた（`configScope.ts` も消した） |
+| 移行のための「古い形式も読む」コードと古い形式のデータが残っていた | 2026-10-23 に移行を終え、古い形式のデータを `0003_drop_legacy_rows.sql` で消し、読むコード・段階のフラグ・定期実行を消した。鍵が無いときに平文で保存する逃げ道もなくした（§6.1） |
 
 ### 18.3 ルールとのギャップのうち、開発者が判断してそのままにするもの
 | 項目 | 理由 |
@@ -1857,7 +1866,7 @@ README 作成時のコード確認で見つかった不具合は、すべて直�
 
 ### 18.4 一般公開に向けて残っているもの
 - **Google の OAuth 審査**：`gmail.modify` は制限付きスコープなので、100人を超えて公開するには審査と第三者のセキュリティ評価（CASA）が要る。審査前は「未確認のアプリ」の警告が出て、テストユーザーは100人まで、リフレッシュトークンは7日で失効する。D1 に平文の個人情報を残さない形にしたので、審査で説明する範囲は小さくなった。
-- **プライバシーポリシー・利用規約**：「メールはサーバーに保存しない」「D1 にはキーを HMAC にして中身を暗号化した設定（共通設定・アカウント設定を含む）と、暗号化したトークンだけを置き、古い形式の行も定期的に置き換える」「端末内のデータはログアウトで消す」「第三者に送らない」「ログに個人情報を残さない」「HTML メールの外部画像は既定で読み込まない」と書く。Google API Services User Data Policy（Limited Use）に従うことも書く。
+- **プライバシーポリシー・利用規約**：「メールはサーバーに保存しない」「D1 にはキーを HMAC にして中身を暗号化した設定（共通設定・アカウント設定を含む）と、暗号化したトークンだけを置く」「端末内のデータはログアウトで消す」「第三者に送らない」「ログに個人情報を残さない」「HTML メールの外部画像は既定で読み込まない」と書く。Google API Services User Data Policy（Limited Use）に従うことも書く。
 - **実際の利用者のメールでの検証**：ログには中身を残せないので、ログには「どの処理で・どの種類の失敗か」だけを残し、再現は利用者の同意を得た報告で行う。
 
 ---
@@ -1873,8 +1882,10 @@ README 作成時のコード確認で見つかった不具合は、すべて直�
 | グループから送ったメールを D1 に残さず、To の集合で判定する | 送るたびに D1 のデータが増えないようにするため |
 | セッションを持たないアカウントのトークンは D1 に暗号化して置き、暗号化 Cookie には移さない | Cookie だと連携が「その端末・そのブラウザだけ」になりログアウトで消える／1つ約4KB で連携が多いと入らない／トークン更新のたびに書き換えて同時リクエストどうしで上書きし合う／D1 のトークンはすでに暗号化済みで、移しても安全性はそれほど上がらない |
 | HMAC の鍵を新しいシークレットにせず、`TOKEN_ENCRYPTION_KEY` から HKDF で派生させる | シークレットを増やさないため |
-| D1 の書き換えを SQL ではなく Worker で行い、2段階で入れる | 中身が暗号化されているので SQL では書き換えられない。ロールバックで壊れないようにするため |
-| 定期実行で古い行を置き換える | 二度と開かない人の行が平文のまま残らないようにするため |
+| 保存の形の変更を2段階で入れ、終わったら古い形式を消す | ロールバックで壊れないようにするため。移行が終わったら古い形式を読むコードを消し、コードを単純にする |
+| 移行の終わりに `chat_configs` をすべて消す（設定を作り直す） | 暗号化した中身の中に古い形式が残っていても SQL では見分けられないため。利用者が開発者本人だけで、設定が消えてよいと本人が決めた。`linked_accounts` は今の形式の行だけ残し、再ログインを要らなくした |
+| 鍵が無ければ例外にし、平文で保存しない | ローカル開発の便利さより、D1 に平文の個人情報を書く道をなくすことを取った（ルール1） |
+| 定期実行（`backfill.ts`）をやめる | 古い形式の行が無くなり、置き換えるものが無くなったため |
 | 送信を自動で再試行しない | 5xx やタイムアウトでも送れている可能性があり、再試行すると二重送信になる |
 | Message-ID を自前で決め、純正の形にする | 結果が分からないときの照合に使うため。Re:Mail から送ったことが分からないように |
 | 送信を upload エンドポイントにする | raw を JSON に入れる方式は数MB を超えると失敗したため |
@@ -1891,7 +1902,7 @@ README 作成時のコード確認で見つかった不具合は、すべて直�
 | `groupEmailsByRoom` はローカルキーを返し、複合キーにするのは `mergeAccountGroups` | 複数アカウント対応のとき、既存のグルーピングのロジックを一切変えずに済ませるため（広がる破損を防ぐための、意図した仕様からの逸脱） |
 | 複数のアカウントを対等に扱い、画面から「連携」「メイン」の区別をなくす | ログインできた＝同じ人なので、どのアカウントも同じように使え、どれでも1つだけログアウトできるようにするため |
 | 設定をそのアカウント自身の置き場所に保存する | ほかのアカウントの付属として使っていたアカウントで直接ログインしても、同じ設定で使えるようにするため |
-| フィルターをアカウントごとにし、全アカウント対象のフィルターを分ける | どのアカウントのフィルターかを明確にし、ほかのアカウントのメールを混ぜない（送信元の取り違えなどを防ぐ）ため |
+| フィルターをアカウントごとにする（アカウントの決まっていないフィルターは一致させない） | どのアカウントのフィルターかを明確にし、ほかのアカウントのメールを混ぜない（送信元の取り違えなどを防ぐ）ため |
 | セッションを持つアカウントのログアウトは、ほかのアカウントへ引き継ぐ | 1つだけログアウトしても、残りのアカウントを使い続けられるようにするため。ログアウトしたアカウントのトークンは残さない |
 | 権限の一覧を `googleScopes.ts` の1か所にまとめる | あとから追加したアカウントだけ `profile` が無く、名前と画像が出なかったため |
 | 既読・未読を自動にする設定は既定でオフ | Gmail の状態を勝手に変えないため（シンプルなデザイン：新しい機能は既定でオフ） |
@@ -1928,28 +1939,25 @@ README 作成時のコード確認で見つかった不具合は、すべて直�
 | A.3 | `app/lib/roomKey.ts` | 複合キー |
 | A.4 | `app/lib/tokenCrypto.ts` | 暗号文と HMAC の形 |
 | A.5 | `app/lib/addressKey.ts` | アドレスのキー（a1:） |
-| A.6 | `app/lib/addressStage.ts` | アドレスの移行の段階 |
-| A.7 | `app/lib/configCrypto.ts` | chat_id（h1:）と封筒 |
-| A.8 | `app/lib/configStage.ts` | 設定の置き場所の移行の段階 |
-| A.9 | `app/lib/configStore.ts` | 設定の読み書き・アカウントごとの置き場所・移行 |
-| A.10 | `app/lib/linkedAccountsStore.ts` | アカウントのトークンの読み書き・引き継ぎ・移行 |
-| A.11 | `app/lib/backfill.ts` | 定期実行 |
-| A.12 | `app/lib/pinnedIds.ts` | ピン留めの保存形式 |
-| A.13 | `app/lib/syncedSettings.ts` | 共通設定・アカウント設定の名前と型 |
-| A.14 | `app/lib/googleScopes.ts` | Google に求める権限 |
-| A.15 | `app/lib/googleToken.ts` | トークンの更新 |
-| A.16 | `app/lib/safeLog.ts` | ログに出してよいもの |
-| A.17 | `app/lib/securityHeaders.ts` | CSP とヘッダー |
-| A.18 | `app/lib/emailHtml.ts` | HTML メールの表示 |
-| A.19 | `app/lib/sendVerify.ts` | 送信結果の分類と照合 |
-| A.20 | `app/lib/mime.ts` | 送信メールの組み立て |
-| A.21 | `app/lib/replyCompose.ts` | 返信・転送の本文と件名 |
-| A.22 | `app/lib/recipients.ts` | 返信の宛先 |
-| A.23 | `app/lib/messageParse.ts` | 受信メールの解析 |
-| A.24 | `app/lib/historySync.ts` | 差分同期 |
-| A.25 | `app/lib/mailboxOps.ts` | 移動・削除・既読／未読のラベル |
-| A.26 | `app/lib/filterMatch.ts` | フィルター条件 |
-| A.27 | `app/lib/groupEmails.ts` | チャットの分け方 |
+| A.6 | `app/lib/configCrypto.ts` | chat_id（h1:）と封筒 |
+| A.7 | `app/lib/configStore.ts` | 設定の読み書き・アカウントごとの置き場所 |
+| A.8 | `app/lib/linkedAccountsStore.ts` | アカウントのトークンの読み書き・引き継ぎ |
+| A.9 | `app/lib/pinnedIds.ts` | ピン留めの保存形式 |
+| A.10 | `app/lib/syncedSettings.ts` | 共通設定・アカウント設定の名前と型 |
+| A.11 | `app/lib/googleScopes.ts` | Google に求める権限 |
+| A.12 | `app/lib/googleToken.ts` | トークンの更新 |
+| A.13 | `app/lib/safeLog.ts` | ログに出してよいもの |
+| A.14 | `app/lib/securityHeaders.ts` | CSP とヘッダー |
+| A.15 | `app/lib/emailHtml.ts` | HTML メールの表示 |
+| A.16 | `app/lib/sendVerify.ts` | 送信結果の分類と照合 |
+| A.17 | `app/lib/mime.ts` | 送信メールの組み立て |
+| A.18 | `app/lib/replyCompose.ts` | 返信・転送の本文と件名 |
+| A.19 | `app/lib/recipients.ts` | 返信の宛先 |
+| A.20 | `app/lib/messageParse.ts` | 受信メールの解析 |
+| A.21 | `app/lib/historySync.ts` | 差分同期 |
+| A.22 | `app/lib/mailboxOps.ts` | 移動・削除・既読／未読のラベル |
+| A.23 | `app/lib/filterMatch.ts` | フィルター条件 |
+| A.24 | `app/lib/groupEmails.ts` | チャットの分け方 |
 
 ### A.1 `app/types/email.ts`
 
@@ -2143,36 +2151,32 @@ export function keysOf<K extends string>(o: Record<K, unknown>): K[] {
 ### A.4 `app/lib/tokenCrypto.ts`
 
 ```ts
-// linked_accounts テーブルに保存する refresh_token / access_token を、Cloudflareの環境変数
-// TOKEN_ENCRYPTION_KEY（base64エンコードされた32バイトのAES鍵）でAES-256-GCM暗号化する。
-// これらのトークンはGmailへの継続的なアクセスを許す長期的な資格情報のため、D1へ平文で
-// 置くのはリスクが大きい（D1への読み取りアクセスがあれば誰でもそのアカウントを使えてしまう）。
+// D1 に置く個人情報（linked_accounts のトークン・アドレス・表示名、chat_configs の中身）を、Cloudflare の環境変数
+// TOKEN_ENCRYPTION_KEY（base64 エンコードされた32バイトの AES 鍵）で AES-256-GCM 暗号化する。
+// トークンは Gmail への継続的なアクセスを許す長期的な資格情報のため、D1 へ平文で置かない（絶対ルール1）。
 //
-// 後方互換のための設計:
-// - TOKEN_ENCRYPTION_KEY が未設定の場合は暗号化せず平文のまま返す（既存の挙動を壊さないが、
-//   本番運用前に必ず設定することを強く推奨する。設定漏れに気づけるよう警告ログ tokenCrypto.keyMissing を出す）
-// - 復号時、値が "encv1:" で始まらない場合は暗号化前の古いデータとみなしてそのまま返す
-//   （鍵導入前に保存された既存の連携アカウントのトークンを引き続き使えるようにするため）
-// - 呼び出し側（resolveAccessToken）は、読み取った値が平文だったときに再暗号化して
-//   書き戻すことで、使われるたびに徐々に暗号化済みへ移行していく
-
-import { logWarn } from "./safeLog";
+// - 鍵が無ければ、暗号化・復号・HMAC のどれも例外にする（平文のまま D1 に書く道を作らない。API は 500 を返す）
+// - 復号できるのは「encv1:」で始まる値だけ。それ以外は例外にする（古い平文の値は 2026-10-23 にすべて消した）
+// - TOKEN_ENCRYPTION_KEY を変える・消すと、D1 の暗号化済みの値がすべて読めなくなる。鍵を足すときは新旧どちらも読めるようにする
 
 const ENC_PREFIX = "encv1:";
-let warnedMissingKey = false;
 
-async function importKey(): Promise<CryptoKey | null> {
-  const keyB64 = process.env.TOKEN_ENCRYPTION_KEY;
-  if (!keyB64) {
-    if (!warnedMissingKey) {
-      // TOKEN_ENCRYPTION_KEY 未設定。linked_accounts のトークンが平文のまま保存されるので、運用前に設定する
-      logWarn("tokenCrypto.keyMissing");
-      warnedMissingKey = true;
-    }
-    return null;
+// 鍵が無いことを、ほかの失敗（壊れた値・Google 側の失効など）と見分けるための例外
+export class EncryptionKeyMissingError extends Error {
+  constructor() {
+    super("TOKEN_ENCRYPTION_KEY is not set");
+    this.name = "EncryptionKeyMissingError";
   }
-  const raw = Uint8Array.from(atob(keyB64), (c) => c.charCodeAt(0));
-  return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+function readKeyBytes(): Uint8Array {
+  const keyB64 = process.env.TOKEN_ENCRYPTION_KEY;
+  if (!keyB64) throw new EncryptionKeyMissingError();
+  return Uint8Array.from(atob(keyB64), (c) => c.charCodeAt(0));
+}
+
+async function importKey(): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", readKeyBytes() as BufferSource, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -2184,48 +2188,36 @@ function fromBase64(b64: string): Uint8Array {
   return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 }
 
+// 空の値は中身が無いので、そのまま返す（呼び出し側は空なら NULL を書く）
 export async function encryptSecret(plain: string): Promise<string> {
   if (!plain) return plain;
   const key = await importKey();
-  if (!key) return plain;
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plain));
   return `${ENC_PREFIX}${toBase64(iv)}:${toBase64(new Uint8Array(ciphertext))}`;
 }
 
 export async function decryptSecret(stored: string | null | undefined): Promise<string> {
-  if (!stored) return stored || "";
-  if (!stored.startsWith(ENC_PREFIX)) return stored; // 鍵導入前の平文データ（後方互換）
+  if (!stored) return "";
+  if (!stored.startsWith(ENC_PREFIX)) throw new Error("Cannot decrypt: value is not encrypted");
   const key = await importKey();
-  if (!key) {
-    // 暗号化済みデータがあるのに鍵が無い（鍵をローテーション/削除してしまった等）場合は
-    // 復号不能なので、呼び出し側がリフレッシュ失敗として扱えるよう例外にする
-    throw new Error("Cannot decrypt: TOKEN_ENCRYPTION_KEY is not set but stored value is encrypted");
-  }
   const [, ivB64, dataB64] = stored.split(":");
-  const iv = fromBase64(ivB64);
-  const ciphertext = fromBase64(dataB64);
+  const iv = fromBase64(ivB64 || "");
+  const ciphertext = fromBase64(dataB64 || "");
   const plainBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv as BufferSource }, key, ciphertext as BufferSource);
   return new TextDecoder().decode(plainBuf);
 }
 
-// 値が既に暗号化済み（＝再暗号化不要）かどうか
-export function isEncrypted(stored: string | null | undefined): boolean {
-  return !!stored && stored.startsWith(ENC_PREFIX);
-}
-
-// D1 の chat_id（相手の名前やアドレス）を、元に戻せない決まった値に置き換えるための HMAC。
-// 同じ相手なら同じ値になるので、行を探す・上書きする・消すことはこれまでどおりできる。
-// 鍵は TOKEN_ENCRYPTION_KEY から HKDF で別の用途の鍵を作って使う（新しいシークレットを増やさないため）。
-// TOKEN_ENCRYPTION_KEY が無ければ null を返す（呼び出し側は平文のまま扱う）
-let hmacKeyPromise: Promise<CryptoKey | null> | null = null;
-function importHmacKey(): Promise<CryptoKey | null> {
+// D1 の chat_id（相手の名前やアドレス）とアドレスのキーを、元に戻せない決まった値に置き換えるための HMAC。
+// 同じ値なら同じ結果になるので、行を探す・上書きする・消すことはできる。
+// 鍵は TOKEN_ENCRYPTION_KEY から HKDF で別の用途の鍵を作って使う（新しいシークレットを増やさないため）
+let hmacKeyPromise: Promise<CryptoKey> | null = null;
+function importHmacKey(): Promise<CryptoKey> {
+  // 鍵が無いときは覚えずに毎回例外にする（あとから鍵を入れたら動くように）
+  const raw = readKeyBytes();
   if (!hmacKeyPromise) {
     hmacKeyPromise = (async () => {
-      const keyB64 = process.env.TOKEN_ENCRYPTION_KEY;
-      if (!keyB64) return null;
-      const raw = Uint8Array.from(atob(keyB64), (c) => c.charCodeAt(0));
-      const base = await crypto.subtle.importKey("raw", raw, "HKDF", false, ["deriveKey"]);
+      const base = await crypto.subtle.importKey("raw", raw as BufferSource, "HKDF", false, ["deriveKey"]);
       return crypto.subtle.deriveKey(
         { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: new TextEncoder().encode("remail-chat-id-hmac-v1") },
         base,
@@ -2238,9 +2230,8 @@ function importHmacKey(): Promise<CryptoKey | null> {
   return hmacKeyPromise;
 }
 
-export async function hmacId(value: string): Promise<string | null> {
+export async function hmacId(value: string): Promise<string> {
   const key = await importHmacKey();
-  if (!key) return null;
   const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
   // 行のキーに使うので、URL でも安全な文字だけにする（43文字）
   return toBase64(sig).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -2252,8 +2243,8 @@ export async function hmacId(value: string): Promise<string | null> {
 
 ```ts
 // D1 のキーにしている自分のアドレス（user_email・account_email）を、元に戻せない決まった値に置き換える。
-// Re:Mail をほかの人も使うので、D1 だけが漏れても利用者のアドレス一覧が分からないようにする（絶対ルール1）。
-// HMAC の計算は呼び出し側から渡す（tokenCrypto.ts の hmacId。テストでは差し替える）
+// D1 だけが漏れても利用者のアドレス一覧が分からないようにする（絶対ルール1）。
+// HMAC の計算は呼び出し側から渡す（tokenCrypto.ts の hmacId。鍵が無ければ例外。テストでは差し替える）
 
 export const ADDRESS_KEY_PREFIX = "a1:";
 
@@ -2266,101 +2257,39 @@ export function isAddressKey(value: string | null | undefined): boolean {
   return !!value && value.startsWith(ADDRESS_KEY_PREFIX);
 }
 
-type Hmac = (value: string) => Promise<string | null>;
+type Hmac = (value: string) => Promise<string>;
 
-// アドレスを D1 のキーにする値。鍵が無ければ null（呼び出し側は平文のまま扱う）
-export async function addressKeyFor(email: string, hmac: Hmac): Promise<string | null> {
+// アドレスを D1 のキーにする値。空のアドレスは例外（誰のものでもない行を作らない）
+export async function addressKeyFor(email: string, hmac: Hmac): Promise<string> {
   const n = normalizeAddress(email);
-  if (!n) return null;
+  if (!n) throw new Error("address is empty");
   // chat_id の HMAC と同じ鍵を使うので、用途の違う値と重ならないよう前に印を付けて計算する
-  const h = await hmac(`addr:${n}`);
-  return h ? ADDRESS_KEY_PREFIX + h : null;
-}
-
-// 移行の途中は平文の行と置き換えた行が混ざるので、両方で探す
-export async function lookupKeysFor(email: string, hmac: Hmac): Promise<string[]> {
-  const keys = [email];
-  const hashed = await addressKeyFor(email, hmac);
-  if (hashed) keys.push(hashed);
-  return keys;
+  return ADDRESS_KEY_PREFIX + (await hmac(`addr:${n}`));
 }
 
 ```
 
-### A.6 `app/lib/addressStage.ts`
+### A.6 `app/lib/configCrypto.ts`
 
 ```ts
-// 自分のアドレス（user_email・account_email）を D1 のキーから外す移行の段階。設定（chat_configs）と
-// 連携アカウント（linked_accounts）で同じ値を使う。
-//   false（段階1）: アドレスを置き換えた行も読める。保存はアドレスを平文のまま
-//   true（段階2）: アドレスを置き換えて保存し、古い形の行は読んだときに置き換える
-// 段階1のコードは段階2の行も読めるので、段階2から1つ前に戻しても壊れない
-export const WRITE_HASHED_ADDRESS = true;
-
-```
-
-### A.7 `app/lib/configCrypto.ts`
-
-```ts
-// chat_configs.custom_name（JSON）のうち、相手の名前・アドレスを含む値を暗号化して D1 に置くための変換。
-// 今はメッセージ単位のピン留め・非表示の roomId（「アカウント＋相手の名前」の複合キー）が対象。
-// 暗号化・復号の関数は呼び出し側から渡す（tokenCrypto.ts の encryptSecret / decryptSecret。テストでは差し替える）。
-//
-// 古いコードに戻しても壊れないよう、2段階で入れる:
-// 段階1: 読むときに roomIdEnc を復号して roomId として返す（保存はまだ平文の roomId）
-// 段階2: 保存するときに roomId を roomIdEnc に置き換える（段階1のコードは roomIdEnc を読めるので、戻しても壊れない）
+// chat_configs の行を暗号化して D1 に置くための変換（絶対ルール1）。
+// D1 の chat_id（相手の名前・アドレス、またはメッセージ ID）を「h1:」＋HMAC に置き換え、
+// 元の chat_id・custom_name（自分で付けた名前・グループのメンバー・フィルターの語など）・アカウントのアドレスは
+// まとめて暗号化して custom_name に入れる。画面とのやり取りは元の chat_id と custom_name で行う。
+// 暗号化・復号・HMAC の関数は呼び出し側から渡す（tokenCrypto.ts。テストでは差し替える）。
+// 予約行（account_email が空。__GLOBAL_SETTINGS__ / __ACCOUNT_SETTINGS__）は chat_id を置き換えず、中身だけを暗号化する（configStore.ts）
 
 type Crypt = (value: string) => Promise<string>;
-
-function parseObject(customName: string | null | undefined): Record<string, unknown> | null {
-  if (!customName || !customName.startsWith("{")) return null;
-  try {
-    const v = JSON.parse(customName);
-    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
-}
-
-// D1 から読んだ custom_name を、画面に返す形にする（roomIdEnc → roomId）。
-// 復号できなければ roomId を空にする（空でもメッセージ単位の設定として扱われ、どのルームにも属さないだけで壊れない）
-export async function revealConfigName(customName: string | null | undefined, decrypt: Crypt): Promise<string | null | undefined> {
-  const obj = parseObject(customName);
-  if (!obj || typeof obj.roomIdEnc !== "string") return customName;
-  const { roomIdEnc, ...rest } = obj;
-  let roomId = "";
-  try { roomId = await decrypt(roomIdEnc as string); } catch { roomId = ""; }
-  return JSON.stringify({ ...rest, roomId });
-}
-
-// 保存する custom_name の roomId を暗号化して roomIdEnc に置き換える（段階2で使う）
-export async function sealConfigName(customName: string | null | undefined, encrypt: Crypt): Promise<string | null | undefined> {
-  const obj = parseObject(customName);
-  if (!obj || typeof obj.roomId !== "string" || !obj.roomId) return customName;
-  const { roomId, ...rest } = obj;
-  return JSON.stringify({ ...rest, roomIdEnc: await encrypt(roomId as string) });
-}
-
-// 平文の roomId が残っている（段階2より前に保存された）行か
-export function hasPlainRoomId(customName: string | null | undefined): boolean {
-  const obj = parseObject(customName);
-  return !!obj && typeof obj.roomId === "string" && !!obj.roomId;
-}
-
-// ---- 行ごとの暗号化（chat_id と custom_name をまとめて隠す） ----
-// D1 の chat_id（相手の名前・アドレス、またはメッセージ ID）を「h1:」＋HMAC に置き換え、
-// 元の chat_id と custom_name（自分で付けた名前・グループのメンバー・フィルターの語など）は
-// まとめて暗号化して custom_name に入れる。画面とのやり取りは、これまでどおり元の chat_id と custom_name で行う
 
 export const SEALED_CHAT_ID_PREFIX = "h1:";
 
 export type RowCrypto = {
-  hmac: (value: string) => Promise<string | null>;
+  hmac: (value: string) => Promise<string>;
   encrypt: Crypt;
   decrypt: Crypt;
 };
 
-// account_email が空の行は __GLOBAL_SETTINGS__ などの予約行（個人情報を含まない）なので、そのまま扱う
+// account_email が空の行は予約行
 export function isReservedRow(accountEmail: string | null | undefined): boolean {
   return !accountEmail;
 }
@@ -2369,25 +2298,22 @@ export function isSealedChatId(chatId: string | null | undefined): boolean {
   return !!chatId && chatId.startsWith(SEALED_CHAT_ID_PREFIX);
 }
 
-// 保存する形にする。鍵が無い（HMAC が作れない）ときは null（呼び出し側は平文のまま保存する）。
-// accountEmail を渡すと、元のアカウントのアドレスも一緒に暗号化して持つ（account_email 列を置き換えた後に戻すため）
-export async function sealRow(chatId: string, customName: string | null | undefined, c: RowCrypto, accountEmail?: string): Promise<{ chatId: string; customName: string } | null> {
+// 保存する形にする。元のアカウントのアドレスも一緒に暗号化して持つ（account_email 列は HMAC にしてあるので、そこからは戻せない）
+export async function sealRow(chatId: string, customName: string | null | undefined, c: RowCrypto, accountEmail: string): Promise<{ chatId: string; customName: string }> {
   const hashed = await c.hmac(chatId);
-  if (!hashed) return null;
-  const envelope = JSON.stringify(accountEmail ? { c: chatId, n: customName ?? null, a: accountEmail } : { c: chatId, n: customName ?? null });
+  const envelope = JSON.stringify({ c: chatId, n: customName ?? null, a: accountEmail });
   return { chatId: SEALED_CHAT_ID_PREFIX + hashed, customName: await c.encrypt(envelope) };
 }
 
-// D1 の行を、画面に返す形（元の chat_id と custom_name）に戻す。暗号化していない行はそのまま。
-// 復号できない行は null（その行は返さない。ほかの行の表示は止めない）
-export async function openRow(chatId: string, customName: string | null | undefined, c: RowCrypto): Promise<{ chatId: string; customName: string | null; accountEmail?: string } | null> {
-  if (!isSealedChatId(chatId)) return { chatId, customName: customName ?? null };
+// D1 の行を、画面に返す形（元の chat_id・custom_name・アカウント）に戻す。
+// sealRow の形でない行・復号できない行・アカウントを持たない行は null（その行は返さない。ほかの行の表示は止めない）
+export async function openRow(chatId: string, customName: string | null | undefined, c: RowCrypto): Promise<{ chatId: string; customName: string | null; accountEmail: string } | null> {
+  if (!isSealedChatId(chatId)) return null;
   try {
     const env = JSON.parse(await c.decrypt(customName || "")) as { c?: unknown; n?: unknown; a?: unknown };
     if (typeof env.c !== "string" || !env.c) return null;
-    const out: { chatId: string; customName: string | null; accountEmail?: string } = { chatId: env.c, customName: typeof env.n === "string" ? env.n : null };
-    if (typeof env.a === "string" && env.a) out.accountEmail = env.a;
-    return out;
+    if (typeof env.a !== "string" || !env.a) return null;
+    return { chatId: env.c, customName: typeof env.n === "string" ? env.n : null, accountEmail: env.a };
   } catch {
     return null;
   }
@@ -2395,38 +2321,23 @@ export async function openRow(chatId: string, customName: string | null | undefi
 
 ```
 
-### A.8 `app/lib/configStage.ts`
+### A.7 `app/lib/configStore.ts`
 
 ```ts
-// 設定をアカウントごとの置き場所（そのアカウントの user_email）に移す移行の段階。
-//   true（段階1）: 連携アカウントの設定を、そのアカウントの置き場所に書き、以前の置き場所（メインアカウントの user_email）にも同じものを書く。
-//                  古いコードに戻しても、以前の置き場所の行で設定が見える
-//   false（段階2）: 以前の置き場所には書かない（段階1を十分に動かしてから切り替える）
-//   2026-10-23 に段階2へ切り替えた。段階2のコードは以前の置き場所の古い写しを、読んだときに消す
-export const WRITE_LEGACY_LINKED_COPY = false;
-
-```
-
-### A.9 `app/lib/configStore.ts`
-
-```ts
-// 設定（chat_configs）の読み書き。/api/config と、全行を定期的に置き換える処理（app/lib/backfill.ts）の両方から使う。
+// 設定（chat_configs）の読み書き。/api/config から使う。
 //
 // D1 に個人情報を平文で置かない（絶対ルール1）。
-// - chat_id（相手の名前・アドレス）は「h1:」＋HMAC、元の chat_id と custom_name（名前変更・グループ・フィルターの語）は
-//   まとめて暗号化して保存する（app/lib/configCrypto.ts）
-// - user_email・account_email（自分のアドレス）は「a1:」＋HMAC に置き換え、元の account_email は暗号化した中身に持たせる
-//   （app/lib/addressKey.ts）。Re:Mail をほかの人も使うので、D1 だけが漏れても利用者の一覧が分からないようにする
-// 画面とのやり取りは、これまでどおり元のアドレス・chat_id・custom_name で行う。
-// 古いコードに戻しても壊れないよう、段階を分けて入れる（段階は app/lib/addressStage.ts で切り替える）
+// - chat_id（相手の名前・アドレス）は「h1:」＋HMAC、元の chat_id・custom_name（名前変更・グループ・フィルターの語）・
+//   アカウントのアドレスはまとめて暗号化して保存する（app/lib/configCrypto.ts）
+// - user_email・account_email（自分のアドレス）は「a1:」＋HMAC に置き換える（app/lib/addressKey.ts）
+// - 予約行（account_email が空。__GLOBAL_SETTINGS__ / __ACCOUNT_SETTINGS__）は中身を暗号化する
+// 鍵が無ければ例外にする（平文で書く道は無い）。画面とのやり取りは元のアドレス・chat_id・custom_name で行う
 import { logError, logInfo } from "./safeLog";
-import { decryptSecret, encryptSecret, hmacId, isEncrypted } from "./tokenCrypto";
+import { decryptSecret, encryptSecret, hmacId } from "./tokenCrypto";
 import { stripPinnedBodies } from "./pinnedIds";
-import { addressKeyFor, isAddressKey } from "./addressKey";
-import { WRITE_HASHED_ADDRESS } from "./addressStage";
+import { addressKeyFor } from "./addressKey";
 import { sanitizeSyncedSettings, sanitizeAccountSettings, newestCommonSettings, syncedSettingsKey, type SyncedSettings, type AccountSettings } from "./syncedSettings";
-import { WRITE_LEGACY_LINKED_COPY } from "./configStage";
-import { sealConfigName, sealRow, openRow, isReservedRow, isSealedChatId, SEALED_CHAT_ID_PREFIX, type RowCrypto } from "./configCrypto";
+import { sealRow, openRow, isReservedRow, SEALED_CHAT_ID_PREFIX, type RowCrypto } from "./configCrypto";
 
 type Db = CloudflareEnv["DB"];
 
@@ -2445,7 +2356,6 @@ type Row = {
 
 // 画面に返す形（元のアドレス・chat_id・custom_name）
 export type OpenedConfig = Omit<Row, "user_email">;
-type OpenedRow = OpenedConfig & { source: Row; rank: number };
 
 const UPSERT_SQL = `INSERT INTO chat_configs (user_email, account_email, chat_id, custom_name, is_pinned, is_hidden, hidden_at_date, unhide_on_new)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -2456,109 +2366,24 @@ const UPSERT_SQL = `INSERT INTO chat_configs (user_email, account_email, chat_id
        hidden_at_date=excluded.hidden_at_date,
        unhide_on_new=excluded.unhide_on_new`;
 
-const DELETE_ROW_SQL = "DELETE FROM chat_configs WHERE user_email = ? AND account_email = ? AND chat_id = ?";
+const addressKey = (email: string) => addressKeyFor(email, hmacId);
 
-// 本人のアドレスの、平文と置き換えた値（移行の途中は両方の行がありうる）
-async function userKeys(email: string): Promise<{ plain: string; hashed: string | null }> {
-  return { plain: email, hashed: await addressKeyFor(email, hmacId) };
-}
-
-// これから保存するときに使う account_email の値（段階1では平文のまま）
-async function targetAccountKey(accountEmail: string): Promise<string> {
-  if (isReservedRow(accountEmail)) return "";
-  if (!WRITE_HASHED_ADDRESS) return accountEmail;
-  return (await addressKeyFor(accountEmail, hmacId)) || accountEmail;
-}
-
-// 本人の設定をすべて読み、元の形に戻して返す。古い形の行・本体の残っている行は、ここで今の保存の形に置き換える
-export async function openAndMigrateConfigs(db: Db, userEmail: string): Promise<OpenedConfig[]> {
-  const user = await userKeys(userEmail);
-  const targetUser = WRITE_HASHED_ADDRESS && user.hashed ? user.hashed : user.plain;
-  const { results } = user.hashed
-    ? await db.prepare("SELECT * FROM chat_configs WHERE user_email IN (?, ?)").bind(user.plain, user.hashed).all()
-    : await db.prepare("SELECT * FROM chat_configs WHERE user_email = ?").bind(user.plain).all();
-  const rows = results as Row[];
-
-  // それぞれの行を元の形に戻す。同じ設定が古い形と新しい形の両方にあれば、新しい形（rank が高い方）を使い、
-  // 使わなかった方は「同じ設定の古い行」として後で消す。開けなかった行は消さずにそのまま残す（失わないため）
-  const opened = new Map<string, OpenedRow>();
-  const duplicates: Row[] = [];
-  for (const row of rows) {
-    const reserved = isReservedRow(row.account_email);
-    let chatId = row.chat_id;
-    let customName = row.custom_name ?? null;
-    let accountEmail = row.account_email;
-    if (!reserved) {
-      const o = await openRow(row.chat_id, row.custom_name, rowCrypto);
-      if (!o) { logError("config.openRow", {}); continue; }
-      chatId = o.chatId;
-      customName = o.customName;
-      if (isAddressKey(row.account_email)) {
-        // アドレスを置き換えた行は、暗号化した中身に元のアドレスを持っている
-        if (!o.accountEmail) { logError("config.openRow.noAccount", {}); continue; }
-        accountEmail = o.accountEmail;
-      }
-      // メールの中身を D1 に置かない（絶対ルール1）。以前の形式で残っていた本体は、ここで取り除く
-      customName = stripPinnedBodies(customName) ?? null;
+// そのアカウントの置き場所（user_email）にある設定をすべて読み、元の形に戻して返す。
+// 開けない行（壊れた・今の形でない）は返さない（ほかの行の表示は止めない）。予約行は暗号化したまま返す
+export async function openConfigs(db: Db, userEmail: string): Promise<OpenedConfig[]> {
+  const { results } = await db.prepare("SELECT * FROM chat_configs WHERE user_email = ?").bind(await addressKey(userEmail)).all();
+  const out: OpenedConfig[] = [];
+  for (const row of (results || []) as Row[]) {
+    const flags = { is_pinned: row.is_pinned, is_hidden: row.is_hidden, hidden_at_date: row.hidden_at_date, unhide_on_new: row.unhide_on_new };
+    if (isReservedRow(row.account_email)) {
+      out.push({ account_email: "", chat_id: row.chat_id, custom_name: row.custom_name ?? null, ...flags });
+      continue;
     }
-    const rank = (isAddressKey(row.user_email) ? 4 : 0) + (isAddressKey(row.account_email) ? 2 : 0) + (isSealedChatId(row.chat_id) ? 1 : 0);
-    const key = `${accountEmail}\u0000${chatId}`;
-    const prev = opened.get(key);
-    if (prev && prev.rank >= rank) { duplicates.push(row); continue; }
-    if (prev) duplicates.push(prev.source);
-    opened.set(key, {
-      account_email: accountEmail, chat_id: chatId, custom_name: customName,
-      is_pinned: row.is_pinned, is_hidden: row.is_hidden, hidden_at_date: row.hidden_at_date, unhide_on_new: row.unhide_on_new,
-      source: row, rank,
-    });
+    const o = await openRow(row.chat_id, row.custom_name, rowCrypto);
+    if (!o) { logError("config.openRow", {}); continue; }
+    out.push({ account_email: o.accountEmail, chat_id: o.chatId, custom_name: o.customName, ...flags });
   }
-
-  // 古い形の行・本体の残っている行を、今の保存の形に置き換える（同じバッチで書いて消すので途中で失われない）。
-  // 失敗しても読み込みは止めない（次に読んだときにまた試す）
-  try {
-    const stmts = [];
-    let rewritten = 0;
-    for (const o of opened.values()) {
-      const reserved = isReservedRow(o.account_email);
-      const account = await targetAccountKey(o.account_email);
-      let chat = o.chat_id;
-      let custom = o.custom_name ?? null;
-      if (!reserved) {
-        const sealed = await sealRow(o.chat_id, o.custom_name, rowCrypto, WRITE_HASHED_ADDRESS ? o.account_email : undefined);
-        if (sealed) { chat = sealed.chatId; custom = sealed.customName; }
-        else custom = (await sealConfigName(custom, encryptSecret)) ?? null;
-      }
-      const src = o.source;
-      const sameKeys = src.user_email === targetUser && src.account_email === account && src.chat_id === chat;
-      // 中身を書き直す必要があるか：本体が残っている、または（段階2で）元のアドレスをまだ中身に持っていない
-      let contentStale = false;
-      if (!reserved && isSealedChatId(src.chat_id)) {
-        const srcOpened = await openRow(src.chat_id, src.custom_name, rowCrypto);
-        contentStale = !srcOpened
-          || stripPinnedBodies(srcOpened.customName) !== srcOpened.customName
-          || (WRITE_HASHED_ADDRESS && !srcOpened.accountEmail);
-      } else if (!reserved) {
-        contentStale = true; // 平文の chat_id の行は暗号化して置き換える
-      }
-      if (sameKeys && !contentStale) continue;
-      if (!reserved && !isSealedChatId(chat)) continue; // 鍵が無く暗号化できないときは、今の行をそのまま使う
-      stmts.push(db.prepare(UPSERT_SQL).bind(targetUser, account, chat, custom, o.is_pinned ?? 0, o.is_hidden ?? 0, o.hidden_at_date ?? null, o.unhide_on_new ?? 0));
-      if (!sameKeys) stmts.push(db.prepare(DELETE_ROW_SQL).bind(src.user_email, src.account_email, src.chat_id));
-      rewritten++;
-    }
-    for (const row of duplicates) stmts.push(db.prepare(DELETE_ROW_SQL).bind(row.user_email, row.account_email, row.chat_id));
-    if (stmts.length > 0) {
-      await db.batch(stmts);
-      logInfo("config.migrateRows", { count: rewritten });
-    }
-  } catch (e) {
-    logError("config.migrateRows", { count: rows.length }, e);
-  }
-
-  return Array.from(opened.values()).map((o) => ({
-    account_email: o.account_email, chat_id: o.chat_id, custom_name: o.custom_name,
-    is_pinned: o.is_pinned, is_hidden: o.is_hidden, hidden_at_date: o.hidden_at_date, unhide_on_new: o.unhide_on_new,
-  }));
+  return out;
 }
 
 export type ConfigInput = {
@@ -2571,295 +2396,143 @@ export type ConfigInput = {
   unhide_on_new?: boolean;
 };
 
-// 1つの設定を保存する。同じ設定の古い形の行（平文のアドレス・平文の chat_id）が残っていれば消す
+// 1つの設定を、userEmail の置き場所に保存する
 export async function saveConfig(db: Db, userEmail: string, input: ConfigInput): Promise<void> {
-  const user = await userKeys(userEmail);
-  const targetUser = WRITE_HASHED_ADDRESS && user.hashed ? user.hashed : user.plain;
-  // メールの中身（以前の形式のピン留めの本体）は、送られてきても保存しない（絶対ルール1）
+  // メールの中身（ピン留めの本体）は、送られてきても保存しない（絶対ルール1）
   const customName = stripPinnedBodies(input.custom_name) ?? null;
-  const flags = [input.is_pinned ? 1 : 0, input.is_hidden ? 1 : 0, input.hidden_at_date || null, input.unhide_on_new ? 1 : 0] as const;
-
-  const account = await targetAccountKey(input.account_email);
-  const sealed = await sealRow(input.chat_id, customName, rowCrypto, WRITE_HASHED_ADDRESS ? input.account_email : undefined);
-  const chat = sealed ? sealed.chatId : input.chat_id;
-  const custom = sealed ? sealed.customName : ((await sealConfigName(customName, encryptSecret)) || null);
-  const userKeysList = [user.plain, user.hashed || user.plain];
-  const accountKeys = [input.account_email, (await addressKeyFor(input.account_email, hmacId)) || input.account_email];
-  const chatKeys = [input.chat_id, chat];
-  await db.batch([
-    db.prepare(UPSERT_SQL).bind(targetUser, account, chat, custom, ...flags),
-    db.prepare(`DELETE FROM chat_configs WHERE user_email IN (?, ?) AND account_email IN (?, ?) AND chat_id IN (?, ?)
-                AND NOT (user_email = ? AND account_email = ? AND chat_id = ?)`)
-      .bind(...userKeysList, ...accountKeys, ...chatKeys, targetUser, account, chat),
-  ]);
+  const sealed = await sealRow(input.chat_id, customName, rowCrypto, input.account_email);
+  await db.prepare(UPSERT_SQL).bind(
+    await addressKey(userEmail), await addressKey(input.account_email), sealed.chatId, sealed.customName,
+    input.is_pinned ? 1 : 0, input.is_hidden ? 1 : 0, input.hidden_at_date || null, input.unhide_on_new ? 1 : 0,
+  ).run();
 }
 
-// 1つの設定を消す（古い形・新しい形のどれで保存されていても消す）
+// 1つの設定を消す
 export async function deleteConfig(db: Db, userEmail: string, chatId: string, accountEmail: string): Promise<void> {
-  const user = await userKeys(userEmail);
-  const sealedChat = await hmacId(chatId);
-  const userKeysList = [user.plain, user.hashed || user.plain];
-  const accountKeys = [accountEmail, (await addressKeyFor(accountEmail, hmacId)) || accountEmail];
-  const chatKeys = [chatId, sealedChat ? `${SEALED_CHAT_ID_PREFIX}${sealedChat}` : chatId];
-  await db.prepare("DELETE FROM chat_configs WHERE user_email IN (?, ?) AND account_email IN (?, ?) AND chat_id IN (?, ?)")
-    .bind(...userKeysList, ...accountKeys, ...chatKeys).run();
+  await db.prepare("DELETE FROM chat_configs WHERE user_email = ? AND account_email = ? AND chat_id = ?")
+    .bind(await addressKey(userEmail), await addressKey(accountEmail), SEALED_CHAT_ID_PREFIX + (await hmacId(chatId))).run();
 }
 
 // どの端末でも共通の設定（account_email が空の予約行 __GLOBAL_SETTINGS__ に持つ）。
 // 入れてよい設定の名前と型は app/lib/syncedSettings.ts で決め、それ以外は捨てる。
-// アカウントのアドレスを含むので、行の中身はまとめて暗号化して保存する（以前の平文の JSON も読める）
+// アカウントのアドレスを含むので、行の中身はまとめて暗号化して保存する
 export const GLOBAL_SETTINGS_CHAT_ID = "__GLOBAL_SETTINGS__";
+export const ACCOUNT_SETTINGS_CHAT_ID = "__ACCOUNT_SETTINGS__";
 
-// 保存されている中身を設定に戻す。暗号化したもの・以前の平文の JSON のどちらも読む。読めなければ空
+// 保存されている（暗号化した）中身を設定に戻す。読めなければ空
 export async function openGlobalSettings(customName: string | null | undefined): Promise<SyncedSettings> {
   if (!customName) return {};
   try {
-    const json = customName.startsWith("encv1:") ? await decryptSecret(customName) : customName;
-    return sanitizeSyncedSettings(JSON.parse(json));
+    return sanitizeSyncedSettings(JSON.parse(await decryptSecret(customName)));
   } catch {
     return {};
   }
 }
 
-// 予約行（account_email が空）の中身を読む。今の形の行を優先する
-async function readReservedRow(db: Db, userEmail: string, chatId: string): Promise<string | null> {
-  const user = await userKeys(userEmail);
-  const targetUser = WRITE_HASHED_ADDRESS && user.hashed ? user.hashed : user.plain;
-  const { results } = await db.prepare("SELECT user_email, custom_name FROM chat_configs WHERE user_email IN (?, ?) AND account_email = '' AND chat_id = ?")
-    .bind(user.plain, user.hashed || user.plain, chatId).all();
-  const rows = results as { user_email: string; custom_name: string | null }[];
-  return (rows.find(r => r.user_email === targetUser) || rows[0])?.custom_name ?? null;
-}
-
-// 予約行を、渡した値そのもので置き換える（暗号化して書く）。古い形（平文のアドレス）の行があれば消す。
-// 鍵が無く暗号化できないとき（ローカルの開発環境など）は、アドレスを含む値を平文で D1 に置かないよう外して書き、外した値を返す
-async function writeReservedRow(db: Db, userEmail: string, chatId: string, value: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const user = await userKeys(userEmail);
-  const targetUser = WRITE_HASHED_ADDRESS && user.hashed ? user.hashed : user.plain;
-  const out = { ...value };
-  let sealed = await encryptSecret(JSON.stringify(out));
-  if (!isEncrypted(sealed)) {
-    delete out.accounts;
-    sealed = JSON.stringify(out);
+export async function openAccountSettings(customName: string | null | undefined): Promise<AccountSettings> {
+  if (!customName) return {};
+  try {
+    return sanitizeAccountSettings(JSON.parse(await decryptSecret(customName)));
+  } catch {
+    return {};
   }
-  await db.batch([
-    db.prepare(UPSERT_SQL).bind(targetUser, "", chatId, sealed, 0, 0, null, 0),
-    db.prepare("DELETE FROM chat_configs WHERE user_email IN (?, ?) AND account_email = '' AND chat_id = ? AND user_email <> ?")
-      .bind(user.plain, user.hashed || user.plain, chatId, targetUser),
-  ]);
-  return out;
 }
 
-// 共通の設定の一部を書き換える。ほかの値は残す。古い形（平文のアドレス）の行があれば今の形に移して消す
-export async function saveGlobalSettings(db: Db, userEmail: string, updates: unknown): Promise<SyncedSettings> {
-  const merged: SyncedSettings = { ...(await openGlobalSettings(await readReservedRow(db, userEmail, GLOBAL_SETTINGS_CHAT_ID))), ...sanitizeSyncedSettings(updates) };
-  return (await writeReservedRow(db, userEmail, GLOBAL_SETTINGS_CHAT_ID, merged)) as SyncedSettings;
+// 予約行（account_email が空）の中身を読む
+async function readReservedRow(db: Db, userEmail: string, chatId: string): Promise<string | null> {
+  const { results } = await db.prepare("SELECT custom_name FROM chat_configs WHERE user_email = ? AND account_email = '' AND chat_id = ?")
+    .bind(await addressKey(userEmail), chatId).all();
+  return ((results || []) as { custom_name: string | null }[])[0]?.custom_name ?? null;
+}
+
+// 予約行を、渡した値そのもので置き換える（暗号化して書く）
+async function writeReservedRow(db: Db, userEmail: string, chatId: string, value: Record<string, unknown>): Promise<void> {
+  await db.prepare(UPSERT_SQL).bind(await addressKey(userEmail), "", chatId, await encryptSecret(JSON.stringify(value)), 0, 0, null, 0).run();
 }
 
 // ---- アカウントごとの置き場所 ----
-// 設定は「そのアカウント自身」の置き場所（user_email = そのアカウント）に保存する。こうすると、連携アカウントで
-// 直接ログインしても、連携して使っていたときの設定がそのまま使える（ログインできる＝同じ人とみなす）。
-// - アカウント設定・チャットの設定（ピン留め・非表示・名前変更・グループ・そのアカウントだけのフィルター）：そのアカウントの置き場所
-// - 共通設定・すべてのアカウントが対象のフィルター（shared）：ログインしている全アカウントの置き場所に同じものを書く
-// 以前は連携アカウントの設定もメインアカウントの置き場所に書いていた。その行は読んだときに写し、段階1では両方に書く（configStage.ts）
-
-export const ACCOUNT_SETTINGS_CHAT_ID = "__ACCOUNT_SETTINGS__";
+// 設定は「そのアカウント自身」の置き場所（user_email = そのアカウント）に保存する。こうすると、そのアカウントだけで
+// ログインしても同じ設定で使える（ログインできる＝同じ人とみなす）。
+// - アカウント設定・チャットの設定（ピン留め・非表示・名前変更・グループ・フィルター）：そのアカウントの置き場所
+// - 共通設定：ログインしている全アカウントの置き場所に同じものを書き、一番新しいもの（updatedAt）を使う
 
 const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
-// custom_name の JSON から、すべてのアカウントが対象か（shared）・最後に保存した時刻・フィルターの対象アカウントを読む
-export function configMeta(customName: string | null | undefined): { shared: boolean; updatedAt: number; filterAccount?: string; isFilter?: boolean } {
-  if (!customName || !customName.startsWith("{")) return { shared: false, updatedAt: 0 };
-  try {
-    const p = JSON.parse(customName) as { shared?: unknown; updatedAt?: unknown; filterAction?: unknown; isGroup?: unknown; filterCriteria?: { accountEmail?: unknown } };
-    const fa = p.filterCriteria?.accountEmail;
-    const meta: { shared: boolean; updatedAt: number; filterAccount?: string; isFilter?: boolean } = { shared: p.shared === true, updatedAt: typeof p.updatedAt === "number" ? p.updatedAt : 0 };
-    if (typeof fa === "string" && fa) meta.filterAccount = fa;
-    if (!!p.filterAction || (!!p.isGroup && !!p.filterCriteria)) meta.isFilter = true;
-    return meta;
-  } catch {
-    return { shared: false, updatedAt: 0 };
-  }
-}
-
-// フィルターを、指定したアカウントだけのものにする（すべてのアカウントが対象だったものを、アカウントごとに分けるとき）
-export function assignFilterAccount(customName: string | null | undefined, account: string): string | null {
-  if (!customName) return customName ?? null;
-  try {
-    const p = JSON.parse(customName) as Record<string, unknown> & { filterCriteria?: Record<string, unknown> };
-    delete p.shared;
-    p.filterCriteria = { ...(p.filterCriteria || {}), accountEmail: account };
-    return JSON.stringify(p);
-  } catch {
-    return customName;
-  }
-}
-
-const toInput = (o: OpenedConfig, accountEmail: string): ConfigInput => ({
-  chat_id: o.chat_id, account_email: accountEmail, custom_name: o.custom_name ?? null,
-  is_pinned: o.is_pinned === 1, is_hidden: o.is_hidden === 1, hidden_at_date: o.hidden_at_date ?? null, unhide_on_new: o.unhide_on_new === 1,
-});
-// 2つの写しの中身が同じかを比べるための値
-const contentKey = (o: OpenedConfig) => JSON.stringify([o.custom_name ?? null, o.is_pinned ? 1 : 0, o.is_hidden ? 1 : 0, o.hidden_at_date ?? null, o.unhide_on_new ? 1 : 0]);
-
-// ログイン中のアカウント（メイン＋連携）。重複と空を除く
+// ログイン中のアカウント（ログインのセッションを持つアカウント＋一緒にログインしているアカウント）。重複と空を除く
 export function sessionAccountList(primary: string, linked: string[]): string[] {
   const out = [primary];
   for (const a of linked) if (a && !out.some(x => sameAddress(x, a))) out.push(a);
   return out;
 }
 
+// ログイン中でないアカウントの設定を読み書きしようとした（API は 400 を返す）
+export class UnknownAccountError extends Error {
+  constructor() {
+    super("Unknown account");
+    this.name = "UnknownAccountError";
+  }
+}
+
 export type SessionConfigs = { configs: OpenedConfig[]; accountSettings: Record<string, AccountSettings> };
 
-// ログイン中の全アカウントの設定を読み、画面に返す形にまとめる。足りない写し・以前の置き場所の行は、ここで書き足す
+// ログイン中の全アカウントの設定を読み、画面に返す形にまとめる。
+// 共通設定は一番新しい写しを使い、違う写し・無い写しを書き直す（あとから足したアカウントにも写す）
 export async function openSessionConfigs(db: Db, primary: string, linked: string[]): Promise<SessionConfigs> {
   const accounts = sessionAccountList(primary, linked);
-  const findAccount = (a: string) => accounts.find(x => sameAddress(x, a));
   const spaces = new Map<string, OpenedConfig[]>();
-  for (const a of accounts) spaces.set(a, await openAndMigrateConfigs(db, a));
+  for (const a of accounts) spaces.set(a, await openConfigs(db, a));
 
-  const result = new Map<string, OpenedConfig>();
-  const writes: { owner: string; input: ConfigInput }[] = [];
-  const deletes: { owner: string; chatId: string; accountEmail: string }[] = [];
-  const key = (account: string, chat: string) => `${account.toLowerCase()}\u0000${chat}`;
-
-  // 1. 自分の置き場所にある、自分のチャットの設定
+  // チャットの設定は、その置き場所のアカウントのものだけを返す
+  const configs: OpenedConfig[] = [];
   for (const [owner, rows] of spaces) {
     for (const o of rows) {
       if (isReservedRow(o.account_email) || !sameAddress(o.account_email, owner)) continue;
-      const meta = configMeta(o.custom_name);
-      if (meta.shared || (meta.isFilter && !meta.filterAccount && accounts.length > 1)) continue;
-      // 以前はほかのアカウントだけが対象のフィルターも、メインアカウント名義で保存していた。対象のアカウントへ移す
-      const target = meta.filterAccount ? findAccount(meta.filterAccount) : undefined;
-      if (target && !sameAddress(target, owner)) {
-        if (!result.has(key(target, o.chat_id))) {
-          result.set(key(target, o.chat_id), { ...o, account_email: target });
-          writes.push({ owner: target, input: toInput(o, target) });
-        }
-        deletes.push({ owner, chatId: o.chat_id, accountEmail: owner });
-        continue;
-      }
-      result.set(key(owner, o.chat_id), { ...o, account_email: owner });
-    }
-  }
-  // 2. 以前の置き場所（ほかのアカウントの置き場所）にある、このアカウントのチャットの設定。自分の置き場所に無いものだけ使い、写す。
-  //    段階2（configStage.ts）では、写し終えた（または自分の置き場所にすでにある）以前の行は消す（D1 に同じ設定を2つ置かない）。
-  //    消すのは書き足しのあと（同じ try の中で、書き足しが失敗したら消さない）
-  for (const [space, rows] of spaces) {
-    for (const o of rows) {
-      if (isReservedRow(o.account_email) || sameAddress(o.account_email, space) || configMeta(o.custom_name).shared) continue;
-      const owner = findAccount(o.account_email);
-      if (!owner) {
-        // 連携を解除したアカウントなどの行は、これまでどおりメインアカウントの置き場所の分だけ返す
-        if (space === primary && !result.has(key(o.account_email, o.chat_id))) result.set(key(o.account_email, o.chat_id), o);
-        continue;
-      }
-      if (!WRITE_LEGACY_LINKED_COPY) deletes.push({ owner: space, chatId: o.chat_id, accountEmail: o.account_email });
-      if (result.has(key(owner, o.chat_id))) continue;
-      result.set(key(owner, o.chat_id), { ...o, account_email: owner });
-      writes.push({ owner, input: toInput(o, owner) });
-    }
-  }
-  // 3. すべてのアカウントが対象のフィルター（shared と、アカウントを決めていない以前のフィルター）は、
-  //    アカウントごとの別々のフィルターに分ける（フィルターはアカウントごとに保存し、そのアカウントのメールにだけ効く）。
-  //    一番新しい写しをもとに、各アカウントの置き場所にそのアカウントだけのフィルターとして書き直す
-  if (accounts.length > 1) {
-    const best = new Map<string, { o: OpenedConfig; at: number; preferred: boolean }>();
-    for (const [space, rows] of spaces) {
-      for (const o of rows) {
-        if (isReservedRow(o.account_email)) continue;
-        const meta = configMeta(o.custom_name);
-        const toSplit = meta.shared || (meta.isFilter && !meta.filterAccount && sameAddress(o.account_email, space));
-        if (!toSplit) continue;
-        const cur = best.get(o.chat_id);
-        const preferred = space === primary;
-        if (!cur || meta.updatedAt > cur.at || (meta.updatedAt === cur.at && preferred && !cur.preferred)) best.set(o.chat_id, { o, at: meta.updatedAt, preferred });
-      }
-    }
-    for (const [chat, { o }] of best) {
-      for (const a of accounts) {
-        // 分けたあとにそのアカウントで編集した（アカウントの決まった）フィルターがあれば、そちらを使う
-        if (result.has(key(a, chat))) continue;
-        const own: OpenedConfig = { ...o, account_email: a, custom_name: assignFilterAccount(o.custom_name, a) };
-        result.set(key(a, chat), own);
-        writes.push({ owner: a, input: toInput(own, a) });
-      }
-    }
-  } else {
-    // 1つのアカウントだけでログインしているときは、そのアカウントのフィルターとしてそのまま返す
-    for (const o of spaces.get(primary) || []) {
-      if (isReservedRow(o.account_email) || !configMeta(o.custom_name).shared) continue;
-      result.set(key(primary, o.chat_id), { ...o, account_email: primary });
+      configs.push({ ...o, account_email: owner });
     }
   }
 
-  // 4. 共通設定：一番新しい写しを使い、違う写し・無い写しを書き直す（あとから足したアカウントにも写す）
   const reservedOf = (a: string, chatId: string) => spaces.get(a)?.find(o => isReservedRow(o.account_email) && o.chat_id === chatId);
+
+  // 共通設定：一番新しい写しを使う
   const globalCopies = await Promise.all(accounts.map(async (a) => ({ a, settings: await openGlobalSettings(reservedOf(a, GLOBAL_SETTINGS_CHAT_ID)?.custom_name) })));
   const common = newestCommonSettings(globalCopies.map(c => ({ settings: c.settings, preferred: c.a === primary })));
   const commonKey = syncedSettingsKey(common);
   const globalWrites = Object.keys(common).length > 0 ? globalCopies.filter(c => syncedSettingsKey(c.settings) !== commonKey).map(c => c.a) : [];
 
-  // 5. アカウント設定：無ければ、以前の共通設定にあった値を初期値にする（書くのは変えたときだけ）
+  // アカウント設定：そのアカウントの置き場所のもの
   const accountSettings: Record<string, AccountSettings> = {};
-  for (const { a, settings } of globalCopies) {
-    const raw = reservedOf(a, ACCOUNT_SETTINGS_CHAT_ID)?.custom_name;
-    if (raw) { accountSettings[a] = await openAccountSettings(raw); continue; }
-    const legacy = settings.alwaysLoadImages ?? common.alwaysLoadImages;
-    accountSettings[a] = legacy === undefined ? {} : { alwaysLoadImages: legacy };
-  }
+  for (const a of accounts) accountSettings[a] = await openAccountSettings(reservedOf(a, ACCOUNT_SETTINGS_CHAT_ID)?.custom_name);
 
-  // 書き足しは失敗しても読み込みは止めない（次に読んだときにまた試す）
+  // 写しの書き直しは失敗しても読み込みは止めない（次に読んだときにまた試す）
   try {
-    for (const w of writes) await saveSessionConfig(db, primary, linked, w.input, undefined, w.owner);
-    for (const d of deletes) await deleteConfig(db, d.owner, d.chatId, d.accountEmail);
     for (const a of globalWrites) await writeReservedRow(db, a, GLOBAL_SETTINGS_CHAT_ID, common);
-    const n = writes.length + deletes.length + globalWrites.length;
-    if (n > 0) logInfo("config.syncSpaces", { count: n });
+    if (globalWrites.length > 0) logInfo("config.syncCommon", { count: globalWrites.length });
   } catch (e) {
-    logError("config.syncSpaces", {}, e);
+    logError("config.syncCommon", {}, e);
   }
 
-  // 共通設定は1行にまとめて返す（中身は復号した JSON）。そのほかの予約行はメインアカウントの分だけ
-  const reserved: OpenedConfig[] = (spaces.get(primary) || []).filter(o => isReservedRow(o.account_email) && o.chat_id !== GLOBAL_SETTINGS_CHAT_ID && o.chat_id !== ACCOUNT_SETTINGS_CHAT_ID);
-  if (accounts.some(a => reservedOf(a, GLOBAL_SETTINGS_CHAT_ID))) reserved.push({ account_email: "", chat_id: GLOBAL_SETTINGS_CHAT_ID, custom_name: JSON.stringify(common) });
-  return { configs: [...reserved, ...result.values()], accountSettings };
+  // 共通設定は1行にまとめて返す（中身は復号した JSON）
+  if (Object.keys(common).length > 0) configs.unshift({ account_email: "", chat_id: GLOBAL_SETTINGS_CHAT_ID, custom_name: JSON.stringify(common) });
+  return { configs, accountSettings };
 }
 
-// 1つの設定を、ログイン中のアカウントの置き場所に保存する。
-// scope が "shared" なら全アカウントに、そうでなければそのチャットのアカウント（account_email）の置き場所に書く。
-// ownerOverride は読むときの書き足し用（その置き場所にだけ書く）
-export async function saveSessionConfig(db: Db, primary: string, linked: string[], input: ConfigInput, scope?: "shared", ownerOverride?: string): Promise<void> {
-  const accounts = sessionAccountList(primary, linked);
-  const legacyCopy = (owner: string) => WRITE_LEGACY_LINKED_COPY && !sameAddress(owner, primary) && !configMeta(input.custom_name).shared;
-  if (ownerOverride) {
-    await saveConfig(db, ownerOverride, { ...input, account_email: ownerOverride });
-    if (legacyCopy(ownerOverride)) await saveConfig(db, primary, { ...input, account_email: ownerOverride });
-    return;
-  }
-  if (scope === "shared") {
-    for (const a of accounts) await saveConfig(db, a, { ...input, account_email: a });
-    return;
-  }
-  const owner = accounts.find(a => sameAddress(a, input.account_email));
-  // ログイン中のアカウントでなければ（連携を解除したアカウントなど）、これまでどおりメインアカウントの置き場所に書く
-  if (!owner) { await saveConfig(db, primary, input); return; }
+// ログイン中のアカウントのうち、accountEmail と同じもの。無ければ UnknownAccountError
+function ownerOf(primary: string, linked: string[], accountEmail: string): string {
+  const owner = sessionAccountList(primary, linked).find(a => sameAddress(a, accountEmail));
+  if (!owner) throw new UnknownAccountError();
+  return owner;
+}
+
+// 1つの設定を、そのチャットのアカウント（account_email）の置き場所に保存する
+export async function saveSessionConfig(db: Db, primary: string, linked: string[], input: ConfigInput): Promise<void> {
+  const owner = ownerOf(primary, linked, input.account_email);
   await saveConfig(db, owner, { ...input, account_email: owner });
-  // 段階1：古いコードに戻しても見えるよう、以前の置き場所にも書く
-  if (legacyCopy(owner)) await saveConfig(db, primary, { ...input, account_email: owner });
 }
 
-// 1つの設定を消す。shared なら全アカウントの写しを、そうでなければそのアカウントの置き場所と以前の置き場所の行を消す
-export async function deleteSessionConfig(db: Db, primary: string, linked: string[], chatId: string, accountEmail: string, scope?: "shared"): Promise<void> {
-  const accounts = sessionAccountList(primary, linked);
-  if (scope === "shared") {
-    for (const a of accounts) await deleteConfig(db, a, chatId, a);
-    await deleteConfig(db, primary, chatId, accountEmail);
-    return;
-  }
-  const owner = accounts.find(a => sameAddress(a, accountEmail));
-  if (owner && !sameAddress(owner, primary)) await deleteConfig(db, owner, chatId, owner);
-  await deleteConfig(db, primary, chatId, accountEmail);
+// 1つの設定を、そのチャットのアカウントの置き場所から消す
+export async function deleteSessionConfig(db: Db, primary: string, linked: string[], chatId: string, accountEmail: string): Promise<void> {
+  const owner = ownerOf(primary, linked, accountEmail);
+  await deleteConfig(db, owner, chatId, owner);
 }
 
 // 共通設定を書き換え、ログイン中の全アカウントに同じものを書く（一番新しい写しに、変えた値を重ねる）
@@ -2867,38 +2540,27 @@ export async function saveCommonSettings(db: Db, primary: string, linked: string
   const accounts = sessionAccountList(primary, linked);
   const current = await Promise.all(accounts.map(async (a) => ({ settings: await openGlobalSettings(await readReservedRow(db, a, GLOBAL_SETTINGS_CHAT_ID)), preferred: a === primary })));
   const merged: SyncedSettings = { ...newestCommonSettings(current), ...sanitizeSyncedSettings(updates), updatedAt: now };
-  let out: SyncedSettings = merged;
-  for (const a of accounts) out = (await writeReservedRow(db, a, GLOBAL_SETTINGS_CHAT_ID, merged)) as SyncedSettings;
-  return out;
-}
-
-export async function openAccountSettings(customName: string | null | undefined): Promise<AccountSettings> {
-  if (!customName) return {};
-  try {
-    const json = customName.startsWith("encv1:") ? await decryptSecret(customName) : customName;
-    return sanitizeAccountSettings(JSON.parse(json));
-  } catch {
-    return {};
-  }
+  for (const a of accounts) await writeReservedRow(db, a, GLOBAL_SETTINGS_CHAT_ID, merged);
+  return merged;
 }
 
 // アカウント設定の一部を書き換える（そのアカウントの置き場所に書く）
 export async function saveAccountSettings(db: Db, accountEmail: string, updates: unknown): Promise<AccountSettings> {
   const merged: AccountSettings = { ...(await openAccountSettings(await readReservedRow(db, accountEmail, ACCOUNT_SETTINGS_CHAT_ID))), ...sanitizeAccountSettings(updates) };
-  return (await writeReservedRow(db, accountEmail, ACCOUNT_SETTINGS_CHAT_ID, merged)) as AccountSettings;
+  await writeReservedRow(db, accountEmail, ACCOUNT_SETTINGS_CHAT_ID, merged);
+  return merged;
 }
 
 ```
 
-### A.10 `app/lib/linkedAccountsStore.ts`
+### A.8 `app/lib/linkedAccountsStore.ts`
 
 ```ts
 // 連携アカウント（linked_accounts）の読み書き。自分のアドレス（user_email・account_email）は「a1:」＋HMAC に置き換え、
-// 元の連携アカウントのアドレス・表示名・プロフィール画像の URL は暗号化して保存する（絶対ルール1）。
-// 移行の途中は平文の行と置き換えた行が混ざるので、読むときは両方を探す（app/lib/addressStage.ts）
-import { addressKeyFor, isAddressKey, normalizeAddress } from "./addressKey";
-import { WRITE_HASHED_ADDRESS } from "./addressStage";
-import { decryptSecret, encryptSecret, hmacId, isEncrypted } from "./tokenCrypto";
+// 元の連携アカウントのアドレス・トークン・表示名・プロフィール画像の URL は暗号化して保存する（絶対ルール1）。
+// 鍵が無ければ例外にする（平文で書く道は無い）
+import { addressKeyFor, normalizeAddress } from "./addressKey";
+import { decryptSecret, encryptSecret, hmacId } from "./tokenCrypto";
 import { logError, logInfo } from "./safeLog";
 
 type Db = CloudflareEnv["DB"];
@@ -2922,120 +2584,51 @@ const INSERT_SQL = `INSERT INTO linked_accounts (user_email, account_email, acco
        account_enc=excluded.account_enc, refresh_token=excluded.refresh_token, access_token=excluded.access_token,
        expires_at=excluded.expires_at, needs_reauth=excluded.needs_reauth, name=excluded.name, picture=excluded.picture`;
 
-async function keysOf(email: string): Promise<[string, string]> {
-  return [email, (await addressKeyFor(email, hmacId)) || email];
-}
+const addressKey = (email: string) => addressKeyFor(email, hmacId);
+const openOptional = async (v: string | null | undefined) => (v ? await decryptSecret(v) : null);
 
-// 保存に使うキー（段階1では平文のまま）
-async function targetKeys(userEmail: string, accountEmail: string): Promise<{ user: string; account: string }> {
-  if (!WRITE_HASHED_ADDRESS) return { user: userEmail, account: accountEmail };
-  return {
-    user: (await addressKeyFor(userEmail, hmacId)) || userEmail,
-    account: (await addressKeyFor(accountEmail, hmacId)) || accountEmail,
-  };
-}
-
-// 新しい形の行ほど優先する（同じ連携アカウントが古い形と新しい形の両方にあるとき）
-function rankOf(row: LinkedAccountRow): number {
-  return (isAddressKey(row.user_email) ? 2 : 0) + (isAddressKey(row.account_email) ? 1 : 0);
-}
-
-// 1つの連携アカウントの行（トークンを取り出すため）。見つかった行のキーもそのまま返すので、更新はその行に対して行う
+// 1つの連携アカウントの行（トークンを取り出すため）。更新はこの行のキーに対して行う
 export async function findLinkedAccount(db: Db, userEmail: string, accountEmail: string): Promise<LinkedAccountRow | null> {
-  const [u1, u2] = await keysOf(userEmail);
-  const [a1, a2] = await keysOf(accountEmail);
-  const { results } = await db.prepare(
-    "SELECT * FROM linked_accounts WHERE user_email IN (?, ?) AND account_email IN (?, ?)"
-  ).bind(u1, u2, a1, a2).all();
-  const rows = (results || []) as LinkedAccountRow[];
-  return rows.sort((x, y) => rankOf(y) - rankOf(x))[0] || null;
+  const { results } = await db.prepare("SELECT * FROM linked_accounts WHERE user_email = ? AND account_email = ?")
+    .bind(await addressKey(userEmail), await addressKey(accountEmail)).all();
+  return ((results || []) as LinkedAccountRow[])[0] || null;
+}
+
+async function rowsOf(db: Db, userEmail: string): Promise<LinkedAccountRow[]> {
+  const { results } = await db.prepare("SELECT * FROM linked_accounts WHERE user_email = ?").bind(await addressKey(userEmail)).all();
+  return (results || []) as LinkedAccountRow[];
 }
 
 // 本人の連携アカウントの一覧（画面に出すため、アドレス・表示名・画像 URL は元に戻して返す）。
-// 段階2では、古い形の行をここで新しい形に置き換える
+// 開けない行は飛ばす（ほかのアカウントは使えるように）
 export async function listLinkedAccounts(db: Db, userEmail: string): Promise<{ account_email: string; needs_reauth: number | null; name: string | null; picture: string | null }[]> {
-  const [u1, u2] = await keysOf(userEmail);
-  const { results } = await db.prepare("SELECT * FROM linked_accounts WHERE user_email IN (?, ?)").bind(u1, u2).all();
-  const rows = (results || []) as LinkedAccountRow[];
-
-  const byAccount = new Map<string, { row: LinkedAccountRow; accountEmail: string; name: string | null; picture: string | null }>();
-  const duplicates: LinkedAccountRow[] = [];
-  for (const row of rows) {
-    let accountEmail = row.account_email;
-    let name: string | null = null;
-    let picture: string | null = null;
+  const out: { account_email: string; needs_reauth: number | null; name: string | null; picture: string | null }[] = [];
+  for (const row of await rowsOf(db, userEmail)) {
     try {
-      if (isAddressKey(row.account_email)) {
-        if (!row.account_enc) { logError("accounts.openRow.noAccount", {}); continue; }
-        accountEmail = await decryptSecret(row.account_enc);
-      }
-      name = row.name ? await decryptSecret(row.name) : null;
-      picture = row.picture ? await decryptSecret(row.picture) : null;
+      const accountEmail = await decryptSecret(row.account_enc);
+      if (!accountEmail) { logError("accounts.openRow.noAccount", {}); continue; }
+      out.push({ account_email: accountEmail, needs_reauth: row.needs_reauth, name: await openOptional(row.name), picture: await openOptional(row.picture) });
     } catch (e) {
-      // 開けない行は消さずに残す（鍵の問題なら、直せばまた読めるため）
       logError("accounts.openRow", {}, e);
-      continue;
-    }
-    const key = normalizeAddress(accountEmail);
-    const prev = byAccount.get(key);
-    if (prev && rankOf(prev.row) >= rankOf(row)) { duplicates.push(row); continue; }
-    if (prev) duplicates.push(prev.row);
-    byAccount.set(key, { row, accountEmail, name, picture });
-  }
-
-  if (WRITE_HASHED_ADDRESS) {
-    try {
-      const stmts = [];
-      for (const { row, accountEmail, name, picture } of byAccount.values()) {
-        const t = await targetKeys(userEmail, accountEmail);
-        const done = row.user_email === t.user && row.account_email === t.account && !!row.account_enc
-          && (!row.name || row.name.startsWith("encv1:")) && (!row.picture || row.picture.startsWith("encv1:"));
-        if (done) continue;
-        stmts.push(db.prepare(INSERT_SQL).bind(
-          t.user, t.account, await encryptSecret(accountEmail), row.refresh_token, row.access_token, row.expires_at, row.created_at ?? null,
-          row.needs_reauth ?? 0, name ? await encryptSecret(name) : null, picture ? await encryptSecret(picture) : null,
-        ));
-        if (row.user_email !== t.user || row.account_email !== t.account) {
-          stmts.push(db.prepare("DELETE FROM linked_accounts WHERE user_email = ? AND account_email = ?").bind(row.user_email, row.account_email));
-        }
-      }
-      for (const row of duplicates) stmts.push(db.prepare("DELETE FROM linked_accounts WHERE user_email = ? AND account_email = ?").bind(row.user_email, row.account_email));
-      if (stmts.length > 0) {
-        await db.batch(stmts);
-        logInfo("accounts.migrateRows", { count: stmts.length });
-      }
-    } catch (e) {
-      logError("accounts.migrateRows", {}, e);
     }
   }
-
-  return Array.from(byAccount.values()).map(({ row, accountEmail, name, picture }) => ({ account_email: accountEmail, needs_reauth: row.needs_reauth, name, picture }));
+  return out;
 }
 
-// 連携した（し直した）アカウントを保存する。同じアカウントの古い形の行は消す
+// 連携した（し直した）アカウントを保存する
 export async function saveLinkedAccount(db: Db, userEmail: string, accountEmail: string, v: { refreshToken: string; accessToken: string | null; expiresAt: number | null; name: string | null; picture: string | null }): Promise<void> {
-  const t = await targetKeys(userEmail, accountEmail);
-  const hashed = WRITE_HASHED_ADDRESS;
-  const [u1, u2] = await keysOf(userEmail);
-  const [a1, a2] = await keysOf(accountEmail);
-  await db.batch([
-    db.prepare(INSERT_SQL).bind(
-      t.user, t.account, hashed ? await encryptSecret(accountEmail) : null,
-      await encryptSecret(v.refreshToken), v.accessToken ? await encryptSecret(v.accessToken) : null, v.expiresAt, new Date().toISOString(), 0,
-      // 表示名・画像 URL は段階2から暗号化する（段階1より前のコードは、暗号化した値をそのまま画面に出してしまうため）
-      v.name ? (hashed ? await encryptSecret(v.name) : v.name) : null,
-      v.picture ? (hashed ? await encryptSecret(v.picture) : v.picture) : null,
-    ),
-    db.prepare("DELETE FROM linked_accounts WHERE user_email IN (?, ?) AND account_email IN (?, ?) AND NOT (user_email = ? AND account_email = ?)")
-      .bind(u1, u2, a1, a2, t.user, t.account),
-  ]);
+  await db.prepare(INSERT_SQL).bind(
+    await addressKey(userEmail), await addressKey(accountEmail), await encryptSecret(accountEmail),
+    await encryptSecret(v.refreshToken), v.accessToken ? await encryptSecret(v.accessToken) : null, v.expiresAt, new Date().toISOString(), 0,
+    v.name ? await encryptSecret(v.name) : null,
+    v.picture ? await encryptSecret(v.picture) : null,
+  ).run();
 }
 
-// 連携を解除する（古い形・新しい形のどちらで保存されていても消す）
+// 連携を解除する
 export async function deleteLinkedAccount(db: Db, userEmail: string, accountEmail: string): Promise<void> {
-  const [u1, u2] = await keysOf(userEmail);
-  const [a1, a2] = await keysOf(accountEmail);
-  await db.prepare("DELETE FROM linked_accounts WHERE user_email IN (?, ?) AND account_email IN (?, ?)").bind(u1, u2, a1, a2).run();
+  await db.prepare("DELETE FROM linked_accounts WHERE user_email = ? AND account_email = ?")
+    .bind(await addressKey(userEmail), await addressKey(accountEmail)).run();
 }
 
 // ログイン中のアカウント（from）だけをログアウトし、残りのアカウントの1つ（to）にログインを引き継ぐ。
@@ -3046,49 +2639,43 @@ export async function deleteLinkedAccount(db: Db, userEmail: string, accountEmai
 export async function promoteLinkedAccount(db: Db, from: string, to: string): Promise<{ refreshToken: string; accessToken: string | null; expiresAt: number | null; name: string | null; picture: string | null } | null> {
   const target = await findLinkedAccount(db, from, to);
   if (!target || target.needs_reauth) return null;
-  const open = async (v: string | null | undefined) => (v ? (isEncrypted(v) ? await decryptSecret(v) : v) : null);
-  const refreshToken = await open(target.refresh_token);
+  const refreshToken = await openOptional(target.refresh_token);
   if (!refreshToken) return null;
 
-  const [u1, u2] = await keysOf(from);
-  const { results } = await db.prepare("SELECT * FROM linked_accounts WHERE user_email IN (?, ?)").bind(u1, u2).all();
-  const rows = (results || []) as LinkedAccountRow[];
-  const [t1, t2] = await keysOf(to);
+  const fromKey = await addressKey(from);
+  const toKey = await addressKey(to);
   const stmts = [];
-  for (const row of rows) {
+  for (const row of await rowsOf(db, from)) {
     // 引き継ぐアカウント自身の行は写さない（自分自身に自分は付けない）
-    if (row.account_email === t1 || row.account_email === t2) continue;
-    const accountEmail = isAddressKey(row.account_email) ? (row.account_enc ? await decryptSecret(row.account_enc) : null) : row.account_email;
+    if (row.account_email === toKey || !row.account_enc) continue;
+    const accountEmail = await decryptSecret(row.account_enc);
     if (!accountEmail || normalizeAddress(accountEmail) === normalizeAddress(from)) continue;
-    const k = await targetKeys(to, accountEmail);
     stmts.push(db.prepare(INSERT_SQL).bind(
-      k.user, k.account, row.account_enc ?? (WRITE_HASHED_ADDRESS ? await encryptSecret(accountEmail) : null), row.refresh_token, row.access_token, row.expires_at,
+      toKey, row.account_email, row.account_enc, row.refresh_token, row.access_token, row.expires_at,
       row.created_at ?? new Date().toISOString(), row.needs_reauth ?? 0, row.name ?? null, row.picture ?? null,
     ));
   }
-  stmts.push(db.prepare("DELETE FROM linked_accounts WHERE user_email IN (?, ?)").bind(u1, u2));
+  stmts.push(db.prepare("DELETE FROM linked_accounts WHERE user_email = ?").bind(fromKey));
   // 写すのと消すのは同じバッチで行う（途中で失われないように）
   await db.batch(stmts);
   logInfo("accounts.promote", { count: stmts.length - 1 });
   return {
     refreshToken,
-    accessToken: await open(target.access_token),
+    accessToken: await openOptional(target.access_token),
     expiresAt: target.expires_at,
-    name: await open(target.name ?? null),
-    picture: await open(target.picture ?? null),
+    name: await openOptional(target.name ?? null),
+    picture: await openOptional(target.picture ?? null),
   };
 }
 
-
 // 一緒にログインしているアカウントのアドレスだけ（設定の読み書きのたびに使う）。
-// listLinkedAccounts と違い、表示名・画像は復号せず、行の書き直しもしない（アドレスの列だけを読む）
+// listLinkedAccounts と違い、表示名・画像は復号しない
 export async function listLinkedAccountEmails(db: Db, userEmail: string): Promise<string[]> {
-  const [u1, u2] = await keysOf(userEmail);
-  const { results } = await db.prepare("SELECT account_email, account_enc FROM linked_accounts WHERE user_email IN (?, ?)").bind(u1, u2).all();
+  const { results } = await db.prepare("SELECT account_enc FROM linked_accounts WHERE user_email = ?").bind(await addressKey(userEmail)).all();
   const out: string[] = [];
-  for (const row of (results || []) as { account_email: string; account_enc: string | null }[]) {
+  for (const row of (results || []) as { account_enc: string | null }[]) {
     try {
-      const email = isAddressKey(row.account_email) ? (row.account_enc ? await decryptSecret(row.account_enc) : "") : row.account_email;
+      const email = await decryptSecret(row.account_enc);
       if (email && !out.some(e => normalizeAddress(e) === normalizeAddress(email))) out.push(email);
     } catch (e) {
       // 開けない行は飛ばす（ほかのアカウントの設定は読めるように）
@@ -3100,70 +2687,11 @@ export async function listLinkedAccountEmails(db: Db, userEmail: string): Promis
 
 ```
 
-### A.11 `app/lib/backfill.ts`
-
-```ts
-// D1 の全行を、今の保存の形（アドレスの置き換え・相手名や設定の暗号化・ピン留めの本体の削除）に置き換える。
-// 設定は「その人が Re:Mail を開いたとき」に置き換わるので、二度と開かない人の行は平文のまま残ってしまう。
-// それを残さないよう、Worker の定期実行（worker.ts の scheduled）から呼ぶ。
-// 置き換え方は、開いたときと同じ処理（configStore.ts・linkedAccountsStore.ts）をそのまま使う
-import { openAndMigrateConfigs } from "./configStore";
-import { listLinkedAccounts } from "./linkedAccountsStore";
-import { WRITE_HASHED_ADDRESS } from "./addressStage";
-import { logError, logInfo } from "./safeLog";
-
-type Db = CloudflareEnv["DB"];
-
-// まだ置き換えていない（user_email が平文の）利用者を、1回に maxUsers 人まで処理する。
-// 開けない行がある人で毎回つまらないよう、順番はばらばらにする
-export async function runBackfill(db: Db, maxUsers = 20): Promise<{ configUsers: number; linkedUsers: number }> {
-  // 段階2（アドレスも置き換えて保存する）になるまでは何もしない（段階1のコードに戻せる状態を保つため）
-  if (!WRITE_HASHED_ADDRESS) return { configUsers: 0, linkedUsers: 0 };
-  let configUsers = 0;
-  let linkedUsers = 0;
-  try {
-    const { results } = await db.prepare(
-      "SELECT DISTINCT user_email FROM chat_configs WHERE user_email NOT LIKE 'a1:%' ORDER BY random() LIMIT ?"
-    ).bind(maxUsers).all();
-    for (const { user_email } of results as { user_email: string }[]) {
-      try {
-        await openAndMigrateConfigs(db, user_email);
-        configUsers++;
-      } catch (e) {
-        // 1人の失敗で、ほかの人の置き換えは止めない
-        logError("backfill.configs", {}, e);
-      }
-    }
-  } catch (e) {
-    logError("backfill.configs.list", {}, e);
-  }
-  try {
-    const { results } = await db.prepare(
-      "SELECT DISTINCT user_email FROM linked_accounts WHERE user_email NOT LIKE 'a1:%' ORDER BY random() LIMIT ?"
-    ).bind(maxUsers).all();
-    for (const { user_email } of results as { user_email: string }[]) {
-      try {
-        await listLinkedAccounts(db, user_email);
-        linkedUsers++;
-      } catch (e) {
-        logError("backfill.linked", {}, e);
-      }
-    }
-  } catch (e) {
-    logError("backfill.linked.list", {}, e);
-  }
-  if (configUsers || linkedUsers) logInfo("backfill", { count: configUsers + linkedUsers });
-  return { configUsers, linkedUsers };
-}
-
-```
-
-### A.12 `app/lib/pinnedIds.ts`
+### A.9 `app/lib/pinnedIds.ts`
 
 ```ts
 // ピン留めの保存データ（D1 の custom_name に入る JSON）の読み書きを助ける純粋関数。
-// D1 にはメールの中身を置かず、Gmail のメッセージ ID だけを保存する（絶対ルール1）。
-// 以前の形式（data にメール本体を丸ごと入れていた）も読めるようにしておく（ロールバックしても壊れないように）
+// D1 にはメールの中身を置かず、Gmail のメッセージ ID だけを保存する（絶対ルール1）
 import type { Email } from "../types/email";
 
 // 1つのピン留めチャットで覚えておく ID の上限（以前の「直近60件」と同じ）
@@ -3172,17 +2700,9 @@ export const MAX_PINNED_IDS_PER_CHAT = 60;
 const GMAIL_ID_RE = /^[0-9a-f]{6,32}$/i;
 export const isGmailId = (v: unknown): v is string => typeof v === "string" && GMAIL_ID_RE.test(v);
 
-// 保存データの JSON から、ピン留めしたメールの ID と、古い形式で入っていたメール本体を取り出す
-export function readPinnedField(parsed: { ids?: unknown; data?: unknown }): { ids: string[]; legacyEmails: Email[] } {
-  const legacyEmails: Email[] = [];
-  if (parsed.data) {
-    const list = Array.isArray(parsed.data) ? parsed.data : [parsed.data];
-    for (const e of list) {
-      if (e && typeof e === "object" && isGmailId((e as Email).id)) legacyEmails.push(e as Email);
-    }
-  }
-  const ids = Array.isArray(parsed.ids) ? parsed.ids.filter(isGmailId) : legacyEmails.map(e => e.id);
-  return { ids: capPinnedIds(ids), legacyEmails };
+// 保存データの JSON から、ピン留めしたメールの ID を取り出す（ID でない値は捨てる）
+export function readPinnedIds(parsed: { ids?: unknown }): string[] {
+  return Array.isArray(parsed.ids) ? capPinnedIds(parsed.ids.filter(isGmailId)) : [];
 }
 
 // 重複を除き、上限までにする（先頭ほど新しいメールという並びを保つ）
@@ -3217,10 +2737,9 @@ export function missingPinnedEmail(id: string, roomLocalKey: string | undefined,
   };
 }
 
-// 設定（custom_name の JSON）に以前の形式で残っているメール本体（data）を取り除く（ピン留めの段階2）。
-// チャット単位のピン留め（roomId を持たない）でまだ ids が無ければ、data のメール ID から ids を作ってから消す。
-// メッセージ単位のピン留めは chat_id がメッセージ ID そのものなので、data を消すだけでよい。
-// 変える必要が無ければ、受け取った値をそのまま返す（呼び出し側は「変わったか」で書き戻すかを決める）
+// 保存する設定（custom_name の JSON）からメール本体（data）を取り除く。ピン留めは ids だけを持つ形なので、
+// data は今の画面からは送られないが、送られてきても D1 に書かないための守りとして保存の前に必ず通す（絶対ルール1）。
+// 変える必要が無ければ、受け取った値をそのまま返す
 export function stripPinnedBodies(customName: string | null | undefined): string | null | undefined {
   if (!customName || !customName.startsWith("{")) return customName;
   let obj: Record<string, unknown>;
@@ -3232,18 +2751,13 @@ export function stripPinnedBodies(customName: string | null | undefined): string
     return customName;
   }
   if (!("data" in obj)) return customName;
-  const { data, ...rest } = obj;
-  const isMessageLevel = "roomId" in rest || "roomIdEnc" in rest;
-  if (!isMessageLevel && !Array.isArray(rest.ids)) {
-    const ids = readPinnedField({ data }).legacyEmails.map((e) => e.id).filter(isGmailId);
-    if (ids.length > 0) rest.ids = capPinnedIds(ids);
-  }
-  return JSON.stringify(rest);
+  delete obj.data;
+  return JSON.stringify(obj);
 }
 
 ```
 
-### A.13 `app/lib/syncedSettings.ts`
+### A.10 `app/lib/syncedSettings.ts`
 
 ```ts
 // 設定は2種類ある。どちらもどの端末でも共通で、D1 に暗号化して保存する。
@@ -3261,16 +2775,13 @@ export const SYNCED_SETTING_TYPES = {
   sent: "boolean",
   // 送信ボタン・アクションバー・場所の表示を、文字にするかアイコンにするか
   iconLabels: "boolean",
-  // 以前は共通設定だった「メールの外部の画像」。今はアカウント設定に移したので画面からは書かない。
-  // 古い行から各アカウントの初期値を作るのと、古いコードに戻したときに読めるよう、名前だけ残す
-  alwaysLoadImages: "boolean",
   // アカウントごとの表示チェックボックス（キーはアカウントのアドレス。行ごと暗号化するので D1 に平文では残らない）
   accounts: "accountMap",
   // 最後に保存した時刻（ミリ秒）。アカウントごとの写しのうち、どれが一番新しいかを決めるのに使う
   updatedAt: "number",
 } as const;
 
-// 画面が持って保存する共通設定の名前（updatedAt と、移した alwaysLoadImages は含めない）
+// 画面が持って保存する共通設定の名前（updatedAt は含めない）
 export const COMMON_SETTING_KEYS = ["inbox", "archive", "spam", "trash", "sent", "iconLabels", "accounts"] as const;
 
 // アカウント設定の一覧（アカウントごとに保存する）
@@ -3338,7 +2849,7 @@ export function sanitizeAccountSettings(value: unknown): AccountSettings {
   return out;
 }
 
-// アカウントごとの写しのうち一番新しい共通設定を選ぶ（updatedAt が無い古い行は 0 とみなし、同じならログイン中のアカウントの分）
+// アカウントごとの写しのうち一番新しい共通設定を選ぶ（updatedAt が無ければ 0 とみなし、同じならログインのセッションを持つアカウントの分）
 export function newestCommonSettings(copies: { settings: SyncedSettings; preferred: boolean }[]): SyncedSettings {
   let best: { settings: SyncedSettings; at: number; preferred: boolean } | null = null;
   for (const c of copies) {
@@ -3350,7 +2861,7 @@ export function newestCommonSettings(copies: { settings: SyncedSettings; preferr
 
 ```
 
-### A.14 `app/lib/googleScopes.ts`
+### A.11 `app/lib/googleScopes.ts`
 
 ```ts
 // Google に求める権限（OAuth スコープ）。最初のログイン（auth.ts）と、別のアカウントでもログインするとき
@@ -3363,7 +2874,7 @@ export const GOOGLE_OAUTH_SCOPE = "openid email profile https://www.googleapis.c
 
 ```
 
-### A.15 `app/lib/googleToken.ts`
+### A.12 `app/lib/googleToken.ts`
 
 ```ts
 // Googleのアクセストークン取得・リフレッシュを一元化する。メインアカウント（auth.tsのjwtコールバック）と
@@ -3432,7 +2943,7 @@ export async function getValidAccessToken(
 
 ```
 
-### A.16 `app/lib/safeLog.ts`
+### A.13 `app/lib/safeLog.ts`
 
 ```ts
 // 個人情報を出さないログ。console.* を直接使わず、必ずここを通す（eslint の no-console で強制している）。
@@ -3503,7 +3014,7 @@ export const logInfo = (op: string, fields?: LogFields) => write("info", op, fie
 
 ```
 
-### A.17 `app/lib/securityHeaders.ts`
+### A.14 `app/lib/securityHeaders.ts`
 
 ```ts
 // ページ全体に付けるセキュリティヘッダー。CSP は worker.ts が、それ以外は next.config.ts が付ける。
@@ -3589,7 +3100,7 @@ export function withNonceResponse(response: Response, nonce: string): Response {
 
 ```
 
-### A.18 `app/lib/emailHtml.ts`
+### A.15 `app/lib/emailHtml.ts`
 
 ```ts
 // HTML メールを iframe で表示する前の下ごしらえ（純粋関数）。
@@ -3646,7 +3157,7 @@ export function prepareEmailHtml(raw: string, allowRemote: boolean): string {
 
 ```
 
-### A.19 `app/lib/sendVerify.ts`
+### A.16 `app/lib/sendVerify.ts`
 
 ```ts
 // 送信の結果が分からないとき（5xx・タイムアウト・通信断）に、二重送信せずに
@@ -3760,7 +3271,7 @@ export function matchSentMessage(c: SentCandidate, e: SentExpectation): "message
 
 ```
 
-### A.20 `app/lib/mime.ts`
+### A.17 `app/lib/mime.ts`
 
 ```ts
 // 送信するメール（RFC 5322 / MIME）を組み立てる純粋関数。
@@ -4137,7 +3648,7 @@ export function decodeMimeHeader(header: string): string {
 
 ```
 
-### A.21 `app/lib/replyCompose.ts`
+### A.18 `app/lib/replyCompose.ts`
 
 ```ts
 // 返信メールの件名・References・送信元エイリアス・署名・引用を、純正 Gmail と同じ形で組み立てる純粋関数。
@@ -4337,7 +3848,7 @@ export function composeForwardBodies(input: ForwardComposeInput): { text: string
 
 ```
 
-### A.22 `app/lib/recipients.ts`
+### A.19 `app/lib/recipients.ts`
 
 ```ts
 // 返信の宛先を、純正 Gmail と同じ決まりで計算する純粋関数。
@@ -4423,7 +3934,7 @@ export function describeExtraRecipients(extra: ExtraRecipient[]): string {
 
 ```
 
-### A.23 `app/lib/messageParse.ts`
+### A.20 `app/lib/messageParse.ts`
 
 ```ts
 // Gmail API のメッセージ（生データ）から、画面に出す本文・添付・リンクなどを取り出す処理。
@@ -4799,7 +4310,7 @@ export function parseMessageDetail(message: GmailMessage) {
 
 ```
 
-### A.24 `app/lib/historySync.ts`
+### A.21 `app/lib/historySync.ts`
 
 ```ts
 // Gmail の history API（前回からの変化だけを返す）で、画面のメール一覧を差分だけ更新するための純粋関数。
@@ -4893,7 +4404,7 @@ export function idsToFetchForLabelChanges(knownIds: Set<string>, labelUpdates: {
 
 ```
 
-### A.25 `app/lib/mailboxOps.ts`
+### A.22 `app/lib/mailboxOps.ts`
 
 ```ts
 // メールの移動・削除（ゴミ箱へ）で Gmail に付け外しするラベルと、送るメッセージ ID の整え方。
@@ -4953,7 +4464,7 @@ export function groupIdsByAccount(ids: string[], accountOf: (id: string) => stri
 
 ```
 
-### A.26 `app/lib/filterMatch.ts`
+### A.23 `app/lib/filterMatch.ts`
 
 ```ts
 // フィルターツール（作成/非表示/ピン留め/移動/削除）と検索バーで共有する、
@@ -5047,43 +4558,18 @@ export type FilterCriteria = {
   // OR結合される条件セットの配列。空/未指定は「内容条件なし＝保存場所条件だけで絞り込む」を意味する
   conditionSets?: ConditionSet[];
   boxes?: FindBarBoxKey[];
-  // 対象アカウント（連携アカウントのメールアドレス）。未指定/空文字列＝アカウントを問わない。
-  // グループ化のフィルターは受信専用のため、複数アカウントのメールをまたいで集約できる
+  // 対象アカウント（そのフィルターを持つアカウントのアドレス）。フィルターはアカウントごとで、そのアカウントのメールにだけ効く。
+  // 無いフィルターは壊れた設定として、どのメールにも一致させない
   accountEmail?: string;
-  // 後方互換用: conditionSets 導入前の旧バージョンで保存されたフラットな単一条件データ。
-  // conditionSets が無いときだけ getConditionSets() 経由で読み込まれる
-  textRules?: TextRule[];
-  dateRange?: { from?: string; to?: string };
-  hasAttachment?: boolean;
-  isReply?: boolean;
-  isForward?: boolean;
-  format?: "html" | "text";
 };
 
-function isConditionSetEmpty(set: ConditionSet): boolean {
-  return (
-    !(set.textRules && set.textRules.length > 0) &&
-    !set.dateRange &&
-    set.hasAttachment === undefined &&
-    set.isReply === undefined &&
-    set.isForward === undefined &&
-    set.format === undefined &&
-    set.isUnread === undefined
-  );
-}
-
-// FilterCriteria から、実際にOR評価すべき条件セットの配列を取り出す（新旧データ形式を吸収する）
+// FilterCriteria から、OR評価する条件セットの配列を取り出す（壊れて配列でなければ空）
 export function getConditionSets(criteria: FilterCriteria): ConditionSet[] {
-  if (criteria.conditionSets) return criteria.conditionSets;
-  const legacy: ConditionSet = {
-    textRules: criteria.textRules, dateRange: criteria.dateRange,
-    hasAttachment: criteria.hasAttachment, isReply: criteria.isReply, isForward: criteria.isForward, format: criteria.format,
-  };
-  return isConditionSetEmpty(legacy) ? [] : [legacy];
+  return Array.isArray(criteria.conditionSets) ? criteria.conditionSets : [];
 }
 
 // メッセージの「相手」（自分が送信したなら宛先、受信したなら差出人）の生ヘッダー文字列を返す。
-// TextRule.direction が未指定の古いデータ向けの後方互換フォールバックにのみ使う
+// 条件セットの方向（direction）が「問わない」のときに使う
 function getPartnerRaw(email: MatchableEmail, myEmail: string): string {
   return isMineEmail(email, myEmail) ? (email.to || "") : (email.from || "");
 }
@@ -5182,12 +4668,14 @@ export function messageMatchesFilter(email: MatchableEmail, criteria: FilterCrit
 }
 
 function messageMatchesFilterUnsafe(email: MatchableEmail, criteria: FilterCriteria, myEmail: string): boolean {
-  // email.accountId が無い（accountId導入前のデータ・ローカルfake等）場合は myEmail 名義として扱う。
-  // このメール自身が実際に属するアカウントを、以降の受信/送信（isMineEmail）判定にも使う。
-  // myEmailを呼び出し元がメインアカウント固定で渡していても、連携アカウントのメールに対して
-  // 正しく「自分＝そのメールの所属アカウント」で送受信判定できるようにするため
+  // アカウントの決まっていないフィルターは壊れた設定なので、どのメールにも一致させない（ほかのアカウントのメールに効かせない）
+  if (!criteria.accountEmail) return false;
+  // email.accountId が無い（送信直後のローカルfake等）場合は myEmail 名義として扱う。
+  // このメール自身が実際に属するアカウントを、以降の受信/送信（isMineEmail）判定にも使う
   const emailAccount = email.accountId || myEmail;
-  if (criteria.accountEmail && emailAccount !== criteria.accountEmail) return false;
+  if (emailAccount !== criteria.accountEmail) return false;
+  // 条件セットが配列でない（壊れた設定）なら一致させない（「条件なし」として全件に効かせない）
+  if (criteria.conditionSets !== undefined && !Array.isArray(criteria.conditionSets)) return false;
 
   if (criteria.boxes && criteria.boxes.length > 0) {
     if (!criteria.boxes.includes(getBoxKey(email))) return false;
@@ -5216,7 +4704,7 @@ export function isEmptyFilterCriteria(criteria: FilterCriteria): boolean {
 
 ```
 
-### A.27 `app/lib/groupEmails.ts`
+### A.24 `app/lib/groupEmails.ts`
 
 ```ts
 // useMailApp.ts の groupedEmails useMemo から抽出した、副作用のない純粋関数版。
@@ -5244,21 +4732,13 @@ function sameAddressSet(a: Set<string>, b: Set<string>): boolean {
   return a.size > 0 && a.size === b.size && [...a].every(addr => b.has(addr));
 }
 
-// グループのメンバーの実メールアドレス集合を求める。作成時に確定させて保存した値を正とし、
-// （古い形式のグループ等で）保存が無い場合のみ、そのメンバーの個別チャットの受信メールから推定する
-function resolveGroupMemberAddresses(cfg: ChatConfig, roomLookup: Record<string, Email[]>, myEmail: string): Set<string> {
+// グループのメンバーの実メールアドレス集合。作成時に確定させて保存した値（groupMemberAddresses）だけを使う。
+// 保存が無い・メンバーの数と合わない（壊れた）グループは空にする（受信メールから推定した相手に送らない。送信は呼び出し側で止める）
+export function groupMemberAddresses(cfg: ChatConfig): Set<string> {
   const members = cfg.groupMembers || [];
-  const addresses = (cfg.groupMemberAddresses && cfg.groupMemberAddresses.length === members.length)
-    ? cfg.groupMemberAddresses
-    : members.map((m: string) => {
-        const msgs = roomLookup[m];
-        const partner = msgs?.find((e: Email) => !isMineEmail(e, myEmail));
-        const raw = partner ? partner.from : "";
-        const match = (raw || "").match(/<([^>]+)>/);
-        const resolved = ((match ? match[1] : raw) || "").trim().toLowerCase();
-        return resolved || m.trim().toLowerCase();
-      });
-  return new Set(addresses.map((a: string) => a.toLowerCase()).filter(Boolean));
+  const addresses = cfg.groupMemberAddresses;
+  if (!Array.isArray(addresses) || addresses.length !== members.length) return new Set();
+  return new Set(addresses.filter((a): a is string => typeof a === "string").map(a => a.trim().toLowerCase()).filter(Boolean));
 }
 
 // 1アカウント分のメールを、ローカルなroomキーでグルーピングする（既存のgroupedEmails useMemoと
@@ -5346,7 +4826,7 @@ export function groupEmailsByRoom(
     if (cfg.filterCriteria) return;
     const mode = cfg.groupMode || "normal";
     const members = cfg.groupMembers || [];
-    const memberAddresses = resolveGroupMemberAddresses(cfg, groups, myAddress);
+    const memberAddresses = groupMemberAddresses(cfg);
 
     // このグループから送信されたメール = 宛先セットがメンバー全員と完全一致する送信済みメール
     const sentViaGroup = emails.filter((e: Email) => isMineEmail(e, myAddress) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));

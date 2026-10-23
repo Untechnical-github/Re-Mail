@@ -6,7 +6,7 @@ import { getCachedAttachment, setCachedAttachment, attachmentCacheKey, attachmen
 import { clearDeviceData, clearAccountDeviceData, DEVICE_OWNER_KEY } from "../lib/deviceData";
 import { loadDraft, saveDraft, removeDraft } from "../lib/drafts";
 import { isMineEmail, getFindBarBoxKey, FilterCriteria, messageMatchesFilter, ChatListTab, chatConfigTab } from "../lib/filterMatch";
-import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "../lib/groupEmails";
+import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, groupMemberAddresses } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId, isRateLimitReason } from "../lib/sendVerify";
@@ -21,7 +21,7 @@ const INLINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 import { planReply, type ReplyPlan } from "../lib/recipients";
 import { parseAddress } from "../lib/mime";
 import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, composeReplyBodies, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, type SendAsInfo } from "../lib/replyCompose";
-import { readPinnedField, capPinnedIds, mergePinnedIds, missingPinnedEmail } from "../lib/pinnedIds";
+import { readPinnedIds, capPinnedIds, mergePinnedIds, missingPinnedEmail } from "../lib/pinnedIds";
 import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
 import { logError, logWarn } from "../lib/safeLog";
 import { createSaveQueue, type SaveQueue } from "../lib/configSaveQueue";
@@ -143,23 +143,6 @@ function sameAddressSet(a: Set<string>, b: Set<string>): boolean {
   return a.size > 0 && a.size === b.size && [...a].every(addr => b.has(addr));
 }
 
-// グループのメンバーの実メールアドレス集合を求める。作成時に確定させて保存した値を正とし、
-// （古い形式のグループ等で）保存が無い場合のみ、そのメンバーの個別チャットの受信メールから推定する
-function resolveGroupMemberAddresses(cfg: ChatConfig, roomLookup: Record<string, Email[]>, myEmail: string): Set<string> {
-  const members = cfg.groupMembers || [];
-  const addresses = (cfg.groupMemberAddresses && cfg.groupMemberAddresses.length === members.length)
-    ? cfg.groupMemberAddresses
-    : members.map((m: string) => {
-        const msgs = roomLookup[m];
-        const partner = msgs?.find((e) => !isMineEmail(e, myEmail));
-        const raw = partner ? partner.from : "";
-        const match = (raw || "").match(/<([^>]+)>/);
-        const resolved = ((match ? match[1] : raw) || "").trim().toLowerCase();
-        return resolved || m.trim().toLowerCase();
-      });
-  return new Set(addresses.map((a: string) => a.toLowerCase()).filter(Boolean));
-}
-
 // 大文字小文字を無視して、text内にkwが出現する回数を数える（検索バーの「1件名あたり複数ヒット」対応用）
 function countOccurrences(text: string, kwLower: string): number {
   if (!kwLower) return 0;
@@ -189,8 +172,7 @@ export function useMailApp() {
       decodeRoomKey(saved);
       return saved as RoomKeyStr;
     } catch {
-      // 複合roomKey導入前の古い形式（生のローカルキーのまま保存されていた）は復元できないため破棄する
-      localStorage.removeItem("remail_selected_sender");
+      // 読めない値は無視する（開いていたチャットを復元しないだけで、ほかは止めない）
       return null;
     }
   });
@@ -759,7 +741,6 @@ export function useMailApp() {
       const res = await fetch("/api/config");
       if (res.ok) {
         const data = await res.json();
-        const pMsgs: Email[] = [];
         if (data.accountSettings && typeof data.accountSettings === "object") {
           loadedAccountSettings = {};
           for (const [acc, v] of Object.entries(data.accountSettings as Record<string, unknown>)) loadedAccountSettings[acc] = sanitizeAccountSettings(v);
@@ -768,7 +749,6 @@ export function useMailApp() {
           if (c.chat_id === "__GLOBAL_SETTINGS__" && c.custom_name) {
             try { globalSettings = sanitizeSyncedSettings(JSON.parse(c.custom_name)); } catch { /* 壊れた設定は無視して既定値を使う */ } return;
           }
-          if (c.chat_id === "__KNOWN_BOXES__") { return; }
           let customNameVal = c.custom_name || undefined;
           let forceFetchVal = false;
           let pinnedIdsVal: string[] | undefined = undefined;
@@ -796,20 +776,8 @@ export function useMailApp() {
               filterActionVal = parsed.filterAction; filterContinuousVal = parsed.filterContinuous; filterDestinationVal = parsed.filterDestination;
               filterCreatedAtVal = parsed.filterCreatedAt; filterLastAppliedAtVal = parsed.filterLastAppliedAt;
               filterIncludeExistingVal = parsed.filterIncludeExisting;
-              // ピン留めは ID だけを保存する。以前の形式（data にメール本体）で保存された行も読み、
-              // その本体は表示と端末キャッシュの種にだけ使う（D1 からは段階2で消す）
-              const pinned = readPinnedField(parsed);
-              pinnedIdsVal = pinned.ids;
-              // ★修正: 過去のバグで保存された「送信済みメールのINBOXラベル」をロード時に強制消去する
-              const rowAccount = c.account_email || session?.user?.email || "";
-              pMsgs.push(...pinned.legacyEmails.map(raw => {
-                // 端末キャッシュをアカウントごとに分けるため、どのアカウントのメールかを必ず持たせる
-                const e = { ...raw, accountId: raw.accountId || rowAccount };
-                if ((e.isMe || isMineEmail(e, rowAccount)) && e.labelIds?.includes("INBOX")) {
-                  return { ...e, labelIds: e.labelIds.filter((l: string) => l !== "INBOX") };
-                }
-                return e;
-              }));
+              // ピン留めは Gmail のメッセージ ID だけを保存している（中身は端末キャッシュと Gmail から埋める）
+              pinnedIdsVal = readPinnedIds(parsed);
             } catch { /* 壊れた保存データは無視する */ }
           }
           // roomIdの有無で、room単位の設定かメッセージ単位の設定かを振り分ける
@@ -823,9 +791,9 @@ export function useMailApp() {
             formatted[stateKey] = { customName: customNameVal, isPinned: c.is_pinned === 1, isHidden: c.is_hidden === 1, hiddenAtDate: c.hidden_at_date || undefined, unhideOnNew: c.unhide_on_new === 1, forceFetch: forceFetchVal, persistedIds: pinnedIdsVal, isGroup: isGroupVal, groupMembers: groupMembersVal, groupMemberAddresses: groupMemberAddressesVal, groupMode: groupModeVal, groupHiddenMembers: groupHiddenMembersVal, filterCriteria: filterCriteriaVal, filterHideOriginal: filterHideOriginalVal, filterAction: filterActionVal, filterContinuous: filterContinuousVal, filterDestination: filterDestinationVal, filterCreatedAt: filterCreatedAtVal, filterLastAppliedAt: filterLastAppliedAtVal, filterIncludeExisting: filterIncludeExistingVal };
           }
         });
-        setChatConfigs(formatted); setMessageConfigs(formattedMessages); setPersistedEmails(pMsgs);
+        setChatConfigs(formatted); setMessageConfigs(formattedMessages); setPersistedEmails([]);
         // 端末キャッシュと Gmail から、ピン留めメールの中身を後から埋める（最初の表示は待たせない）
-        void hydratePinnedEmails(formatted, formattedMessages, pMsgs);
+        void hydratePinnedEmails(formatted, formattedMessages, []);
       }
       else {
         logWarn("config.load", { status: res.status });
@@ -907,7 +875,7 @@ export function useMailApp() {
     let nameToSave = nextConfig.customName || "";
     if (nextConfig.forceFetch || nextConfig.isGroup || nextConfig.filterAction) {
       nameToSave = JSON.stringify({
-        // 最後に保存した時刻（以前の写しが残っていたときに、どれが新しいかを決めるのに使う）
+        // 最後に保存した時刻（アカウントごとの写しのうち、どれが新しいかを決めるのに使う）
         // eslint-disable-next-line react-hooks/purity -- 描画中ではなく、保存するとき（操作のたび）に呼ばれる関数の中なので問題ない
         updatedAt: Date.now(),
         // ピン留めはメールの中身を保存せず、Gmail のメッセージ ID だけを保存する（絶対ルール1）
@@ -1334,7 +1302,7 @@ export function useMailApp() {
           // どの端末でも共通の設定を反映する。D1 に無い設定（初めて同期する端末の値）は、このあと D1 に保存される
           const remoteSettings: SyncedSettings = globalSettings || {};
           applySyncedSettings(remoteSettings);
-          // updatedAt と、アカウント設定に移した alwaysLoadImages は画面が持たないので、比べるときは外す
+          // updatedAt は画面が持たないので、比べるときは外す
           savedSyncedKeyRef.current = syncedSettingsKey(pickCommonSettings(remoteSettings));
           setSyncedSettingsReady(true);
           // fetchEmails等が読む前に、ref側は同期的に確定させておく（state更新の再レンダリングを待たない）
@@ -1992,11 +1960,7 @@ export function useMailApp() {
       // グループは1つのアカウントから送信する前提のため、「自分」はこのグループ自身が属する
       // アカウント（連携アカウントの場合はそちら）で判定する（メインアカウント固定だと、
       // 連携アカウントのグループで送受信の判定が逆転してしまう）
-      // groupMembers はローカルキーで保存されているため、groupedEmails（複合キー）を引く前に
-      // このグループ自身のアカウントで複合化した、ローカルキーだけの部分集合を作る
-      const localMemberLookup: Record<string, Email[]> = {};
-      (cfg.groupMembers || []).forEach(m => { localMemberLookup[m] = groupedEmails[encodeRoomKey(accountEmail, m as LocalKey)] || []; });
-      const memberAddresses = resolveGroupMemberAddresses(cfg, localMemberLookup, accountEmail);
+      const memberAddresses = groupMemberAddresses(cfg);
       const sentViaGroup = allUniqueEmails.filter((e) => isMineEmail(e, accountEmail) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
       const received = allUniqueEmails.filter((e) => {
         if (isMineEmail(e, accountEmail)) return false;
@@ -2340,8 +2304,7 @@ export function useMailApp() {
   // フィルターツールで作成するグループ。宛先の集合ではなく条件（FilterCriteria）でメッセージを
   // 動的に集約する。新着メールも条件に合えば自動的に含まれ続ける。常に受信専用チャットとして扱う
   const createFilterGroup = async (name: string, filterCriteria: FilterCriteria, hideOriginal: boolean, includeExisting: boolean = true) => {
-    // 1つのアカウントだけが対象なら、そのアカウントの名義で作る（そのアカウントだけでログインしても使えるように）。
-    // すべてのアカウントが対象なら、ログイン中の全アカウントに写しを保存する（updateChatConfig が shared で保存する）
+    // フィルターは必ずどれか1つのアカウントのもの。そのアカウントの名義で作る（そのアカウントだけでログインしても使えるように）
     const myEmail = filterCriteria.accountEmail || session?.user?.email || "";
     const groupRoomLocal = asLocalKey(`group:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
     const groupRoom = encodeRoomKey(myEmail, groupRoomLocal);
@@ -2806,7 +2769,12 @@ export function useMailApp() {
       let actualCc = "";
       if (groupCfg?.isGroup) {
         // グループチャット: メンバー全員へ1通のメールとして一斉送信する
-        actualTo = Array.from(resolveGroupMemberAddresses(groupCfg, groupedEmails, sendAccountEmail)).join(", ");
+        actualTo = Array.from(groupMemberAddresses(groupCfg)).join(", ");
+        if (!actualTo) {
+          // メンバーのアドレスが保存されていない（壊れた）グループには送らない（宛先なしで送ったり、推測した相手に送ったりしない）
+          showErrorToast("このグループはメンバーのアドレスが読めないため送信できません。グループを作り直してください。本文は入力欄に残っています。");
+          return;
+        }
       } else {
         // 宛先は純正 Gmail と同じ決まりで計算する（Reply-To 優先、既定は相手のみ、切り替えで全員に返信）
         const plan = getReplyPlan(selectedSender);

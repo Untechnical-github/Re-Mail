@@ -33,7 +33,7 @@ describe("messageMatchesFilter の方向（sent/received）判定", () => {
     };
     // myEmail はメインアカウント固定で渡されても、email.accountId（連携アカウント）を
     // 基準に正しく「送信済み」と判定できる必要がある
-    const matches = messageMatchesFilter(email, { conditionSets: [{ direction: "sent" }] }, "main@gmail.com");
+    const matches = messageMatchesFilter(email, { conditionSets: [{ direction: "sent" }], accountEmail: "linked@work.com" }, "main@gmail.com");
     expect(matches).toBe(true);
   });
 
@@ -42,7 +42,7 @@ describe("messageMatchesFilter の方向（sent/received）判定", () => {
       from: "someone@example.com", to: "linked@work.com", subject: "件名", labelIds: ["INBOX"],
       accountId: "linked@work.com",
     };
-    const matches = messageMatchesFilter(email, { conditionSets: [{ direction: "sent" }] }, "main@gmail.com");
+    const matches = messageMatchesFilter(email, { conditionSets: [{ direction: "sent" }], accountEmail: "linked@work.com" }, "main@gmail.com");
     expect(matches).toBe(false);
   });
 });
@@ -51,10 +51,10 @@ describe("壊れたフィルターの保存データ", () => {
   const email = { id: "1", from: "a@example.com", to: "me@example.com", subject: "テスト語", body: "", labelIds: ["INBOX"] };
 
   it("語の無い条件や形の違う条件でも例外にせず、一致しない扱いにする", () => {
-    const broken = { conditionSets: [{ textRules: [{ field: "subject", text: "テスト語" }] }] } as unknown as Parameters<typeof messageMatchesFilter>[1];
+    const broken = { conditionSets: [{ textRules: [{ field: "subject", text: "テスト語" }] }], accountEmail: "me@example.com" } as unknown as Parameters<typeof messageMatchesFilter>[1];
     expect(() => messageMatchesFilter(email, broken, "me@example.com")).not.toThrow();
     expect(messageMatchesFilter(email, broken, "me@example.com")).toBe(false);
-    const weird = { conditionSets: "x" } as unknown as Parameters<typeof messageMatchesFilter>[1];
+    const weird = { conditionSets: "x", accountEmail: "me@example.com" } as unknown as Parameters<typeof messageMatchesFilter>[1];
     expect(messageMatchesFilter(email, weird, "me@example.com")).toBe(false);
   });
 });
@@ -66,12 +66,12 @@ describe("未読・既読の条件", () => {
     const unread = { ...base, labelIds: ["INBOX", "UNREAD"] };
     const read = { ...base, labelIds: ["INBOX"] };
     const noLabels = { ...base };
-    expect(messageMatchesFilter(unread, { conditionSets: [{ isUnread: true }] }, "me@example.com")).toBe(true);
-    expect(messageMatchesFilter(read, { conditionSets: [{ isUnread: true }] }, "me@example.com")).toBe(false);
-    expect(messageMatchesFilter(read, { conditionSets: [{ isUnread: false }] }, "me@example.com")).toBe(true);
-    expect(messageMatchesFilter(unread, { conditionSets: [{ isUnread: false }] }, "me@example.com")).toBe(false);
+    expect(messageMatchesFilter(unread, { conditionSets: [{ isUnread: true }], accountEmail: "me@example.com" }, "me@example.com")).toBe(true);
+    expect(messageMatchesFilter(read, { conditionSets: [{ isUnread: true }], accountEmail: "me@example.com" }, "me@example.com")).toBe(false);
+    expect(messageMatchesFilter(read, { conditionSets: [{ isUnread: false }], accountEmail: "me@example.com" }, "me@example.com")).toBe(true);
+    expect(messageMatchesFilter(unread, { conditionSets: [{ isUnread: false }], accountEmail: "me@example.com" }, "me@example.com")).toBe(false);
     // ラベルが無い（読み込み途中など）メールは既読とみなす
-    expect(messageMatchesFilter(noLabels, { conditionSets: [{ isUnread: false }] }, "me@example.com")).toBe(true);
+    expect(messageMatchesFilter(noLabels, { conditionSets: [{ isUnread: false }], accountEmail: "me@example.com" }, "me@example.com")).toBe(true);
   });
   it("未読の条件だけのセットも「条件あり」として扱う", async () => {
     const { isEmptyFilterCriteria } = await import("./filterMatch");
@@ -83,5 +83,26 @@ describe("未読・既読の条件", () => {
       expect(isActionBoxRestricted("read", box)).toBe(false);
       expect(isActionBoxRestricted("unread", box)).toBe(false);
     }
+  });
+});
+
+describe("フィルターのアカウント", () => {
+  const email = { id: "a1", from: "田中 <tanaka@example.com>", to: "me@example.com", subject: "請求書", body: "", labelIds: ["INBOX"], accountId: "me@example.com" };
+  const sets = [{ textRules: [{ field: "subject" as const, mode: "contains" as const, keyword: "請求書" }] }];
+
+  it("そのアカウントのメールにだけ一致する", () => {
+    expect(messageMatchesFilter(email, { conditionSets: sets, accountEmail: "me@example.com" }, "me@example.com")).toBe(true);
+    expect(messageMatchesFilter(email, { conditionSets: sets, accountEmail: "other@example.com" }, "me@example.com")).toBe(false);
+  });
+
+  it("アカウントの決まっていないフィルター（壊れた設定）はどのメールにも一致させず、例外にもしない", () => {
+    expect(messageMatchesFilter(email, { conditionSets: sets }, "me@example.com")).toBe(false);
+    expect(messageMatchesFilter(email, { conditionSets: sets, accountEmail: "" }, "me@example.com")).toBe(false);
+  });
+
+  it("以前のフラットな条件（conditionSets の無い textRules）は読まない", () => {
+    const legacy = { textRules: sets[0].textRules, accountEmail: "me@example.com" } as unknown as Parameters<typeof messageMatchesFilter>[1];
+    // textRules は読まれないので件名の条件は効かず、場所の条件だけで判断される
+    expect(messageMatchesFilter({ ...email, subject: "関係ない" }, { ...legacy, boxes: ["inbox"] }, "me@example.com")).toBe(true);
   });
 });
