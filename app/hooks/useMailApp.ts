@@ -4,7 +4,7 @@ import { ChatConfig, MessageConfig, SelectionMode, ModalState, ModalTargetMode, 
 import { Email } from "../types/email";
 import { getCachedAttachment, setCachedAttachment, attachmentCacheKey, attachmentIdCacheKey } from "../lib/attachmentCache";
 import { clearDeviceData, clearAccountDeviceData, DEVICE_OWNER_KEY } from "../lib/deviceData";
-import { loadDraft, saveDraft, removeDraft } from "../lib/drafts";
+import { loadDraft, saveDraft, removeDraft, isEmptyDraft } from "../lib/drafts";
 import { isMineEmail, getFindBarBoxKey, FilterCriteria, messageMatchesFilter, ChatListTab, chatConfigTab } from "../lib/filterMatch";
 import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, groupMemberAddresses, roomPartner } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
@@ -528,6 +528,7 @@ export function useMailApp() {
       return next;
     });
   };
+
 
   // チャットを閉じたら展開状態をリセット
   useEffect(() => { setExpandedMsgIds([]); }, [selectedSender]);
@@ -2012,16 +2013,31 @@ export function useMailApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allUniqueEmails, chatConfigs, groupedEmails, session]);
 
-  // 下書きチャットから他のチャットへ離脱した際、まだ何も送信していなければ破棄する
-  // （リロード/タブ復元では selectedSender が変化しないのでここは発火せず維持される）
+  // 下書きチャットから他のチャットへ離脱した際、まだ何も送信しておらず、入力中の内容（下書き）も無ければ破棄する
+  // （リロード/タブ復元では selectedSender が変化しないのでここは発火せず維持される）。
+  // 下書きが残っているのに一覧から消すと、移った先・送信元を切り替えた先に持っていった本文や添付に戻れなくなる
   const prevDraftCheckSenderRef = useRef<RoomKeyStr | null>(selectedSender);
+  // メールも下書きも無ければ一覧から消す。開き直していたら消さない
+  const dropDraftChatIfEmpty = async (room: RoomKeyStr) => {
+    if (!draftChatsRef.current.includes(room)) return;
+    if ((groupedEmailsRef.current[room] || []).length > 0) return;
+    const d = await loadDraft(room);
+    if (d && !isEmptyDraft(d)) return;
+    if (selectedSenderRef.current === room) return;
+    removeDraftChat(room);
+  };
   useEffect(() => {
     const prev = prevDraftCheckSenderRef.current;
-    if (prev && prev !== selectedSender && draftChatsRef.current.includes(prev)) {
-      const stillEmpty = !groupedEmailsRef.current[prev] || groupedEmailsRef.current[prev].length === 0;
-      if (stillEmpty) removeDraftChat(prev);
-    }
     prevDraftCheckSenderRef.current = selectedSender;
+    if (!prev || prev === selectedSender || !draftChatsRef.current.includes(prev)) return;
+    // 入力中の内容を持って移ったときは、移り先で読み戻して移り元の下書きを消したあと（少し待ってから）で判断する。
+    // 移り先に書きかけがあって持っていけなかったときは、移り元に下書きが残るので消さない
+    if (carryDraftRef.current?.fromRoom === prev) { setTimeout(() => { void dropDraftChatIfEmpty(prev); }, 2000); return; }
+    // 打ってすぐ（保存の待ち時間のうち）に離れた分も失わないよう、今の入力をすぐ保存する（そのチャットは消さない）
+    const typed = { subject: replySubject, body: replyBody, replyToMessage, attachments: replyAttachments, recipients, recipientsBase, updatedAt: Date.now() };
+    if (draftReadyRoom === prev && !isEmptyDraft(typed)) { void saveDraft(prev, typed); return; }
+    void dropDraftChatIfEmpty(prev);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 開いているチャットが変わったときだけ見る（入力のたびには動かさない）
   }, [selectedSender]);
 
   const senderList = useMemo<RoomKeyStr[]>(() => {
