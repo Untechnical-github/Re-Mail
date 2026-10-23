@@ -4,7 +4,7 @@ import { ChatConfig, MessageConfig, SelectionMode, ModalState, ModalTargetMode, 
 import { Email } from "../types/email";
 import { getCachedAttachment, setCachedAttachment, attachmentCacheKey, attachmentIdCacheKey } from "../lib/attachmentCache";
 import { clearDeviceData, clearAccountDeviceData, DEVICE_OWNER_KEY } from "../lib/deviceData";
-import { loadDraft, saveDraft, removeDraft, isEmptyDraft } from "../lib/drafts";
+import { loadDraft, saveDraft, removeDraft, hasDraftContent, type ComposeDraft } from "../lib/drafts";
 import { isMineEmail, getFindBarBoxKey, FilterCriteria, messageMatchesFilter, ChatListTab, chatConfigTab } from "../lib/filterMatch";
 import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, groupMemberAddresses, roomPartner } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
@@ -341,6 +341,9 @@ export function useMailApp() {
   const [recipients, setRecipients] = useState<ComposeRecipient[] | null>(null);
   const [recipientsBase, setRecipientsBase] = useState<ComposeRecipient[] | null>(null);
   const [composeDialog, setComposeDialog] = useState<ComposeDialog | null>(null);
+  // 送信スペース（送信元・送信先・返信元・件名）を開いているか。送信スペースを押す・リプライを押すと開き、
+  // 送信スペース以外を押す・メッセージ一覧のスクロールが始まるとたたむ（page.tsx）
+  const [composeActive, setComposeActive] = useState(false);
   // アカウントごとの送信元（自分のアドレスとエイリアス）。開いたチャットのアカウントの分だけ取りにいく（下の getSendAs）
   const [sendAsByAccount, setSendAsByAccount] = useState<Record<string, SendAsInfo[]>>({});
   // 自分のアドレスとエイリアス（読み込めている分）。返信の宛先・Reply-To・受け取った立場の判定で「自分」を除くのに使う
@@ -2018,12 +2021,15 @@ export function useMailApp() {
   // 下書きが残っているのに一覧から消すと、移った先・送信元を切り替えた先に持っていった本文や添付に戻れなくなる
   const prevDraftCheckSenderRef = useRef<RoomKeyStr | null>(selectedSender);
   // メールも下書きも無ければ一覧から消す。開き直していたら消さない
-  const dropDraftChatIfEmpty = async (room: RoomKeyStr) => {
+  // 書いた内容（本文・件名・返信元・添付）もやり取りも無ければ、一覧から消す。送信先を変えただけの下書きも一緒に消す。
+  // known は離れる直前の入力（保存の待ち時間のうちに消した分を、古い下書きで上書きして判断しないため）。開き直していたら消さない
+  const dropDraftChatIfEmpty = async (room: RoomKeyStr, known?: ComposeDraft) => {
     if (!draftChatsRef.current.includes(room)) return;
     if ((groupedEmailsRef.current[room] || []).length > 0) return;
-    const d = await loadDraft(room);
-    if (d && !isEmptyDraft(d)) return;
+    const d = known ?? await loadDraft(room);
+    if (d && hasDraftContent(d)) return;
     if (selectedSenderRef.current === room) return;
+    await removeDraft(room);
     removeDraftChat(room);
   };
   useEffect(() => {
@@ -2033,10 +2039,11 @@ export function useMailApp() {
     // 入力中の内容を持って移ったときは、移り先で読み戻して移り元の下書きを消したあと（少し待ってから）で判断する。
     // 移り先に書きかけがあって持っていけなかったときは、移り元に下書きが残るので消さない
     if (carryDraftRef.current?.fromRoom === prev) { setTimeout(() => { void dropDraftChatIfEmpty(prev); }, 2000); return; }
-    // 打ってすぐ（保存の待ち時間のうち）に離れた分も失わないよう、今の入力をすぐ保存する（そのチャットは消さない）
-    const typed = { subject: replySubject, body: replyBody, replyToMessage, attachments: replyAttachments, recipients, recipientsBase, updatedAt: Date.now() };
-    if (draftReadyRoom === prev && !isEmptyDraft(typed)) { void saveDraft(prev, typed); return; }
-    void dropDraftChatIfEmpty(prev);
+    if (draftReadyRoom !== prev) { void dropDraftChatIfEmpty(prev); return; }
+    // 打ってすぐ（保存の待ち時間のうち）に離れた分も失わないよう、書いた内容があれば今の入力をすぐ保存する（そのチャットは消さない）
+    const typed: ComposeDraft = { subject: replySubject, body: replyBody, replyToMessage, attachments: replyAttachments, recipients, recipientsBase, updatedAt: Date.now() };
+    if (hasDraftContent(typed)) { void saveDraft(prev, typed); return; }
+    void dropDraftChatIfEmpty(prev, typed);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 開いているチャットが変わったときだけ見る（入力のたびには動かさない）
   }, [selectedSender]);
 
@@ -3935,7 +3942,7 @@ export function useMailApp() {
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
       replyNotFoundToast, errorToast, infoToast, sendConfirm, unloadedCount, isRetryingUnloaded, draftChats, activeChatTab,
-      recipients: effectiveRecipients, recipientsCustomized, composeDialog, showSentRecipients, showReceivedRecipients, sendAsByAccount,
+      recipients: effectiveRecipients, recipientsCustomized, composeDialog, composeActive, showSentRecipients, showReceivedRecipients, sendAsByAccount,
       isDraftReady: draftReadyRoom === selectedSender,
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
@@ -3954,7 +3961,7 @@ export function useMailApp() {
       jumpToReplyTarget, createOrOpenChat, createGroupChat, createFilterGroup, deleteChatConfig, forwardMessageTo,
       updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail, switchSendAccount, logoutAccount,
       unlinkAccount, isAccountVisible, setSendConfirm, retryUnloaded,
-      addComposeRecipients, removeComposeRecipient, chooseReplyTarget, setComposeDialog, myAddressesFor, partnerRecipient, showErrorToast,
+      addComposeRecipients, removeComposeRecipient, chooseReplyTarget, setComposeDialog, setComposeActive, myAddressesFor, partnerRecipient, showErrorToast,
       recipientForRoom: (room: RoomKeyStr): ComposeRecipient | null => partnerRecipient(room),
       setShowSentRecipients, setShowReceivedRecipients,
     },

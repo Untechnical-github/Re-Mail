@@ -409,7 +409,7 @@ export function ActionBar({ app, isChat }: { app: MailAppHook, isChat: boolean }
   const modePrefix = isChat ? "chat" : "msg";
   const { selectionMode, selectedIds } = app.state;
   const { handleMenuBarClick, setModal, setSelectedIds, setRenameInput,
-          setReplySubject, setReplyToMessage, safeBack, enterSelectionMode } = app.actions;
+          chooseReplyTarget, setComposeActive, safeBack, enterSelectionMode } = app.actions;
 
   const [showCopiedToast, setShowCopiedToast] = useState(false);
 
@@ -616,8 +616,10 @@ export function ActionBar({ app, isChat }: { app: MailAppHook, isChat: boolean }
           <button
             onClick={() => {
               if (!selectedMsg || isInboundOnlyGroupBar) return;
-              setReplyToMessage(selectedMsg);
-              setReplySubject(selectedMsg.subject?.startsWith("Re:") ? selectedMsg.subject : `Re: ${selectedMsg.subject || ""}`);
+              // 返信元の画面で選んだときと同じく、送信先の置き換え（返信／全員に返信の選択）まで行う
+              chooseReplyTarget(selectedMsg);
+              // 送信スペースを開いたままにする（送信スペース以外を押すかスクロールするまでたたまない）
+              setComposeActive(true);
               if (isAnySelection) safeBack();
             }}
             className={`${btnBase} bg-[#1E1F22] text-gray-400 hover:bg-[#3f4147] hover:text-gray-200 ${(!selectedMsg || isInboundOnlyGroupBar) ? "opacity-30 pointer-events-none grayscale" : ""}`}

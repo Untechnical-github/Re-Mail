@@ -24,6 +24,12 @@ export function isEmptyDraft(d: Pick<ComposeDraft, "subject" | "body" | "replyTo
   return !d.subject.trim() && !d.body.trim() && !d.replyToMessage && d.attachments.length === 0 && !d.recipients;
 }
 
+// 本文・件名・返信元・添付のどれかがあるか（送信先を変えただけの下書きは含めない）。
+// 新しいチャットを一覧に残すかの判断に使う（書いた内容が無く、やり取りも無ければチャットは片付ける）
+export function hasDraftContent(d: Pick<ComposeDraft, "subject" | "body" | "replyToMessage" | "attachments">): boolean {
+  return !!d.subject.trim() || !!d.body.trim() || !!d.replyToMessage || d.attachments.length > 0;
+}
+
 // 端末に残っていた送信先を読み戻す（壊れた値・上限を超えた分は捨てる）
 function readRecipients(v: unknown): ComposeRecipient[] | null {
   return Array.isArray(v) ? normalizeRecipients(v).recipients : null;
