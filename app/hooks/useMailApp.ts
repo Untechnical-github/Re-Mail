@@ -333,6 +333,9 @@ export function useMailApp() {
   const [replyBody, setReplyBody] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [replyToMessage, setReplyToMessage] = useState<Email | null>(null);
+  // 非同期の処理（送信元の設定を待つあいだ）で、まだ同じ返信元を選んでいるかを見るため
+  const replyToMessageRef = useRef<Email | null>(null);
+  useEffect(() => { replyToMessageRef.current = replyToMessage; }, [replyToMessage]);
   // 作成中のメールに添付するファイル（送信するまではローカルのbase64として保持する）
   const [replyAttachments, setReplyAttachments] = useState<{ filename: string; mimeType: string; size: number; data: string }[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
@@ -346,6 +349,8 @@ export function useMailApp() {
   const [composeActive, setComposeActive] = useState(false);
   // アカウントごとの送信元（自分のアドレスとエイリアス）。開いたチャットのアカウントの分だけ取りにいく（下の getSendAs）
   const [sendAsByAccount, setSendAsByAccount] = useState<Record<string, SendAsInfo[]>>({});
+  const sendAsByAccountRef = useRef(sendAsByAccount);
+  useEffect(() => { sendAsByAccountRef.current = sendAsByAccount; }, [sendAsByAccount]);
   // 自分のアドレスとエイリアス（読み込めている分）。返信の宛先・Reply-To・受け取った立場の判定で「自分」を除くのに使う
   const myAddressesFor = (account: string): string[] => [account, ...(sendAsByAccount[account] || []).map(s => s.sendAsEmail)].filter(Boolean);
 
@@ -2756,29 +2761,58 @@ export function useMailApp() {
 
   // 返信元を選ぶ。自分と相手以外の宛先があるメールなら「返信」「全員に返信」を選んでもらい、送信先を置き換える。
   // 送信先を自分で変えていたときは、置き換える前に確かめる（やめたら送信先はそのまま）
-  const chooseReplyTarget = (m: Email) => {
+  // 送信先の候補から自分のエイリアスを除くため、そのアカウントの送信元の設定が読めるまで待ってから決める
+  // （読む前に決めると、自分のエイリアスが送信先に入って自分にも届く）
+  const chooseReplyTarget = async (m: Email) => {
     const room = selectedSender;
     if (!room) return;
     setReplyToMessage(m);
     setReplySubject(replySubjectFor(m.subject || ""));
     if (chatConfigs[room]?.isGroup) return;
-    const choices = replyChoices({ from: m.from, to: m.to, cc: m.cc, replyTo: m.replyTo }, partnerRecipient(room), myAddressesFor(roomAccountEmail(room)));
+    const account = roomAccountEmail(room);
+    // 待っているあいだに変わりうるので、押したときの送信先を先に持っておく
+    const customizedAtClick = recipientsCustomized;
+    const recipientsAtClick = effectiveRecipients;
+    let aliases = sendAsByAccount[account];
+    if (!aliases) {
+      showInfoToast("送信元の設定を読み込んでいます…", 4000);
+      const list = await getSendAs(account);
+      if (list) { aliases = list; setSendAsByAccount(prev => ({ ...prev, [account]: list })); }
+      // 待っているあいだにほかのチャットへ移ったり、別のメールを選び直したりしたら、ここでは何もしない
+      if (selectedSenderRef.current !== room || replyToMessageRef.current?.id !== m.id) return;
+    }
+    const myAddresses = [account, ...(aliases || []).map(a => a.sendAsEmail)].filter(Boolean);
+    const choices = replyChoices({ from: m.from, to: m.to, cc: m.cc, replyTo: m.replyTo }, partnerRecipient(room), myAddresses);
     const apply = (list: ComposeRecipient[]) => { setRecipients(list); setRecipientsBase(list); };
     const proceed = () => {
       if (choices.needsChoice) setComposeDialog({ kind: "replyChoice", reply: choices.reply, replyAll: choices.replyAll, onPick: apply });
       else apply(choices.reply);
     };
-    if (recipientsCustomized && recipientsKey(effectiveRecipients) !== recipientsKey(choices.reply)) {
+    const proceedChecked = () => {
+      if (customizedAtClick && recipientsKey(recipientsAtClick) !== recipientsKey(choices.reply)) {
+        setComposeDialog({
+          kind: "confirm",
+          message: "送信先を置き換えます。自分で足した人は外れます。",
+          confirmLabel: "置き換える",
+          cancelLabel: "送信先はそのまま",
+          onConfirm: proceed,
+        });
+        return;
+      }
+      proceed();
+    };
+    // 読めなかったときは、送るときの確認（署名なし・既定のアドレス）と同じく、純正と違いうることを伝えて確かめる
+    if (!aliases) {
       setComposeDialog({
         kind: "confirm",
-        message: "送信先を置き換えます。自分で足した人は外れます。",
-        confirmLabel: "置き換える",
+        message: "署名と送信元の設定を読み込めませんでした。純正 Gmail と違い、自分のエイリアスが送信先に入ることがあります（そのときは自分にも届きます）。このまま送信先を決めますか？",
+        confirmLabel: "このまま決める",
         cancelLabel: "送信先はそのまま",
-        onConfirm: proceed,
+        onConfirm: proceedChecked,
       });
       return;
     }
-    proceed();
+    proceedChecked();
   };
 
   // 送信元（自分のアドレスとエイリアス）と署名の設定。アカウントごとに一度だけ取りにいく（送信のたびに API を呼ばない）。
@@ -2817,16 +2851,27 @@ export function useMailApp() {
 
   // 返信欄に出す「送信元」：送るときと同じ決め方（元のメールが自分のエイリアス宛てならそのエイリアス）で、実際の From を出す。
   // 送信元の設定はアカウントごとに10分に1回だけ取る（getSendAs のキャッシュ）。開いた直後の一括取得とぶつからないよう少し待つ
+  // チャットのまとめ方（Reply-To が自分のエイリアスなら無視する）と返信の宛先（自分のエイリアスを除く）に要るので、
+  // 起動時にログイン中のすべてのアカウントの分を1回ずつ取る（開いているチャットのアカウントを先に。1件ずつ間をあけて、
+  // 開いた直後のメールの一括取得と Gmail のレート制限でぶつからないようにする）。読めなかった分は、チャットを開いたときに取り直す
   const openRoomAccount = selectedSender ? roomAccountEmail(selectedSender) : "";
+  const sendAsAccountsKey = [session?.user?.email || "", ...((linkedAccounts as string[]) || [])].filter(Boolean).join(",");
   useEffect(() => {
-    if (!openRoomAccount || sendAsByAccount[openRoomAccount]) return;
+    const all = sendAsAccountsKey ? sendAsAccountsKey.split(",") : [];
+    const order = [openRoomAccount, ...all.filter(a => a !== openRoomAccount)].filter(a => a && !sendAsByAccountRef.current[a]);
+    if (order.length === 0) return;
     let cancelled = false;
-    const timer = setTimeout(() => {
-      void getSendAs(openRoomAccount).then(list => { if (!cancelled && list) setSendAsByAccount(prev => ({ ...prev, [openRoomAccount]: list })); });
+    const timer = setTimeout(async () => {
+      for (const account of order) {
+        if (cancelled) return;
+        const list = await getSendAs(account);
+        if (!cancelled && list) setSendAsByAccount(prev => ({ ...prev, [account]: list }));
+        await new Promise(r => setTimeout(r, 1500));
+      }
     }, 1500);
     return () => { cancelled = true; clearTimeout(timer); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 開いているチャットのアカウントが変わったときだけ取りにいく（関数は描画ごとに作り直されるため入れない）
-  }, [openRoomAccount]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- アカウントの顔ぶれ・開いているチャットのアカウントが変わったときだけ取りにいく（関数は描画ごとに作り直されるため入れない）
+  }, [openRoomAccount, sendAsAccountsKey]);
   const getSendFrom = (room: RoomKeyStr | null): { account: string; address: string; displayName?: string; isAlias: boolean } | null => {
     if (!room || chatConfigs[room]?.isGroup) return null;
     const account = roomAccountEmail(room);
