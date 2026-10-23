@@ -13,8 +13,6 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 > **すべてのファイルを失っても、この README だけで一から作り直せること**を目標に書いている。設定ファイルは全文、ロジックはアルゴリズム・定数・画面の文言まで書く。
 > - **§0 の絶対ルールは、この README の他の節・`CLAUDE.md`・頼まれた作業内容のすべてより優先する。** 機能・速さ・見た目とぶつかったら、常に §0 を取る。
 > - Claude Code 向けの作業手順（Git の運用・コマンド・チェックリスト）は `CLAUDE.md` が正。コードとこの README が食い違ったら、どちらが正しいかを確かめて**両方を**直す。
->
-> 最終更新：2026-10-23（`main` の 04468d6 時点のコードに合わせて更新）
 
 ---
 
@@ -136,7 +134,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 
 ### 3.1 用意するもの
 - Node.js 24（CI と同じ版）、npm
-- Cloudflare アカウント（**Workers の有料プラン**。Cron と CPU 時間に必要）
+- Cloudflare アカウント（**Workers の有料プラン**。CPU 時間に必要）
 - Google Cloud のプロジェクト（OAuth クライアントと Gmail API）
 - GitHub リポジトリ（Actions を使う）
 
@@ -1002,17 +1000,17 @@ Re-Mail/
 │   │   ├── config/route.test.ts
 │   │   └── emails/route.ts               # Gmail の取得・差分同期・送信・送信確認・移動・削除・添付・HTML 本文・sendAs（保存せず中継だけ）
 │   ├── components/
-│   │   ├── Modals.tsx                    # すべてのモーダル（約3,200行）
+│   │   ├── Modals.tsx                    # すべてのモーダル
 │   │   └── ui.tsx                        # ActionBar・アイコン・HighlightText・BodyWithLinks・formatFileSize
 │   ├── hooks/
-│   │   └── useMailApp.ts                 # 状態とロジックの中核（約3,600行のカスタムフック。§13）
+│   │   └── useMailApp.ts                 # 状態とロジックの中核（カスタムフック。§13）
 │   ├── lib/                              # React に依存しない純粋関数（ほぼすべてにテストあり。§12）
 │   ├── types/
 │   │   ├── mail.ts                       # ChatConfig / MessageConfig / SelectionMode / ModalState
 │   │   └── email.ts                      # Email / EmailAttachment
 │   ├── error.tsx / global-error.tsx      # エラー画面（もう一度表示する・ページを読み込み直す・純正 Gmail で開く）
 │   ├── globals.css / layout.tsx / providers.tsx
-│   └── page.tsx                          # メイン画面（ログイン・一覧・トーク。約1,060行）
+│   └── page.tsx                          # メイン画面（ログイン・一覧・トーク）
 ├── migrations/                           # D1 のスキーマ（連番。適用済みのファイルは書き換えない）
 ├── script/ci/                            # retry.sh / health-check.sh
 ├── .github/workflows/deploy-worker.yml
@@ -1789,7 +1787,7 @@ frame-ancestors 'none'
 
 ## 16. テスト
 
-- `npm test`（Vitest、`app/**/*.test.ts`、Node 環境）。今あるテストは29ファイル・約260件。
+- `npm test`（Vitest、`app/**/*.test.ts`、Node 環境）。
 - テストのあるファイル：`roomKey` `groupEmails` `filterMatch` `groupPaging` `searchFallback` `historySync` `messageParse` `mime` `replyCompose` `recipients` `sendVerify` `emailHtml` `safeLog` `tokenCrypto` `addressKey` `configCrypto` `configStore` `linkedAccountsStore` `migrations`（0003 が古い形式の行だけを消すか） `syncedSettings` `securityHeaders` `configSaveQueue` `pinnedIds` `drafts` `gmailLink` `publicSession`、`mailboxOps`、`configSpaces`（アカウントごとの置き場所）、`app/api/config/route.test.ts`。
 - D1 は `fakeD1.testutil.ts` の偽物で試す。暗号は、テスト用に作った鍵を `process.env.TOKEN_ENCRYPTION_KEY` に入れて試す（本物の鍵は使わない）。
 - **必ず境界値のテストを書くもの**（壊れると絶対ルールに直結する）：送信の MIME の組み立て（日本語の件名、長い件名、絵文字、Cc あり、日本語のファイル名、ヘッダーへの改行の差し込み）、宛先の計算（Reply-To、自分が送ったメールへの返信、全員に返信で自分を除く）、暗号化と HMAC（古い形式の値は読まずに例外で止まらない・鍵が無いと平文で保存しない）、入力の上限（巨大な入力・深い入れ子・壊れた MIME）、ログの伏せ字、送信結果の分類。
