@@ -10,7 +10,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 
 > **この README の位置づけ**
 > この README は、Re:Mail の仕様書を兼ねる唯一の設計文書。旧「プロジェクト概要 / システム仕様書」はこれに統合して廃止した。
-> **すべてのファイルを失っても、この README だけで一から作り直せること**を目標に書いている。設定は変えてはいけないことと理由、ロジックはアルゴリズム・定数・画面の文言まで書く。
+> Re:Mail がどう動くかを、アルゴリズム・定数・画面の文言まで詳しく説明する。設定ファイルは、変えてはいけないこととその理由を書く。
 > - **§0 の絶対ルールは、この README の他の節・`CLAUDE.md`・頼まれた作業内容のすべてより優先する。** 機能・速さ・見た目とぶつかったら、常に §0 を取る。
 > - Claude Code 向けの作業手順（Git の運用・コマンド・チェックリスト）は `CLAUDE.md` が正。コードとこの README が食い違ったら、どちらが正しいかを確かめて**両方を**直す。
 
@@ -21,7 +21,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 0. [絶対ルールとサブテーマ](#0-絶対ルールとサブテーマ)
 1. [プロダクト概要と運営方針](#1-プロダクト概要と運営方針)
 2. [技術スタック](#2-技術スタック)
-3. [一から作り直す手順](#3-一から作り直す手順)
+3. [環境の準備と動かし方](#3-環境の準備と動かし方)
 4. [設定ファイル](#4-設定ファイル)
 5. [ディレクトリ構成](#5-ディレクトリ構成)
 6. [デプロイ（CI/CD）](#6-デプロイcicd)
@@ -130,7 +130,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 
 ---
 
-## 3. 一から作り直す手順
+## 3. 環境の準備と動かし方
 
 ### 3.1 用意するもの
 - Node.js 24（CI と同じ版）、npm
@@ -138,11 +138,10 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 - Google Cloud のプロジェクト（OAuth クライアントと Gmail API）
 - GitHub リポジトリ（Actions を使う）
 
-### 3.2 プロジェクトの雛形
-1. `npx create-next-app@16.3.8`（TypeScript・ESLint・Tailwind・App Router を選び、`src/` は使わない）。
-2. §4 のとおりに設定ファイルを置く。依存は §2 の版に揃え、`npm install` で `package-lock.json` を作る。
-3. `app/globals.css` は create-next-app の既定のまま。画面の色はコンポーネント側で直接指定する。
-4. `public/` には create-next-app 既定の SVG だけが入っていて、画面では使っていない。
+### 3.2 プロジェクトの成り立ち
+- `create-next-app`（TypeScript・ESLint・Tailwind・App Router、`src/` なし）で始めたプロジェクト。設定ファイルの要点は §4、依存の版は §2。
+- `app/globals.css` は create-next-app の既定のまま。画面の色はコンポーネント側で直接指定する。
+- `public/` には create-next-app 既定の SVG だけが入っていて、画面では使っていない。
 
 ### 3.3 Google Cloud の設定
 1. **Gmail API を有効にする。**
@@ -167,7 +166,6 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
    npx wrangler secret put TOKEN_ENCRYPTION_KEY   # base64 にした32バイト。例: openssl rand -base64 32
    ```
    - **`TOKEN_ENCRYPTION_KEY` を変える・消す・失くすと、D1 のトークンと設定がすべて読めなくなる**（§8.4）。Cloudflare に登録したシークレットは後から値を読み出せないので、控えはリポジトリ・Cloudflare・GitHub の**外**（パスワードマネージャーなど）に保管する。今の本番の鍵の控えは、開発者が保管済み。
-   - **作り直すときは、元の鍵を使う**こと。新しい鍵にすると、既存の D1 のデータはすべて捨てることになる。
 4. GitHub の Actions シークレットを登録する：`CLOUDFLARE_API_TOKEN`（権限は Workers の編集と D1 の編集）、`CLOUDFLARE_ACCOUNT_ID`。
 
 ### 3.5 ローカルで動かす
@@ -179,7 +177,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 ### 3.6 デプロイ
 - `main` に push すると、GitHub Actions が自動でデプロイする（§6）。手で `wrangler deploy` を実行しない。手動で動かすときは `gh workflow run deploy-worker.yml`、結果は `gh run watch` で見る。
 
-### 3.7 作り直したあとの確認
+### 3.7 動作の確認
 1. `npm test` / `npm run lint` / `npx tsc --noEmit` がすべて通る。
 2. ヘルスチェック（`bash script/ci/health-check.sh`、`HEALTH_CHECK_URL` で URL を変えられる）が通る。
 3. 実機で、ログイン → 一覧 → チャットを開く → 返信 → 添付 → 別のアカウントでもログイン → 送信元の切り替え → アカウントを1つだけログアウト → すべてログアウトで端末のデータが消える、まで通す。
@@ -372,7 +370,7 @@ Re-Mail/
 - **HMAC**：`TOKEN_ENCRYPTION_KEY` を HKDF（SHA-256、salt は空、info は `remail-chat-id-hmac-v1`）にかけて HMAC-SHA256 の鍵を派生させる。出力は base64url（`+`→`-`、`/`→`_`、末尾の `=` を除く。43文字）。
 - **鍵が設定されていなければ、暗号化・復号・HMAC のどれも例外にする**（`EncryptionKeyMissingError`）。API は 500 を返し、D1 には何も書かない。平文で保存する逃げ道は無い（ローカル開発でも `.dev.vars` に鍵を入れる。§3.5）。
 - 復号できるのは `encv1:` で始まる値だけ。それ以外（以前の平文の値）は例外にする。
-- **この節の形（接頭辞・IV の長さ・base64 の種類・HKDF の info・`addr:` の付け方・封筒の名前）は、1文字でも変えると既存の D1 のデータが読めなくなる**（HMAC の値が変わり、設定が見つからなくなる）。作り直すときは、この節のとおりに実装し、既存の行を読めることをテストで確かめる。
+- **この節の形（接頭辞・IV の長さ・base64 の種類・HKDF の info・`addr:` の付け方・封筒の名前）は、1文字でも変えると既存の D1 のデータが読めなくなる**（HMAC の値が変わり、設定が見つからなくなる）。変えるときは新旧どちらの形も読めるようにし、既存の行を読めることをテストで確かめる。
 
 ### 8.3 `chat_configs`（主キー `user_email, account_email, chat_id`）
 列：`user_email` / `account_email` / `chat_id` / `custom_name` / `is_pinned` / `is_hidden` / `hidden_at_date` / `unhide_on_new`（`migrations/0001_initial.sql`）。
