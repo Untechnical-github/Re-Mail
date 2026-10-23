@@ -2429,10 +2429,10 @@ const FILTER_BOX_LABELS: Record<FindBarBoxKey, string> = {
   inbox: "受信箱", archive: "アーカイブ", sent: "送信済み", spam: "迷惑メール", trash: "ゴミ箱",
 };
 const FILTER_ACTIONS: [FilterToolAction, string][] = [
-  ["group", "作成"], ["hide", "非表示"], ["pin", "ピン留め"], ["move", "移動"], ["delete", "削除"], ["read", "既読にする"], ["unread", "未読にする"],
+  ["group", "作成"], ["hide", "非表示"], ["pin", "ピン留め"], ["move", "移動"], ["delete", "削除"], ["read", "既読"], ["unread", "未読"],
 ];
 const MOVE_DEST_LABELS: Record<string, string> = { INBOX: "受信箱", ARCHIVE: "アーカイブ", SPAM: "迷惑メール", TRASH: "ゴミ箱" };
-const FILTER_KIND_LABELS: Record<string, string> = { group: "グループ", hide: "非表示", pin: "ピン留め", move: "移動", delete: "削除", read: "既読にする", unread: "未読にする" };
+const FILTER_KIND_LABELS: Record<string, string> = { group: "グループ", hide: "非表示", pin: "ピン留め", move: "移動", delete: "削除", read: "既読", unread: "未読" };
 const FILTER_ACTION_VERB: Record<string, string> = { hide: "非表示にする", pin: "ピン留めする", move: "移動する", delete: "削除する", read: "既読にする", unread: "未読にする" };
 
 // chatConfigs の1行が「グループフィルター」か「アクションフィルター（継続のみ保存される）」かを判定する
