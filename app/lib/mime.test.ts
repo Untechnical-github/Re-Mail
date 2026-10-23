@@ -37,6 +37,16 @@ describe("splitAddressList / parseAddress", () => {
     expect(splitAddressList('"山田, 太郎" <a@example.com>, b@example.com')).toEqual(['"山田, 太郎" <a@example.com>', "b@example.com"]);
   });
 
+  it("中身の無いグループ（undisclosed-recipients:;）は宛先として数えない", () => {
+    expect(splitAddressList("undisclosed-recipients:;")).toEqual([]);
+    expect(splitAddressList(" undisclosed-recipients: ; ")).toEqual([]);
+    expect(splitAddressList("undisclosed-recipients:;, a@example.com")).toEqual(["a@example.com"]);
+    // 引用符の中のコロンは表示名の一部なので残す
+    expect(splitAddressList('"営業部:" <a@example.com>')).toEqual(['"営業部:" <a@example.com>']);
+    // 巨大な入力でも固まらない
+    expect(splitAddressList(":".repeat(100_000) + ";")).toEqual([":".repeat(100_000)]);
+  });
+
   it("表示名とアドレスに分ける", () => {
     expect(parseAddress('"山田 太郎" <a@example.com>')).toEqual({ name: "山田 太郎", address: "a@example.com" });
     expect(parseAddress("b@example.com")).toEqual({ name: "", address: "b@example.com" });
@@ -94,10 +104,18 @@ describe("buildMimeSegments", () => {
     expect(text).toMatch(/^Bcc: b@example.com X-Evil: 1$/m);
   });
 
-  it("Bcc だけ（To が空）でも組み立てられる", () => {
+  it("Bcc だけ（To も Cc も空）なら、純正 Gmail と同じく To を undisclosed-recipients:; にする", () => {
     const text = toText(buildMimeSegments({ to: "", bcc: "b@example.com", subject: "s", text: "t" }));
     expect(text).toMatch(/^Bcc: b@example.com$/m);
+    expect(text).toMatch(/^To: undisclosed-recipients:;$/m);
+    const lines = text.split("\r\n");
+    expect(lines.findIndex(l => l.startsWith("To: "))).toBe(lines.findIndex(l => l.startsWith("Bcc: ")) - 1);
+  });
+
+  it("To が空でも Cc があれば To は付けない", () => {
+    const text = toText(buildMimeSegments({ to: "  ", cc: "c@example.com", bcc: "b@example.com", subject: "s", text: "t" }));
     expect(text).not.toMatch(/^To:/m);
+    expect(text).toMatch(/^Cc: c@example.com$/m);
   });
 
   it("From・Reply-To は指定したときだけ入り、日本語の表示名は encoded-word になる", () => {

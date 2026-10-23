@@ -288,6 +288,17 @@ describe("groupEmailsByRoom：Reply-To と送ったメールの入れ先", () =>
     expect(groups[asLocalKey("x@example.com")]).toBeUndefined();
   });
 
+  it("純正 Gmail から Bcc だけで送ったメール（To が undisclosed-recipients:;）は、Bcc の相手のチャットに入る", () => {
+    const groups = groupEmailsByRoom([
+      mkEmail({ id: "1", from: "田中 <tanaka@example.com>" }),
+      mkEmail({ id: "s1", isMe: true, from: ME, to: "undisclosed-recipients:;", bcc: "tanaka@example.com", labelIds: ["SENT"] }),
+      mkEmail({ id: "s2", isMe: true, from: ME, to: "undisclosed-recipients:;", bcc: "秘密 <bcc@example.com>", labelIds: ["SENT"] }),
+    ], ME, none);
+    expect(ids(groups[asLocalKey("田中")])).toEqual(["1", "s1"]);
+    expect(ids(groups[asLocalKey("秘密")])).toEqual(["s2"]);
+    expect(Object.keys(groups).some(k => k.includes("undisclosed"))).toBe(false);
+  });
+
   it("部分一致ではルームに入れない（「田中」のルームに「田中太郎」宛てのメールを入れない）", () => {
     const groups = groupEmailsByRoom([
       mkEmail({ id: "1", from: "田中 <tanaka@example.com>" }),

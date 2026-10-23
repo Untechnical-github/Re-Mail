@@ -201,6 +201,8 @@ describe("sentRecipientCounts / receivedRole", () => {
     expect(sentRecipientCounts({ to: "a@example.com", cc: '"山田, 太郎" <b@example.com>, c@example.com', bcc: "d@example.com" })).toBe("To 1・Cc 2・Bcc 1");
     expect(sentRecipientCounts({ to: "a@example.com" })).toBe("To 1");
     expect(sentRecipientCounts({ bcc: "d@example.com" })).toBe("Bcc 1");
+    // 純正 Gmail から Bcc だけで送ったメール
+    expect(sentRecipientCounts({ to: "undisclosed-recipients:;", bcc: "d@example.com" })).toBe("Bcc 1");
   });
   it("受け取ったメールの自分の立場（エイリアスを含む）", () => {
     expect(receivedRole({ to: `相手 <a@example.com>, ${ME}` }, [ME])).toBe("To");

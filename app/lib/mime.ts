@@ -70,25 +70,33 @@ export function encodeHeaderText(value: string): string {
   return words.join(`${CRLF} `);
 }
 
+// 中身の無いグループ（「undisclosed-recipients:;」）の名前の部分。宛先ではないので数えない
+const EMPTY_GROUP = /^[^"<>@:]*:$/;
+
 // 「"山田, 太郎" <a@example.com>, b@example.com」のような宛先の並びを1件ずつに分ける。
-// 表示名の中のカンマで切らないよう、引用符と <> の中は区切りとみなさない
+// 表示名の中のカンマで切らないよう、引用符と <> の中は区切りとみなさない。
+// 純正 Gmail は Bcc だけで送ると To を「undisclosed-recipients:;」にするので、中身の無いグループは飛ばす
 export function splitAddressList(list: string): string[] {
   const result: string[] = [];
   let cur = "";
   let inQuote = false;
   let inAngle = false;
+  const push = () => {
+    const entry = cur.trim();
+    if (entry && !EMPTY_GROUP.test(entry)) result.push(entry);
+    cur = "";
+  };
   for (const ch of list) {
     if (ch === '"') inQuote = !inQuote;
     else if (ch === "<" && !inQuote) inAngle = true;
     else if (ch === ">" && !inQuote) inAngle = false;
     if ((ch === "," || ch === ";") && !inQuote && !inAngle) {
-      if (cur.trim()) result.push(cur.trim());
-      cur = "";
+      push();
       continue;
     }
     cur += ch;
   }
-  if (cur.trim()) result.push(cur.trim());
+  push();
   return result;
 }
 
@@ -214,8 +222,10 @@ export function buildMimeSegments(input: MimeInput): MimeSegment[] {
   if (input.date) headers.push(`Date: ${input.date.toUTCString().replace("GMT", "+0000")}`);
   if (input.messageId) headers.push(`Message-ID: ${stripLineBreaks(input.messageId).trim()}`);
   headers.push(`Subject: ${encodeHeaderText(input.subject || "")}`);
-  // Bcc だけで送るときは To を付けない（中身の無い「To: 」は RFC 5322 に合わない）
+  // Bcc だけで送るときは、純正 Gmail と同じく To を「undisclosed-recipients:;」（中身の無いグループ。RFC 5322 の形）にする
+  // （実機で純正の送信済みと比べて確かめた。受け取った側のメールには Gmail が同じものを付ける）
   if (input.to && input.to.trim()) headers.push(`To: ${formatAddressHeader(input.to)}`);
+  else if (!(input.cc && input.cc.trim())) headers.push("To: undisclosed-recipients:;");
   if (input.cc && input.cc.trim()) headers.push(`Cc: ${formatAddressHeader(input.cc)}`);
   if (input.bcc && input.bcc.trim()) headers.push(`Bcc: ${formatAddressHeader(input.bcc)}`);
   if (input.replyTo && input.replyTo.trim()) headers.push(`Reply-To: ${formatAddressHeader(input.replyTo)}`);

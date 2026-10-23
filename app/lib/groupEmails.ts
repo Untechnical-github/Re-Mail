@@ -122,7 +122,8 @@ export function groupEmailsByRoom(
       groups[newRoomName] = [];
       // 送ったメールだけで作ったルームも、あとの送ったメールの照合先にする（相手は最初の宛先）
       if (!chatConfigs[newRoomName as LocalKey]?.isGroup && !newRoomName.startsWith("group:")) individualRooms.push(newRoomName);
-      const firstAddress = parseAddress(splitAddressList(email.to || email.cc || email.bcc || "")[0] || "").address.trim().toLowerCase();
+      // To が「undisclosed-recipients:;」（純正 Gmail で Bcc だけ）のときも Cc・Bcc の最初の人を相手にする
+      const firstAddress = parseAddress(splitAddressList([email.to, email.cc, email.bcc].filter(Boolean).join(",").slice(0, 200_000))[0] || "").address.trim().toLowerCase();
       if (firstAddress && !roomPartner[newRoomName]) roomPartner[newRoomName] = firstAddress;
     }
     if (!groups[newRoomName].some(e => e.id === email.id)) groups[newRoomName].push({ ...email, isMe: true });

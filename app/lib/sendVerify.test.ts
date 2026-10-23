@@ -82,5 +82,7 @@ describe("matchSentMessage", () => {
     expect(matchSentMessage({ ...sent, bcc: "x@example.com" }, bccOnly)).toBeNull();
     expect(matchSentMessage({ ...sent, bcc: undefined }, bccOnly)).toBeNull();
     expect(matchSentMessage({ ...base, bcc: "z@example.com" }, expected)).toBeNull();
+    // 送信済みの To は「undisclosed-recipients:;」になる（宛先なしとして比べる）
+    expect(matchSentMessage({ ...sent, to: "undisclosed-recipients:;" }, bccOnly)).toBe("fields");
   });
 });
