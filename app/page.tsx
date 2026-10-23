@@ -10,8 +10,7 @@ import { Modals, EmailModal, AttachmentModal, SearchModal, FilterToolModal } fro
 import { getFileIcon, formatFileSize, PinIcon, PaperclipIcon, WarningIcon, InboxIcon, ArchiveIcon, SendIcon, SpamIcon, TrashIcon } from "./components/ui";
 import { chatConfigTab, isMineEmail } from "./lib/filterMatch";
 import type { Email } from "./types/email";
-import { describeExtraRecipients } from "./lib/recipients";
-import { replySubjectFor } from "./lib/replyCompose";
+import { summarizeRecipients, sentRecipientCounts, receivedRole, ROLE_LABELS, ROLE_HINTS } from "./lib/composeRecipients";
 import { gmailOpenUrl } from "./lib/gmailLink";
 
 function InlineAttachmentImage({ attachment, messageId, accountId, cacheKey, onOpen }: {
@@ -168,10 +167,23 @@ export default function Home() {
   // Shift+クリック範囲選択用の最終クリックインデックス
   const lastChatIdxRef = useRef<number>(-1);
   const lastMsgIdxRef = useRef<number>(-1);
-  // 返信欄のどこかにキャレット（フォーカス）があるか。スマホでは、本文が空でフォーカスも無いときは
-  // 件名・返信先・送信元を隠して、メッセージを読む場所を広くとる
+  // 返信欄のどこかにキャレット（フォーカス）があるか。本文が空でフォーカスも無いときは（PC・スマホ共通）
+  // 送信元・送信先・返信元・件名を隠して、メッセージを読む場所を広くとる
   const composeRef = useRef<HTMLDivElement>(null);
   const [composeFocused, setComposeFocused] = useState(false);
+  // 送信先の欄を開いているか（たたんでいるときは1行の要約だけ出す）。開いたチャットを持っておき、ほかのチャットに移ったら自動でたたむ
+  const selectedRoom = app.state.selectedSender;
+  const [recipientsOpenRoom, setRecipientsOpenRoom] = useState<string | null>(null);
+  const recipientsOpen = !!selectedRoom && recipientsOpenRoom === selectedRoom;
+  // 本文の入力欄は最初は1行、入力に合わせて伸び、画面の高さの約40%（またはおよそ8行）で止まって中をスクロールする
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const replyBodyValue = app.state.replyBody;
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [replyBodyValue, selectedRoom]);
 
   if (auth.status === "loading") return <div className="flex h-screen items-center justify-center bg-[#313338] text-gray-400 font-bold">読み込み中...</div>;
   if (!auth.session || auth.session.error === "RefreshAccessTokenError") return (
@@ -190,8 +202,12 @@ export default function Home() {
   const isInboundOnlyGroup = !!(selectedGroupConfig?.isGroup && (selectedGroupConfig.groupMode === "inbound_only" || isFilterGroup));
   const isOutboundOnlyGroup = !!(selectedGroupConfig?.isGroup && !isFilterGroup && selectedGroupConfig.groupMode === "outbound_only");
   const isSendDisabled = isInboundOnlyGroup || isFilterGroup;
-  // スマホでは、本文に何か書いてあるか、返信欄にキャレットがあるときだけ、件名・返信先・送信元を出す（パソコンでは常に出す）
-  const showComposeExtras = !state.isMobile || !!state.replyBody.trim() || composeFocused;
+  // 本文に何か書いてあるか、返信欄にキャレットがあるときだけ、送信元・送信先・返信元・件名を出す（PC・スマホ共通）
+  // 送信先の欄を開いている間・入力欄から開いた確認画面や選ぶ画面を出している間も、たたまない（選んでいる途中で消えないように）
+  const composeModalOpen = !!state.composeDialog || ["select_recipients", "select_reply_target", "select_send_account"].includes(state.modal?.type || "");
+  const showComposeExtras = !!state.replyBody.trim() || composeFocused || recipientsOpen || composeModalOpen;
+  const isGroupChat = !!selectedGroupConfig?.isGroup;
+  const noRecipients = !isGroupChat && state.recipients.length === 0;
   const subjectFindHighlight = state.findBarOpen && state.findBarSearchSubject ? state.findBarKeyword : "";
   const bodyFindHighlight = state.findBarOpen && state.findBarSearchBody ? state.findBarKeyword : "";
 
@@ -230,6 +246,44 @@ export default function Home() {
     </div>
   </div>
 )}
+{/* 入力欄の確認画面（送信先を外す・チャットを移る・送信先を置き換える・返信／全員に返信・引用の注意） */}
+{state.composeDialog && (() => {
+  const d = state.composeDialog;
+  const close = () => actions.setComposeDialog(null);
+  return (
+    <div className="fixed inset-0 bg-black/70 z-[90] flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); if (d.kind === "confirm") d.onCancel?.(); close(); }}>
+      <div role="dialog" aria-modal="true" className="bg-[#313338] rounded-lg shadow-2xl w-full max-w-sm border border-[#1E1F22] p-5 max-h-[85dvh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        {d.kind === "confirm" ? (
+          <>
+            <p className="text-sm text-gray-200 mb-5 leading-relaxed">{d.message}</p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => { close(); d.onCancel?.(); }} className="px-4 py-2 hover:underline text-gray-300 text-sm">{d.cancelLabel || "やめる"}</button>
+              <button onClick={() => { close(); d.onConfirm(); }} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">{d.confirmLabel}</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 className="text-lg font-bold text-white mb-1">返信のしかた</h2>
+            <p className="text-xs text-gray-400 mb-3">返信元のメールには、自分と相手のほかにも宛先があります。どちらで送るか選んでください（あとから送信先の欄で変えられます）</p>
+            {([["返信", d.reply], ["全員に返信", d.replyAll]] as const).map(([label, list]) => (
+              <button key={label} onClick={() => { close(); d.onPick([...list]); }} className="w-full text-left bg-[#2B2D31] hover:bg-[#35373C] rounded p-3 mb-2 transition">
+                <div className="text-sm font-bold text-white mb-1">{label}</div>
+                {list.map(r => (
+                  <div key={r.address} className="text-[11px] text-gray-300 truncate">
+                    <span className="text-gray-500">{r.role === "to" ? "To" : r.role === "cc" ? "Cc" : "Bcc"}　</span>{r.name ? `${r.name} <${r.address}>` : r.address}
+                  </div>
+                ))}
+              </button>
+            ))}
+            <div className="flex justify-end">
+              <button onClick={close} className="px-4 py-2 hover:underline text-gray-300 text-sm">送信先はそのまま</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+})()}
 {state.infoToast && !state.errorToast && (
   <div role="status" className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] bg-[#2B2D31] text-white text-sm font-bold px-4 py-2.5 rounded-lg shadow-lg border border-[#5865F2] max-w-[90vw] text-center pointer-events-none">
     {state.infoToast}
@@ -825,6 +879,14 @@ export default function Home() {
                            <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
                               {!isMe && <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>}
                               <span>{new Date(email.date).toLocaleString("ja-JP", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                              {/* 宛先の表示設定（共通設定・既定オフ）。送ったメールは人数、受け取ったメールは自分がどの欄で受け取ったか */}
+                              {isMe && state.showSentRecipients && (() => {
+                                const counts = sentRecipientCounts(email);
+                                return counts ? <span className="px-1.5 rounded bg-black/20 text-gray-300">{counts}</span> : null;
+                              })()}
+                              {!isMe && state.showReceivedRecipients && (
+                                <span className="px-1.5 rounded bg-black/20 text-gray-300">{receivedRole(email, actions.myAddressesFor(email.accountId || actions.roomAccountEmail(state.selectedSender!)))}</span>
+                              )}
                            </div>
                            <div
                               className={`p-3.5 text-[15px] leading-relaxed whitespace-pre-wrap select-text shadow-sm transition-all cursor-pointer ${email.labelIds?.includes("UNREAD") ? 'font-semibold' : ''} ${isSelected ? 'ring-2 ring-white scale-[0.98]' : ''} ${isMe ? 'bg-[#5865F2] text-white rounded-2xl rounded-tr-sm' : 'bg-[#2B2D31] text-gray-200 rounded-2xl rounded-tl-sm hover:bg-[#35373C]'}`}
@@ -973,11 +1035,13 @@ export default function Home() {
                   {isSendDisabled && (
                     <div className="text-[11px] text-gray-400 mb-2">{isFilterGroup ? "フィルターグループのため、送信・返信はできません" : "受信専用のグループチャットのため、送信・返信はできません"}</div>
                   )}
-                  {/* 送信元：実際に使う From（元のメールが自分のエイリアス宛てなら、そのエイリアス）を返信先の上に出す（送り間違えを防ぐ）。
-                      アカウントが2つ以上あるときは押すと切り替えられる。エイリアスから送るときは、アカウントが1つでも出す */}
-                  {showComposeExtras && computed.sendFrom && (((state.linkedAccounts as string[]) || []).length > 0 || computed.sendFrom.isAlias) && (() => {
+                  {/* 送信元：実際に使う From（元のメールが自分のエイリアス宛てなら、そのエイリアス）を、アカウントのアイコン・名前と一緒に出す（送り間違えを防ぐ）。
+                      押すと送信元のアカウントを選ぶ画面を開く。ログインしているアカウントが1つでエイリアスも無ければ押せない */}
+                  {showComposeExtras && computed.sendFrom && (() => {
                     const from = computed.sendFrom!;
-                    const canSwitch = ((state.linkedAccounts as string[]) || []).length > 0;
+                    const me = auth.session?.user?.email || "";
+                    const profile = from.account === me ? { name: auth.session?.user?.name || undefined, picture: auth.session?.user?.image || undefined } : state.linkedAccountProfiles[from.account];
+                    const canSwitch = ((state.linkedAccounts as string[]) || []).length > 0 || (state.sendAsByAccount[from.account] || []).length > 1;
                     return (
                       <button
                         type="button"
@@ -991,19 +1055,79 @@ export default function Home() {
                         className={`w-full flex items-center gap-2 bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2] text-left transition ${canSwitch ? "hover:bg-[#35373C]" : "cursor-default"}`}
                       >
                         <span className="text-gray-400 flex-shrink-0">送信元:</span>
+                        {/* eslint-disable-next-line @next/next/no-img-element -- アカウントの小さなプロフィール画像。next/image の最適化は Worker の中継が増えるので使わない（ほかのアカウント画像と同じ） */}
+                        <img src={profile?.picture || `/api/avatar?name=${encodeURIComponent(profile?.name || from.account)}`} alt="" referrerPolicy="no-referrer" className="w-5 h-5 rounded-full flex-shrink-0" />
                         <span className="truncate flex-1" title={from.address}>
+                          {profile?.name && <span className="font-bold text-gray-200 mr-1">{profile.name}</span>}
                           {from.displayName ? `${from.displayName} <${from.address}>` : from.address}
                           {from.isAlias && <span className="text-gray-500">（{from.account} のエイリアス）</span>}
                         </span>
-                        {canSwitch && <span className="font-bold px-2 text-[#5865F2] flex-shrink-0">切り替え</span>}
+                        {canSwitch && <span className="font-bold px-2 text-[#5865F2] flex-shrink-0">変更</span>}
                       </button>
                     );
                   })()}
+                  {/* 送信先：たたんでいるときは1行の要約。開くと1人ずつのチップ（押すと確認を挟んで外す）と「＋ 送信先を追加」 */}
+                  {showComposeExtras && (isGroupChat ? (
+                    <div className="flex items-center gap-2 bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">
+                      <span className="text-gray-400 flex-shrink-0">送信先:</span>
+                      <span className="truncate flex-1">グループのメンバー全員に送ります</span>
+                    </div>
+                  ) : (
+                    <div className="bg-[#2B2D31] text-gray-300 rounded text-xs mb-2 border-l-4 border-[#5865F2]">
+                      <button
+                        type="button"
+                        disabled={isSendDisabled}
+                        onClick={(e) => { e.stopPropagation(); setRecipientsOpenRoom(recipientsOpen ? null : selectedRoom); }}
+                        className="w-full flex items-center gap-2 p-2 text-left hover:bg-[#35373C] rounded transition"
+                        aria-expanded={recipientsOpen}
+                      >
+                        <span className="text-gray-400 flex-shrink-0">送信先:</span>
+                        <span className={`truncate flex-1 ${noRecipients ? "text-red-400 font-bold" : ""}`}>
+                          {noRecipients ? "送信先がありません" : summarizeRecipients(state.recipients)}
+                        </span>
+                        <span className="font-bold px-2 text-[#5865F2] flex-shrink-0">{recipientsOpen ? "閉じる" : "開く"}</span>
+                      </button>
+                      {recipientsOpen && (
+                        <div className="px-2 pb-2 flex flex-col gap-1 max-h-[30dvh] overflow-y-auto">
+                          {state.recipients.map(r => (
+                            <button
+                              key={r.address}
+                              type="button"
+                              title={`${r.address}（押すと送信先から外します）`}
+                              onClick={(e) => { e.stopPropagation(); actions.removeComposeRecipient(r.address); }}
+                              className="flex items-center gap-2 px-2 py-1.5 rounded bg-black/20 hover:bg-black/30 border border-white/10 text-left transition"
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element -- 名前から作る小さなアイコン（Re:Mail 自身の /api/avatar。外部には通信しない） */}
+                              <img src={`/api/avatar?name=${encodeURIComponent(r.name || r.address)}`} alt="" className="w-5 h-5 rounded-full flex-shrink-0" />
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate text-gray-200 font-bold">{r.name || r.address}</span>
+                                <span className="block truncate text-[11px] text-gray-400">
+                                  {ROLE_LABELS[r.role]}{ROLE_HINTS[r.role] && <span className="text-gray-500">：{ROLE_HINTS[r.role]}</span>}
+                                </span>
+                              </span>
+                              <span className="text-gray-400 font-bold px-1 flex-shrink-0">×</span>
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              actions.setModal({ type: "select_recipients", targetMode: "current_chat", targets: [] });
+                              window.history.pushState({ action: "modal" }, "", window.location.href);
+                            }}
+                            className="font-bold px-2 py-1.5 text-left text-[#5865F2] hover:text-white"
+                          >
+                            ＋ 送信先を追加
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
                   {showComposeExtras && (
                   <div className="flex items-center gap-2 bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">
-                    <span className="text-gray-400 flex-shrink-0">返信先:</span>
+                    <span className="text-gray-400 flex-shrink-0">返信元:</span>
                     <span className={`truncate flex-1 ${state.replyToMessage ? "" : "text-gray-500"}`}>
-                      {state.replyToMessage ? (state.replyToMessage.subject || state.replyToMessage.snippet || "(件名なし)") : "未選択"}
+                      {state.replyToMessage ? (state.replyToMessage.subject || state.replyToMessage.snippet || "(件名なし)") : "なし（新しいメール）"}
                     </span>
                     <button
                       disabled={isSendDisabled}
@@ -1014,28 +1138,15 @@ export default function Home() {
                       }}
                       className="font-bold px-2 text-[#5865F2] hover:text-white flex-shrink-0"
                     >
-                      {state.replyToMessage ? "返信先を変更" : "返信先を選択"}
+                      {state.replyToMessage ? "返信元を変更" : "返信元を選択"}
                     </button>
                     {state.replyToMessage && (
-                      <button onClick={(e) => { e.stopPropagation(); actions.setReplyToMessage(null); }} className="font-bold px-1 hover:text-white flex-shrink-0">×</button>
+                      <button title="返信元を外す" onClick={(e) => { e.stopPropagation(); actions.setReplyToMessage(null); }} className="font-bold px-1 hover:text-white flex-shrink-0">×</button>
                     )}
                   </div>
                   )}
-                  {/* Cc や複数の To があるメールへの返信のときだけ出す（既定は純正 Gmail と同じく相手のみ） */}
-                  {computed.replyPlan && computed.replyPlan.extra.length > 0 && (
-                    <div className="flex items-center gap-2 text-xs mb-2 px-2 text-gray-400">
-                      <span className="truncate flex-1" title={computed.replyPlan.extra.map(r => r.address).join(", ")}>
-                        {describeExtraRecipients(computed.replyPlan.extra)}
-                      </span>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); actions.setReplyAll(!state.replyAll); }}
-                        className={`flex-shrink-0 font-bold px-2 py-0.5 rounded border transition ${state.replyAll ? "bg-[#5865F2] border-[#5865F2] text-white" : "border-[#4E5058] text-gray-300 hover:text-white"}`}
-                      >
-                        全員に返信
-                      </button>
-                    </div>
-                  )}
-                  {showComposeExtras && <input disabled={isSendDisabled || !!state.replyToMessage} title={state.replyToMessage ? "返信の件名は、スレッドが分かれないよう元の件名に揃えます" : undefined} type="text" placeholder="件名 (省略可)" value={state.replyToMessage ? replySubjectFor(state.replyToMessage.subject) : state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />}
+                  {/* 件名は返信元が無いとき（新しいメール）だけ。返信の件名はスレッドが分かれないよう元の件名に揃える */}
+                  {showComposeExtras && !state.replyToMessage && <input disabled={isSendDisabled} type="text" placeholder="件名 (省略可)" value={state.replySubject} onChange={(e) => actions.setReplySubject(e.target.value)} onClick={(e) => e.stopPropagation()} className="w-full text-sm px-2 py-1 mb-2 bg-transparent text-white focus:outline-none placeholder-gray-500 font-medium border-b border-[#2B2D31]" />}
                   {state.replyAttachments.length > 0 && (
                     <div className="flex flex-wrap gap-2 mb-2">
                       {state.replyAttachments.map((att, idx) => (
@@ -1068,8 +1179,8 @@ export default function Home() {
                       />
                       {state.useIconLabels ? <PaperclipIcon className="w-5 h-5" /> : <span className="text-xs font-bold">添付</span>}
                     </label>
-                    <textarea disabled={isSendDisabled || !state.isDraftReady} placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || actions.roomLocalKey(state.selectedSender!)}`} rows={state.isMobile ? 1 : 2} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} className="flex-1 resize-none text-[15px] bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
-                    <button title="送信" onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={isSendDisabled || state.isSending || !state.isDraftReady || !state.replyBody.trim()} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
+                    <textarea ref={bodyRef} disabled={isSendDisabled || !state.isDraftReady} placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || actions.roomLocalKey(state.selectedSender!)}`} rows={1} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} style={{ maxHeight: "min(40dvh, 13rem)" }} className="flex-1 resize-none overflow-y-auto text-[15px] leading-6 bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
+                    <button title={noRecipients ? "送信先がありません" : "送信"} onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={isSendDisabled || state.isSending || !state.isDraftReady || !state.replyBody.trim() || noRecipients} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
                       {state.isSending ? "..." : (state.useIconLabels ? <SendIcon className="w-4 h-4" /> : "送信")}
                     </button>
                   </div>

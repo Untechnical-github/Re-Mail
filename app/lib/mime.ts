@@ -13,6 +13,8 @@ export type MimeInput = {
   replyTo?: string;
   to: string;
   cc?: string;
+  // Bcc は raw に入れて messages.send に渡す。Gmail が受信者側のメールからは取り除き、自分の送信済みにだけ残す（純正と同じ）
+  bcc?: string;
   subject: string;
   text?: string;
   html?: string;
@@ -202,7 +204,7 @@ export function buildMimeSegments(input: MimeInput): MimeSegment[] {
   const headers: string[] = [];
   // Date は付けない。純正 Gmail と同じ形式（送信者のタイムゾーン）で Gmail 側が付ける
   // 並びは純正 Gmail が送るメールと同じにする（MIME-Version → References → In-Reply-To → From → Date →
-  // Message-ID → Subject → To → Cc）。Gmail は自分が付け直すヘッダーを並べ替えるが、それ以外はこの順のまま届くため
+  // Message-ID → Subject → To → Cc → Bcc）。Gmail は自分が付け直すヘッダーを並べ替えるが、それ以外はこの順のまま届くため
   headers.push("MIME-Version: 1.0");
   const inReplyTo = input.inReplyTo ? stripLineBreaks(input.inReplyTo).trim() : "";
   const references = input.references ? stripLineBreaks(input.references).trim() : inReplyTo;
@@ -212,8 +214,10 @@ export function buildMimeSegments(input: MimeInput): MimeSegment[] {
   if (input.date) headers.push(`Date: ${input.date.toUTCString().replace("GMT", "+0000")}`);
   if (input.messageId) headers.push(`Message-ID: ${stripLineBreaks(input.messageId).trim()}`);
   headers.push(`Subject: ${encodeHeaderText(input.subject || "")}`);
-  headers.push(`To: ${formatAddressHeader(input.to || "")}`);
+  // Bcc だけで送るときは To を付けない（中身の無い「To: 」は RFC 5322 に合わない）
+  if (input.to && input.to.trim()) headers.push(`To: ${formatAddressHeader(input.to)}`);
   if (input.cc && input.cc.trim()) headers.push(`Cc: ${formatAddressHeader(input.cc)}`);
+  if (input.bcc && input.bcc.trim()) headers.push(`Bcc: ${formatAddressHeader(input.bcc)}`);
   if (input.replyTo && input.replyTo.trim()) headers.push(`Reply-To: ${formatAddressHeader(input.replyTo)}`);
 
   const attachments = input.attachments || [];

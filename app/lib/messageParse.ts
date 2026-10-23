@@ -342,6 +342,8 @@ export function parseMessageDetail(message: GmailMessage) {
   const to = decodeMimeHeader(getHeader(headers, "To")) || decodeMimeHeader(getHeader(headers, "Delivered-To"));
   const cc = decodeMimeHeader(getHeader(headers, "Cc")) || undefined;
   const replyTo = decodeMimeHeader(getHeader(headers, "Reply-To")) || undefined;
+  // Bcc は自分が送ったメール（送信済み）にだけ残る。受け取ったメールには無い
+  const bcc = decodeMimeHeader(getHeader(headers, "Bcc")) || undefined;
   const date = getHeader(headers, "Date");
   const labelIds = message.labelIds || [];
   // Discord風の「返信先」チップ表示のため、Message-ID / In-Reply-To を保持しておく
@@ -366,5 +368,5 @@ export function parseMessageDetail(message: GmailMessage) {
 
   const attachments = extractAttachments(payload, rawHtmlForCheck);
   const hasHtml = !!htmlBodyForLinks;
-  return { id: message.id, threadId: message.threadId, subject, from, to, cc, replyTo, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, references, inReplyTo, isForward, hasHtml };
+  return { id: message.id, threadId: message.threadId, subject, from, to, cc, bcc, replyTo, date, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, references, inReplyTo, isForward, hasHtml };
 }

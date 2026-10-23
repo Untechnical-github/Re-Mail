@@ -1,4 +1,7 @@
 // useMailApp.ts の groupedEmails useMemo から抽出した、副作用のない純粋関数版。
+// 規則：受け取ったメールは相手（Reply-To に自分以外があればそのアドレス、無ければ From）のルームへ。
+// 自分が送ったメールは To / Cc / Bcc に入っている相手の個人チャットすべてへ。アドレスだけのルームは、
+// 同じアドレスの表示名ルームがあればそちらへまとめる。グループは宛先の集合がメンバーと完全一致する送信メールと、メンバーからの受信メール
 // 「1アカウント分のメール配列 + そのアカウントのchatConfigs」を受け取り、ローカルなroomキー
 // （相手の表示名やアドレス、group:xxxx など）でグルーピングしたものを返す。
 // 複数アカウント分の結果をマージする場合は mergeAccountGroups を使う（そちらで
@@ -8,6 +11,7 @@ import { ChatConfig } from "../types/mail";
 import { Email } from "../types/email";
 import { isMineEmail, messageMatchesFilter } from "./filterMatch";
 import { LocalKey, RoomKeyStr, encodeRoomKey, decodeRoomKey, keysOf } from "./roomKey";
+import { splitAddressList, parseAddress } from "./mime";
 
 function parseAddressSet(toHeader: string): Set<string> {
   const set = new Set<string>();
@@ -32,48 +36,96 @@ export function groupMemberAddresses(cfg: ChatConfig): Set<string> {
   return new Set(addresses.filter((a): a is string => typeof a === "string").map(a => a.trim().toLowerCase()).filter(Boolean));
 }
 
-// 1アカウント分のメールを、ローカルなroomキーでグルーピングする（既存のgroupedEmails useMemoと
-// 完全に同じロジック）。返り値のキーはローカルキー（例: "田中太郎", "group:xxxx"）で、
-// アカウントをまたいだ複合キー化は行わない（それは mergeAccountGroups の責務）
+// 受け取ったメールの「相手」。Reply-To に自分（エイリアスを含む）以外のアドレスがあれば、その最初のものを相手にする
+// （問い合わせフォームのように From が共通で Reply-To が人ごとに違うメールを、返信先の人のチャットにまとめるため）。
+// Reply-To が無ければ From。roomName は Reply-To の表示名、無ければ Reply-To のアドレス（From の表示名は使わない）
+export type MailPartner = { name: string; address: string; roomName: string; viaReplyTo: boolean };
+
+export function mailPartnerOf(email: Pick<Email, "from" | "replyTo">, myAddresses: string[]): MailPartner {
+  const me = new Set(myAddresses.filter(Boolean).map(a => a.trim().toLowerCase()));
+  // 壊れた・巨大なヘッダーで固まらないよう、見る長さに上限を置く
+  const replyTo = splitAddressList((email.replyTo || "").slice(0, 20_000))
+    .map(parseAddress)
+    .find(a => a.address.includes("@") && !me.has(a.address.trim().toLowerCase()));
+  if (replyTo) {
+    const address = replyTo.address.trim().toLowerCase();
+    return { name: replyTo.name, address, roomName: replyTo.name || replyTo.address.trim() || "Unknown", viaReplyTo: true };
+  }
+  const from = email.from || "";
+  const { name, address } = parseAddress(from);
+  return { name, address: address.trim().toLowerCase(), roomName: from.split("<")[0].replace(/"/g, "").trim() || "Unknown", viaReplyTo: false };
+}
+
+// 自分が送ったメールの宛先（To / Cc / Bcc）。アドレス（小文字）と表示名
+function sentRecipients(email: Pick<Email, "to" | "cc" | "bcc">): { addresses: Set<string>; names: Set<string>; first: string } {
+  const addresses = new Set<string>();
+  const names = new Set<string>();
+  let first = "";
+  for (const header of [email.to, email.cc, email.bcc]) {
+    for (const entry of splitAddressList((header || "").slice(0, 200_000))) {
+      const { name, address } = parseAddress(entry);
+      const addr = address.trim().toLowerCase();
+      if (addr) addresses.add(addr);
+      if (name) names.add(name.trim());
+      // 新しいルームの名前：To の最初の宛先の表示名（無ければアドレス）。To が無ければ Cc、Cc も無ければ Bcc の最初
+      if (!first) first = name.trim() || address.trim();
+    }
+  }
+  return { addresses, names, first };
+}
+
+// 1アカウント分のメールを、ローカルなroomキーでグルーピングする。
+// 返り値のキーはローカルキー（例: "田中太郎", "group:xxxx"）で、
+// アカウントをまたいだ複合キー化は行わない（それは mergeAccountGroups の責務）。
+// myAliases は自分のエイリアス（Reply-To が自分宛てかどうかの判定にだけ使う）
 export function groupEmailsByRoom(
   emails: Email[],
   myAddress: string,
   chatConfigs: Record<LocalKey, ChatConfig>,
+  myAliases: string[] = [],
 ): Record<LocalKey, Email[]> {
   const groups: Record<string, Email[]> = {};
   const tempSentEmails: Email[] = [];
+  const myAddresses = [myAddress, ...myAliases];
+  // ルームの相手のアドレス（Reply-To を優先）。最初に見つかった受信メールで決める
+  const roomPartner: Record<string, string> = {};
   emails.forEach((email) => {
     if (email.senderRoom) { if (!groups[email.senderRoom]) groups[email.senderRoom] = []; groups[email.senderRoom].push(email); return; }
     const isMe = isMineEmail(email, myAddress || "");
     if (!isMe) {
-      const roomName = email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown";
+      const partner = mailPartnerOf(email, myAddresses);
+      const roomName = partner.roomName;
       if (!groups[roomName]) groups[roomName] = []; groups[roomName].push(email);
+      if (!roomPartner[roomName] && partner.address) roomPartner[roomName] = partner.address;
     } else { tempSentEmails.push(email); }
   });
 
+  // 自分が送ったメールは、To / Cc / Bcc のどれかに相手のアドレス（またはルーム名）が入っている個人チャットすべてに入れる
+  // （グループのメールを各メンバーのチャットに入れるのと同じ考え方）。グループのルームは対象外
+  const individualRooms = Object.keys(groups).filter(room => !chatConfigs[room as LocalKey]?.isGroup && !room.startsWith("group:"));
   tempSentEmails.forEach((email) => {
     // 実行中メモリ上でも送信済みメールからINBOXを強制剥奪する
     if (email.labelIds?.includes("INBOX")) {
       email.labelIds = email.labelIds.filter((l: string) => l !== "INBOX");
     }
-    const toClean = email.to ? email.to.toLowerCase() : "";
-    let matchedRoom: string | null = null;
-    for (const roomName of Object.keys(groups)) {
-      const roomNameLower = roomName.toLowerCase();
-      const partnerEmail = groups[roomName].find(e => !isMineEmail(e, myAddress || ""))?.from.toLowerCase() || "";
-      const partnerAddr = (partnerEmail.match(/<([^>]+)>/) || [null, partnerEmail])[1]?.trim() || partnerEmail.trim();
-      if ((roomNameLower && toClean.includes(roomNameLower)) || (partnerAddr && toClean.includes(partnerAddr))) { matchedRoom = roomName; break; }
+    const { addresses, names, first } = sentRecipients(email);
+    const matched = individualRooms.filter(room => {
+      const partnerAddr = roomPartner[room] || "";
+      return (partnerAddr && addresses.has(partnerAddr)) || names.has(room) || addresses.has(room.trim().toLowerCase());
+    });
+    if (matched.length > 0) {
+      matched.forEach(room => groups[room].push({ ...email, isMe: true }));
+      return;
     }
-    if (matchedRoom) { groups[matchedRoom].push({ ...email, isMe: true }); }
-    else {
-      let newRoomName = "Unknown";
-      if (email.to) {
-        const toMatch = email.to.split(",")[0];
-        newRoomName = toMatch.split("<")[0].replace(/"/g, "").trim() || toMatch.replace(/[<>]/g, "").trim();
-        if (!newRoomName) newRoomName = "Unknown";
-      }
-      if (!groups[newRoomName]) groups[newRoomName] = []; groups[newRoomName].push({ ...email, isMe: true });
+    const newRoomName = first || "Unknown";
+    if (!groups[newRoomName]) {
+      groups[newRoomName] = [];
+      // 送ったメールだけで作ったルームも、あとの送ったメールの照合先にする（相手は最初の宛先）
+      if (!chatConfigs[newRoomName as LocalKey]?.isGroup && !newRoomName.startsWith("group:")) individualRooms.push(newRoomName);
+      const firstAddress = parseAddress(splitAddressList(email.to || email.cc || email.bcc || "")[0] || "").address.trim().toLowerCase();
+      if (firstAddress && !roomPartner[newRoomName]) roomPartner[newRoomName] = firstAddress;
     }
+    if (!groups[newRoomName].some(e => e.id === email.id)) groups[newRoomName].push({ ...email, isMe: true });
   });
 
   // まだ返信がなく表示名が分からないうちは「アドレスそのもの」がルームキーになるが、
@@ -86,7 +138,8 @@ export function groupEmailsByRoom(
     const msgs = groups[room];
     if (!msgs || msgs.length === 0) return "";
     const partner = msgs.find((e: Email) => !isMineEmail(e, myAddress || ""));
-    const raw = partner ? partner.from : (msgs.find((e: Email) => e.to)?.to || "");
+    if (partner) return mailPartnerOf(partner, myAddresses).address;
+    const raw = (msgs.find((e: Email) => e.to)?.to || "").split(",")[0];
     const match = (raw || "").match(/<([^>]+)>/);
     return ((match ? match[1] : raw) || "").trim().toLowerCase();
   };
@@ -228,4 +281,28 @@ export function applyFilterGroups(
   });
 
   return next;
+}
+
+// ルームの相手（表示名とアドレス）。相手から届いたメールがあれば mailPartnerOf（Reply-To 優先）、
+// 送ったメールしか無ければ、その宛先（To / Cc / Bcc）のうちルーム名（表示名かアドレス）に合うもの、無ければ最初の宛先
+export function roomPartner(msgs: Email[], localKey: string, myAddress: string, myAliases: string[] = []): { name: string; address: string } {
+  const partner = msgs.find(e => !isMineEmail(e, myAddress || ""));
+  if (partner) {
+    const p = mailPartnerOf(partner, [myAddress, ...myAliases]);
+    return { name: p.name, address: p.address };
+  }
+  const room = (localKey || "").trim();
+  let fallback: { name: string; address: string } | null = null;
+  for (const e of msgs) {
+    for (const header of [e.to, e.cc, e.bcc]) {
+      for (const entry of splitAddressList((header || "").slice(0, 200_000))) {
+        const { name, address } = parseAddress(entry);
+        const addr = address.trim().toLowerCase();
+        if (!addr) continue;
+        if (addr === room.toLowerCase() || (name && name.trim() === room)) return { name: name.trim(), address: addr };
+        if (!fallback) fallback = { name: name.trim(), address: addr };
+      }
+    }
+  }
+  return fallback || { name: "", address: "" };
 }

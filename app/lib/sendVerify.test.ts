@@ -74,4 +74,13 @@ describe("matchSentMessage", () => {
     expect(matchSentMessage(base, { ...expected, cc: undefined })).toBeNull();
     expect(matchSentMessage({ ...base, cc: "" }, { ...expected, cc: undefined })).toBe("fields");
   });
+
+  it("Bcc も照らし合わせる（Bcc だけの送信でも一致を見つけられる）", () => {
+    const bccOnly = { ...expected, to: "", cc: undefined, bcc: "x@example.com, Y <y@example.com>" };
+    const sent = { ...base, to: "", cc: "", bcc: "Y@example.com, x@example.com" };
+    expect(matchSentMessage(sent, bccOnly)).toBe("fields");
+    expect(matchSentMessage({ ...sent, bcc: "x@example.com" }, bccOnly)).toBeNull();
+    expect(matchSentMessage({ ...sent, bcc: undefined }, bccOnly)).toBeNull();
+    expect(matchSentMessage({ ...base, bcc: "z@example.com" }, expected)).toBeNull();
+  });
 });

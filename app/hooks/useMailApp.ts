@@ -6,7 +6,7 @@ import { getCachedAttachment, setCachedAttachment, attachmentCacheKey, attachmen
 import { clearDeviceData, clearAccountDeviceData, DEVICE_OWNER_KEY } from "../lib/deviceData";
 import { loadDraft, saveDraft, removeDraft } from "../lib/drafts";
 import { isMineEmail, getFindBarBoxKey, FilterCriteria, messageMatchesFilter, ChatListTab, chatConfigTab } from "../lib/filterMatch";
-import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, groupMemberAddresses } from "../lib/groupEmails";
+import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, groupMemberAddresses, roomPartner } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { makeMessageId, isRateLimitReason } from "../lib/sendVerify";
@@ -18,8 +18,7 @@ import { sanitizeSyncedSettings, sanitizeAccountSettings, syncedSettingsKey, pic
 type InlineImageRef = { contentId: string; attachmentId: string; mimeType: string; size: number };
 // 本文中に出す画像の1枚あたりの上限。これより大きいものは出さず、Gmail で開く案内にする（端末のメモリを守るため）
 const INLINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-import { planReply, type ReplyPlan } from "../lib/recipients";
-import { parseAddress } from "../lib/mime";
+import { normalizeRecipients, recipientsHeader, excludesPartner, pickMoveTarget, replyChoices, quoteGoesToOutsiders, recipientsKey, isValidRecipientAddress, displayRecipientName, type ComposeRecipient } from "../lib/composeRecipients";
 import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, composeReplyBodies, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, type SendAsInfo } from "../lib/replyCompose";
 import { readPinnedIds, capPinnedIds, mergePinnedIds, missingPinnedEmail } from "../lib/pinnedIds";
 import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
@@ -36,6 +35,7 @@ const ACCOUNT_SETTINGS_KEY_PREFIX = "__account_settings__:";
 type SendApiPayload = {
   to: string;
   cc?: string;
+  bcc?: string;
   from?: string;
   replyTo?: string;
   references?: string;
@@ -51,6 +51,24 @@ type SendApiPayload = {
 };
 // unconfirmed: 送れたか分からず、送信済みにも見つからなかった / unverifiable: 送信済みを確かめることもできなかった
 type SendApiResult = { ok: true; id?: string; threadId?: string } | { ok: false; reason: "failed" | "unconfirmed" | "unverifiable"; status?: number; code?: string; gmailReason?: string };
+
+// 入力欄の確認画面（送信先を外す・チャットを移る・送信先を置き換える・返信／全員に返信・引用の注意）
+export type ComposeDialog =
+  | { kind: "confirm"; message: string; confirmLabel: string; cancelLabel?: string; onConfirm: () => void; onCancel?: () => void }
+  | { kind: "replyChoice"; reply: ComposeRecipient[]; replyAll: ComposeRecipient[]; onPick: (list: ComposeRecipient[]) => void };
+
+type Attachment = { filename: string; mimeType: string; size: number; data: string };
+// 送信元の切り替え・送信先の変更でほかのチャットへ移るときに持っていく入力中の内容
+type CarriedDraft = {
+  room: string;
+  fromRoom: string;
+  subject: string;
+  body: string;
+  attachments: Attachment[];
+  recipients: ComposeRecipient[] | null;
+  recipientsBase: ComposeRecipient[] | null;
+  replyToMessage: Email | null;
+};
 
 // /api/config が返す chat_configs の行
 type D1ConfigRow = {
@@ -221,6 +239,9 @@ export function useMailApp() {
   // 今は「メールの外部の画像を、押さずに毎回読み込むか」だけ（既定はオフ。読み込むと送り手に開封が伝わる）。
   // そのアカウントの D1 の置き場所に持ち、ログアウトしても変えない。読み込むまでは既定（オフ）のまま
   const [accountSettings, setAccountSettings] = useState<Record<string, AccountSettings>>({});
+  // 宛先の表示設定（共通設定・既定はオフ）。送ったメールに「To 1・Cc 2・Bcc 1」、受け取ったメールに自分の立場（To / Cc）を出す
+  const [showSentRecipients, setShowSentRecipients] = useState(false);
+  const [showReceivedRecipients, setShowReceivedRecipients] = useState(false);
   const [checkInbox, setCheckInbox] = useState<boolean>(() => getSavedBoxSettings()?.inbox ?? true);
   const [checkArchive, setCheckArchive] = useState<boolean>(() => getSavedBoxSettings()?.archive ?? true);
   const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
@@ -315,9 +336,15 @@ export function useMailApp() {
   // 作成中のメールに添付するファイル（送信するまではローカルのbase64として保持する）
   const [replyAttachments, setReplyAttachments] = useState<{ filename: string; mimeType: string; size: number; data: string }[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
-  // 「全員に返信」がオンになっているルームと返信先。チャットや返信先を変えたら自動で「相手のみ」に戻るよう、
-  // オン・オフの値ではなく「どこでオンにしたか」を持つ
-  const [replyAllKey, setReplyAllKey] = useState<string | null>(null);
+  // 入力中の送信先（To / Cc / Bcc）。null は既定（開いているチャットの相手を To に1人）のまま。
+  // recipientsBase は返信元を選んで置き換えたときの内容（そこから自分で変えたかの判定に使う。null は既定）
+  const [recipients, setRecipients] = useState<ComposeRecipient[] | null>(null);
+  const [recipientsBase, setRecipientsBase] = useState<ComposeRecipient[] | null>(null);
+  const [composeDialog, setComposeDialog] = useState<ComposeDialog | null>(null);
+  // アカウントごとの送信元（自分のアドレスとエイリアス）。開いたチャットのアカウントの分だけ取りにいく（下の getSendAs）
+  const [sendAsByAccount, setSendAsByAccount] = useState<Record<string, SendAsInfo[]>>({});
+  // 自分のアドレスとエイリアス（読み込めている分）。返信の宛先・Reply-To・受け取った立場の判定で「自分」を除くのに使う
+  const myAddressesFor = (account: string): string[] => [account, ...(sendAsByAccount[account] || []).map(s => s.sendAsEmail)].filter(Boolean);
 
   // 入力中の返信はチャットごとの下書きとして端末に保存し、チャットを開いたら読み戻す（送信の失敗・通信断・
   // 再読み込みで失わないため。また、別のチャットで書きかけた文が今のチャットに残って誤送信されないため）。
@@ -325,29 +352,36 @@ export function useMailApp() {
   const [draftReadyRoom, setDraftReadyRoom] = useState<string | null>(null);
   const selectedSenderRef = useRef(selectedSender);
   useEffect(() => { selectedSenderRef.current = selectedSender; }, [selectedSender]);
-  // 送信元のアカウントを切り替えたときに、切り替え先のチャットへ持っていく入力中の内容
-  const carryDraftRef = useRef<{ room: string; subject: string; body: string; attachments: { filename: string; mimeType: string; size: number; data: string }[] } | null>(null);
+  // 送信元のアカウントを切り替えたとき・送信先を変えてほかのチャットへ移るときに、移り先のチャットへ持っていく入力中の内容
+  const carryDraftRef = useRef<CarriedDraft | null>(null);
   useEffect(() => {
     const room = selectedSender;
     let cancelled = false;
     void (room ? loadDraft(room) : Promise.resolve(null)).then(d => {
       if (cancelled) return;
-      // 切り替え先に下書きが無ければ、切り替え元で入力していた内容を使う（返信先は元のアカウントのメールなので持ってこない）
       const carry = carryDraftRef.current && carryDraftRef.current.room === room ? carryDraftRef.current : null;
       if (carry) carryDraftRef.current = null;
-      if (carry && !d?.body && !d?.subject && !d?.attachments?.length) {
+      // 移り先に書きかけの下書きが無ければ、移り元で入力していた内容を使い、移り元の下書きは消す（両方に残って二重に送られないように）
+      if (carry && !d?.body && !d?.subject && !d?.attachments?.length && !d?.replyToMessage && !d?.recipients) {
         setReplySubject(carry.subject);
         setReplyBody(carry.body);
-        setReplyToMessage(null);
+        setReplyToMessage(carry.replyToMessage);
         setReplyAttachments(carry.attachments);
+        setRecipients(carry.recipients);
+        setRecipientsBase(carry.recipientsBase);
         setAttachError(null);
         setDraftReadyRoom(room);
+        void removeDraft(carry.fromRoom);
         return;
       }
+      // 移り先にも書きかけがあるときは、どちらも消さずに残す（入力を失わない）
+      if (carry) showErrorToast("移り先のチャットに書きかけの内容があったため、入力中の内容は元のチャットに残しました。");
       setReplySubject(d?.subject || "");
       setReplyBody(d?.body || "");
       setReplyToMessage(d?.replyToMessage || null);
       setReplyAttachments(d?.attachments || []);
+      setRecipients(d?.recipients ?? null);
+      setRecipientsBase(d?.recipientsBase ?? null);
       setAttachError(null);
       setDraftReadyRoom(room);
     });
@@ -359,7 +393,7 @@ export function useMailApp() {
     if (!room || draftReadyRoom !== room) return;
     // 打つたびに書き込まないよう、少し待ってからまとめて保存する
     const timer = setTimeout(() => {
-      void saveDraft(room, { subject: replySubject, body: replyBody, replyToMessage, attachments: replyAttachments, updatedAt: Date.now() }).then(ok => {
+      void saveDraft(room, { subject: replySubject, body: replyBody, replyToMessage, attachments: replyAttachments, recipients, recipientsBase, updatedAt: Date.now() }).then(ok => {
         if (!ok && !draftSaveFailedRef.current) {
           draftSaveFailedRef.current = true;
           showErrorToast("入力中の内容を端末に保存できませんでした。再読み込みすると消えるので、送信するまで画面を閉じないでください。");
@@ -367,7 +401,7 @@ export function useMailApp() {
       });
     }, 300);
     return () => clearTimeout(timer);
-  }, [selectedSender, draftReadyRoom, replySubject, replyBody, replyToMessage, replyAttachments]);
+  }, [selectedSender, draftReadyRoom, replySubject, replyBody, replyToMessage, replyAttachments, recipients, recipientsBase]);
 
   const [hasMouse, setHasMouse] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
@@ -811,8 +845,8 @@ export function useMailApp() {
   // 新しい共通設定を足すときは、ここと下の applySyncedSettings にも足す。アカウントごとの設定は accountSettings に持つ
   const syncedSettings: SyncedSettings = useMemo(() => ({
     inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent,
-    iconLabels: useIconLabels, accounts: checkAccounts,
-  }), [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, checkAccounts]);
+    iconLabels: useIconLabels, showSentRecipients, showReceivedRecipients, accounts: checkAccounts,
+  }), [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, showSentRecipients, showReceivedRecipients, checkAccounts]);
   // D1 から読んだ設定を画面に反映する（D1 に無い設定は、この端末の今の値のまま）
   const applySyncedSettings = (s: SyncedSettings) => {
     if (s.inbox !== undefined) setCheckInbox(s.inbox);
@@ -821,6 +855,8 @@ export function useMailApp() {
     if (s.trash !== undefined) setCheckTrash(s.trash);
     if (s.sent !== undefined) setCheckSent(s.sent);
     if (s.iconLabels !== undefined) setUseIconLabels(s.iconLabels);
+    if (s.showSentRecipients !== undefined) setShowSentRecipients(s.showSentRecipients);
+    if (s.showReceivedRecipients !== undefined) setShowReceivedRecipients(s.showReceivedRecipients);
     if (s.accounts !== undefined) setCheckAccounts(s.accounts);
   };
   // D1 から読み終えるまでは保存しない（読む前のこの端末の値で、ほかの端末で変えた設定を上書きしないため）
@@ -1253,11 +1289,12 @@ export function useMailApp() {
   // （数千通あるような実アカウントで、読み込み範囲外の過去メールが検索に一切引っかからない
   // 問題への対応）。メイン＋連携アカウントをまたいで検索し、見つかったメールはそのまま
   // emails stateへマージする（クリックしてチャットを開いた際に即座に反映されるように）
-  const searchServerSide = async (keyword: string, field: "subject" | "body"): Promise<Email[]> => {
+  // onlyAccount を渡すと、そのアカウントだけを探す（返信元を選ぶ画面は送信元のアカウントのメールしか選べないため、ほかは撃たない）
+  const searchServerSide = async (keyword: string, field: "subject" | "body", onlyAccount?: string): Promise<Email[]> => {
     const trimmed = keyword.trim();
     if (!trimmed) return [];
     const myEmail = session?.user?.email || "";
-    const accounts = [myEmail, ...linkedAccountsRef.current];
+    const accounts = onlyAccount ? [onlyAccount] : [myEmail, ...linkedAccountsRef.current];
     const escaped = trimmed.replace(/"/g, '\\"');
     const q = field === "subject" ? `subject:"${escaped}"` : `"${escaped}"`;
 
@@ -1769,14 +1806,15 @@ export function useMailApp() {
         } catch { /* 複合roomKeyでない古いデータ（移行前の残り等）は無視する */ }
       });
       const accountEmails = allUniqueEmails.filter(e => (e.accountId || myEmail) === accountEmail);
-      return { accountEmail, groups: groupEmailsByRoom(accountEmails, accountEmail, localChatConfigs) };
+      const aliases = (sendAsByAccount[accountEmail] || []).map(a => a.sendAsEmail);
+      return { accountEmail, groups: groupEmailsByRoom(accountEmails, accountEmail, localChatConfigs, aliases) };
     });
     const merged = mergeAccountGroups(perAccountGroups);
     // フィルターグループ（filterCriteria持ち）は受信専用のため、上のアカウント単位の集約を
     // 対象外にしてある（groupEmailsByRoom側）。ここで全アカウント分のメールをまたいで
     // 別途集約する（criteria.accountEmailで対象アカウントを絞り込める）
     return applyFilterGroups(merged, chatConfigs, allUniqueEmails, myEmail);
-  }, [allUniqueEmails, session, chatConfigs, linkedAccounts]);
+  }, [allUniqueEmails, session, chatConfigs, linkedAccounts, sendAsByAccount]);
 
   const groupedEmailsRef = useRef(groupedEmails);
   useEffect(() => { groupedEmailsRef.current = groupedEmails; }, [groupedEmails]);
@@ -1872,7 +1910,9 @@ export function useMailApp() {
   };
 
   // メッセージID → 所属ルームキーの逆引き。フィルターツールで複数ルームにまたがる
-  // メッセージを一括非表示/ピン留めする際、各メッセージ自身の本来のルームを正しく特定するために使う
+  // メッセージを一括非表示/ピン留めする際、各メッセージ自身の本来のルームを正しく特定するために使う。
+  // 自分が送ったメールは宛先の人のチャットすべてに出る（1通が複数のルームに入る）ので、ここには最後に見つけたルームが入る。
+  // どのルームでも同じアカウントなので、アカウントの判定には使える。ルームそのものが要るときは roomOfMessage を使う
   const emailRoomMap = useMemo(() => {
     const map = new Map<string, RoomKeyStr>();
     keysOf(groupedEmails).forEach(room => (groupedEmails[room] || []).forEach((e) => map.set(e.id, room)));
@@ -1908,22 +1948,20 @@ export function useMailApp() {
   // 属するアカウントで判定する（メインアカウント固定だと、連携アカウント宛にメインアカウントから
   // 送ったメールを「相手からの受信」と誤認識してしまう）
   // 宛先に書く「表示名 <アドレス>」。相手から届いたメールの From に表示名があればそれを使い、無ければアドレスだけ
+  // 受け取ったメールに Reply-To（自分以外）があれば、そのアドレスを相手とする（groupEmails.ts の roomPartner）
+  const getRoomPartner = (room: RoomKeyStr): { name: string; address: string } => {
+    const { accountEmail, localKey } = decodeRoomKey(room);
+    const aliases = (sendAsByAccount[accountEmail] || []).map(a => a.sendAsEmail);
+    return roomPartner(groupedEmails[room] || [], localKey, accountEmail, aliases);
+  };
   const getRoomRecipient = (room: RoomKeyStr): string => {
-    const address = getRoomAddress(room);
-    const { accountEmail: roomOwnerEmail } = decodeRoomKey(room);
-    const partner = (groupedEmails[room] || []).find((e) => !isMineEmail(e, roomOwnerEmail));
-    const { name, address: fromAddress } = parseAddress(partner?.from || "");
-    if (name && fromAddress.trim().toLowerCase() === address) return `${name} <${address}>`;
+    const { name, address } = getRoomPartner(room);
+    // 表示名にカンマなどが入っていても宛先の区切りにならないよう、引用符で囲む（ヘッダーに書くときは mime.ts が整える）
+    const cleanName = name.replace(/["\\<>\r\n]+/g, " ").trim();
+    if (cleanName && address) return `"${cleanName}" <${address}>`;
     return address;
   };
-  const getRoomAddress = (room: RoomKeyStr): string => {
-    const msgs = groupedEmails[room] || [];
-    const { accountEmail: roomOwnerEmail } = decodeRoomKey(room);
-    const partner = msgs.find((e) => !isMineEmail(e, roomOwnerEmail));
-    const raw = partner ? partner.from : (msgs.find((e) => e.to)?.to || "");
-    const match = (raw || "").match(/<([^>]+)>/);
-    return ((match ? match[1] : raw) || "").trim().toLowerCase();
-  };
+  const getRoomAddress = (room: RoomKeyStr): string => getRoomPartner(room).address;
 
   // 「作成」モーダルの「候補」一覧（下書き中の空チャット・グループ自体は除く）。
   // ボックスのチェックボックス状態には影響されず（groupedEmails自体が非フィルター済みのため）、
@@ -2234,7 +2272,8 @@ export function useMailApp() {
   };
 
   // 返信欄の「送信元」を別のアカウントに切り替える。切り替え先のアカウントで、同じ相手との既存のチャット
-  // （無ければ新しいチャット）を開く。入力中の本文・添付は切り替え先へ持っていく（送り間違えないよう、送信元は返信欄に常に出す）
+  // （無ければ新しいチャット）を開く。入力中の本文・添付・送信先は切り替え先へ持っていく。
+  // 返信元は外す（スレッドはアカウントごとのため、別のアカウントのメールには返信できない）
   const switchSendAccount = async (target: string) => {
     const room = selectedSender;
     setModal(null);
@@ -2244,17 +2283,20 @@ export function useMailApp() {
     const { accountEmail: current, localKey } = decodeRoomKey(room);
     if (current.toLowerCase() === target.toLowerCase()) { closeModalEntry(); return; }
     const address = getRoomAddress(room) || localKey;
-    const hasInput = !!(replyBody || replyAttachments.length || (!replyToMessage && replySubject));
-    const carried = { subject: replyToMessage ? "" : replySubject, body: replyBody, attachments: replyAttachments };
+    const hasInput = !!(replyBody || replyAttachments.length || (!replyToMessage && replySubject) || recipients);
     const dest = resolveDirectRoom(address, target);
     if (!dest) { closeModalEntry(); return; }
-    // 開く前に決めておく（開いた直後に下書きの読み戻しが走るため）
-    if (hasInput) carryDraftRef.current = { room: dest.room, ...carried };
+    // 開く前に決めておく（開いた直後に下書きの読み戻しが走るため）。
+    // 持っていった内容は、切り替え先で読み戻せたら切り替え元の下書きから消す（両方に残って二重に送られないように）
+    if (hasInput) {
+      carryDraftRef.current = {
+        room: dest.room, fromRoom: room, subject: replyToMessage ? "" : replySubject, body: replyBody, attachments: replyAttachments,
+        recipients, recipientsBase: null, replyToMessage: null,
+      };
+    }
     if (!dest.existing) addDraftChat(dest.room);
     await openChat(dest.room, { replaceHistory: cameFromModal });
     if (!isMobile && cameFromModal) window.history.replaceState({}, "", window.location.href);
-    // 持っていった内容は切り替え元の下書きから消す（両方に残って二重に送られないように）
-    if (hasInput) void removeDraft(room);
     showInfoToast(`送信元を ${target} に切り替えました`, 2500);
   };
 
@@ -2596,10 +2638,124 @@ export function useMailApp() {
     const { accountEmail } = decodeRoomKey(room);
     return replyToMessage || (groupedEmails[room] || []).find(e => !isMineEmail(e, accountEmail) && !e.isMissing) || null;
   };
-  const getReplyPlan = (room: RoomKeyStr | null): ReplyPlan | null => {
-    const base = getReplyBase(room);
-    if (!room || !base) return null;
-    return planReply({ from: base.from, to: base.to, cc: base.cc, replyTo: base.replyTo }, [decodeRoomKey(room).accountEmail]);
+
+  // ---- 送信先（To / Cc / Bcc） ----
+  // 開いている個別チャットの相手（To）。アドレスが分からない（形が正しくない）ときは null
+  const partnerRecipient = (room: RoomKeyStr | null): ComposeRecipient | null => {
+    if (!room || chatConfigs[room]?.isGroup) return null;
+    const { localKey } = decodeRoomKey(room);
+    const { name, address } = getRoomPartner(room);
+    // 下書きチャット（まだやり取りが無い）は、ルームのキーそのものが相手のアドレス
+    const addr = address || localKey.trim().toLowerCase();
+    if (!isValidRecipientAddress(addr)) return null;
+    return name ? { address: addr, name, role: "to" } : { address: addr, role: "to" };
+  };
+  const partnerAddressOf = (room: RoomKeyStr | null): string => partnerRecipient(room)?.address || "";
+  // 既定の送信先：開いているチャットの相手を To に1人
+  const defaultRecipientsFor = (room: RoomKeyStr | null): ComposeRecipient[] => {
+    const p = partnerRecipient(room);
+    return p ? [p] : [];
+  };
+  const effectiveRecipients: ComposeRecipient[] = recipients ?? defaultRecipientsFor(selectedSender);
+  // 既定または前回の置き換えから、自分で足した・外したか
+  const recipientsCustomized = recipients !== null && recipientsKey(recipients) !== recipientsKey(recipientsBase ?? defaultRecipientsFor(selectedSender));
+  const partnerLabel = (room: RoomKeyStr): string => {
+    const p = partnerRecipient(room);
+    const label = chatConfigs[room]?.customName || p?.name || "";
+    return displayRecipientName({ name: label || undefined, address: p?.address || decodeRoomKey(room).localKey });
+  };
+
+  // 入力中の内容（本文・添付・送信先・返信元・件名）を持って、送信先の人とのチャットへ移る。
+  // 同じアカウントにその相手のチャットがあればそこ、無ければ下書きチャットを作る。移り元の下書きは、移り先で読み戻せたら消す
+  const moveComposeTo = async (list: ComposeRecipient[]) => {
+    const room = selectedSender;
+    const target = pickMoveTarget(list);
+    if (!room || !target) return;
+    const { accountEmail } = decodeRoomKey(room);
+    const dest = resolveDirectRoom(target.address, accountEmail);
+    if (!dest || dest.room === room) { setRecipients(list); return; }
+    carryDraftRef.current = {
+      room: dest.room, fromRoom: room, subject: replySubject, body: replyBody, attachments: replyAttachments,
+      recipients: list, recipientsBase, replyToMessage,
+    };
+    if (!dest.existing) addDraftChat(dest.room);
+    await openChat(dest.room);
+    showInfoToast(`${displayRecipientName(target)}とのチャットに移りました`, 2500);
+  };
+
+  // 今のチャットの相手が送信先から外れるときの確認（「外す確認」と「移る確認」を分けず、この1つだけ出す）
+  const askMoveForRecipients = (list: ComposeRecipient[]) => {
+    const room = selectedSender;
+    const target = pickMoveTarget(list);
+    if (!room || !target) return;
+    setComposeDialog({
+      kind: "confirm",
+      message: `${partnerLabel(room)}を外すと、このチャットからは送れません。${displayRecipientName(target)}とのチャットに移って続けますか？ 入力中の本文・添付・送信先・返信元はそのまま持っていきます。`,
+      confirmLabel: "移る",
+      cancelLabel: "やめる",
+      onConfirm: () => { void moveComposeTo(list); },
+    });
+  };
+
+  // 送信先を変える（足す・外す）。今のチャットの相手が含まれなくなるなら、変える前に移るか確かめる（やめたら変えない）
+  const applyRecipients = (next: ComposeRecipient[]) => {
+    const room = selectedSender;
+    if (!room || chatConfigs[room]?.isGroup) return;
+    const list = normalizeRecipients(next).recipients;
+    if (excludesPartner(list, partnerAddressOf(room))) { askMoveForRecipients(list); return; }
+    setRecipients(list);
+  };
+
+  const addComposeRecipients = (additions: ComposeRecipient[]) => {
+    const { recipients: list, invalid, overLimit } = normalizeRecipients([...effectiveRecipients, ...additions]);
+    if (overLimit > 0) showErrorToast(`送信先は合計${500}件までです。${overLimit}件は足せませんでした。`);
+    else if (invalid > 0) showErrorToast(`メールアドレスの形が正しくないため、${invalid}件は足せませんでした。`);
+    applyRecipients(list);
+  };
+
+  // チップを押したとき：確認を挟んで外す。相手が外れて移ることになるときは、移る確認だけを出す
+  const removeComposeRecipient = (address: string) => {
+    const room = selectedSender;
+    if (!room || chatConfigs[room]?.isGroup) return;
+    const key = address.trim().toLowerCase();
+    const removed = effectiveRecipients.find(r => r.address.toLowerCase() === key);
+    if (!removed) return;
+    const next = effectiveRecipients.filter(r => r.address.toLowerCase() !== key);
+    if (excludesPartner(next, partnerAddressOf(room))) { askMoveForRecipients(next); return; }
+    setComposeDialog({
+      kind: "confirm",
+      message: `${displayRecipientName(removed)}を送信先から外しますか？`,
+      confirmLabel: "外す",
+      cancelLabel: "やめる",
+      onConfirm: () => setRecipients(next),
+    });
+  };
+
+  // 返信元を選ぶ。自分と相手以外の宛先があるメールなら「返信」「全員に返信」を選んでもらい、送信先を置き換える。
+  // 送信先を自分で変えていたときは、置き換える前に確かめる（やめたら送信先はそのまま）
+  const chooseReplyTarget = (m: Email) => {
+    const room = selectedSender;
+    if (!room) return;
+    setReplyToMessage(m);
+    setReplySubject(replySubjectFor(m.subject || ""));
+    if (chatConfigs[room]?.isGroup) return;
+    const choices = replyChoices({ from: m.from, to: m.to, cc: m.cc, replyTo: m.replyTo }, partnerRecipient(room), myAddressesFor(roomAccountEmail(room)));
+    const apply = (list: ComposeRecipient[]) => { setRecipients(list); setRecipientsBase(list); };
+    const proceed = () => {
+      if (choices.needsChoice) setComposeDialog({ kind: "replyChoice", reply: choices.reply, replyAll: choices.replyAll, onPick: apply });
+      else apply(choices.reply);
+    };
+    if (recipientsCustomized && recipientsKey(effectiveRecipients) !== recipientsKey(choices.reply)) {
+      setComposeDialog({
+        kind: "confirm",
+        message: "送信先を置き換えます。自分で足した人は外れます。",
+        confirmLabel: "置き換える",
+        cancelLabel: "送信先はそのまま",
+        onConfirm: proceed,
+      });
+      return;
+    }
+    proceed();
   };
 
   // 送信元（自分のアドレスとエイリアス）と署名の設定。アカウントごとに一度だけ取りにいく（送信のたびに API を呼ばない）。
@@ -2638,7 +2794,6 @@ export function useMailApp() {
 
   // 返信欄に出す「送信元」：送るときと同じ決め方（元のメールが自分のエイリアス宛てならそのエイリアス）で、実際の From を出す。
   // 送信元の設定はアカウントごとに10分に1回だけ取る（getSendAs のキャッシュ）。開いた直後の一括取得とぶつからないよう少し待つ
-  const [sendAsByAccount, setSendAsByAccount] = useState<Record<string, SendAsInfo[]>>({});
   const openRoomAccount = selectedSender ? roomAccountEmail(selectedSender) : "";
   useEffect(() => {
     if (!openRoomAccount || sendAsByAccount[openRoomAccount]) return;
@@ -2679,9 +2834,6 @@ export function useMailApp() {
       return { html: null, text: null };
     }
   };
-  const replyAllScope = `${selectedSender || ""}|${replyToMessage?.id || ""}`;
-  const replyAll = replyAllKey === replyAllScope;
-  const setReplyAll = (on: boolean) => setReplyAllKey(on ? replyAllScope : null);
 
   // 送信 API を呼ぶ。送信は自動で再試行しない（二重送信になるため）。
   // 結果が分からないとき（ブラウザと Worker の通信断、Worker が途中で落ちた）は送信済みフォルダと照合する
@@ -2691,7 +2843,7 @@ export function useMailApp() {
       try {
         const v = await fetch("/api/emails", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "verifySent", accountEmail: payload.accountEmail, messageId, to: payload.to, cc: payload.cc, subject: payload.subject, body: payload.body, sentAfterMs }),
+          body: JSON.stringify({ action: "verifySent", accountEmail: payload.accountEmail, messageId, to: payload.to, cc: payload.cc, bcc: payload.bcc, subject: payload.subject, body: payload.body, sentAfterMs }),
         });
         if (!v.ok) return { ok: false, reason: "unverifiable" };
         const d = (await v.json()) as { found?: boolean; id?: string; threadId?: string };
@@ -2739,6 +2891,9 @@ export function useMailApp() {
         : r.code === "FORWARD_ATTACHMENTS_FAILED" ? "元のメールの添付ファイルを取得できなかったため、転送しませんでした。時間をおいてもう一度お試しください。"
         : r.status === 401 ? `ログインの有効期限が切れたため${label}できませんでした。再読み込みしてからもう一度お試しください。`
         : r.status === 413 ? `添付ファイルが大きすぎるため${label}できませんでした（合計25MBまで）。`
+        : r.code === "NO_RECIPIENTS" ? `送信先がないため${label}できませんでした。送信先を足してからもう一度お試しください。`
+        : r.code === "TOO_MANY_RECIPIENTS" ? `送信先が多すぎるため${label}できませんでした（合計500件まで）。`
+        : r.code === "INVALID_RECIPIENTS" ? `送信先のメールアドレスに正しくないものがあるため${label}できませんでした。送信先を確認してください。`
         : `メールの${label}に失敗しました。宛先が正しいか確認してください。`
       );
       return;
@@ -2756,10 +2911,30 @@ export function useMailApp() {
     });
   };
 
-  const handleSend = async (opts: { allowNoSendAs?: boolean } = {}) => {
+  const handleSend = async (opts: { allowNoSendAs?: boolean; allowQuoteToOutsiders?: boolean } = {}) => {
     if (!selectedSender || !replyBody.trim()) return;
     const groupCfg = chatConfigs[selectedSender];
     if (groupCfg?.isGroup && (groupCfg.groupMode === "inbound_only" || groupCfg.filterCriteria)) return; // 受信専用・フィルターグループは送信不可
+    // 送る直前にも送信先を確かめる（どこかで抜けていても、相手を含まない送信先のまま今のチャットから送らない）
+    const sendRecipients = effectiveRecipients;
+    if (!groupCfg?.isGroup) {
+      if (sendRecipients.length === 0) {
+        showErrorToast("送信先がありません。「＋ 送信先を追加」から選んでください。本文は入力欄に残っています。");
+        return;
+      }
+      if (excludesPartner(sendRecipients, partnerAddressOf(selectedSender))) { askMoveForRecipients(sendRecipients); return; }
+      // 引用が元のやり取りにいなかった人にだけ届くときは、送る前に確かめる（純正と違う結果になりうるため）
+      if (replyToMessage && !opts.allowQuoteToOutsiders && quoteGoesToOutsiders(sendRecipients, replyToMessage, myAddressesFor(roomAccountEmail(selectedSender)))) {
+        setComposeDialog({
+          kind: "confirm",
+          message: "元のメールの内容（引用）が、元のやり取りにいなかった人に届きます。送りますか？",
+          confirmLabel: "送る",
+          cancelLabel: "やめる",
+          onConfirm: () => { void handleSend({ ...opts, allowQuoteToOutsiders: true }); },
+        });
+        return;
+      }
+    }
     setIsSending(true);
     try {
       // 送信元アカウントはチャット自身の複合キーから決める（開いているチャットがどの連携アカウント
@@ -2767,6 +2942,7 @@ export function useMailApp() {
       const { accountEmail: sendAccountEmail, localKey: sendLocalKey } = decodeRoomKey(selectedSender);
       let actualTo: string;
       let actualCc = "";
+      let actualBcc = "";
       if (groupCfg?.isGroup) {
         // グループチャット: メンバー全員へ1通のメールとして一斉送信する
         actualTo = Array.from(groupMemberAddresses(groupCfg)).join(", ");
@@ -2776,16 +2952,10 @@ export function useMailApp() {
           return;
         }
       } else {
-        // 宛先は純正 Gmail と同じ決まりで計算する（Reply-To 優先、既定は相手のみ、切り替えで全員に返信）
-        const plan = getReplyPlan(selectedSender);
-        if (plan) {
-          const recipients = replyAll ? plan.all : plan.senderOnly;
-          actualTo = recipients.to;
-          actualCc = recipients.cc;
-        } else {
-          const targetEmails = groupedEmails[selectedSender] || [];
-          actualTo = targetEmails[0]?.to || sendLocalKey;
-        }
+        // 宛先は入力欄の送信先そのもの（返信元を選んだときに、純正 Gmail と同じ決まりで初期値を入れてある）
+        actualTo = recipientsHeader(sendRecipients, "to");
+        actualCc = recipientsHeader(sendRecipients, "cc");
+        actualBcc = recipientsHeader(sendRecipients, "bcc");
       }
       
       // 返信は純正 Gmail と同じ形にする（threadId・In-Reply-To・References を付け、件名は「Re: 元の件名」に揃える。
@@ -2811,7 +2981,7 @@ export function useMailApp() {
         setSendConfirm({
           message: "署名と送信元の設定を読み込めませんでした。純正 Gmail と違い、署名なし・既定のアドレスで送ることになります。このまま送りますか？",
           actionLabel: "このまま送る",
-          resend: async () => { setSendConfirm(null); await handleSend({ allowNoSendAs: true }); },
+          resend: async () => { setSendConfirm(null); await handleSend({ ...opts, allowNoSendAs: true }); },
         });
         return;
       }
@@ -2836,7 +3006,7 @@ export function useMailApp() {
       const attachmentsToSend = replyAttachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, data: a.data }));
 
       const payload: SendApiPayload = {
-        to: actualTo, cc: actualCc || undefined, subject: finalSubject, body: bodies.text, bodyHtml: bodies.html,
+        to: actualTo, cc: actualCc || undefined, bcc: actualBcc || undefined, subject: finalSubject, body: bodies.text, bodyHtml: bodies.html,
         threadId, inReplyTo, references, from: fromHeader, replyTo: alias?.replyToAddress || undefined,
         accountEmail: sendAccountEmail, attachments: attachmentsToSend,
       };
@@ -2857,6 +3027,7 @@ export function useMailApp() {
           from: sendAccountEmail || "自分",
           to: actualTo,
           cc: actualCc || undefined,
+          bcc: actualBcc || undefined,
           date: new Date().toUTCString(),
           body: finalBody,
           snippet: finalBody.slice(0, 60),
@@ -2878,7 +3049,7 @@ export function useMailApp() {
         // 送れた分の下書きを消す。送信中に別のチャットへ移っていたら、そちらの入力欄は消さない
         void removeDraft(sentRoom);
         if (selectedSenderRef.current === sentRoom) {
-          setReplySubject(""); setReplyBody(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null); setReplyAllKey(null);
+          setReplySubject(""); setReplyBody(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null); setRecipients(null); setRecipientsBase(null);
         }
         // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）
         if (sentRoom && draftChatsRef.current.includes(sentRoom)) removeDraftChat(sentRoom);
@@ -2982,8 +3153,11 @@ export function useMailApp() {
 
   // メッセージ単位の非表示のコア処理。modal状態に依存しないため、確認モーダル経由の実行と
   // 継続フィルターの自動適用エンジンの両方から呼べる
+  // メッセージのルーム。開いているチャットに入っていればそのチャット（複数のチャットに出るメールで、操作した場所を優先する）
+  const roomOfMessage = (id: string): RoomKeyStr | undefined =>
+    selectedSender && (groupedEmails[selectedSender] || []).some(e => e.id === id) ? selectedSender : emailRoomMap.get(id);
   const applyHideToIds = (ids: string[]) => {
-    ids.forEach(id => updateMessageConfig(asLocalKey(id), { isHidden: true, hiddenAtDate: new Date().toISOString(), roomId: emailRoomMap.get(id) }, resolveMessageAccountEmail(id)));
+    ids.forEach(id => updateMessageConfig(asLocalKey(id), { isHidden: true, hiddenAtDate: new Date().toISOString(), roomId: roomOfMessage(id) }, resolveMessageAccountEmail(id)));
   };
 
   // メッセージ単位のピン留めのコア処理。modal状態に依存しないため、確認モーダル経由の実行と
@@ -2999,7 +3173,7 @@ export function useMailApp() {
       if (found && !found.labelIds?.includes("TRASH") && !found.labelIds?.includes("SPAM")) {
         // フィルターツール等、複数ルームにまたがるメッセージを対象にする場合があるため、
         // 常に selectedSender を使うのではなく、そのメッセージ自身の本来のルームを優先する
-        const room = emailRoomMap.get(targetId) || selectedSender || undefined;
+        const room = roomOfMessage(targetId) || selectedSender || undefined;
         const pData = { ...found, senderRoom: room ? decodeRoomKey(room).localKey : undefined };
         pMsgs.push(pData);
         updateMessageConfig(asLocalKey(targetId), { isPinned: true, forceFetch: true, roomId: room }, resolveMessageAccountEmail(targetId));
@@ -3634,6 +3808,23 @@ export function useMailApp() {
     if (lookupAccountEmail !== (session?.user?.email || "")) lookupParams.append("accountEmail", lookupAccountEmail);
 
     const already = emailsRef.current.find(matches);
+    // 返信元がほかのチャットのメール（返信元はほかのチャットからも選べる）なら、確かめてからそのチャットへ移ってスクロールする
+    if (already && !(groupedEmails[selectedSender] || []).some(matches)) {
+      const otherRoom = keysOf(groupedEmails).find(room => room !== selectedSender && !chatConfigs[room]?.filterCriteria && (groupedEmails[room] || []).some(matches));
+      if (otherRoom) {
+        setComposeDialog({
+          kind: "confirm",
+          message: `返信元のメールがある${partnerLabel(otherRoom)}とのチャットに移りますか？`,
+          confirmLabel: "移る",
+          cancelLabel: "やめる",
+          onConfirm: () => {
+            setRevealedCrossPrompts(prev => prev.includes(already.id) ? prev : [...prev, already.id]);
+            void openChat(otherRoom).then(() => scrollToMsg(already.id));
+          },
+        });
+        return;
+      }
+    }
     // 移動などの楽観的更新がこのメッセージに正しく反映されていない場合に備え、
     // 見つかった場合もすぐ確定させず、裏で最新状態を取得して上書きする（表示は先にスクロールする）
     if (already) { scrollToMsg(already.id); }
@@ -3727,7 +3918,8 @@ export function useMailApp() {
       revealedCrossPrompts, boxColors,
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
-      replyNotFoundToast, errorToast, infoToast, sendConfirm, unloadedCount, isRetryingUnloaded, replyAll, draftChats, activeChatTab,
+      replyNotFoundToast, errorToast, infoToast, sendConfirm, unloadedCount, isRetryingUnloaded, draftChats, activeChatTab,
+      recipients: effectiveRecipients, recipientsCustomized, composeDialog, showSentRecipients, showReceivedRecipients, sendAsByAccount,
       isDraftReady: draftReadyRoom === selectedSender,
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
@@ -3745,9 +3937,12 @@ export function useMailApp() {
       openAttachmentModal, closeAttachmentModal,
       jumpToReplyTarget, createOrOpenChat, createGroupChat, createFilterGroup, deleteChatConfig, forwardMessageTo,
       updateChatConfigByRoomKey, deleteChatConfigByRoomKey, messageConfigKey, roomLocalKey, roomAccountEmail, switchSendAccount, logoutAccount,
-      unlinkAccount, isAccountVisible, setSendConfirm, setReplyAll, retryUnloaded,
+      unlinkAccount, isAccountVisible, setSendConfirm, retryUnloaded,
+      addComposeRecipients, removeComposeRecipient, chooseReplyTarget, setComposeDialog, myAddressesFor, partnerRecipient, showErrorToast,
+      recipientForRoom: (room: RoomKeyStr): ComposeRecipient | null => partnerRecipient(room),
+      setShowSentRecipients, setShowReceivedRecipients,
     },
-    computed: { replyPlan: getReplyPlan(selectedSender), sendFrom: getSendFrom(selectedSender), allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
+    computed: { sendFrom: getSendFrom(selectedSender), allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
     refs: { touchTimer, hasPushedSelectRef, activeLoadRef, searchTimeoutRef }
   };
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { planReply, describeExtraRecipients } from "./recipients";
+import { planReply } from "./recipients";
 
 const ME = "me@example.com";
 
@@ -50,23 +50,5 @@ describe("planReply", () => {
   it("自分宛てに自分で送ったメールは、自分に返す", () => {
     const p = planReply({ from: ME, to: ME }, [ME]);
     expect(p.senderOnly.to).toBe(ME);
-  });
-});
-
-describe("describeExtraRecipients", () => {
-  it("Cc がいれば Cc の人の名前で「ほかN名」", () => {
-    expect(describeExtraRecipients([
-      { name: "", address: "b@example.com", field: "to" },
-      { name: "山田", address: "c@example.com", field: "cc" },
-      { name: "", address: "d@example.com", field: "cc" },
-    ])).toBe("Cc：山田さん ほか2名");
-  });
-
-  it("To だけで1人なら To と書き、名前がなければアドレスを出す", () => {
-    expect(describeExtraRecipients([{ name: "", address: "b@example.com", field: "to" }])).toBe("To：b@example.com");
-  });
-
-  it("空なら空文字", () => {
-    expect(describeExtraRecipients([])).toBe("");
   });
 });

@@ -17,6 +17,8 @@ export type Email = {
   to: string;
   // 返信の宛先（全員に返信・Reply-To）を純正 Gmail と同じに決めるために持つ。送信直後の仮オブジェクトには無いことがある
   cc?: string;
+  // 自分が送ったメールにだけ入る（Gmail は受信者側のメールから Bcc を取り除く）
+  bcc?: string;
   replyTo?: string;
   date: string;
   body: string;

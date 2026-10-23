@@ -11,6 +11,7 @@ import { logError } from "../lib/safeLog";
 import { prepareEmailHtml, hasRemoteContent } from "../lib/emailHtml";
 import { clearDeviceData } from "../lib/deviceData";
 import { gmailOpenUrl } from "../lib/gmailLink";
+import { ROLE_LABELS, ROLE_HINTS, originalParticipants, type ComposeRecipient, type RecipientRole } from "../lib/composeRecipients";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: MailAppHook; modal: NonNullable<ModalState> }) {
@@ -293,11 +294,15 @@ function CategorizedActionSelect({ app, modal }: { app: MailAppHook; modal: NonN
   );
 }
 
-// 「作成」モーダル: 過去にやり取りした宛先の選択・検索・新規アドレス追加を行い、チャットを作成/オープンする
+// 「作成」モーダル: 過去にやり取りした宛先の選択・検索・新規アドレス追加を行い、チャットを作成/オープンする。
+// 入力欄の「＋ 送信先を追加」（select_recipients）でも同じ画面を使う。そのときは候補を送信元と同じアカウントの相手に絞り、
+// 選んだ人ごとに To / Cc / Bcc を選べるようにし、返信元があれば「元のメールに入っていた人」を一番上に出す
 function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: NonNullable<ModalState> }) {
   const { contactDirectory } = app.computed;
   const { safeBack, createOrOpenChat, createGroupChat, forwardMessageTo, exitAfterAction } = app.actions;
   const isForward = modal?.composeMode === "forward";
+  const isRecipients = modal.type === "select_recipients";
+  const sendAccount = isRecipients && app.state.selectedSender ? app.actions.roomAccountEmail(app.state.selectedSender) : "";
   // 転送では元のメールの添付も一緒に送る。純正 Gmail と同じ 25MB を超える場合は、送る前に止める
   const forwardAttachments = isForward ? (modal.forwardMessage?.attachments || []) : [];
   const forwardAttachmentBytes = forwardAttachments.reduce((sum, a) => sum + (a.size || 0), 0);
@@ -307,7 +312,17 @@ function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: NonNulla
   const linkedAccounts: string[] = app.state.linkedAccounts || [];
   // 新規の宛先・グループをどのアカウント名義で作るか（既存の宛先を選んだ場合はそのアカウントのまま開く
   // ため無視される）。連携アカウントが無ければ選択肢を出す意味がないので常にメインアカウントになる
-  const [account, setAccount] = useState(mainEmail);
+  const [account, setAccount] = useState(sendAccount || mainEmail);
+  // 送信先を選ぶとき：選んだ人ごとの立場（既定は To）
+  const [roles, setRoles] = useState<Record<string, RecipientRole>>({});
+  const currentRecipients: ComposeRecipient[] = isRecipients ? app.state.recipients : [];
+  const currentKeys = new Set(currentRecipients.map(r => r.address.toLowerCase()));
+  // 返信元のメールの差出人（Reply-To 優先）・To・Cc。自分のアドレスとエイリアスは除く
+  const replySource = isRecipients ? app.state.replyToMessage : null;
+  const participants: ComposeRecipient[] = replySource
+    ? originalParticipants({ from: replySource.from, to: replySource.to, cc: replySource.cc, replyTo: replySource.replyTo }, app.actions.myAddressesFor(account)).filter(p => !currentKeys.has(p.address.toLowerCase()))
+    : [];
+  const participantOf = (id: string) => participants.find(p => p.address.toLowerCase() === id.toLowerCase());
 
   const [step, setStep] = useState<"select" | "group_setup">("select");
   const [search, setSearch] = useState("");
@@ -322,11 +337,14 @@ function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: NonNulla
 
   const getLabel = (id: string) => {
     const contact = contactDirectory.find(c => c.room === id);
-    return contact ? contact.label : id;
+    if (contact) return contact.label;
+    const p = participantOf(id);
+    return p?.name ? `${p.name} <${p.address}>` : id;
   };
 
-  // 候補は選択中のアカウントのものだけを表示する（アカウント選択を切り替えると候補も切り替わる）
-  const availableContacts = contactDirectory.filter(c => !selected.includes(c.room) && c.accountEmail === account);
+  // 候補は選択中のアカウントのものだけを表示する（アカウント選択を切り替えると候補も切り替わる）。
+  // 送信先を選ぶときは、もう送信先に入っている人は出さない
+  const availableContacts = contactDirectory.filter(c => !selected.includes(c.room) && c.accountEmail === account && !(isRecipients && currentKeys.has(c.address.toLowerCase())));
   const trimmedSearch = search.trim();
   const query = trimmedSearch.toLowerCase();
   const filteredContacts = query
@@ -340,13 +358,31 @@ function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: NonNulla
     && !availableContacts.some(c => c.address.toLowerCase() === query))
     ? trimmedSearch : null;
 
-  const addSelected = (id: string) => setSelected(prev => (prev.includes(id) ? prev : [...prev, id]));
+  const addSelected = (id: string, role?: RecipientRole) => {
+    if (role) setRoles(prev => ({ ...prev, [id]: role }));
+    setSelected(prev => (prev.includes(id) ? prev : [...prev, id]));
+  };
   const removeSelected = (id: string) => setSelected(prev => prev.filter(x => x !== id));
 
   // 転送モード: 単数・複数を問わず、選択した宛先へその場で転送する（新規チャットは開かない）。
   // 通常モード: 単数選択は従来通りその場でチャットを開く/作成する。複数選択はグループ設定画面へ進む
   const handleNext = () => {
     if (selected.length === 0) return;
+    if (isRecipients) {
+      const list = selected.map((id): ComposeRecipient | null => {
+        const role = roles[id] || "to";
+        if (contactDirectory.some(c => c.room === id)) {
+          const r = app.actions.recipientForRoom(id as RoomKeyStr);
+          return r ? { ...r, role } : null;
+        }
+        const p = participantOf(id);
+        return p?.name ? { address: p.address, name: p.name, role } : { address: id.trim(), role };
+      }).filter((r): r is ComposeRecipient => !!r);
+      if (list.length < selected.length) app.actions.showErrorToast("アドレスが分からない相手がいたため、その人は足せませんでした。");
+      safeBack();
+      app.actions.addComposeRecipients(list);
+      return;
+    }
     if (isForward && modal.forwardMessage) {
       // 履歴の戻し方はメッセージ選択モードの終了も兼ねる exitAfterAction に統一する
       exitAfterAction();
@@ -389,7 +425,7 @@ function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: NonNulla
 
   // 連携アカウントがある場合のみ表示する、新規の宛先/グループをどのアカウント名義で作るかの選択UI。
   // 転送は転送元メッセージ自身のアカウントから送るため、ここでの選択は関係なく出さない
-  const accountPicker = linkedAccounts.length > 0 && !isForward ? (
+  const accountPicker = linkedAccounts.length > 0 && !isForward && !isRecipients ? (
     <div className="px-3 pt-2 pb-2 border-b border-[#1E1F22]">
       <div className="text-[11px] font-bold text-gray-500 mb-1.5">新規の宛先・グループを作成するアカウント</div>
       <div className="flex flex-wrap gap-1.5">
@@ -501,7 +537,8 @@ function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: NonNulla
   return (
     <div className="flex flex-col max-h-[80vh]">
       <div className="p-4 border-b border-[#1E1F22]">
-        <h2 className="text-lg font-bold text-white">{isForward ? "メールを転送" : "チャットを作成"}</h2>
+        <h2 className="text-lg font-bold text-white">{isRecipients ? "送信先を追加" : isForward ? "メールを転送" : "チャットを作成"}</h2>
+        {isRecipients && <p className="text-xs text-gray-400 mt-1 truncate">{sendAccount} でやり取りした相手から選べます</p>}
         {isForward && (
           <p className="text-xs text-gray-400 mt-1 truncate">
             件名: {modal.forwardMessage?.subject || "(件名なし)"}
@@ -543,10 +580,42 @@ function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: NonNulla
             <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">選択中の宛先</div>
             <div className="flex flex-col gap-1">
               {selected.map((id) => (
-                <div key={id} className="flex items-center justify-between gap-2 p-2 bg-[rgba(88,101,242,0.15)] rounded">
-                  <span className="text-sm text-white truncate">{getLabel(id)}</span>
-                  <button onClick={() => removeSelected(id)} className="text-gray-300 hover:text-white font-bold px-2 flex-shrink-0">×</button>
+                <div key={id} className="p-2 bg-[rgba(88,101,242,0.15)] rounded">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm text-white truncate">{getLabel(id)}</span>
+                    <button onClick={() => removeSelected(id)} className="text-gray-300 hover:text-white font-bold px-2 flex-shrink-0">×</button>
+                  </div>
+                  {isRecipients && (
+                    <div className="mt-1.5">
+                      <select
+                        value={roles[id] || "to"}
+                        onChange={(e) => setRoles(prev => ({ ...prev, [id]: e.target.value as RecipientRole }))}
+                        className="bg-[#1E1F22] text-xs text-gray-200 rounded px-1.5 py-1.5 max-w-full"
+                      >
+                        {(Object.keys(ROLE_LABELS) as RecipientRole[]).map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+                      </select>
+                      {ROLE_HINTS[roles[id] || "to"] && <div className="text-[11px] text-gray-400 mt-1">{ROLE_HINTS[roles[id] || "to"]}</div>}
+                    </div>
+                  )}
                 </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {participants.filter(p => !selected.includes(p.address)).length > 0 && (
+          <div>
+            <div className="text-xs font-bold text-gray-400 mb-1.5 px-2">元のメールに入っていた人</div>
+            <div className="flex flex-col gap-1">
+              {participants.filter(p => !selected.includes(p.address)).map(p => (
+                <button
+                  key={p.address}
+                  onClick={() => addSelected(p.address, p.role)}
+                  className="flex flex-col items-start p-2 hover:bg-[#2B2D31] rounded text-left transition"
+                >
+                  <span className="text-sm text-gray-200 truncate w-full">{p.name || p.address}</span>
+                  <span className="text-[11px] text-gray-500 truncate w-full">{p.name ? `${p.address}・` : ""}元は {p.role === "cc" ? "Cc" : "To"}</span>
+                </button>
               ))}
             </div>
           </div>
@@ -605,8 +674,166 @@ function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: NonNulla
           onClick={handleNext}
           className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4] disabled:bg-gray-600 disabled:text-gray-400"
         >
-          {isForward ? "転送" : (selected.length > 1 ? "次へ (グループ設定)" : "チャットを作成する")}
+          {isRecipients ? "追加" : isForward ? "転送" : (selected.length > 1 ? "次へ (グループ設定)" : "チャットを作成する")}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// 入力欄の「返信元を選択」。上に検索モーダルと同じ形の検索（タブ・並び替え・場所の絞り込み・2文字以上で0件ならサーバー検索。
+// 同じ語で二度撃たない）を置き、その下に今のチャットのメールを出す。選べるのは送信元と同じアカウントのメールだけ
+// （ほかのチャットのメールも選べる）。選んでも開いているチャットは変わらない
+type ReplySearchTab = "all" | "recipient" | "address" | "subject" | "body";
+const REPLY_SEARCH_RESULT_LIMIT = 100;
+
+function ReplyTargetModal({ app }: { app: MailAppHook }) {
+  const { selectedSender, chatConfigs, checkInbox, checkArchive, checkSpam, checkTrash, checkSent } = app.state;
+  const { safeBack, openEmailModal, chooseReplyTarget, roomAccountEmail, roomLocalKey } = app.actions;
+  const { allUniqueEmails, groupedEmails, contactDirectory, emailRoomMap, groupReplyPools } = app.computed;
+  const account = selectedSender ? roomAccountEmail(selectedSender) : "";
+
+  const [keyword, setKeyword] = useState("");
+  const [tab, setTab] = useState<ReplySearchTab>("all");
+  const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
+  const [boxFilter, setBoxFilter] = useState<Record<BoxKey, boolean>>({ inbox: checkInbox, archive: checkArchive, sent: checkSent, spam: checkSpam, trash: checkTrash });
+  const [isServerSearching, setIsServerSearching] = useState(false);
+  const searchedRef = useRef<Set<string>>(new Set());
+  const kw = keyword.trim().toLowerCase();
+
+  // 送信元と同じアカウントのメールだけ
+  const accountEmails = useMemo(
+    () => (allUniqueEmails as Email[]).filter(e => (e.accountId || app.auth.session?.user?.email || "").toLowerCase() === account.toLowerCase()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- セッションのアドレスは開いている間は変わらない
+    [allUniqueEmails, account],
+  );
+  const contactOf = useMemo(() => new Map(contactDirectory.map(c => [c.room, c])), [contactDirectory]);
+  const roomLabel = (room: RoomKeyStr | undefined) => (room ? (contactOf.get(room)?.label || chatConfigs[room]?.customName || roomLocalKey(room)) : "");
+  const roomAddress = (room: RoomKeyStr | undefined) => (room ? contactOf.get(room)?.address || "" : "");
+
+  const matchField = (e: Email, field: Exclude<ReplySearchTab, "all">): boolean => {
+    const room = emailRoomMap.get(e.id);
+    if (field === "subject") return (e.subject || "").toLowerCase().includes(kw);
+    if (field === "body") return (e.body || "").toLowerCase().includes(kw);
+    if (field === "recipient") return roomLabel(room).toLowerCase().includes(kw) || (e.from || "").split("<")[0].toLowerCase().includes(kw);
+    return roomAddress(room).toLowerCase().includes(kw) || (e.from || "").toLowerCase().includes(kw);
+  };
+  const results = useMemo(() => {
+    if (!kw) return [] as Email[];
+    const fields: Exclude<ReplySearchTab, "all">[] = tab === "all" ? ["recipient", "address", "subject", "body"] : [tab];
+    const list = accountEmails.filter(e => boxFilter[getSearchBoxInfo(e).key] && fields.some(f => matchField(e, f)));
+    list.sort((a, b) => sortOrder === "oldest" ? new Date(a.date).getTime() - new Date(b.date).getTime() : new Date(b.date).getTime() - new Date(a.date).getTime());
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- matchField は描画ごとに作り直されるが、中で使う値は依存に入れてある
+  }, [kw, tab, sortOrder, boxFilter, accountEmails, emailRoomMap, contactOf]);
+
+  // 読み込み済みのメールで0件のとき（2文字以上）だけ、送信元のアカウントの Gmail を件名・本文で検索する。同じ語では二度撃たない
+  const subjectCount = useMemo(() => (kw ? accountEmails.filter(e => (e.subject || "").toLowerCase().includes(kw)).length : 0), [kw, accountEmails]);
+  const bodyCount = useMemo(() => (kw ? accountEmails.filter(e => (e.body || "").toLowerCase().includes(kw)).length : 0), [kw, accountEmails]);
+  useEffect(() => {
+    if (!kw || kw.length < 2 || !account) return;
+    if (tab !== "all" && tab !== "subject" && tab !== "body") return;
+    const searchKw = `${account.toLowerCase()}|${kw}`;
+    const needSubject = shouldTriggerServerSearch(searchedRef.current, searchKw, "subject", subjectCount);
+    const needBody = shouldTriggerServerSearch(searchedRef.current, searchKw, "body", bodyCount);
+    if (!needSubject && !needBody) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      if (needSubject) markServerSearched(searchedRef.current, searchKw, "subject");
+      if (needBody) markServerSearched(searchedRef.current, searchKw, "body");
+      setIsServerSearching(true);
+      try {
+        await Promise.all([
+          needSubject ? app.actions.searchServerSide(keyword, "subject", account) : Promise.resolve([]),
+          needBody ? app.actions.searchServerSide(keyword, "body", account) : Promise.resolve([]),
+        ]);
+      } finally {
+        if (!cancelled) setIsServerSearching(false);
+      }
+    }, 500);
+    return () => { cancelled = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 検索語・タブ・件数が変わったときだけ判定する（searchServerSide は描画ごとに作り直される）
+  }, [kw, tab, subjectCount, bodyCount, account]);
+
+  if (!selectedSender) return null;
+  const isGroup = chatConfigs[selectedSender]?.isGroup;
+  const source = isGroup ? (groupReplyPools[selectedSender] || []) : (groupedEmails[selectedSender] || []);
+  const currentMsgs = (source as Email[]).slice().sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  const renderRow = (m: Email, showRoom: boolean) => {
+    // 送信直後でまだ Gmail の ID が無いメール・読み込めていないメールは返信元にできない（スレッドと引用が作れないため）
+    const selectable = !m.id.startsWith("fake-") && !m.isMissing;
+    const room = emailRoomMap.get(m.id);
+    return (
+      <div key={m.id} className="flex items-center gap-2 p-2 hover:bg-[#2B2D31] rounded">
+        <div className="flex-1 min-w-0 text-sm">
+          <div className="text-gray-400 text-[11px] truncate">
+            {new Date(m.date).toLocaleString("ja-JP")}{showRoom && room && room !== selectedSender ? `・${roomLabel(room)}` : ""}・{getSearchBoxInfo(m).name}
+          </div>
+          <div className="text-gray-200 truncate">{kw ? <HighlightText text={m.subject || m.snippet || "(件名なし)"} highlight={keyword} /> : (m.subject || m.snippet || "(件名なし)")}</div>
+          {!selectable && <div className="text-[11px] text-gray-500">送信直後・読み込めていないメールは選べません</div>}
+        </div>
+        <button
+          disabled={!selectable}
+          onClick={() => { chooseReplyTarget(m); safeBack(); }}
+          className="px-3 py-1.5 bg-[#5865F2] hover:bg-[#4752C4] text-white text-xs font-bold rounded flex-shrink-0 disabled:bg-gray-600 disabled:text-gray-400"
+        >
+          選択
+        </button>
+        <button onClick={() => openEmailModal(m)} className="px-3 py-1.5 bg-[#1E1F22] hover:bg-[#3f4147] text-gray-200 text-xs font-bold rounded flex-shrink-0">詳細</button>
+      </div>
+    );
+  };
+
+  const TABS: [ReplySearchTab, string][] = [["all", "すべて"], ["recipient", "宛先名"], ["address", "アドレス"], ["subject", "件名"], ["body", "本文"]];
+  return (
+    <div className="flex flex-col max-h-[80vh]">
+      <div className="p-4 border-b border-[#1E1F22]">
+        <h2 className="text-lg font-bold text-white">返信元を選択</h2>
+        <p className="text-[11px] text-gray-400 mt-1 truncate">{account} のメールから選べます。選んでも開いているチャットは変わりません</p>
+        <input
+          type="text"
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          placeholder="ほかのチャットのメールを検索..."
+          className="w-full mt-2 bg-[#1E1F22] text-sm text-gray-200 px-3 py-1.5 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
+        />
+        {kw && (
+          <>
+            <div className="flex gap-1 mt-2 overflow-x-auto scrollbar-none">
+              {TABS.map(([t, label]) => (
+                <button key={t} onClick={() => setTab(t)} className={`px-2.5 py-1 rounded text-xs font-bold transition flex-shrink-0 ${tab === t ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#3f4147]"}`}>{label}</button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-1 mt-2 text-[11px] font-bold">
+              <button onClick={() => setSortOrder("newest")} className={`px-2 py-1 rounded ${sortOrder === "newest" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#3f4147]"}`}>新しい順</button>
+              <button onClick={() => setSortOrder("oldest")} className={`px-2 py-1 rounded ${sortOrder === "oldest" ? "bg-[#5865F2] text-white" : "bg-[#232428] text-gray-400 hover:bg-[#3f4147]"}`}>古い順</button>
+              {(Object.keys(SEARCH_BOX_LABELS) as BoxKey[]).map(key => (
+                <label key={key} className="flex items-center gap-1 cursor-pointer bg-[#232428] px-2 py-1 rounded hover:bg-[#3f4147]">
+                  <input type="checkbox" checked={boxFilter[key]} onChange={(e) => setBoxFilter(prev => ({ ...prev, [key]: e.target.checked }))} className="accent-[#5865F2]" />
+                  {SEARCH_BOX_LABELS[key]}
+                </label>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+      <div className="p-2 overflow-y-auto flex-1 space-y-1">
+        {kw && (
+          <div className="mb-3">
+            <div className="text-xs font-bold text-gray-400 px-2 mb-1">検索結果 ({results.length}件)</div>
+            {isServerSearching && <div className="text-center text-xs text-[#5865F2] font-bold py-1 animate-pulse">Gmail から検索中...</div>}
+            {results.slice(0, REPLY_SEARCH_RESULT_LIMIT).map(m => renderRow(m, true))}
+            {results.length > REPLY_SEARCH_RESULT_LIMIT && <div className="text-[11px] text-gray-500 px-2">ほか{results.length - REPLY_SEARCH_RESULT_LIMIT}件。語を足して絞り込んでください</div>}
+            {results.length === 0 && !isServerSearching && <div className="text-gray-500 text-xs p-2">見つかりませんでした</div>}
+          </div>
+        )}
+        <div className="text-xs font-bold text-gray-400 px-2 mb-1">このチャットのメール</div>
+        {currentMsgs.map(m => renderRow(m, false))}
+        {currentMsgs.length === 0 && <div className="text-gray-500 text-sm p-4 text-center">このチャットにはまだメッセージがありません</div>}
+      </div>
+      <div className="p-4 border-t border-[#1E1F22] flex justify-end">
+        <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
       </div>
     </div>
   );
@@ -883,6 +1110,12 @@ export function EmailModal({ app }: { app: MailAppHook }) {
               {email.subject || "(件名なし)"}
             </div>
             <div className="text-[11px] text-gray-400 mt-1 truncate">{email.from}</div>
+            {/* 宛先は設定に関係なく出す。Bcc は自分が送ったメール（送信済み）にだけ残っている */}
+            {([["To", email.to], ["Cc", email.cc], ["Bcc", email.bcc]] as const).map(([label, value]) => value ? (
+              <div key={label} className="text-[11px] text-gray-400 truncate" title={value}>
+                <span className="text-gray-500">{label}: </span>{value}
+              </div>
+            ) : null)}
             <div className="text-[11px] text-gray-500">
               {new Date(email.date).toLocaleString("ja-JP")}
             </div>
@@ -1377,7 +1610,7 @@ export function Modals({ app }: { app: MailAppHook }) {
   // 設定画面で開いているタブ（"common" か、アカウントのアドレス）
   const [settingsTab, setSettingsTab] = useState<string>("common");
   const { modal, renameInput, chatConfigs, messageConfigs, selectedIds, selectedSender, checkTrash, checkSpam, checkInbox, checkArchive, checkSent, revealedCrossPrompts } = app.state;
-  const { executeConfirmedAction, executePin, setRenameInput, updateChatConfigByRoomKey, safeBack, setReplyToMessage, setReplySubject, openEmailModal, exitAfterAction } = app.actions;
+  const { executeConfirmedAction, executePin, setRenameInput, updateChatConfigByRoomKey, safeBack, exitAfterAction } = app.actions;
   const { groupedEmails, allUniqueEmails, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats } = app.computed;
 
   if (!modal || modal.type === "search" || modal.type === "filter_tool") return null;
@@ -1413,7 +1646,7 @@ export function Modals({ app }: { app: MailAppHook }) {
           <CategorizedActionSelect app={app} modal={modal} />
         )}
 
-        {modal.type === "compose_new_chat" && (
+        {(modal.type === "compose_new_chat" || modal.type === "select_recipients") && (
           <ComposeNewChatModal app={app} modal={modal} />
         )}
 
@@ -1542,6 +1775,21 @@ export function Modals({ app }: { app: MailAppHook }) {
                     <button onClick={() => app.actions.setUseIconLabels(true)} className={toggleClass(app.state.useIconLabels)}>アイコン</button>
                   </div>
                 </div>
+                {/* 宛先の表示（既定はオフ）。メールの詳細には、設定に関係なく To / Cc（送ったメールなら Bcc も）を出す */}
+                {([
+                  ["送ったメールに宛先の人数を表示する", "送ったメールの時間の横に「To 1・Cc 2・Bcc 1」のように出します", app.state.showSentRecipients, app.actions.setShowSentRecipients],
+                  ["受け取ったメールに、自分がどの欄で受け取ったかを表示する", "受け取ったメールの時間の横に「To」か「Cc」を出します。どちらにも自分がいないときは「宛先に自分なし」と出します（Bcc・メーリングリスト・自動転送のどれかは分かりません）", app.state.showReceivedRecipients, app.actions.setShowReceivedRecipients],
+                ] as const).map(([title, desc, on, set]) => (
+                  <div key={title} className="bg-[#2B2D31] rounded p-3 mt-3">
+                    <div className="text-sm font-bold text-gray-200 mb-1">{title}</div>
+                    <div className="text-xs text-gray-500 mb-1">{desc}</div>
+                    <div className="text-[11px] text-gray-500 mb-3">To：宛先 ／ Cc：ほかの人にも見せる（{ROLE_HINTS.cc}）／ Bcc：こっそり送る（{ROLE_HINTS.bcc}）</div>
+                    <div className="flex gap-2">
+                      <button onClick={() => set(false)} className={toggleClass(!on)}>オフ</button>
+                      <button onClick={() => set(true)} className={toggleClass(on)}>オン</button>
+                    </div>
+                  </div>
+                ))}
               </>
             )}
 
@@ -1745,7 +1993,7 @@ export function Modals({ app }: { app: MailAppHook }) {
           return (
             <div className="p-5">
               <h2 className="text-lg font-bold text-white mb-1">送信元のアカウント</h2>
-              <div className="text-xs text-gray-500 mb-4">選んだアカウントで、この相手とのチャットを開きます（やり取りが無ければ新しいチャットになります）。入力中の本文と添付は引き継ぎます</div>
+              <div className="text-xs text-gray-500 mb-4">選んだアカウントで、この相手とのチャットを開きます（やり取りが無ければ新しいチャットになります）。入力中の本文・添付・送信先は引き継ぎ、返信元は外します（スレッドはアカウントごとのため）</div>
               <div className="flex flex-col gap-1 mb-4">
                 {accounts.map((a) => {
                   const isCurrent = a.toLowerCase() === current.toLowerCase();
@@ -1769,53 +2017,22 @@ export function Modals({ app }: { app: MailAppHook }) {
                   );
                 })}
               </div>
+              {/* エイリアスは選ぶものではなく、純正 Gmail と同じく元のメールの宛先に合わせて自動で決まる（pickSendAs） */}
+              {(() => {
+                const aliases = ((app.state.sendAsByAccount as Record<string, { sendAsEmail: string }[]>)[current] || []).filter(a => a.sendAsEmail.toLowerCase() !== current.toLowerCase());
+                if (aliases.length === 0) return null;
+                return (
+                  <div className="text-[11px] text-gray-500 mb-4">
+                    {current} のエイリアス：{aliases.map(a => a.sendAsEmail).join("、")}。どのアドレスから送るかは、純正 Gmail と同じく返信元のメールの宛先に合わせて自動で決まります（返信元が無いときは Gmail の既定の送信元）
+                  </div>
+                );
+              })()}
               <button onClick={() => safeBack()} className="w-full py-2 hover:underline text-gray-400 text-sm">キャンセル</button>
             </div>
           );
         })()}
 
-        {modal.type === "select_reply_target" && (() => {
-          const isGroup = chatConfigs[selectedSender!]?.isGroup;
-          const source = isGroup ? (app.computed.groupReplyPools[selectedSender!] || []) : (groupedEmails[selectedSender!] || []);
-          const msgs = (source as Email[]).slice().sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-          return (
-            <div className="flex flex-col max-h-[80vh]">
-              <div className="p-4 border-b border-[#1E1F22]">
-                <h2 className="text-lg font-bold text-white">返信先を選択</h2>
-              </div>
-              <div className="p-2 overflow-y-auto flex-1 space-y-1">
-                {msgs.map((m) => (
-                  <div key={m.id} className="flex items-center gap-2 p-2 hover:bg-[#2B2D31] rounded">
-                    <div className="flex-1 min-w-0 text-sm">
-                      <div className="text-gray-400 text-[11px]">{new Date(m.date).toLocaleString("ja-JP")}</div>
-                      <div className="text-gray-200 truncate">{m.subject || m.snippet || "(件名なし)"}</div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setReplyToMessage(m);
-                        setReplySubject(m.subject?.startsWith("Re:") ? m.subject : `Re: ${m.subject || ""}`);
-                        safeBack();
-                      }}
-                      className="px-3 py-1.5 bg-[#5865F2] hover:bg-[#4752C4] text-white text-xs font-bold rounded flex-shrink-0"
-                    >
-                      選択
-                    </button>
-                    <button
-                      onClick={() => openEmailModal(m)}
-                      className="px-3 py-1.5 bg-[#1E1F22] hover:bg-[#3f4147] text-gray-200 text-xs font-bold rounded flex-shrink-0"
-                    >
-                      詳細
-                    </button>
-                  </div>
-                ))}
-                {msgs.length === 0 && <div className="text-gray-500 text-sm p-4 text-center">このチャットにはまだメッセージがありません</div>}
-              </div>
-              <div className="p-4 border-t border-[#1E1F22] flex justify-end">
-                <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-              </div>
-            </div>
-          );
-        })()}
+        {modal.type === "select_reply_target" && <ReplyTargetModal app={app} />}
 
         {modal.type === "rename" && (
           <div className="p-5">

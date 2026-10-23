@@ -1,22 +1,32 @@
-// 入力中の返信（本文・件名・返信先・添付）を、チャットごとに端末の IndexedDB に置いておく。
+// 入力中の返信（本文・件名・返信元・送信先・添付）を、チャットごとに端末の IndexedDB に置いておく。
 // 送信の失敗・通信断・再読み込み・チャットの切り替えで入力を失わないため（絶対ルール3）。
 // キーはチャットの複合キー（アカウント＋相手）なので、連携解除・ログアウトでアカウントごとに消せる
 import localforage from "localforage";
 import type { Email } from "../types/email";
 import { decodeRoomKey } from "./roomKey";
+import { normalizeRecipients, type ComposeRecipient } from "./composeRecipients";
 
 export type ComposeDraft = {
   subject: string;
   body: string;
   replyToMessage: Email | null;
   attachments: { filename: string; mimeType: string; size: number; data: string }[];
+  // 入力中の送信先。null は「既定（開いているチャットの相手を To に1人）」のまま。
+  // recipientsBase は返信元を選んで置き換えたときの内容（自分で変えたかどうかの判定に使う。null は既定）
+  recipients?: ComposeRecipient[] | null;
+  recipientsBase?: ComposeRecipient[] | null;
   updatedAt: number;
 };
 
 const store = localforage.createInstance({ name: "remail", storeName: "drafts" });
 
-export function isEmptyDraft(d: Pick<ComposeDraft, "subject" | "body" | "replyToMessage" | "attachments">): boolean {
-  return !d.subject.trim() && !d.body.trim() && !d.replyToMessage && d.attachments.length === 0;
+export function isEmptyDraft(d: Pick<ComposeDraft, "subject" | "body" | "replyToMessage" | "attachments" | "recipients">): boolean {
+  return !d.subject.trim() && !d.body.trim() && !d.replyToMessage && d.attachments.length === 0 && !d.recipients;
+}
+
+// 端末に残っていた送信先を読み戻す（壊れた値・上限を超えた分は捨てる）
+function readRecipients(v: unknown): ComposeRecipient[] | null {
+  return Array.isArray(v) ? normalizeRecipients(v).recipients : null;
 }
 
 export async function loadDraft(room: string): Promise<ComposeDraft | null> {
@@ -28,6 +38,8 @@ export async function loadDraft(room: string): Promise<ComposeDraft | null> {
       body: typeof d.body === "string" ? d.body : "",
       replyToMessage: d.replyToMessage && typeof d.replyToMessage === "object" ? d.replyToMessage : null,
       attachments: Array.isArray(d.attachments) ? d.attachments : [],
+      recipients: readRecipients(d.recipients),
+      recipientsBase: readRecipients(d.recipientsBase),
       updatedAt: typeof d.updatedAt === "number" ? d.updatedAt : 0,
     };
   } catch {

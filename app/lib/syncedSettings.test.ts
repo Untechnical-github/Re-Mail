@@ -18,6 +18,11 @@ describe("sanitizeSyncedSettings", () => {
       .toEqual({ accounts: { "a@example.com": false } });
     expect(sanitizeSyncedSettings({ accounts: ["a@example.com"] })).toEqual({});
   });
+
+  it("宛先の表示設定（送った・受け取ったメール）は真偽値だけを残す", () => {
+    expect(sanitizeSyncedSettings({ showSentRecipients: true, showReceivedRecipients: false })).toEqual({ showSentRecipients: true, showReceivedRecipients: false });
+    expect(sanitizeSyncedSettings({ showSentRecipients: "true", showReceivedRecipients: 1 })).toEqual({});
+  });
 });
 
 describe("syncedSettingsKey", () => {
@@ -39,8 +44,8 @@ describe("共通設定とアカウント設定", () => {
 
   it("画面が持つ共通設定だけを取り出す（updatedAt は外す）", async () => {
     const { pickCommonSettings } = await import("./syncedSettings");
-    expect(pickCommonSettings({ inbox: true, iconLabels: false, updatedAt: 9, accounts: { "a@example.com": true } }))
-      .toEqual({ inbox: true, iconLabels: false, accounts: { "a@example.com": true } });
+    expect(pickCommonSettings({ inbox: true, iconLabels: false, showSentRecipients: true, updatedAt: 9, accounts: { "a@example.com": true } }))
+      .toEqual({ inbox: true, iconLabels: false, showSentRecipients: true, accounts: { "a@example.com": true } });
   });
 
   it("アカウント設定は決まった名前の真偽値だけを残す", async () => {

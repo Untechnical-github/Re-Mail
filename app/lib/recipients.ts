@@ -1,4 +1,4 @@
-// 返信の宛先を、純正 Gmail と同じ決まりで計算する純粋関数。
+// 返信の宛先を、純正 Gmail と同じ決まりで計算する純粋関数（返信元を選んだときの送信先の初期値づくりに使う。composeRecipients.ts）。
 // - 返信（相手のみ）: Reply-To があればそこへ、なければ差出人へ。自分が送ったメールへの返信なら、元の To へ
 // - 全員に返信: 上に加えて元の To の残りを To に、元の Cc を Cc に入れる。自分のアドレスと重複は除く
 import { splitAddressList, parseAddress } from "./mime";
@@ -9,7 +9,7 @@ export type ExtraRecipient = { name: string; address: string; field: "to" | "cc"
 export type ReplyPlan = {
   senderOnly: ReplyRecipients;
   all: ReplyRecipients;
-  // 「全員に返信」にすると増える宛先。空なら「全員に返信」の切り替えを出さない
+  // 「全員に返信」にすると増える宛先。空なら返信元を選んだときに「返信／全員に返信」を聞かない
   extra: ExtraRecipient[];
 };
 
@@ -68,13 +68,4 @@ export function planReply(src: ReplySource, myAddresses: string[]): ReplyPlan {
     all: { to: join(allTo), cc: join(allCc) },
     extra,
   };
-}
-
-// 入力欄の近くに出す「Cc：山田さん ほか2名」の文言。Cc が1人でもいれば Cc、いなければ To と書く
-export function describeExtraRecipients(extra: ExtraRecipient[]): string {
-  if (extra.length === 0) return "";
-  const first = extra.find(e => e.field === "cc") || extra[0];
-  const label = extra.some(e => e.field === "cc") ? "Cc" : "To";
-  const who = first.name ? `${first.name}さん` : first.address;
-  return extra.length > 1 ? `${label}：${who} ほか${extra.length - 1}名` : `${label}：${who}`;
 }

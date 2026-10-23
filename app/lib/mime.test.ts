@@ -75,6 +75,31 @@ describe("buildMimeSegments", () => {
     expect(text).toMatch(/^Message-ID: <new@example.com>$/m);
   });
 
+  it("Bcc は Cc の直後に入り、日本語の表示名だけ encoded-word にして <アドレス> は残す", () => {
+    const text = toText(buildMimeSegments({
+      to: "a@example.com", cc: "b@example.com", bcc: "山田 太郎 <yamada@example.com>, c@example.com", subject: "s", text: "t", replyTo: "r@example.com",
+    }));
+    const lines = text.split("\r\n");
+    const cc = lines.findIndex(l => l.startsWith("Cc: "));
+    expect(lines[cc + 1]).toMatch(/^Bcc: =\?UTF-8\?B\?[^?]+\?= <yamada@example.com>,$/);
+    expect(lines[cc + 2]).toBe(" c@example.com");
+    expect(lines[cc + 3]).toBe("Reply-To: r@example.com");
+    expect(decodeWords(lines[cc + 1].slice(5).replace(/ <.*$/, ""))).toBe("山田 太郎");
+  });
+
+  it("Bcc が空なら Bcc ヘッダーを出さない。改行を入れられても別のヘッダーを差し込ませない", () => {
+    expect(toText(buildMimeSegments({ to: "a@example.com", bcc: "  ", subject: "s", text: "t" }))).not.toMatch(/^Bcc:/m);
+    const text = toText(buildMimeSegments({ to: "a@example.com", bcc: "b@example.com\r\nX-Evil: 1", subject: "s", text: "t" }));
+    expect(text).not.toMatch(/^X-Evil/m);
+    expect(text).toMatch(/^Bcc: b@example.com X-Evil: 1$/m);
+  });
+
+  it("Bcc だけ（To が空）でも組み立てられる", () => {
+    const text = toText(buildMimeSegments({ to: "", bcc: "b@example.com", subject: "s", text: "t" }));
+    expect(text).toMatch(/^Bcc: b@example.com$/m);
+    expect(text).not.toMatch(/^To:/m);
+  });
+
   it("From・Reply-To は指定したときだけ入り、日本語の表示名は encoded-word になる", () => {
     const withFrom = toText(buildMimeSegments({ to: "a@example.com", subject: "s", text: "t", from: "営業部 <sales@example.com>", replyTo: "support@example.com" }));
     expect(withFrom).toMatch(/^From: =\?UTF-8\?B\?[^?]+\?= <sales@example.com>$/m);

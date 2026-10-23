@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups } from "./groupEmails";
+import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, mailPartnerOf, roomPartner } from "./groupEmails";
 import { Email } from "../types/email";
 import { ChatConfig } from "../types/mail";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey } from "./roomKey";
@@ -221,5 +221,114 @@ describe("groupMemberAddresses", () => {
     expect(groupMemberAddresses({ isGroup: true, groupMembers: ["田中"] } as ChatConfig).size).toBe(0);
     expect(groupMemberAddresses({ isGroup: true, groupMembers: ["田中", "鈴木"], groupMemberAddresses: ["tanaka@example.com"] } as ChatConfig).size).toBe(0);
     expect(groupMemberAddresses({ isGroup: true, groupMembers: ["田中"], groupMemberAddresses: [5] } as unknown as ChatConfig).size).toBe(0);
+  });
+});
+
+describe("groupEmailsByRoom：Reply-To と送ったメールの入れ先", () => {
+  const none = {} as Record<LocalKey, ChatConfig>;
+  const ids = (list: Email[] | undefined) => (list || []).map(e => e.id).sort();
+
+  it("Reply-To（表示名あり）のあるメールは、Reply-To の表示名のルームにまとまる", () => {
+    const groups = groupEmailsByRoom([
+      mkEmail({ id: "1", from: "受付 <noreply@example.com>", replyTo: "山田 <yamada@example.com>" }),
+      mkEmail({ id: "2", from: "山田 <yamada@example.com>" }),
+    ], ME, none);
+    expect(Object.keys(groups)).toEqual(["山田"]);
+    expect(ids(groups[asLocalKey("山田")])).toEqual(["1", "2"]);
+  });
+
+  it("Reply-To に表示名が無ければアドレスのルームにし、同じアドレスの表示名ルームがあればそちらへまとめる", () => {
+    const only = groupEmailsByRoom([mkEmail({ id: "1", from: "受付 <noreply@example.com>", replyTo: "yamada@example.com" })], ME, none);
+    expect(Object.keys(only)).toEqual(["yamada@example.com"]);
+    const merged = groupEmailsByRoom([
+      mkEmail({ id: "1", from: "受付 <noreply@example.com>", replyTo: "yamada@example.com" }),
+      mkEmail({ id: "2", from: "山田 <yamada@example.com>" }),
+    ], ME, none);
+    expect(Object.keys(merged)).toEqual(["山田"]);
+    expect(ids(merged[asLocalKey("山田")])).toEqual(["1", "2"]);
+  });
+
+  it("問い合わせフォームの形：From が共通でも Reply-To が人ごとに違えば、別々のルームになる", () => {
+    const groups = groupEmailsByRoom([
+      mkEmail({ id: "1", from: "お問い合わせフォーム <form@example.com>", replyTo: "a@example.com" }),
+      mkEmail({ id: "2", from: "お問い合わせフォーム <form@example.com>", replyTo: "b@example.com" }),
+    ], ME, none);
+    expect(Object.keys(groups).sort()).toEqual(["a@example.com", "b@example.com"]);
+    expect(groups[asLocalKey("お問い合わせフォーム")]).toBeUndefined();
+  });
+
+  it("Reply-To が自分（エイリアスを含む）なら無視して From のルームにする", () => {
+    const groups = groupEmailsByRoom([
+      mkEmail({ id: "1", from: "田中 <tanaka@example.com>", replyTo: ME }),
+      mkEmail({ id: "2", from: "鈴木 <suzuki@example.com>", replyTo: "Alias <alias@example.com>" }),
+    ], ME, none, ["alias@example.com"]);
+    expect(Object.keys(groups).sort()).toEqual(["田中", "鈴木"].sort());
+  });
+
+  it("自分が送ったメールは、To / Cc / Bcc に入っている相手のチャットすべてに入る", () => {
+    const groups = groupEmailsByRoom([
+      mkEmail({ id: "1", from: "田中 <tanaka@example.com>" }),
+      mkEmail({ id: "2", from: "鈴木 <suzuki@example.com>" }),
+      mkEmail({ id: "3", from: "佐藤 <sato@example.com>" }),
+      mkEmail({ id: "4", from: "受付 <noreply@example.com>", replyTo: "yamada@example.com" }),
+      mkEmail({ id: "s", isMe: true, from: ME, to: "tanaka@example.com", cc: "鈴木 <suzuki@example.com>", bcc: "yamada@example.com", labelIds: ["SENT"] }),
+    ], ME, none);
+    expect(ids(groups[asLocalKey("田中")])).toEqual(["1", "s"]);
+    expect(ids(groups[asLocalKey("鈴木")])).toEqual(["2", "s"]);
+    expect(ids(groups[asLocalKey("yamada@example.com")])).toEqual(["4", "s"]);
+    expect(ids(groups[asLocalKey("佐藤")])).toEqual(["3"]);
+  });
+
+  it("どのチャットにも当たらなければ、To の最初（無ければ Cc、Bcc）の名前で新しいルームを作る。あとの送ったメールもそこに入る", () => {
+    const groups = groupEmailsByRoom([
+      mkEmail({ id: "s1", isMe: true, from: ME, to: "", cc: "", bcc: "秘密 <bcc@example.com>", labelIds: ["SENT"], date: "2026-01-01T00:00:00.000Z" }),
+      mkEmail({ id: "s2", isMe: true, from: ME, to: "x@example.com", cc: "秘密 <bcc@example.com>", labelIds: ["SENT"], date: "2026-01-02T00:00:00.000Z" }),
+    ], ME, none);
+    expect(ids(groups[asLocalKey("秘密")])).toEqual(["s1", "s2"]);
+    expect(groups[asLocalKey("x@example.com")]).toBeUndefined();
+  });
+
+  it("部分一致ではルームに入れない（「田中」のルームに「田中太郎」宛てのメールを入れない）", () => {
+    const groups = groupEmailsByRoom([
+      mkEmail({ id: "1", from: "田中 <tanaka@example.com>" }),
+      mkEmail({ id: "s", isMe: true, from: ME, to: "田中太郎 <taro@example.com>", labelIds: ["SENT"] }),
+    ], ME, none);
+    expect(ids(groups[asLocalKey("田中")])).toEqual(["1"]);
+    expect(ids(groups[asLocalKey("田中太郎")])).toEqual(["s"]);
+  });
+
+  it("グループの規則は変わらない（宛先の集合がメンバーと完全一致する送信メールだけがグループに入る）", () => {
+    const chatConfigs: Record<LocalKey, ChatConfig> = {
+      [asLocalKey("group:1")]: { isGroup: true, groupMembers: ["田中", "鈴木"], groupMemberAddresses: ["tanaka@example.com", "suzuki@example.com"] },
+    } as Record<LocalKey, ChatConfig>;
+    const groups = groupEmailsByRoom([
+      mkEmail({ id: "1", from: "田中 <tanaka@example.com>" }),
+      mkEmail({ id: "g", isMe: true, from: ME, to: "tanaka@example.com, suzuki@example.com", labelIds: ["SENT"] }),
+      mkEmail({ id: "c", isMe: true, from: ME, to: "tanaka@example.com", cc: "suzuki@example.com", labelIds: ["SENT"] }),
+    ], ME, chatConfigs);
+    expect(ids(groups[asLocalKey("group:1")])).toEqual(["1", "g"]);
+    expect(ids(groups[asLocalKey("田中")])).toEqual(["1", "c", "g"]);
+    expect(ids(groups[asLocalKey("鈴木")])).toEqual(["g"]);
+  });
+});
+
+describe("mailPartnerOf", () => {
+  it("Reply-To（自分以外）を優先し、無ければ From", () => {
+    expect(mailPartnerOf({ from: "受付 <a@example.com>", replyTo: "山田 <Y@example.com>" }, [ME])).toEqual({ name: "山田", address: "y@example.com", roomName: "山田", viaReplyTo: true });
+    expect(mailPartnerOf({ from: "受付 <a@example.com>", replyTo: ME }, [ME])).toMatchObject({ address: "a@example.com", roomName: "受付", viaReplyTo: false });
+    expect(mailPartnerOf({ from: "a@example.com" }, [ME])).toMatchObject({ address: "a@example.com", roomName: "a@example.com" });
+  });
+});
+
+describe("roomPartner", () => {
+  it("受信メールがあれば Reply-To 優先で相手を決める", () => {
+    expect(roomPartner([mkEmail({ id: "1", from: "受付 <a@example.com>", replyTo: "山田 <y@example.com>" })], "山田", ME)).toEqual({ name: "山田", address: "y@example.com" });
+  });
+  it("送ったメールしか無ければ、ルーム名に合う宛先（無ければ最初の宛先）", () => {
+    const sent = mkEmail({ id: "s", isMe: true, from: ME, to: "x@example.com, 鈴木 <suzuki@example.com>", bcc: "z@example.com" });
+    expect(roomPartner([sent], "鈴木", ME)).toEqual({ name: "鈴木", address: "suzuki@example.com" });
+    expect(roomPartner([sent], "z@example.com", ME)).toEqual({ name: "", address: "z@example.com" });
+    expect(roomPartner([sent], "別の人", ME)).toEqual({ name: "", address: "x@example.com" });
+    expect(roomPartner([], "a@example.com", ME)).toEqual({ name: "", address: "" });
   });
 });

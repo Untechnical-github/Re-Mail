@@ -67,6 +67,7 @@ export type SentCandidate = {
   subject: string; // 解読済み
   to: string; // 解読済み
   cc: string; // 解読済み
+  bcc?: string; // 解読済み。送信済みのメールにだけ残る
   internalDateMs: number;
 };
 
@@ -75,6 +76,7 @@ export type SentExpectation = {
   subject: string;
   to: string;
   cc?: string;
+  bcc?: string;
   body?: string; // 送ろうとした本文（テキスト）
   sentAfterMs: number;
 };
@@ -90,7 +92,7 @@ function normalizeForSnippet(s: string): string {
 
 // 送信済みの1通が、今回送ろうとしたメールかどうか。
 // Message-ID が一致すれば確実。Gmail が Message-ID を付け替えた場合に備えて、
-// 宛先（To・Cc）・件名・時刻（送信を始めた1分前以降）・本文の冒頭がすべて一致する場合も同じメールとみなす。
+// 宛先（To・Cc・Bcc）・件名・時刻（送信を始めた1分前以降）・本文の冒頭がすべて一致する場合も同じメールとみなす。
 // 同じ相手に同じ件名で続けて返信することはよくあるため、本文の冒頭まで見て取り違えを防ぐ
 export function matchSentMessage(c: SentCandidate, e: SentExpectation): "messageId" | "fields" | null {
   if (c.messageIdHeader && c.messageIdHeader.trim() === e.messageId) return "messageId";
@@ -98,6 +100,8 @@ export function matchSentMessage(c: SentCandidate, e: SentExpectation): "message
   if (normalizeSubject(c.subject) !== normalizeSubject(e.subject)) return null;
   if (!sameSet(addressSet(c.to), addressSet(e.to))) return null;
   if (!sameSet(addressSet(c.cc), addressSet(e.cc || ""))) return null;
+  // Bcc は送信済みのメールにだけ残るので、Bcc だけの送信（To が空）でも照合できる
+  if (!sameSet(addressSet(c.bcc || ""), addressSet(e.bcc || ""))) return null;
   const body = normalizeForSnippet(e.body || "");
   if (body) {
     const snippet = normalizeForSnippet(c.snippet);

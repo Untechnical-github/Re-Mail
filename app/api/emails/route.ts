@@ -12,6 +12,7 @@ import { summarizeHistory, type GmailHistoryRecord } from "../../lib/historySync
 import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
 import { logError, logWarn, logInfo } from "../../lib/safeLog";
 import { labelChangeFor, readLabelChange, sanitizeMessageIds, chunkIds } from "../../lib/mailboxOps";
+import { validateSendHeaders } from "../../lib/composeRecipients";
 
 
 // Gmail API の生データ（必要なフィールドだけ）
@@ -165,7 +166,7 @@ async function findSentMessage(accessToken: string, exp: SentExpectation): Promi
       const recent = ((await recentRes.json()) as GmailListResponse).messages || [];
       for (const m of recent) {
         const metaRes = await fetchWithRetry(
-          `${base}/${encodeURIComponent(m.id)}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=Subject&metadataHeaders=To&metadataHeaders=Cc&fields=id,threadId,internalDate,snippet,payload/headers`,
+          `${base}/${encodeURIComponent(m.id)}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=Subject&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Bcc&fields=id,threadId,internalDate,snippet,payload/headers`,
           auth
         );
         if (!metaRes.ok) continue;
@@ -177,6 +178,8 @@ async function findSentMessage(accessToken: string, exp: SentExpectation): Promi
           subject: decodeMimeHeader(getHeader(h, "Subject")),
           to: decodeMimeHeader(getHeader(h, "To")),
           cc: decodeMimeHeader(getHeader(h, "Cc")),
+          // 送信済みのメールには Bcc が残る（Bcc だけで送ったメールも照合できるように）
+          bcc: decodeMimeHeader(getHeader(h, "Bcc")),
           internalDateMs: Number(meta.internalDate || 0),
         }, exp);
         if (matched) return { id: meta.id, threadId: meta.threadId };
@@ -548,7 +551,15 @@ export async function POST(request: Request) {
 
     // ① メールの送信
     if (action === "send" || !action) {
-      const { to, cc, subject, body, bodyHtml, threadId, inReplyTo, references, from, replyTo } = bodyData;
+      const { subject, body, bodyHtml, threadId, inReplyTo, references, from, replyTo } = bodyData;
+      // 宛先（To / Cc / Bcc）は画面の送信先から作られて届く。件数（合計500）・長さ・改行をここでも確かめ、
+      // 1件も無い・壊れているときは送らない（宛先を勝手に直さない）
+      const checked = validateSendHeaders({ to: bodyData.to, cc: bodyData.cc, bcc: bodyData.bcc });
+      if (!checked.ok) {
+        logWarn("send.invalidRecipients", { reason: checked.error });
+        return NextResponse.json({ error: checked.error }, { status: 400 });
+      }
+      const { to, cc, bcc } = checked.headers;
       const attachments = (bodyData.attachments || []) as { filename: string; mimeType: string; data: string }[];
 
       // 転送: 元のメールの添付も純正 Gmail と同じく一緒に送る。添付の ID は取り直すたびに変わることがあるため、
@@ -586,8 +597,9 @@ export async function POST(request: Request) {
       // 転送など、元の HTML をそのまま保ちたい場合は bodyHtml を使い、テキスト版と一緒に
       // multipart/alternative で送る（受信側が HTML を表示できない場合にも読めるように）
       const segments = buildMimeSegments({
-        to: to || "",
-        cc: typeof cc === "string" ? cc : undefined,
+        to,
+        cc: cc || undefined,
+        bcc: bcc || undefined,
         subject: subject || "",
         text: body || (bodyHtml ? undefined : ""),
         html: bodyHtml || undefined,
@@ -616,7 +628,7 @@ export async function POST(request: Request) {
       }
       if (outcome === "unknown") {
         if (res) logWarn("send.serverError", { status: res.status });
-        const found = await findSentMessage(accessToken, { messageId, subject: subject || "", to: to || "", cc: typeof cc === "string" ? cc : "", body: body || "", sentAfterMs });
+        const found = await findSentMessage(accessToken, { messageId, subject: subject || "", to, cc, bcc, body: body || "", sentAfterMs });
         if (found) {
           logInfo("send.verifiedSent", { messageId: found.id, threadId: found.threadId });
           return NextResponse.json({ success: true, id: found.id, threadId: found.threadId, messageId, verified: true });
@@ -638,11 +650,15 @@ export async function POST(request: Request) {
     // ブラウザと Worker の間の通信が切れて送信の結果を受け取れなかったときに、
     // クライアントから「そのメールが送れていたか」を確かめる（再送はしない）
     if (action === "verifySent") {
-      const { messageId, to, cc, subject, body, sentAfterMs } = bodyData;
+      const { messageId, to, cc, bcc, subject, body, sentAfterMs } = bodyData;
       if (!isValidMessageId(messageId) || typeof sentAfterMs !== "number") {
         return NextResponse.json({ error: "Invalid request" }, { status: 400 });
       }
-      const found = await findSentMessage(accessToken, { messageId, subject: subject || "", to: to || "", cc: typeof cc === "string" ? cc : "", body: typeof body === "string" ? body : "", sentAfterMs });
+      const found = await findSentMessage(accessToken, {
+        messageId, subject: typeof subject === "string" ? subject : "",
+        to: typeof to === "string" ? to : "", cc: typeof cc === "string" ? cc : "", bcc: typeof bcc === "string" ? bcc : "",
+        body: typeof body === "string" ? body : "", sentAfterMs,
+      });
       return NextResponse.json(found ? { found: true, id: found.id, threadId: found.threadId } : { found: false });
     }
 

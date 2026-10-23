@@ -153,6 +153,18 @@ describe("parseMessageDetail", () => {
     expect(m).toMatchObject({ subject: "件名", cc: "c@example.com", replyTo: "r@example.com", references: "<r1@example.com>", body: "本文", messageIdHeader: "<m@example.com>" });
   });
 
+  it("送信済みのメールの Bcc を取り出す（無ければ undefined）", () => {
+    const sent = parseMessageDetail({
+      id: "abc124", threadId: "t1", snippet: "s", labelIds: ["SENT"],
+      payload: { mimeType: "text/plain", headers: [
+        { name: "From", value: "me@example.com" }, { name: "To", value: "a@example.com" },
+        { name: "Bcc", value: "=?UTF-8?B?" + btoa(String.fromCharCode(...new TextEncoder().encode("鈴木"))) + "?= <b@example.com>" },
+      ], body: { data: b64url("本文") } },
+    });
+    expect(sent.bcc).toBe("鈴木 <b@example.com>");
+    expect(parseMessageDetail({ id: "abc125", threadId: "t1", payload: { headers: [{ name: "To", value: "a@example.com" }] } }).bcc).toBeUndefined();
+  });
+
   it("payload が無い・壊れていても例外にしない", () => {
     expect(parseMessageDetail({ id: "abc123", threadId: "t1" })).toMatchObject({ subject: "(件名なし)", body: "", attachments: [] });
   });

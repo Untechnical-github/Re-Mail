@@ -15,4 +15,10 @@ describe("isEmptyDraft", () => {
     expect(isEmptyDraft({ ...empty, replyToMessage: { id: "a", threadId: "", subject: "", from: "", to: "", date: "", body: "", snippet: "", labelIds: [] } })).toBe(false);
     expect(isEmptyDraft({ ...empty, attachments: [{ filename: "a.pdf", mimeType: "application/pdf", size: 1, data: "QQ==" }] })).toBe(false);
   });
+
+  it("送信先を自分で変えていれば（既定でなければ）空ではない", () => {
+    expect(isEmptyDraft({ ...empty, recipients: null })).toBe(true);
+    expect(isEmptyDraft({ ...empty, recipients: [] })).toBe(false);
+    expect(isEmptyDraft({ ...empty, recipients: [{ address: "a@example.com", role: "cc" }] })).toBe(false);
+  });
 });

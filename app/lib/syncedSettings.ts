@@ -13,6 +13,10 @@ export const SYNCED_SETTING_TYPES = {
   sent: "boolean",
   // 送信ボタン・アクションバー・場所の表示を、文字にするかアイコンにするか
   iconLabels: "boolean",
+  // 送ったメールの時間の横に「To 1・Cc 2・Bcc 1」を出すか（既定はオフ）
+  showSentRecipients: "boolean",
+  // 受け取ったメールの時間の横に、自分がどの欄（To / Cc）で受け取ったかを出すか（既定はオフ）
+  showReceivedRecipients: "boolean",
   // アカウントごとの表示チェックボックス（キーはアカウントのアドレス。行ごと暗号化するので D1 に平文では残らない）
   accounts: "accountMap",
   // 最後に保存した時刻（ミリ秒）。アカウントごとの写しのうち、どれが一番新しいかを決めるのに使う
@@ -20,7 +24,7 @@ export const SYNCED_SETTING_TYPES = {
 } as const;
 
 // 画面が持って保存する共通設定の名前（updatedAt は含めない）
-export const COMMON_SETTING_KEYS = ["inbox", "archive", "spam", "trash", "sent", "iconLabels", "accounts"] as const;
+export const COMMON_SETTING_KEYS = ["inbox", "archive", "spam", "trash", "sent", "iconLabels", "showSentRecipients", "showReceivedRecipients", "accounts"] as const;
 
 // アカウント設定の一覧（アカウントごとに保存する）
 export const ACCOUNT_SETTING_TYPES = {
