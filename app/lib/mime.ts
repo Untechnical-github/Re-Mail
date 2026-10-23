@@ -222,10 +222,9 @@ export function buildMimeSegments(input: MimeInput): MimeSegment[] {
   if (input.date) headers.push(`Date: ${input.date.toUTCString().replace("GMT", "+0000")}`);
   if (input.messageId) headers.push(`Message-ID: ${stripLineBreaks(input.messageId).trim()}`);
   headers.push(`Subject: ${encodeHeaderText(input.subject || "")}`);
-  // Bcc だけで送るときは、純正 Gmail と同じく To を「undisclosed-recipients:;」（中身の無いグループ。RFC 5322 の形）にする
-  // （実機で純正の送信済みと比べて確かめた。受け取った側のメールには Gmail が同じものを付ける）
+  // Bcc だけで送るときは To を付けない。受け取った側のメールには、純正と同じく Gmail が「To: undisclosed-recipients:;」を付ける。
+  // こちらで「undisclosed-recipients:;」を入れると、Gmail API が 400（invalidArgument）で送信を断る（実機で確かめた）
   if (input.to && input.to.trim()) headers.push(`To: ${formatAddressHeader(input.to)}`);
-  else if (!(input.cc && input.cc.trim())) headers.push("To: undisclosed-recipients:;");
   if (input.cc && input.cc.trim()) headers.push(`Cc: ${formatAddressHeader(input.cc)}`);
   if (input.bcc && input.bcc.trim()) headers.push(`Bcc: ${formatAddressHeader(input.bcc)}`);
   if (input.replyTo && input.replyTo.trim()) headers.push(`Reply-To: ${formatAddressHeader(input.replyTo)}`);

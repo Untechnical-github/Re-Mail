@@ -104,12 +104,10 @@ describe("buildMimeSegments", () => {
     expect(text).toMatch(/^Bcc: b@example.com X-Evil: 1$/m);
   });
 
-  it("Bcc だけ（To も Cc も空）なら、純正 Gmail と同じく To を undisclosed-recipients:; にする", () => {
+  it("Bcc だけ（To も Cc も空）なら To を付けない（undisclosed-recipients:; を入れると Gmail API が送信を断る）", () => {
     const text = toText(buildMimeSegments({ to: "", bcc: "b@example.com", subject: "s", text: "t" }));
     expect(text).toMatch(/^Bcc: b@example.com$/m);
-    expect(text).toMatch(/^To: undisclosed-recipients:;$/m);
-    const lines = text.split("\r\n");
-    expect(lines.findIndex(l => l.startsWith("To: "))).toBe(lines.findIndex(l => l.startsWith("Bcc: ")) - 1);
+    expect(text).not.toMatch(/^To:/m);
   });
 
   it("To が空でも Cc があれば To は付けない", () => {
