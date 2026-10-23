@@ -12,6 +12,7 @@ import { chatConfigTab, isMineEmail } from "./lib/filterMatch";
 import type { Email } from "./types/email";
 import { summarizeRecipients, sentRecipientCounts, receivedRole, ROLE_LABELS, ROLE_HINTS } from "./lib/composeRecipients";
 import { gmailOpenUrl } from "./lib/gmailLink";
+import { replySubjectFor } from "./lib/replyCompose";
 
 function InlineAttachmentImage({ attachment, messageId, accountId, cacheKey, onOpen }: {
   attachment: { filename: string; mimeType: string; size: number; attachmentId?: string };
@@ -1157,7 +1158,12 @@ export default function Home() {
                       </span>
                     </button>
                     {state.replyToMessage && (
-                      <button title="返信元を外す" onClick={(e) => { e.stopPropagation(); actions.setReplyToMessage(null); }} className="font-bold px-2 py-2 hover:text-white flex-shrink-0">×</button>
+                      <button title="返信元を外す" onClick={(e) => {
+                        e.stopPropagation();
+                        // 返信元を選んだときに自動で入れた件名（Re: 元の件名）は一緒に消す。自分で書き換えた件名は残す
+                        if (state.replyToMessage && state.replySubject === replySubjectFor(state.replyToMessage.subject || "")) actions.setReplySubject("");
+                        actions.setReplyToMessage(null);
+                      }} className="font-bold px-2 py-2 hover:text-white flex-shrink-0">×</button>
                     )}
                   </div>
                   )}
