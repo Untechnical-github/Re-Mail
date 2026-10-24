@@ -258,6 +258,7 @@ Re-Mail/
 │   ├── lib/                              # React に依存しない純粋関数（ほぼすべてにテストあり。§12）
 │   │   ├── composeHtml.ts                # 入力欄の HTML の安全化・純正の形への整形・テキスト版・署名と引用（§10.3・§15.6）
 │   │   ├── composeEditor.ts              # 入力欄の編集の処理（iframe の中の CSP・イベント・見張り・貼り付け・画像。ブラウザでだけ動く）
+│   │   ├── mailAppHelpers.ts             # useMailApp から移した計算（同時数を絞った並列処理・仮の送信済みの突き合わせ・アドレスの集合）
 │   │   ├── htmlTree.ts                   # HTML を1回なめて木にする・戻す（DOM の無いテストでも同じに動く）
 │   │   ├── inlineImages.ts               # 送信の API に届いた本文中の画像の検証
 │   │   └── __fixtures__/gmailCompose.json # 純正 Gmail の作成画面から送ったメールの HTML とテキスト版（整形とテキスト版の正解の見本）
@@ -275,7 +276,9 @@ Re-Mail/
 ├── next.config.ts / open-next.config.ts / wrangler.json
 ├── vitest.config.ts / tsconfig.json / eslint.config.mjs / postcss.config.mjs
 ├── public/                               # create-next-app 既定の SVG（使っていない）
-├── CLAUDE.md                             # Claude Code 向けの作業ルール
+├── CLAUDE.md                             # Claude Code 向けの作業ルール（短い版。詳しくは docs/claude/）
+├── docs/claude/                          # 作業の種類ごとの決まり（d1・code・editor-security・secrets-deploy）
+├── .claude/settings.json                 # Claude Code に読ませないファイル（生成物・鍵など）
 ├── README.md                             # この文書（仕様書を兼ねる）
 └── package.json / package-lock.json
 ```
@@ -773,6 +776,7 @@ type FilterCriteria = {
 | `errorMessage.ts` | `unknown` のエラーから文字列を取り出す（画面の表示用。ログには使わない） |
 | `fakeD1.testutil.ts` | テスト用の D1 の偽物（`migrations/` を本物の SQLite に当てる。途中まで当ててから `applyMigration` で残りを当てることもできる） |
 | `publicSession.ts` | §7.2 |
+| `mailAppHelpers.ts` | `useMailApp` から移した計算：`mapWithConcurrency`（同時数を絞った並列処理）・`reconcileFakeSentEmails`（送信直後の仮のメール `fake-` と取得したメールの突き合わせ）・`parseAddressSet` / `sameAddressSet`・`countOccurrences`・`getSaved*Settings` |
 
 ### 12.5 型（`app/types/email.ts`）
 `Email`：`id` / `threadId` / `subject` / `from` / `to` / `cc?` / `replyTo?` / `date` / `body` / `snippet` / `labelIds` / `isMe?` / `senderRoom?` / `attachments?: EmailAttachment[]` / `htmlLinks?: {text, href}[]` / `hasHtml?` / `replyToId?`（返信元のローカル ID）/ `inReplyTo?` / `messageIdHeader?` / `references?` / `isForward?` / `accountId?`（どのアカウントのメールか）/ `isMissing?`。
@@ -787,11 +791,11 @@ type FilterCriteria = {
 
 ---
 
-## 13. 中核ロジック `useMailApp.ts`
+## 13. 中核ロジック `useMailApp.ts`（と役割ごとのフック）
 
-`page.tsx` と各コンポーネントは、このフックが返す `{ state, actions, computed, refs }`（型 `MailAppHook`）を受け取って描画するだけにする。ロジックはここに集める。
+`page.tsx` と各コンポーネントは、このフックが返す `{ state, actions, computed, refs }`（型 `MailAppHook`）を受け取って描画するだけにする。ロジックは `app/hooks/` に集める。`useMailApp.ts` は state の宣言と、役割ごとのフック（§5 の一覧）の組み合わせだけを持ち、返す形は変えない。各節の見出しに、その処理があるファイルを書く。
 
-### 13.1 初回の読み込み
+### 13.1 初回の読み込み（`useMailSync.ts`）
 1. ログインが済んだら、`remail_device_owner` で端末の持ち主を確かめる。別の人が記録されていれば `clearDeviceData()` してから自分を記録する（共有 PC 対策）。
 2. D1 の設定（`/api/config`。チャットの設定・共通設定・アカウント設定）とほかにログインしているアカウント（`/api/accounts`）を**並列で**読む。失敗したら1.5秒待って1回だけ取り直し、それでもだめならトーストで伝える（「ピン留め・名前変更などの設定を読み込めませんでした…」）。
 3. 共通設定を `applySyncedSettings` で、アカウント設定を `accountSettings` に入れて画面に当てる。**D1 から読み終えるまでは共通設定を保存しない**（ほかの端末で変えた設定を、この端末の古い値で上書きしないため）。それまでは localStorage の仮の値で表示する。
@@ -799,40 +803,40 @@ type FilterCriteria = {
 5. 一覧を取る**前に**、各アカウントの `historyId` の起点を `sync=1`（historyId なし）で取っておく（一覧を取っている間に届いたメールを取りこぼさないため）。
 6. 開いていたチャット・画面の状態・スクロール位置を localStorage から戻す。
 
-### 13.2 一覧の検索式
+### 13.2 一覧の検索式（`useMailSync.ts`）
 チェックボックスの状態から Gmail の検索式を作る。
 - アーカイブがオン：受信箱もオンなら条件なし、受信箱がオフなら `-in:inbox`。
 - アーカイブがオフ：オンの場所を OR でつなぐ（受信箱 `in:inbox`、送信済み `from:me`、迷惑メール `in:spam`、ゴミ箱 `in:trash`）。
 - 迷惑メール・ゴミ箱・送信済みのどれかがオンなら `includeTrash=true`。
 - 下書きは出さない。
 
-### 13.3 アカウントの 401 の扱い
+### 13.3 アカウントの 401 の扱い（`useMailSync.ts`）
 - セッションのアカウントで 401 / 403 が返ったら、§7.2 のとおり、セッションを取り直してから判断する。本当に無効なら `clearDeviceData()` → `signOut()` → 再読み込み。一時的なら「Gmail との接続が一時的に切れました。しばらくすると自動でつながります。」と伝える。
 - ほかのアカウントで 401 なら、そのアカウントだけを止め、`needs_reauth` を画面に反映して再ログインを案内する（「ログインが切れているため、このアカウントのメールが読み込めていません。「再ログイン」からログインし直してください。」）。ほかのアカウントは続ける。
 
-### 13.4 自動更新（差分同期）
+### 13.4 自動更新（差分同期。`useMailSync.ts`）
 - **60秒ごと**（タブが見えているときだけ）・タブに戻ったとき（`visibilitychange`）・通信が戻ったとき（`online`）に、`syncOrRefetch` を呼ぶ。
 - 各アカウントで `sync=1&historyId=…` を呼び、`applySyncResult` で画面に当てる。`idsToFetchForLabelChanges` で出てきた、画面に無いのに表示する場所へ入ってきたメールは `ids=` で詳細を取る。
 - `reset: true` が返ったら、そのアカウントの一覧を取り直す（取りこぼしを残さない）。
 - 以前は約1分ごとに最新100通の詳細をすべて取り直しており、Gmail API の利用上限をすぐに使い切っていた。history.list は1回2ユニットで、詳細を取るのは新着だけ。
 
-### 13.5 チャットを開いたとき
+### 13.5 チャットを開いたとき（`useChatNavigation.ts`・`useMailSync.ts`）
 - **クロスボックス取得**：その相手について、全部の場所を横断して取る。検索式は `(from:"相手" OR to:"相手")` に、分かっている相手のアドレスを OR で足したもの。`maxResults=100`、`knownIds`（最大300件）で取得済みの詳細は取り直さない。
 - 開いているチャットに、チェックボックスでオフにしている場所のメールが含まれるときは、トークの中に「{場所}のメールが含まれています。読み込みますか？」のボタンを出し、押したら出す。
 - グループチャットは、メンバーごとに独立したページトークンで読み進め（`GROUP_MORE_<時刻>` の印で次を読む）、`groupPaging.ts` で全体の状態をまとめる。
 - チャットごとのメール一覧はメモリに LRU で残す（既定10チャット分）。
 - ピン留めの中身は、端末キャッシュ（`pinnedCache`）から先に出し、足りない分だけ `ids=` で取る。Gmail で消えていたものは `missingPinnedEmail` で「このメールは存在しません」と出す。
 
-### 13.6 無限スクロール
+### 13.6 無限スクロール（`useLoadMore.ts`）
 一覧・トークとも、下（トークは上）まで来たら次のページを読む。画面が埋まらないときも、埋まるまで自動で読む。
 
-### 13.7 下書き
+### 13.7 下書き（`useDrafts.ts`）
 - 入力中の返信（本文・件名・返信元・送信先・添付）を、**チャットごとに** IndexedDB に保存する（`drafts.ts`）。本文は入力欄の HTML（本文・引用・署名。本文中の画像は `cid:`）と本文中の画像（`images`。base64）と最後に入れた署名（`insertedSignature`）。文字だけの古い形（`body`）の下書きは、読むときに `<div>` の行に直す。「空」は署名・引用を除いた本文に文字・画像・表が無いこと（署名だけの下書きは残さず、開き直したときに署名を入れ直す）。送信先は既定（相手を To に1人）のままなら保存しない（`null`）。送信の失敗・通信断・再読み込み・チャットの切り替えで失わない。空なら消す。
 - チャットを切り替えたら、そのチャットの下書きを読み込む。読み込み終わるまで送信ボタンを押せなくする（`isDraftReady`）。以前は、別のチャットで書きかけた文が今のチャットに残って誤送信される問題があった。
 - 端末に保存できなかったら「入力中の内容を端末に保存できませんでした。再読み込みすると消えます…」と伝える。
 - **下書きチャット**：新しい宛先でチャットを作って、まだ送っていない状態。`remail_draft_chats` に持ち、送ると普通のチャットになる。ほかのチャットへ離れたとき、**書いた内容（本文・件名・添付・返信元）もその相手とのやり取りも無ければ**、一覧から消し、下書き（送信先を変えただけのものも）も消す。書いた内容があれば残す（離れる直前の入力はすぐ保存する）。入力を持って移った（送信先を変えて移る・送信元を切り替える）ときは、移り先で読み戻して移り元の下書きを消したあと（2秒後）に判断する。
 
-### 13.8 送信（`handleSend`）
+### 13.8 送信（`handleSend`。`useSend.ts`、入力欄まわりは `useCompose.ts`）
 1. 受信専用のグループ・フィルターグループからは送れない（入力欄の上に理由を出す）。
 2. グループからは、メンバー全員のアドレス（保存した `groupMemberAddresses`）を To に入れて1通で送る。アドレスが読めない（壊れた）グループには送らず、「このグループはメンバーのアドレスが読めないため送信できません。グループを作り直してください。本文は入力欄に残っています。」と伝える。
 3. 個別チャットでは、宛先は入力欄の送信先そのもの（`recipientsHeader` で To / Cc / Bcc にする）。送る前に、送信先が0人なら「送信先がありません」と伝えて止め、今のチャットの相手を含まないなら移る確認（§10.4）を出して止め、引用が元のやり取りにいなかった人にだけ届くなら確かめる。返信元はほかのチャットのメールでもよい（`threadId`・`In-Reply-To`・`References` はそのメールのもの）。
@@ -847,10 +851,10 @@ type FilterCriteria = {
 
 **返信チップ**：返信元がほかのチャットのメールなら、押したときに「返信元のメールがある〇〇さんとのチャットに移りますか？」と確かめてから移り、そのメールまでスクロールする。同じチャットならスクロールするだけ。
 
-### 13.9 転送（`forwardMessageTo`）
+### 13.9 転送（`forwardMessageTo`。`useSend.ts`）
 §10.5。まず「転送しています…」を出し、終わったら「転送しました」。
 
-### 13.10 移動・削除・既読／未読・非表示・ピン留め・リセット・名前変更
+### 13.10 移動・削除・既読／未読・非表示・ピン留め・リセット・名前変更（`useMailboxActions.ts`）
 - 選択モード（`SelectionMode`）でチャットやメッセージを選び、アクションバーから操作する。対象が複数の場所にまたがるときは、`categorized_action_select` モーダルで「アカウント × 場所」ごとの件数を見せて選ばせる。移動先も、この場所ごとの確認画面で選ぶ。
 - **Gmail への反映（`postMailboxChange`）**：画面は先に（楽観的に）書き換え、対象のメールを**アカウントごとに分けて**（`groupIdsByAccount`。メールの `accountId` で分け、無ければセッションのアカウント）、それぞれのアカウントで `/api/emails` に POST する。`fake-` の ID は送らない。
   - 失敗したらトーストで伝える。401 なら「〇〇がGmailに反映されませんでした（ログインが切れています）。プロフィールのボタンから再ログインしてから、もう一度お試しください。」、そのほかは「〇〇がGmailに反映されませんでした。再読み込みすると元の場所に戻ります。時間をおいてもう一度お試しいただくか、純正 Gmail で操作してください。」（既読・未読では「元の場所に戻ります」の代わりに「元の既読・未読の状態に戻ります」）、通信できなかったら「〇〇がGmailに反映されなかった可能性があります。通信状況を確認し、再読み込みして確かめてください。」（〇〇は 移動・削除・既読・未読）。
@@ -865,15 +869,15 @@ type FilterCriteria = {
 - **ピン留めの上限**：チャットは10件、メッセージは100件。
 - 非表示には「新着が来たら自動で再表示する」（`unhideOnNew`）を選べる。`hiddenAtDate` より新しいメールが来たら表示に戻す。
 
-### 13.11 継続フィルター
+### 13.11 継続フィルター（`useMailboxActions.ts`）
 - `filterContinuous` のフィルター（非表示・ピン留め・移動・削除・既読にする・未読にする）は、そのフィルターのアカウントのメールのうち、`filterLastAppliedAt` より新しい日時のメールにだけ自動で当て、当てたら `filterLastAppliedAt` を進める。
 
-### 13.12 設定の保存
+### 13.12 設定の保存（`useConfigs.ts`）
 - **共通設定**（場所・アカウントのチェックボックス、文字／アイコン表示）：変えたら少し待ってまとめて（続けて切り替えたら最後の分だけ）`global_settings` を POST する。サーバーが全アカウントの置き場所に書く。
 - **アカウント設定**（メールの外部の画像・チャットを開いたら既読にする・メールを開いたら既読にする）：`setAccountSetting(account, updates)` で、そのアカウントの `account_settings` を POST する。
-- 新しい設定を足すときは、共通設定なら `syncedSettings.ts` の `SYNCED_SETTING_TYPES` と `COMMON_SETTING_KEYS`、このフックの `syncedSettings` / `applySyncedSettings` に、アカウント設定なら `ACCOUNT_SETTING_TYPES` に足す。
+- 新しい設定を足すときは、共通設定なら `syncedSettings.ts` の `SYNCED_SETTING_TYPES` と `COMMON_SETTING_KEYS`、`useConfigs.ts` の `syncedSettings` / `applySyncedSettings` に、アカウント設定なら `ACCOUNT_SETTING_TYPES` に足す。
 
-### 13.13 ブラウザ履歴との連携
+### 13.13 ブラウザ履歴との連携（`useChatNavigation.ts`・`useMailboxActions.ts`・`useFindBar.ts`・`useEmailModals.ts`）
 - モーダル・選択モード・検索バー・モバイルのチャット画面を `history.pushState` で積み、「戻る」で閉じる（state は `{ chat }` / `{ action: "select" | "modal" | "findbar" }`）。モバイルでチャットを開いたときは URL に `#chat` を付ける。
 - スクロール位置はタブごとに保存して戻す。
 

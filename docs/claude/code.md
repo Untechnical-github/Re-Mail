@@ -12,8 +12,8 @@
 
 ## 設定
 - 新しい設定は2種類のどちらかに足す（端末だけに置かない）。
-  - 共通設定（どのアカウントでも同じ）：`syncedSettings.ts` の `SYNCED_SETTING_TYPES` と `COMMON_SETTING_KEYS`、`useMailApp.ts` の `syncedSettings` と `applySyncedSettings`。全アカウントの `__GLOBAL_SETTINGS__` に同じものを書く。
-  - アカウント設定：`ACCOUNT_SETTING_TYPES` に足し、`useMailApp.ts` の `setAccountSetting` で保存する。設定画面では「アカウントの設定」の欄に出す。
+  - 共通設定（どのアカウントでも同じ）：`syncedSettings.ts` の `SYNCED_SETTING_TYPES` と `COMMON_SETTING_KEYS`、`useConfigs.ts` の `syncedSettings` と `applySyncedSettings`。全アカウントの `__GLOBAL_SETTINGS__` に同じものを書く。
+  - アカウント設定：`ACCOUNT_SETTING_TYPES` に足し、`useConfigs.ts` の `setAccountSetting` で保存する。設定画面では「アカウントの設定」の欄に出す。
 - 端末に置くのは画面の状態（タブ・スクロール位置）と下書きだけ。新しく置くものはアカウント別のキーにし、`deviceData.ts` の消す対象に足す。
 
 ## 送受信
