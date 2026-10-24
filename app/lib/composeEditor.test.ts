@@ -34,10 +34,13 @@ describe("iframe の sandbox", () => {
     expect(sandboxes).toEqual(['sandbox="allow-same-origin allow-scripts"']);
   });
   it("メール本文を表示する iframe には allow-scripts・allow-forms・allow-top-navigation を付けない", () => {
-    // モーダルは app/components/modals/ に分けてあるので、その中のファイルもすべて見る
+    // モーダルは app/components/modals/ に、画面の部品（チャット一覧・トーク画面・入力欄）は app/components/ に分けてあるので、その中のファイルもすべて見る
     const modalFiles = readdirSync("app/components/modals").filter(f => f.endsWith(".tsx")).map(f => `app/components/modals/${f}`);
     expect(modalFiles).toContain("app/components/modals/EmailModal.tsx");
-    for (const file of ["app/components/Modals.tsx", "app/page.tsx", ...modalFiles]) {
+    // 入力欄の iframe（ComposeEditor.tsx）は上のテストで別に見る
+    const componentFiles = readdirSync("app/components").filter(f => f.endsWith(".tsx") && f !== "ComposeEditor.tsx").map(f => `app/components/${f}`);
+    expect(componentFiles).toContain("app/components/Modals.tsx");
+    for (const file of ["app/page.tsx", ...componentFiles, ...modalFiles]) {
       const src = readFileSync(file, "utf8");
       for (const s of src.match(/sandbox="[^"]*"/g) || []) expect(s).not.toMatch(/allow-scripts|allow-forms|allow-top-navigation/);
     }
