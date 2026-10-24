@@ -239,10 +239,22 @@ Re-Mail/
 │   │   ├── modals/                       # モーダルの種類ごとのファイル（SettingsModal・FilterToolModal・SearchModal・AccountMenuModal・ComposeNewChatModal・ReplyTargetModal・ConfirmModals など。共通の部品は shared.tsx）
 │   │   └── ui.tsx                        # ActionBar・アイコン・HighlightText・BodyWithLinks・formatFileSize
 │   ├── hooks/
-│   │   ├── useMailApp.ts                 # 状態とロジックの中核（カスタムフック。下の3つを組み合わせて state / actions / computed を返す。§13）
+│   │   ├── useMailApp.ts                 # 状態とロジックの中核（カスタムフック。下のフックを組み合わせて state / actions / computed を返す。§13）
+│   │   ├── mailAppTypes.ts               # 分けたフックどうしで使う型
 │   │   ├── useSendAs.ts                  # 送信元の設定（アカウントごとの sendAs・エイリアス・署名の取得）
 │   │   ├── useConfigs.ts                 # 設定の読み込みと保存（チャットの設定・共通設定・アカウント設定。失敗したら送り直す）
-│   │   └── useDrafts.ts                  # 下書き（チャットごとの入力中の内容・ほかのチャットへ持っていく内容・下書きチャット）
+│   │   ├── useDrafts.ts                  # 下書き（チャットごとの入力中の内容・ほかのチャットへ持っていく内容・下書きチャット）
+│   │   ├── useMailSync.ts                # 一覧の取得と差分同期（最初の読み込み・場所の切り替え・チャットごとの取得・再試行・裏からの同期）
+│   │   ├── useLoadMore.ts                # さらに読み込む（チャット一覧・メッセージ。スクロールバーが出るまで自動で続ける）
+│   │   ├── useRooms.ts                   # ルームの計算（チャットへの分け方・メッセージのルームとアカウント・相手・宛先の候補）
+│   │   ├── useChatList.ts                # チャット一覧の並び・非表示／ピン留め／名前を変えたものの一覧
+│   │   ├── useChatNavigation.ts          # チャットを開く・作る・戻る・送信元のアカウントの切り替え
+│   │   ├── useAccounts.ts                # アカウントを1つだけログアウトする・連携を外す
+│   │   ├── useEmailModals.ts             # メールの詳細と添付のプレビューのモーダル
+│   │   ├── useCompose.ts                 # 入力欄まわり（添付・送信先・返信元と引用・送信元と署名）
+│   │   ├── useSend.ts                    # 送る（送信 API・送る前の確認・返信・転送。自動で再試行しない）
+│   │   ├── useMailboxActions.ts          # 選択モードと操作（非表示・ピン留め・移動・削除・既読／未読・継続フィルター）
+│   │   └── useFindBar.ts                 # 検索バーと、検索結果・返信元へのジャンプ
 │   ├── lib/                              # React に依存しない純粋関数（ほぼすべてにテストあり。§12）
 │   │   ├── composeHtml.ts                # 入力欄の HTML の安全化・純正の形への整形・テキスト版・署名と引用（§10.3・§15.6）
 │   │   ├── composeEditor.ts              # 入力欄の編集の処理（iframe の中の CSP・イベント・見張り・貼り付け・画像。ブラウザでだけ動く）
