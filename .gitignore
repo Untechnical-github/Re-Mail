@@ -44,3 +44,7 @@ next-env.d.ts
 /.open-next/
 .dev.vars*
 /.wrangler/
+
+# Claude Code
+.claude/handoff.md
+.claude/settings.local.json

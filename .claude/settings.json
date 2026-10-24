@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./package-lock.json)",
+      "Read(./.next/**)",
+      "Read(./.open-next/**)",
+      "Read(./.wrangler/**)",
+      "Read(./coverage/**)",
+      "Read(./public/**)",
+      "Read(./next-env.d.ts)",
+      "Read(./types/routes.d.ts)",
+      "Read(./types/cache-life.d.ts)",
+      "Read(./types/validator.ts)",
+      "Read(./.env.local)",
+      "Read(./.dev.vars)"
+    ]
+  }
+}
