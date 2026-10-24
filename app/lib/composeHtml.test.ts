@@ -239,3 +239,20 @@ describe("ブラウザごとの違い（実機の E2E で見つかったもの�
     expect(n).toBe('<div dir="ltr">本文</div><br><div class="gmail_quote gmail_quote_container"><div dir="ltr" class="gmail_attr">h:<br></div><blockquote class="gmail_quote" style="padding-left:1ex"><img src="cid:ii_a0"></blockquote></div><div><br clear="all"></div><div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature">署名</div>');
   });
 });
+
+describe("Chrome のインデント・引用のボタン（本番の E2E で見つかったもの）", () => {
+  it("割れた外側の <div dir=\"ltr\"> と、インデントの中に入り込んだものは外す", () => {
+    const html = '<div dir="ltr"><div>一</div><div>二</div></div><blockquote style="margin: 0 0 0 40px; border: none; padding: 0px;"><div dir="ltr"><div style="text-align: left;"><div>インデント</div></div></div></blockquote><div>三</div>';
+    expect(normalizeComposeHtml(html, "new")).toBe(`<div dir="ltr"><div>一</div><div>二</div><blockquote style="${INDENT_STYLE}"><div style="text-align:left"><div>インデント</div></div></blockquote><div>三</div></div>`);
+  });
+  it("本文の中の引用（引用のボタン）は整え、返信の引用の中は触らない", () => {
+    const html = '<div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex"><font face="arial, sans-serif" size="2">引用の行</font></blockquote></div><br><div class="gmail_quote gmail_quote_container"><div dir="ltr" class="gmail_attr">h:<br></div><blockquote class="gmail_quote" style="x:y"><font size="2">元</font></blockquote></div>';
+    const n = normalizeComposeHtml(html, "reply");
+    expect(n).toContain('<blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex"><font face="arial, sans-serif">引用の行</font></blockquote>');
+    expect(n).toContain('<font size="2">元</font>');
+  });
+  it("たたんで脇に持っていた署名が本文の後ろ（外側の囲みの外）にあっても、純正の並びに戻す", () => {
+    const html = '<div dir="ltr"><div>本文</div></div><div><br></div><div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature"><div dir="ltr">署名</div></div>';
+    expect(normalizeComposeHtml(html, "new")).toBe('<div dir="ltr"><div>本文</div><div><br></div><div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature"><div dir="ltr">署名</div></div></div>');
+  });
+});

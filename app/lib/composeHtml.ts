@@ -375,8 +375,14 @@ function canonicalizeBody(nodes: HtmlNode[]): HtmlNode[] {
   const out: HtmlNode[] = [];
   for (const node of nodes) {
     if (node.type === "text") { out.push(node); continue; }
-    if (hasClass(node, "gmail_quote") || hasClass(node, "gmail_signature")) { out.push(node); continue; }
+    // 返信の引用（元のメール）と署名の中は触らない。本文の中の引用（引用のボタンで作ったもの）は本文と同じに整える
+    if (hasClass(node, "gmail_quote_container") || hasClass(node, "gmail_signature") || (node.name === "div" && hasClass(node, "gmail_quote") && node.children.some(c => isEl(c) && hasClass(c, "gmail_attr")))) { out.push(node); continue; }
     let children = canonicalizeBody(node.children);
+    // Chrome のインデントなどで外側の <div dir="ltr"> が割れたり中に入り込んだりしたものは、外して中身だけにする（純正の行には dir が無い）
+    if (node.name === "div" && node.attrs.length === 1 && node.attrs[0][0] === "dir" && node.attrs[0][1] === "ltr" && children.some(c => c.type === "el" && !INLINE.has(c.name))) {
+      out.push(...children);
+      continue;
+    }
     const attrs = node.attrs.filter(([k]) => !k.startsWith("data-remail") && k !== "contenteditable" && k !== "spellcheck");
     const el: HtmlElement = { type: "el", name: node.name, attrs, children };
     switch (node.name) {

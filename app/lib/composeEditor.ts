@@ -70,6 +70,9 @@ export class ComposeEditorController {
   private images = new Map<string, InlineImage & { url: string }>();
   private selectedImage: HTMLImageElement | null = null;
   private folded = true;
+  // たたんでいる間の引用・署名（入力欄から外して脇に持っておく。見えない部分が入力欄に残っていると、
+  // ブラウザのインデントなどの操作が巻き込んで消してしまうため。純正 Gmail も同じく、開くまで入力欄に入れない）
+  private held: Node[] = [];
   private destroyed = false;
   private listeners: (() => void)[] = [];
 
@@ -150,7 +153,9 @@ export class ComposeEditorController {
       const src = el.getAttribute("src") || "";
       for (const [cid, img] of this.images) if (img.url === src) el.setAttribute("data-remail-cid", cid);
     }
+    this.held = [];
     this.markFold();
+    if (this.folded) this.detachFold();
     this.resize();
     this.emitState();
   }
@@ -158,7 +163,9 @@ export class ComposeEditorController {
   // 今の中身（画像は cid:）。読み取りだけなので、innerHTML を読むのは安全
   getHtml(): string {
     if (!this.root) return "";
-    return mapImageSources(this.root.innerHTML, (src) => {
+    // 脇に持っている引用・署名は後ろに付ける（送る・保存するときに整える〔normalizeComposeHtml〕と、純正の並びになる）
+    const heldHtml = this.held.map(n => (n.nodeType === 1 ? (n as Element).outerHTML : "")).join("");
+    return mapImageSources(this.root.innerHTML + heldHtml, (src) => {
       if (!src.startsWith("blob:")) return src;
       for (const [cid, img] of this.images) if (img.url === src) return `cid:${cid}`;
       return null; // 対応の無い blob: は送らない
@@ -168,7 +175,8 @@ export class ComposeEditorController {
   // 本文から参照されている画像だけ
   getImages(): InlineImage[] {
     if (!this.root) return [];
-    const used = new Set(Array.from(this.root.querySelectorAll("img")).map(i => i.getAttribute("src") || ""));
+    const imgs = [...Array.from(this.root.querySelectorAll("img")), ...this.held.flatMap(n => (n.nodeType === 1 ? [...((n as Element).tagName === "IMG" ? [n as Element] : []), ...Array.from((n as Element).querySelectorAll("img"))] : []))];
+    const used = new Set(imgs.map(i => i.getAttribute("src") || ""));
     return Array.from(this.images.values()).filter(i => used.has(i.url)).map(({ url: _url, ...rest }) => rest);
   }
 
@@ -182,10 +190,27 @@ export class ComposeEditorController {
   setFolded(folded: boolean): void {
     this.folded = folded;
     this.root?.classList.toggle("remail-folded", folded);
+    if (folded) this.detachFold(); else this.attachFold();
     this.resize();
   }
   get isFolded(): boolean { return this.folded; }
-  hasFoldable(): boolean { return !!this.root?.querySelector("[data-remail-fold]"); }
+  hasFoldable(): boolean { return this.held.length > 0 || !!this.root?.querySelector("[data-remail-fold]"); }
+
+  // たたむ：印の付いた引用・署名を入力欄から外して脇に持つ
+  private detachFold(): void {
+    const root = this.root;
+    if (!root) return;
+    const marked = Array.from(root.querySelectorAll("[data-remail-fold]")).filter(el => !el.parentElement?.closest("[data-remail-fold]"));
+    for (const el of marked) { el.remove(); this.held.push(el); }
+  }
+
+  // 開く：脇に持っていた引用・署名を、入力欄の最後に戻す
+  private attachFold(): void {
+    const root = this.root;
+    if (!root || !this.held.length) return;
+    for (const n of this.held) root.appendChild(n);
+    this.held = [];
+  }
 
   // 引用・署名と、その前の区切りの行に印を付ける（「…」でたたむため。送る HTML からは消える）
   private markFold(): void {
