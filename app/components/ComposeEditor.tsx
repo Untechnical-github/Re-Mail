@@ -95,6 +95,8 @@ export function ComposeEditor(props: Props) {
   const cbRef = useRef(props);
   useEffect(() => { cbRef.current = props; });
   const [ready, setReady] = useState(false);
+  // iframe の中の document に付け直した回数（付け直したら中身を入れ直す）
+  const [attachSeq, setAttachSeq] = useState(0);
   const [fmt, setFmt] = useState<EditorFormatState>(EMPTY_STATE);
   const [folded, setFolded] = useState(true);
   const [hasFoldable, setHasFoldable] = useState(false);
@@ -112,6 +114,8 @@ export function ComposeEditor(props: Props) {
     if (!iframe) return;
     let ctrl: ComposeEditorController | null = null;
     const onLoad = () => {
+      // 読み込みの前の空のページ（about:blank）には付けない。中の CSP がある最初の HTML を読み終わってから付ける
+      if (!iframe.contentDocument?.querySelector('meta[http-equiv="Content-Security-Policy"]')) return;
       ctrl?.destroy();
       ctrl = new ComposeEditorController(iframe, {
         onChange: () => {
@@ -133,6 +137,7 @@ export function ComposeEditor(props: Props) {
       if (!ctrl.attach()) { cbRef.current.onError("入力欄を準備できませんでした。再読み込みしてください。"); return; }
       ctrlRef.current = ctrl;
       setReady(true);
+      setAttachSeq(n => n + 1);
     };
     iframe.addEventListener("load", onLoad);
     // すでに読み終わっていたとき
@@ -148,8 +153,8 @@ export function ComposeEditor(props: Props) {
     setFolded(true);
     c.setFolded(true);
     setHasFoldable(c.hasFoldable());
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 入れ替えの番号が変わったときだけ入れる（入力のたびに入れ直さない）
-  }, [loadSeq, ready]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 入れ替えの番号が変わったとき・付け直したときだけ入れる（入力のたびに入れ直さない）
+  }, [loadSeq, ready, attachSeq]);
 
   useEffect(() => {
     apiRef.current = ready && ctrlRef.current ? {
