@@ -1,8 +1,8 @@
-import { useSession, signOut } from "next-auth/react";
+import { useSession } from "next-auth/react";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { ChatConfig, MessageConfig, SelectionMode, ModalState } from "../types/mail";
 import { Email } from "../types/email";
-import { clearDeviceData, clearAccountDeviceData, DEVICE_OWNER_KEY } from "../lib/deviceData";
+import { clearDeviceData, DEVICE_OWNER_KEY } from "../lib/deviceData";
 import { isComposeBodyEmpty } from "../lib/composeHtml";
 import type { InlineImage } from "../lib/composeEditor";
 import type { ComposeEditorApi } from "../components/ComposeEditor";
@@ -27,6 +27,7 @@ import { useFindBar } from "./useFindBar";
 import { useRooms } from "./useRooms";
 import { useChatList } from "./useChatList";
 import { useChatNavigation } from "./useChatNavigation";
+import { useAccounts } from "./useAccounts";
 import type { EmailModalState, AttachmentModalState } from "./mailAppTypes";
 import { getSavedBoxSettings, getSavedAccountSettings } from "../lib/mailAppHelpers";
 
@@ -633,82 +634,11 @@ export function useMailApp() {
     checkInbox, checkArchive, checkSpam, checkTrash, checkSent, revealedCrossPrompts, draftChats, hasLoadedOnceRef, isLoading, selectedSender, setSelectedSender,
   });
 
-  // アカウント連携の解除。D1のlinked_accounts行だけを消す（chat_configsは再連携時に復元できるようあえて残す。
-  // /api/accounts のDELETEハンドラ自体の方針と同じ）。ローカル側はそのアカウント分のメールを一覧から
-  // 即座に取り除き、開いていたチャットがそのアカウントのものだった場合は閉じる
-  // アカウントを1つだけログアウトする。ほかのアカウントはログインしたまま使える。
-  // ログインのセッションを持っているアカウントをログアウトするときは、ほかのアカウントの1つにセッションを引き継ぐ
-  // （サーバーの auth.ts）。ほかに使えるアカウントが無ければ、すべてログアウトする
-  const logoutAccount = async (account: string) => {
-    const me = session?.user?.email || "";
-    if (account.toLowerCase() !== me.toLowerCase()) {
-      await unlinkAccount(account);
-      showInfoToast(`${account} からログアウトしました`, 2500);
-      return;
-    }
-    const next = linkedAccountsRef.current.find(a => !reauthNeededAccounts.includes(a));
-    if (!next) {
-      await clearDeviceData();
-      await signOut({ callbackUrl: "/" });
-      return;
-    }
-    showInfoToast(`${account} からログアウトしています…`);
-    try {
-      const updated = await updateSession({ switchTo: next });
-      if ((updated?.user?.email || "").toLowerCase() !== next.toLowerCase()) throw new Error("switch failed");
-    } catch (e) {
-      logError("accounts.logoutOne", {}, e);
-      showErrorToast("ログアウトできませんでした。通信状況を確認して、もう一度お試しください。");
-      return;
-    }
-    // ログアウトしたアカウントの端末のデータ（添付・ピン留めの中身・下書き）だけを消し、残りのアカウントの分は残す
-    await clearAccountDeviceData(me);
-    try {
-      localStorage.setItem(DEVICE_OWNER_KEY, next);
-      localStorage.removeItem("remail_selected_sender");
-      localStorage.removeItem("remail_scroll_main");
-    } catch { /* 端末の保存領域が使えなくても続ける */ }
-    window.location.reload();
-  };
-
-  const unlinkAccount = async (accountEmail: string) => {
-    const myEmail = session?.user?.email || "";
-    setLinkedAccounts(prev => prev.filter(a => a !== accountEmail));
-    linkedAccountsRef.current = linkedAccountsRef.current.filter(a => a !== accountEmail);
-    setReauthNeededAccounts(prev => prev.filter(a => a !== accountEmail));
-    setLinkedAccountProfiles(prev => {
-      const next = { ...prev };
-      delete next[accountEmail];
-      return next;
-    });
-    setEmails(prev => prev.filter((e) => (e.accountId || myEmail) !== accountEmail));
-    setCurrentNextPageTokens(prev => {
-      const next = { ...prev };
-      delete next[accountEmail];
-      return next;
-    });
-    if (selectedSender) {
-      try {
-        if (decodeRoomKey(selectedSender).accountEmail === accountEmail) {
-          setSelectedSender(null);
-          if (typeof window !== "undefined") {
-            localStorage.removeItem("remail_selected_sender");
-            localStorage.removeItem("remail_scroll_main");
-          }
-        }
-      } catch { /* 複合キーでない古いデータは無視 */ }
-    }
-    setPersistedEmails(prev => prev.filter((e) => (e.accountId || myEmail) !== accountEmail));
-    // 端末に残したそのアカウントの添付・ピン留めの中身・下書きを消す
-    await clearAccountDeviceData(accountEmail);
-    try {
-      const res = await fetch(`/api/accounts?account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" });
-      if (!res.ok) showErrorToast("ログアウトがサーバーに反映されなかった可能性があります。再読み込みして確認してください。");
-    } catch (e) {
-      logError("accounts.unlink", {}, e);
-      showErrorToast("ログアウトがサーバーに反映されなかった可能性があります。通信状況を確認してください。");
-    }
-  };
+  // アカウントを1つだけログアウトする・連携を外すは useAccounts.ts
+  const { logoutAccount, unlinkAccount } = useAccounts({
+    session, updateSession, linkedAccountsRef, setLinkedAccounts, reauthNeededAccounts, setReauthNeededAccounts, setLinkedAccountProfiles,
+    setEmails, setPersistedEmails, setCurrentNextPageTokens, selectedSender, setSelectedSender, showInfoToast, showErrorToast,
+  });
 
   // チャットを開く・作る・戻る・送信元のアカウントの切り替えは useChatNavigation.ts
   const { safeBack, exitAfterAction, openChat, resolveDirectRoom, createOrOpenChat, switchSendAccount, createGroupChat, createFilterGroup } = useChatNavigation({
