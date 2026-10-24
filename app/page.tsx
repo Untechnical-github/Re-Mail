@@ -169,7 +169,7 @@ export default function Home() {
           subjectFindHighlight={subjectFindHighlight}
           bodyFindHighlight={bodyFindHighlight}
           getMsgColor={getMsgColor}
-        composer={
+          composer={
             <Composer
               app={app}
               composeRef={composeRef}

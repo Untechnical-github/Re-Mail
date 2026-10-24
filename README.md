@@ -230,8 +230,12 @@ Re-Mail/
 │   │   ├── config/route.test.ts
 │   │   └── emails/route.ts               # Gmail の取得・差分同期・送信・送信確認・移動・削除・添付・HTML 本文・sendAs（保存せず中継だけ）
 │   ├── components/
+│   │   ├── AttachmentChips.tsx           # メッセージの画像・動画の添付の表示
+│   │   ├── ChatList.tsx                  # チャット一覧（左の列）
+│   │   ├── Composer.tsx                  # 入力欄（送信元・送信先・返信元・件名・添付・本文・送信ボタン）
 │   │   ├── ComposeEditor.tsx             # 書式付きの入力欄（iframe・選んだ文字のバー・「Aa」の書式のバー・リンク・色・画像の大きさ。§14.4）
 │   │   ├── Modals.tsx                    # モーダルの振り分け（どの種類を出すかだけ。§14.6）
+│   │   ├── TalkView.tsx                  # トーク画面（見出し・ページ内検索・ピン留め・メッセージ一覧。入力欄は Composer）
 │   │   ├── modals/                       # モーダルの種類ごとのファイル（SettingsModal・FilterToolModal・SearchModal・AccountMenuModal・ComposeNewChatModal・ReplyTargetModal・ConfirmModals など。共通の部品は shared.tsx）
 │   │   └── ui.tsx                        # ActionBar・アイコン・HighlightText・BodyWithLinks・formatFileSize
 │   ├── hooks/
@@ -247,7 +251,7 @@ Re-Mail/
 │   │   └── email.ts                      # Email / EmailAttachment
 │   ├── error.tsx / global-error.tsx      # エラー画面（もう一度表示する・ページを読み込み直す・純正 Gmail で開く）
 │   ├── globals.css / layout.tsx / providers.tsx
-│   └── page.tsx                          # メイン画面（ログイン・一覧・トーク）
+│   └── page.tsx                          # メイン画面（ログイン・通知・ChatList / TalkView / Composer の組み立て）
 ├── migrations/                           # D1 のスキーマ（連番。適用済みのファイルは書き換えない）
 ├── script/ci/                            # retry.sh / health-check.sh
 ├── .github/workflows/deploy-worker.yml
