@@ -1,5 +1,4 @@
 import { useState } from "react";
-import type { RoomKeyStr } from "../lib/roomKey";
 import type { MailAppHook } from "../hooks/useMailApp";
 import { ComposeNewChatModal } from "./modals/ComposeNewChatModal";
 import { ReplyTargetModal } from "./modals/ReplyTargetModal";
@@ -8,6 +7,7 @@ import { AccountMenuModal } from "./modals/AccountMenuModal";
 import { SettingsModal } from "./modals/SettingsModal";
 import { ConfirmPinModal, ConfirmUnpinModal, ConfirmDeleteModal, ConfirmDeleteGroupModal, ConfirmHideModal } from "./modals/ConfirmModals";
 import { ResetSelectModal } from "./modals/ResetSelectModal";
+import { RenameModal } from "./modals/RenameModal";
 export { EmailModal } from "./modals/EmailModal";
 export { AttachmentModal } from "./modals/AttachmentModal";
 export { SearchModal } from "./modals/SearchModal";
@@ -18,8 +18,8 @@ export function Modals({ app }: { app: MailAppHook }) {
   const [logoutConfirm, setLogoutConfirm] = useState<string | null>(null);
   // 設定画面で開いているタブ（"common" か、アカウントのアドレス）
   const [settingsTab, setSettingsTab] = useState<string>("common");
-  const { modal, renameInput, selectedSender } = app.state;
-  const { setRenameInput, updateChatConfigByRoomKey, safeBack } = app.actions;
+  const { modal, selectedSender } = app.state;
+  const { safeBack } = app.actions;
 
   if (!modal || modal.type === "search" || modal.type === "filter_tool") return null;
 
@@ -100,37 +100,7 @@ export function Modals({ app }: { app: MailAppHook }) {
 
         {modal.type === "select_reply_target" && <ReplyTargetModal app={app} />}
 
-        {modal.type === "rename" && (
-          <div className="p-5">
-            <h2 className="text-lg font-bold text-white mb-4">名前の変更</h2>
-            <input
-              type="text"
-              value={renameInput}
-              onChange={(e) => setRenameInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  updateChatConfigByRoomKey(modal.targets[0] as RoomKeyStr, { customName: renameInput.trim() || undefined });
-                  safeBack();
-                }
-              }}
-              className="w-full bg-[#1E1F22] text-white px-3 py-2 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2] mb-4"
-              autoFocus
-              placeholder="カスタム名を入力..."
-            />
-            <div className="flex justify-end gap-3">
-              <button onClick={() => safeBack()} className="px-4 py-2 hover:underline text-gray-300 text-sm">キャンセル</button>
-              <button
-                onClick={() => {
-                  updateChatConfigByRoomKey(modal.targets[0] as RoomKeyStr, { customName: renameInput.trim() || undefined });
-                  safeBack();
-                }}
-                className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]"
-              >
-                変更する
-              </button>
-            </div>
-          </div>
-        )}
+        {modal.type === "rename" && <RenameModal app={app} modal={modal} />}
 
         {modal.type === "reset_select" && <ResetSelectModal app={app} modal={modal} />}
 
