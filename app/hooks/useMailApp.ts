@@ -6,9 +6,8 @@ import { clearDeviceData, clearAccountDeviceData, DEVICE_OWNER_KEY } from "../li
 import { isComposeBodyEmpty, withQuote } from "../lib/composeHtml";
 import type { InlineImage } from "../lib/composeEditor";
 import type { ComposeEditorApi } from "../components/ComposeEditor";
-import { isMineEmail, FilterCriteria, ChatListTab, chatConfigTab } from "../lib/filterMatch";
-import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, groupMemberAddresses, roomPartner } from "../lib/groupEmails";
-import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
+import { FilterCriteria, ChatListTab, chatConfigTab } from "../lib/filterMatch";
+import { RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { type AccountSettings } from "../lib/syncedSettings";
 
 import { type ComposeRecipient } from "../lib/composeRecipients";
@@ -25,8 +24,9 @@ import { useEmailModals } from "./useEmailModals";
 import { useMailSync } from "./useMailSync";
 import { useLoadMore } from "./useLoadMore";
 import { useFindBar } from "./useFindBar";
+import { useRooms } from "./useRooms";
 import type { EmailModalState, AttachmentModalState } from "./mailAppTypes";
-import { getSavedBoxSettings, getSavedAccountSettings, parseAddressSet, sameAddressSet } from "../lib/mailAppHelpers";
+import { getSavedBoxSettings, getSavedAccountSettings } from "../lib/mailAppHelpers";
 
 // 入力欄の確認画面（送信先を外す・チャットを移る・送信先を置き換える・返信／全員に返信・引用の注意）
 export type ComposeDialog =
@@ -615,219 +615,10 @@ export function useMailApp() {
     }
   }, [selectedSender]);
 
-  // 実際のグルーピングロジックは app/lib/groupEmails.ts の純粋関数に切り出してある
-  // （副作用のない形でユニットテストできるようにするため）。groupedEmails・chatConfigs・
-  // selectedSender は常に encodeRoomKey 済みの複合roomKey（RoomKeyStr）をキーとする。
-  // chatConfigsは既に複合キーなので、groupEmailsByRoom（1アカウント分・ローカルキー前提の
-  // 純粋関数）に渡す前に対象アカウント分だけローカルキーへ戻し、結果をmergeAccountGroupsで
-  // 複合キーへ戻す。allUniqueEmailsも同様に、そのアカウント自身のメール（e.accountId一致）だけに
-  // 絞り込んでから渡す（絞り込まないと、他アカウント宛のメールまでこのアカウントの相手名で
-  // 誤ってグルーピングされてしまう）。accountId未設定（導入前のデータ・送信直後のローカルfake等）は
-  // メインアカウント名義として扱う
-  const groupedEmails = useMemo(() => {
-    const myEmail = session?.user?.email || "";
-    const accounts = [myEmail, ...linkedAccounts];
-    const perAccountGroups = accounts.map(accountEmail => {
-      const localChatConfigs: Record<LocalKey, ChatConfig> = {} as Record<LocalKey, ChatConfig>;
-      keysOf(chatConfigs).forEach(key => {
-        try {
-          const decoded = decodeRoomKey(key);
-          if (decoded.accountEmail === accountEmail) localChatConfigs[decoded.localKey] = chatConfigs[key];
-        } catch { /* 複合roomKeyでない古いデータ（移行前の残り等）は無視する */ }
-      });
-      const accountEmails = allUniqueEmails.filter(e => (e.accountId || myEmail) === accountEmail);
-      const aliases = (sendAsByAccount[accountEmail] || []).map(a => a.sendAsEmail);
-      return { accountEmail, groups: groupEmailsByRoom(accountEmails, accountEmail, localChatConfigs, aliases) };
-    });
-    const merged = mergeAccountGroups(perAccountGroups);
-    // フィルターグループ（filterCriteria持ち）は受信専用のため、上のアカウント単位の集約を
-    // 対象外にしてある（groupEmailsByRoom側）。ここで全アカウント分のメールをまたいで
-    // 別途集約する（criteria.accountEmailで対象アカウントを絞り込める）
-    return applyFilterGroups(merged, chatConfigs, allUniqueEmails, myEmail);
-  }, [allUniqueEmails, session, chatConfigs, linkedAccounts, sendAsByAccount]);
-
-  const groupedEmailsRef = useRef(groupedEmails);
-  useEffect(() => { groupedEmailsRef.current = groupedEmails; }, [groupedEmails]);
-
-  // アカウント連携の解除。D1のlinked_accounts行だけを消す（chat_configsは再連携時に復元できるようあえて残す。
-  // /api/accounts のDELETEハンドラ自体の方針と同じ）。ローカル側はそのアカウント分のメールを一覧から
-  // 即座に取り除き、開いていたチャットがそのアカウントのものだった場合は閉じる
-  // アカウントを1つだけログアウトする。ほかのアカウントはログインしたまま使える。
-  // ログインのセッションを持っているアカウントをログアウトするときは、ほかのアカウントの1つにセッションを引き継ぐ
-  // （サーバーの auth.ts）。ほかに使えるアカウントが無ければ、すべてログアウトする
-  const logoutAccount = async (account: string) => {
-    const me = session?.user?.email || "";
-    if (account.toLowerCase() !== me.toLowerCase()) {
-      await unlinkAccount(account);
-      showInfoToast(`${account} からログアウトしました`, 2500);
-      return;
-    }
-    const next = linkedAccountsRef.current.find(a => !reauthNeededAccounts.includes(a));
-    if (!next) {
-      await clearDeviceData();
-      await signOut({ callbackUrl: "/" });
-      return;
-    }
-    showInfoToast(`${account} からログアウトしています…`);
-    try {
-      const updated = await updateSession({ switchTo: next });
-      if ((updated?.user?.email || "").toLowerCase() !== next.toLowerCase()) throw new Error("switch failed");
-    } catch (e) {
-      logError("accounts.logoutOne", {}, e);
-      showErrorToast("ログアウトできませんでした。通信状況を確認して、もう一度お試しください。");
-      return;
-    }
-    // ログアウトしたアカウントの端末のデータ（添付・ピン留めの中身・下書き）だけを消し、残りのアカウントの分は残す
-    await clearAccountDeviceData(me);
-    try {
-      localStorage.setItem(DEVICE_OWNER_KEY, next);
-      localStorage.removeItem("remail_selected_sender");
-      localStorage.removeItem("remail_scroll_main");
-    } catch { /* 端末の保存領域が使えなくても続ける */ }
-    window.location.reload();
-  };
-
-  const unlinkAccount = async (accountEmail: string) => {
-    const myEmail = session?.user?.email || "";
-    setLinkedAccounts(prev => prev.filter(a => a !== accountEmail));
-    linkedAccountsRef.current = linkedAccountsRef.current.filter(a => a !== accountEmail);
-    setReauthNeededAccounts(prev => prev.filter(a => a !== accountEmail));
-    setLinkedAccountProfiles(prev => {
-      const next = { ...prev };
-      delete next[accountEmail];
-      return next;
-    });
-    setEmails(prev => prev.filter((e) => (e.accountId || myEmail) !== accountEmail));
-    setCurrentNextPageTokens(prev => {
-      const next = { ...prev };
-      delete next[accountEmail];
-      return next;
-    });
-    if (selectedSender) {
-      try {
-        if (decodeRoomKey(selectedSender).accountEmail === accountEmail) {
-          setSelectedSender(null);
-          if (typeof window !== "undefined") {
-            localStorage.removeItem("remail_selected_sender");
-            localStorage.removeItem("remail_scroll_main");
-          }
-        }
-      } catch { /* 複合キーでない古いデータは無視 */ }
-    }
-    setPersistedEmails(prev => prev.filter((e) => (e.accountId || myEmail) !== accountEmail));
-    // 端末に残したそのアカウントの添付・ピン留めの中身・下書きを消す
-    await clearAccountDeviceData(accountEmail);
-    try {
-      const res = await fetch(`/api/accounts?account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" });
-      if (!res.ok) showErrorToast("ログアウトがサーバーに反映されなかった可能性があります。再読み込みして確認してください。");
-    } catch (e) {
-      logError("accounts.unlink", {}, e);
-      showErrorToast("ログアウトがサーバーに反映されなかった可能性があります。通信状況を確認してください。");
-    }
-  };
-
-  // メッセージID → 所属ルームキーの逆引き。フィルターツールで複数ルームにまたがる
-  // メッセージを一括非表示/ピン留めする際、各メッセージ自身の本来のルームを正しく特定するために使う。
-  // 自分が送ったメールは宛先の人のチャットすべてに出る（1通が複数のルームに入る）ので、ここには最後に見つけたルームが入る。
-  // どのルームでも同じアカウントなので、アカウントの判定には使える。ルームそのものが要るときは roomOfMessage を使う
-  const emailRoomMap = useMemo(() => {
-    const map = new Map<string, RoomKeyStr>();
-    keysOf(groupedEmails).forEach(room => (groupedEmails[room] || []).forEach((e) => map.set(e.id, room)));
-    return map;
-  }, [groupedEmails]);
-
-  // メッセージが実際にどのアカウントに属するかを解決する。
-  // 1) 既にそのメッセージの設定行が存在すればそのアカウントを最優先で再利用する
-  //    （非表示化した後にメールデータがローカルから消えても、unhide時に同じキーへ確実に書き戻すため）
-  // 2) groupedEmailsのroomキー（既に正しいアカウントで複合化済み）
-  // 3) メール自身のaccountId
-  // 4) どれも無ければメインアカウントにフォールバック
-  const resolveMessageAccountEmail = (messageId: string): string => {
-    const existingKey = keysOf(messageConfigsRef.current).find(k => decodeRoomKey(k).localKey === (messageId as LocalKey));
-    if (existingKey) {
-      try { return decodeRoomKey(existingKey).accountEmail; } catch { /* 複合キーでない古いデータは無視 */ }
-    }
-    const room = emailRoomMap.get(messageId);
-    if (room) {
-      try { return decodeRoomKey(room).accountEmail; } catch { /* 複合キーでない古いデータは無視 */ }
-    }
-    const found = allUniqueEmails.find((e) => e.id === messageId);
-    return found?.accountId || session?.user?.email || "";
-  };
-
-  // メッセージ単位の設定（messageConfigs）を引くための複合キーを作る。そのメッセージが
-  // 実際に属するアカウントで複合化するため、連携アカウントをまたいでメッセージIDが
-  // 衝突しても互いの非表示/ピン留め状態が混ざらない
-  const messageConfigKey = (messageId: string): RoomKeyStr => encodeRoomKey(resolveMessageAccountEmail(messageId), messageId as LocalKey);
-
-  // ルーム内の相手メールアドレスを推定する（「作成」機能での重複チャット判定・検索に使用）。
-  // 連携アカウントのルームでは「自分」がメインアカウントとは限らないため、そのルーム自身が
-  // 属するアカウントで判定する（メインアカウント固定だと、連携アカウント宛にメインアカウントから
-  // 送ったメールを「相手からの受信」と誤認識してしまう）
-  // 宛先に書く「表示名 <アドレス>」。相手から届いたメールの From に表示名があればそれを使い、無ければアドレスだけ
-  // 受け取ったメールに Reply-To（自分以外）があれば、そのアドレスを相手とする（groupEmails.ts の roomPartner）
-  const getRoomPartner = (room: RoomKeyStr): { name: string; address: string } => {
-    const { accountEmail, localKey } = decodeRoomKey(room);
-    const aliases = (sendAsByAccount[accountEmail] || []).map(a => a.sendAsEmail);
-    return roomPartner(groupedEmails[room] || [], localKey, accountEmail, aliases);
-  };
-  const getRoomRecipient = (room: RoomKeyStr): string => {
-    const { name, address } = getRoomPartner(room);
-    // 表示名にカンマなどが入っていても宛先の区切りにならないよう、引用符で囲む（ヘッダーに書くときは mime.ts が整える）
-    const cleanName = name.replace(/["\\<>\r\n]+/g, " ").trim();
-    if (cleanName && address) return `"${cleanName}" <${address}>`;
-    return address;
-  };
-  const getRoomAddress = (room: RoomKeyStr): string => getRoomPartner(room).address;
-
-  // 「作成」モーダルの「候補」一覧（下書き中の空チャット・グループ自体は除く）。
-  // ボックスのチェックボックス状態には影響されず（groupedEmails自体が非フィルター済みのため）、
-  // 現在のフィルターに関わらず常に最新のやり取り順（時系列順）で並べる
-  const contactDirectory = useMemo(() => {
-    return keysOf(groupedEmails)
-      .filter(room => (groupedEmails[room] || []).length > 0 && !chatConfigs[room]?.isGroup)
-      .map(room => {
-        const decoded = decodeRoomKey(room);
-        return {
-          room,
-          label: chatConfigs[room]?.customName || decoded.localKey,
-          // 名前変更後もリネーム前の元の表示名（相手のFromヘッダー由来の名前）で検索できるように、
-          // labelとは別に保持しておく（customNameが無ければlabelと同じ値になる）
-          originalName: decoded.localKey,
-          address: getRoomAddress(room),
-          accountEmail: decoded.accountEmail,
-          latestDate: groupedEmails[room][0]?.date ? new Date(groupedEmails[room][0].date).getTime() : 0,
-        };
-      })
-      .sort((a, b) => b.latestDate - a.latestDate);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupedEmails, chatConfigs, session]);
-
-  // グループチャットの「返信先を選択」用プール: 表示モードに関わらず、
-  // 自分がグループから送信したメール + メンバー全員からの受信メールを常に候補にする
-  // （送信専用モードでもスレッドには出てこない相手の発言を選んで返信できるようにするため）
-  const groupReplyPools = useMemo(() => {
-    const pools: Record<string, Email[]> = {};
-    keysOf(chatConfigs).forEach(room => {
-      const cfg = chatConfigs[room];
-      if (!cfg?.isGroup) return;
-      const { accountEmail } = decodeRoomKey(room);
-      // グループは1つのアカウントから送信する前提のため、「自分」はこのグループ自身が属する
-      // アカウント（連携アカウントの場合はそちら）で判定する（メインアカウント固定だと、
-      // 連携アカウントのグループで送受信の判定が逆転してしまう）
-      const memberAddresses = groupMemberAddresses(cfg);
-      const sentViaGroup = allUniqueEmails.filter((e) => isMineEmail(e, accountEmail) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
-      const received = allUniqueEmails.filter((e) => {
-        if (isMineEmail(e, accountEmail)) return false;
-        const addrMatch = (e.from || "").match(/<([^>]+)>/);
-        const addr = (addrMatch ? addrMatch[1] : e.from || "").trim().toLowerCase();
-        return memberAddresses.has(addr);
-      });
-      pools[room] = [...sentViaGroup, ...received].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    });
-    return pools;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allUniqueEmails, chatConfigs, groupedEmails, session]);
+  // ルームの計算（チャットへの分け方・メッセージのルームとアカウント・相手・宛先の候補）は useRooms.ts
+  const {
+    groupedEmails, groupedEmailsRef, emailRoomMap, resolveMessageAccountEmail, messageConfigKey, getRoomPartner, getRoomRecipient, getRoomAddress, contactDirectory, groupReplyPools,
+  } = useRooms({ session, chatConfigs, allUniqueEmails, sendAsByAccount, linkedAccounts, messageConfigsRef });
 
   // 下書きチャットから離れたとき、何も書いていなければ一覧から消す（useDrafts.ts）
   useDraftChatCleanup({
@@ -947,6 +738,83 @@ export function useMailApp() {
     prevSenderListRef.current = senderList;
   }, [senderList, isLoading]);
 
+  // アカウント連携の解除。D1のlinked_accounts行だけを消す（chat_configsは再連携時に復元できるようあえて残す。
+  // /api/accounts のDELETEハンドラ自体の方針と同じ）。ローカル側はそのアカウント分のメールを一覧から
+  // 即座に取り除き、開いていたチャットがそのアカウントのものだった場合は閉じる
+  // アカウントを1つだけログアウトする。ほかのアカウントはログインしたまま使える。
+  // ログインのセッションを持っているアカウントをログアウトするときは、ほかのアカウントの1つにセッションを引き継ぐ
+  // （サーバーの auth.ts）。ほかに使えるアカウントが無ければ、すべてログアウトする
+  const logoutAccount = async (account: string) => {
+    const me = session?.user?.email || "";
+    if (account.toLowerCase() !== me.toLowerCase()) {
+      await unlinkAccount(account);
+      showInfoToast(`${account} からログアウトしました`, 2500);
+      return;
+    }
+    const next = linkedAccountsRef.current.find(a => !reauthNeededAccounts.includes(a));
+    if (!next) {
+      await clearDeviceData();
+      await signOut({ callbackUrl: "/" });
+      return;
+    }
+    showInfoToast(`${account} からログアウトしています…`);
+    try {
+      const updated = await updateSession({ switchTo: next });
+      if ((updated?.user?.email || "").toLowerCase() !== next.toLowerCase()) throw new Error("switch failed");
+    } catch (e) {
+      logError("accounts.logoutOne", {}, e);
+      showErrorToast("ログアウトできませんでした。通信状況を確認して、もう一度お試しください。");
+      return;
+    }
+    // ログアウトしたアカウントの端末のデータ（添付・ピン留めの中身・下書き）だけを消し、残りのアカウントの分は残す
+    await clearAccountDeviceData(me);
+    try {
+      localStorage.setItem(DEVICE_OWNER_KEY, next);
+      localStorage.removeItem("remail_selected_sender");
+      localStorage.removeItem("remail_scroll_main");
+    } catch { /* 端末の保存領域が使えなくても続ける */ }
+    window.location.reload();
+  };
+
+  const unlinkAccount = async (accountEmail: string) => {
+    const myEmail = session?.user?.email || "";
+    setLinkedAccounts(prev => prev.filter(a => a !== accountEmail));
+    linkedAccountsRef.current = linkedAccountsRef.current.filter(a => a !== accountEmail);
+    setReauthNeededAccounts(prev => prev.filter(a => a !== accountEmail));
+    setLinkedAccountProfiles(prev => {
+      const next = { ...prev };
+      delete next[accountEmail];
+      return next;
+    });
+    setEmails(prev => prev.filter((e) => (e.accountId || myEmail) !== accountEmail));
+    setCurrentNextPageTokens(prev => {
+      const next = { ...prev };
+      delete next[accountEmail];
+      return next;
+    });
+    if (selectedSender) {
+      try {
+        if (decodeRoomKey(selectedSender).accountEmail === accountEmail) {
+          setSelectedSender(null);
+          if (typeof window !== "undefined") {
+            localStorage.removeItem("remail_selected_sender");
+            localStorage.removeItem("remail_scroll_main");
+          }
+        }
+      } catch { /* 複合キーでない古いデータは無視 */ }
+    }
+    setPersistedEmails(prev => prev.filter((e) => (e.accountId || myEmail) !== accountEmail));
+    // 端末に残したそのアカウントの添付・ピン留めの中身・下書きを消す
+    await clearAccountDeviceData(accountEmail);
+    try {
+      const res = await fetch(`/api/accounts?account_email=${encodeURIComponent(accountEmail)}`, { method: "DELETE" });
+      if (!res.ok) showErrorToast("ログアウトがサーバーに反映されなかった可能性があります。再読み込みして確認してください。");
+    } catch (e) {
+      logError("accounts.unlink", {}, e);
+      showErrorToast("ログアウトがサーバーに反映されなかった可能性があります。通信状況を確認してください。");
+    }
+  };
+
   const safeBack = () => {
     const state = window.history.state;
     if (state && (state.action || state.chat)) {
@@ -987,7 +855,6 @@ export function useMailApp() {
         emails: senderEmails,
         chatNextPageToken: chatNextPageTokenRef.current,
         groupMemberTokens: chatConfigsRef.current[prevSender]?.isGroup ? { ...groupMemberTokensRef.current } : undefined,
-        // eslint-disable-next-line react-hooks/purity -- チャットを開く処理の中で LRU の時刻を取るだけ（描画中には呼ばない）
         lruTime: Date.now(),
       });
       // LRU 上限を超えた古いエントリを削除
@@ -1020,7 +887,6 @@ export function useMailApp() {
     // キャッシュがあれば復元、なければ通常フェッチ
     const cached = chatCacheRef.current.get(sender);
     if (cached) {
-      // eslint-disable-next-line react-hooks/purity -- チャットを開く処理の中で LRU の時刻を取るだけ（描画中には呼ばない）
       cached.lruTime = Date.now();
       setEmails(prev => {
         const map = new Map(prev.map((e) => [e.id, e]));
