@@ -142,6 +142,11 @@ describe("composeForwardBodies", () => {
     expect(r.html).toContain("本文1<br>本文2");
   });
 
+  it("見出しの外枠は純正 Gmail と同じ class（gmail_quote gmail_quote_container）", () => {
+    const r = composeForwardBodies({ original });
+    expect(r.html.startsWith('<div dir="ltr"><div><br><br><div class="gmail_quote gmail_quote_container"><div dir="ltr" class="gmail_attr">---------- Forwarded message ---------<br>')).toBe(true);
+  });
+
   it("署名は元の本文の後、元の HTML があれば body の中身を使う", () => {
     const r = composeForwardBodies({ signatureHtml: "山田", original: { ...original, cc: undefined, html: '<html><body bgcolor="#eee"><p>元</p></body></html>' } });
     expect(r.html.indexOf("gmail_signature")).toBeGreaterThan(r.html.indexOf('<div bgcolor="#eee"><p>元</p></div>'));

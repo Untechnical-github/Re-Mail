@@ -187,7 +187,8 @@ export function composeForwardBodies(input: ForwardComposeInput): { text: string
   } else {
     original = `<div dir="ltr">${textToHtml(o.text)}</div>`;
   }
-  let html = `<div dir="ltr">${textToHtml(body)}<div><br><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">${headerHtml}<br></div><br><br>${original}\n</div>`;
+  // 引用の外枠の class は純正 Gmail（2026-10 時点）と同じく gmail_quote_container も付ける（返信の引用と同じ）
+  let html = `<div dir="ltr">${textToHtml(body)}<div><br><br><div class="gmail_quote gmail_quote_container"><div dir="ltr" class="gmail_attr">${headerHtml}<br></div><br><br>${original}\n</div>`;
   if (sig) html += signatureHtmlBlock(sig);
   html += "</div></div>";
   return { text, html };
