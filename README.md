@@ -231,7 +231,8 @@ Re-Mail/
 │   │   └── emails/route.ts               # Gmail の取得・差分同期・送信・送信確認・移動・削除・添付・HTML 本文・sendAs（保存せず中継だけ）
 │   ├── components/
 │   │   ├── ComposeEditor.tsx             # 書式付きの入力欄（iframe・選んだ文字のバー・「Aa」の書式のバー・リンク・色・画像の大きさ。§14.4）
-│   │   ├── Modals.tsx                    # すべてのモーダル
+│   │   ├── Modals.tsx                    # モーダルの振り分け（どの種類を出すかだけ。§14.6）
+│   │   ├── modals/                       # モーダルの種類ごとのファイル（SettingsModal・FilterToolModal・SearchModal・AccountMenuModal・ComposeNewChatModal・ReplyTargetModal・ConfirmModals など。共通の部品は shared.tsx）
 │   │   └── ui.tsx                        # ActionBar・アイコン・HighlightText・BodyWithLinks・formatFileSize
 │   ├── hooks/
 │   │   └── useMailApp.ts                 # 状態とロジックの中核（カスタムフック。§13）
@@ -949,7 +950,7 @@ type FilterCriteria = {
 ### 14.5 アクションバー（`ui.tsx` の `ActionBar`）
 選択モードで出す。ボタンは状況に応じて：「全選択」「キャンセル」「作成」（グループの作成）、「名前変更」（チャット）、「転送」「リプライ」「コピー」（メッセージ）、「ピン留め」／「ピン解除」、「既読」／「未読」（チャットなら表示されているメールすべて。すべて既読なら「未読」）、「移動」、「非表示」、「削除」、「リセット」（チャット）。保存場所で使えない操作（§12.1）は無効にする。設定で「アイコン」にするとアイコンで出す。
 
-### 14.6 モーダル（`Modals.tsx`）
+### 14.6 モーダル（`Modals.tsx` が振り分け、中身は `components/modals/`）
 | 種類 | 中身 |
 | --- | --- |
 | `account_menu` | 見出し「ログイン中のアカウント」。全アカウントを同じ形で並べ（名前・アドレス・画像、セッションのものに「使用中」、切れていれば「再ログインが必要」）、各アカウントに「ログアウト」（確認：「このアカウントだけログアウトします…」と「はい」「いいえ」）、切れていれば「再ログイン」（`/api/accounts/connect`）。「+ 別のアカウントでもログイン」（`/api/accounts/connect`）、「すべてのアカウントからログアウト」（1つだけなら「ログアウト」。`clearDeviceData` してから `signOut`） |

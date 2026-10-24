@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { editorSrcDoc } from "./composeEditor";
 
 // 入力欄の iframe の守り（README §15「入力欄の iframe」）が、知らないうちに外れていないかを CI で止める。
@@ -34,7 +34,10 @@ describe("iframe の sandbox", () => {
     expect(sandboxes).toEqual(['sandbox="allow-same-origin allow-scripts"']);
   });
   it("メール本文を表示する iframe には allow-scripts・allow-forms・allow-top-navigation を付けない", () => {
-    for (const file of ["app/components/Modals.tsx", "app/page.tsx"]) {
+    // モーダルは app/components/modals/ に分けてあるので、その中のファイルもすべて見る
+    const modalFiles = readdirSync("app/components/modals").filter(f => f.endsWith(".tsx")).map(f => `app/components/modals/${f}`);
+    expect(modalFiles).toContain("app/components/modals/EmailModal.tsx");
+    for (const file of ["app/components/Modals.tsx", "app/page.tsx", ...modalFiles]) {
       const src = readFileSync(file, "utf8");
       for (const s of src.match(/sandbox="[^"]*"/g) || []) expect(s).not.toMatch(/allow-scripts|allow-forms|allow-top-navigation/);
     }
