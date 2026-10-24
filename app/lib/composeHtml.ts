@@ -676,68 +676,73 @@ export function composeHtmlToText(html: string): string {
 }
 
 function renderText(nodes: HtmlNode[]): string {
-  let buf = "";
-  const atLineStart = () => buf === "" || buf.endsWith("\n");
-  const newline = () => { if (!atLineStart()) buf += "\n"; };
-  const ensureBlank = () => { newline(); if (buf !== "" && !buf.endsWith("\n\n")) buf += "\n"; };
+  // 足していく文字列の末尾を毎回調べると、長い本文で時間が2乗に伸びる（文字列の作り直しが起きる）ので、
+  // 断片の配列に足し、末尾の2文字だけを別に覚えておく
+  const chunks: string[] = [];
+  let tail = "";
+  let length = 0;
+  const add = (v: string) => { if (!v) return; chunks.push(v); length += v.length; tail = (tail + v).slice(-2); };
+  const atLineStart = () => length === 0 || tail.endsWith("\n");
+  const newline = () => { if (!atLineStart()) add("\n"); };
+  const ensureBlank = () => { newline(); if (length > 0 && tail !== "\n\n") add("\n"); };
   const quoteLines = (inner: string, extraTail: boolean) => {
     const lines = inner.split("\n");
     if (lines.length && lines[lines.length - 1] === "") lines.pop();
     if (extraTail) lines.push("");
-    for (const l of lines) buf += (l ? `> ${l}` : ">") + "\n";
+    for (const l of lines) add((l ? `> ${l}` : ">") + "\n");
   };
   const walk = (list: HtmlNode[]) => {
     for (const n of list) {
       if (n.type === "text") {
         let v = n.value.replace(/[\s]+/g, " ").replace(/ /g, " ");
         if (atLineStart()) v = v.replace(/^ +/, "");
-        buf += v;
+        add(v);
         continue;
       }
       switch (n.name) {
         case "br":
           // 純正は署名の前の <br clear="all"> をテキスト版の改行にしない
-          if (getAttr(n, "clear") !== "all") buf += "\n";
+          if (getAttr(n, "clear") !== "all") add("\n");
           break;
         case "style": case "head": case "title": case "script": break;
         case "b": case "strong": case "i": case "em": case "u": {
           const inner = renderText(n.children);
-          if (inner.trim()) buf += `*${inner}*`; else buf += inner;
+          if (inner.trim()) add(`*${inner}*`); else add(inner);
           break;
         }
         case "a": {
           const inner = renderText(n.children);
           const href = getAttr(n, "href") || "";
-          buf += inner;
+          add(inner);
           const t = inner.trim();
-          if (href && t !== href && `mailto:${t}` !== href) buf += ` <${href}>`;
+          if (href && t !== href && `mailto:${t}` !== href) add(` <${href}>`);
           break;
         }
-        case "img": buf += `[image: ${getAttr(n, "alt") || "image.png"}]`; break;
+        case "img": add(`[image: ${getAttr(n, "alt") || "image.png"}]`); break;
         case "ol": case "ul": {
-          if (buf !== "") { newline(); buf += "\n"; }
+          if (length > 0) { newline(); add("\n"); }
           let k = 0;
           for (const li of n.children) {
             if (!isEl(li, "li")) continue;
             k++;
             newline();
-            buf += n.name === "ol" ? `   ${k}. ` : "   - ";
-            buf += renderText(li.children).replace(/\n+$/, "").replace(/\n/g, "\n     ");
+            add(n.name === "ol" ? `   ${k}. ` : "   - ");
+            add(renderText(li.children).replace(/\n+$/, "").replace(/\n/g, "\n     "));
           }
           newline();
-          buf += "\n";
+          add("\n");
           break;
         }
         case "blockquote": {
           if (hasClass(n, "gmail_quote")) {
             ensureBlank();
             quoteLines(renderText(n.children).replace(/^\n+/, ""), false);
-            buf += "\n";
+            add("\n");
           } else {
             ensureBlank();
             walk(n.children);
             newline();
-            buf += "\n";
+            add("\n");
           }
           break;
         }
@@ -748,7 +753,7 @@ function renderText(nodes: HtmlNode[]): string {
           collect(n.children);
           for (const tr of rows) {
             const cells = tr.children.filter((c): c is HtmlElement => isEl(c) && (c.name === "td" || c.name === "th")).map(c => renderText(c.children).replace(/\s+/g, " ").trim());
-            buf += cells.join(" ") + "\n";
+            add(cells.join(" ") + "\n");
           }
           break;
         }
@@ -757,7 +762,7 @@ function renderText(nodes: HtmlNode[]): string {
             // 返信の引用：見出し・空行・「> 」の行・最後に「>」の行（純正と同じ）
             newline();
             for (const c of n.children) {
-              if (isEl(c, "blockquote") && hasClass(c, "gmail_quote")) { buf += "\n"; quoteLines(renderText(c.children), true); }
+              if (isEl(c, "blockquote") && hasClass(c, "gmail_quote")) { add("\n"); quoteLines(renderText(c.children), true); }
               else walk([c]);
             }
             break;
@@ -771,7 +776,7 @@ function renderText(nodes: HtmlNode[]): string {
     }
   };
   walk(nodes);
-  return buf;
+  return chunks.join("");
 }
 
 // ---------------------------------------------------------------------------
