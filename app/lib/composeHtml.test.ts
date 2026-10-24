@@ -256,3 +256,10 @@ describe("Chrome のインデント・引用のボタン（本番の E2E で見�
     expect(normalizeComposeHtml(html, "new")).toBe('<div dir="ltr"><div>本文</div><div><br></div><div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature"><div dir="ltr">署名</div></div></div>');
   });
 });
+
+describe("本文中の画像の行", () => {
+  it("行の最後が画像なら、純正と同じく後ろに <br> を置く", () => {
+    expect(normalizeComposeHtml('<div><img src="cid:ii_a0" alt="a.png" width="240" height="120"></div><div>次</div>', "new")).toBe('<div dir="ltr"><div><img src="cid:ii_a0" alt="a.png" width="240" height="120"><br></div><div>次</div></div>');
+    expect(normalizeComposeHtml('<div><img src="cid:ii_a0"><br></div>', "new")).toBe('<div dir="ltr"><div><img src="cid:ii_a0"><br></div></div>');
+  });
+});

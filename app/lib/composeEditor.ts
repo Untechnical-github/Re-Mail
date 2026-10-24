@@ -309,7 +309,8 @@ export class ComposeEditorController {
       if (dims) { img.setAttribute("width", String(dims.width)); img.setAttribute("height", String(dims.height)); }
       img.setAttribute("data-remail-cid", cid);
       this.focus();
-      insertSafeHtml(this.doc, `<div>${img.outerHTML}<br></div>`, "trusted");
+      // 純正と同じく、カーソルの位置にそのまま入れる（行は整えるときに <div><img><br></div> の形になる）
+      insertSafeHtml(this.doc, img.outerHTML, "trusted");
     }
     this.afterChange();
   }

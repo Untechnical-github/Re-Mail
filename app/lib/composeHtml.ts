@@ -424,6 +424,10 @@ function canonicalizeBody(nodes: HtmlNode[]): HtmlNode[] {
       if (getAttr(el, "size") === "2") removeAttr(el, "size");
       if (el.attrs.length === 0) { out.push(...el.children); continue; }
     }
+    // 行の最後が画像なら、純正と同じく後ろに <br> を置く（<div><img ...><br></div>）
+    if (el.name === "div" && children.length && children[children.length - 1].type === "el" && (children[children.length - 1] as HtmlElement).name === "img") {
+      children = el.children = [...children, { type: "el", name: "br", attrs: [], children: [] }];
+    }
     // 中身の無い行は <div><br></div>（純正と同じ）
     if (el.name === "div" && children.every(isBlankText)) children = el.children = [{ type: "el", name: "br", attrs: [], children: [] }];
     // 文字の後ろの <br> は行の終わりの印なので消す（画像の後ろの <br> は純正も残す。WebKit はリストの項目にも付ける）
