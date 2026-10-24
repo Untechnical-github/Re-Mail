@@ -2921,11 +2921,20 @@ export function useMailApp() {
     if (order.length === 0) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
-      for (const account of order) {
-        if (cancelled) return;
-        const list = await getSendAs(account);
-        if (!cancelled && list) setSendAsByAccount(prev => ({ ...prev, [account]: list }));
-        await new Promise(r => setTimeout(r, 1500));
+      // 読めなかった分は、Gmail の利用上限が戻るのを待って取り直す（最大3回。署名を入力欄に入れるのに要るため）
+      let pending = order;
+      for (let round = 0; round < 3 && pending.length; round++) {
+        if (round > 0) await new Promise(r => setTimeout(r, 20_000 * round));
+        const failed: string[] = [];
+        for (const account of pending) {
+          if (cancelled) return;
+          const list = await getSendAs(account);
+          if (cancelled) return;
+          if (list) setSendAsByAccount(prev => ({ ...prev, [account]: list }));
+          else failed.push(account);
+          await new Promise(r => setTimeout(r, 1500));
+        }
+        pending = failed;
       }
     }, 1500);
     return () => { cancelled = true; clearTimeout(timer); };
@@ -3165,9 +3174,16 @@ export function useMailApp() {
       // 既定のアドレス（primary）から送るときは From を付けず、Gmail に純正と同じ形で入れさせる
       const fromHeader = alias && !alias.isPrimary ? (alias.displayName ? `${alias.displayName} <${alias.sendAsEmail}>` : alias.sendAsEmail) : undefined;
 
+      // 署名を一度も入れられていない（送信元の設定が今まで読めなかった）のに入力欄に署名が無ければ、ここで入れる
+      // （黙って署名なしで送らない。自分で消した署名は入れ直さない）
+      let composed = compose.html;
+      if (alias?.signature?.trim() && insertedSignatureRef.current === null && signatureOf(composed) === null) {
+        composed = withSignature(composed, alias.signature, replyToMessage ? "reply" : "new");
+      }
+
       // 本文・署名・引用は組み立て直さず、入力欄の HTML を純正の形に整えて送る。
       // 引用がまだ入っていない（返信元を選んだときに読み込めなかった）ときは、ここでもう一度取りにいく
-      let html = compose.html;
+      let html = composed;
       if (replyToMessage && !hasQuote(html)) {
         const original = await fetchOriginalFull(replyToMessage, sendAccountEmail);
         if (!original.html && !original.text && !opts.allowFallbackQuote) {
