@@ -6,7 +6,7 @@ import { getValidAccessToken } from "../../lib/googleToken";
 import { encryptSecret, decryptSecret, EncryptionKeyMissingError } from "../../lib/tokenCrypto";
 import { findLinkedAccount } from "../../lib/linkedAccountsStore";
 import { buildMimeSegments, buildGmailUploadBody, decodeMimeHeader } from "../../lib/mime";
-import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, getTextBody, extractAttachments, extractContentIdParts, referencesContentId, stripHtmlQuote, looksLikeForward, parseMessageDetail } from "../../lib/messageParse";
+import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, getTextBody, extractAttachments, extractContentIdParts, referencesContentId, stripHtmlQuote, looksLikeForward, parseMessageDetail, parseInternalDate } from "../../lib/messageParse";
 import type { MimeInlinePart } from "../../lib/mime";
 import { summarizeHistory, type GmailHistoryRecord } from "../../lib/historySync";
 import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
@@ -354,7 +354,7 @@ export async function GET(request: Request) {
       // 新しく届いたメールだけ詳細を取る。一度に投げる数は10件まで（レート制限に触れないように）
       for (let i = 0; i < toFetch.length; i += 10) {
         await Promise.all(toFetch.slice(i, i + 10).map(async (id) => {
-          const res = await fetchWithRetry(`${base}/messages/${id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`, auth);
+          const res = await fetchWithRetry(`${base}/messages/${id}?fields=id,threadId,snippet,labelIds,internalDate,payload(headers,parts,body)`, auth);
           if (res.status === 404) { missingAdded.push(id); return; }
           if (!res.ok) { logWarn("sync.detail", { status: res.status, messageId: id }); return; }
           messages.push(parseMessageDetail((await res.json()) as GmailMessage));
@@ -388,7 +388,7 @@ export async function GET(request: Request) {
       await Promise.all(ids.slice(i, i + 20).map(async (id) => {
         try {
           const res = await fetchWithRetry(
-            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`,
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?fields=id,threadId,snippet,labelIds,internalDate,payload(headers,parts,body)`,
             { headers: { Authorization: `Bearer ${accessToken}` } }
           );
           if (res.status === 404 || res.status === 400) { missing.push(id); return; }
@@ -420,7 +420,7 @@ export async function GET(request: Request) {
       if (!hit) return NextResponse.json({ found: false });
 
       const detailRes = await fetchWithRetry(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${hit.id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`,
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${hit.id}?fields=id,threadId,snippet,labelIds,internalDate,payload(headers,parts,body)`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       if (!detailRes.ok) return NextResponse.json({ found: false });
@@ -437,7 +437,7 @@ export async function GET(request: Request) {
     if (messageId.startsWith("fake-")) return NextResponse.json({ htmlBody: null, hasHtml: false });
     try {
       const detailRes = await fetchWithRetry(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?fields=payload`,
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?fields=payload,internalDate`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       if (!detailRes.ok) {
@@ -450,7 +450,8 @@ export async function GET(request: Request) {
       // テキスト版も、画面用に整形する前のものを返す
       if (searchParams.get("full") === "true") {
         const rawText = message.payload ? getTextBody(message.payload) : "";
-        return NextResponse.json({ htmlBody: rawHtml.trim() || null, textBody: rawText || null, hasHtml: !!rawHtml.trim() });
+        // 受け取った時刻も返す（引用・転送の見出しの時刻。端末のキャッシュにある古いメールは持っていないため）
+        return NextResponse.json({ htmlBody: rawHtml.trim() || null, textBody: rawText || null, hasHtml: !!rawHtml.trim(), internalDate: parseInternalDate(message.internalDate) ?? null });
       }
       const subject = decodeMimeHeader(getHeader(message.payload?.headers || [], "Subject"));
       // HTML側の引用は "> " ではなく <blockquote>/gmail_quote タグで表現されるため、
@@ -511,7 +512,7 @@ export async function GET(request: Request) {
       const chunk = messagesToFetch.slice(i, i + chunkSize);
       const chunkResults = await Promise.all(
         chunk.map(async (msg: { id: string }) => {
-          const detailRes = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?fields=id,threadId,snippet,labelIds,payload(headers,parts,body)`, {
+          const detailRes = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?fields=id,threadId,snippet,labelIds,internalDate,payload(headers,parts,body)`, {
             headers: { Authorization: `Bearer ${accessToken}` },
           });
           // レート制限等で最終的に失敗した場合、エラーレスポンスのJSONを本物のメッセージとして

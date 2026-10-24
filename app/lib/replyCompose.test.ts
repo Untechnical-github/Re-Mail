@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { replySubjectFor, buildReferences, pickSendAs, signatureToText, formatQuoteHeader, composeReplyBodies, escapeHtml, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, displayAddressList } from "./replyCompose";
+import { replySubjectFor, buildReferences, pickSendAs, signatureToText, formatQuoteHeader, quoteTimeOf, composeReplyBodies, escapeHtml, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, displayAddressList } from "./replyCompose";
 
 describe("replySubjectFor", () => {
   it("Re: を1回だけ付ける", () => {
@@ -71,6 +71,40 @@ describe("formatQuoteHeader", () => {
     expect(formatQuoteHeader(new Date(2026, 9, 24, 23, 59, 59, 999), "a@example.com")).toBe("2026年10月24日(土) 23:59 <a@example.com>:");
     expect(formatQuoteHeader(new Date(2026, 11, 31, 10, 0, 30), "a@example.com")).toBe("2026年12月31日(木) 10:00 <a@example.com>:");
     expect(formatQuoteHeader(new Date(2027, 0, 1, 0, 0, 0), "a@example.com")).toBe("2027年1月1日(金) 0:00 <a@example.com>:");
+  });
+});
+
+describe("quoteTimeOf（純正 Gmail と同じく、受け取った時刻 internalDate を分で切り捨てて見出しに出す）", () => {
+  const at = (y: number, mo: number, d: number, h: number, mi: number, s = 0, ms = 0) => new Date(y, mo, d, h, mi, s, ms).getTime();
+  const head = (m: { date?: string; internalDate?: number }) => formatQuoteHeader(quoteTimeOf(m), "a@example.com");
+  it("internalDate があればそれを使う（Date ヘッダーが前の分でも）", () => {
+    // 実機：Date が 0:51:58、受信が 0:52:11 → 純正は 0:52
+    expect(head({ date: new Date(at(2026, 9, 25, 0, 51, 58)).toUTCString(), internalDate: at(2026, 9, 25, 0, 52, 11) })).toBe("2026年10月25日(日) 0:52 <a@example.com>:");
+    expect(head({ date: "Sun, 25 Oct 2026 00:51:44 +0900", internalDate: at(2026, 9, 25, 0, 51, 59, 999) })).toBe("2026年10月25日(日) 0:51 <a@example.com>:");
+    expect(head({ internalDate: at(2026, 9, 25, 0, 52, 0) })).toBe("2026年10月25日(日) 0:52 <a@example.com>:");
+  });
+  it("分・時・日・年をまたぐ境目", () => {
+    expect(head({ internalDate: at(2026, 9, 24, 23, 59, 59, 999) })).toBe("2026年10月24日(土) 23:59 <a@example.com>:");
+    expect(head({ internalDate: at(2026, 9, 24, 23, 59, 59, 999) + 1 })).toBe("2026年10月25日(日) 0:00 <a@example.com>:");
+    expect(head({ internalDate: at(2026, 11, 31, 23, 59, 59, 999) })).toBe("2026年12月31日(木) 23:59 <a@example.com>:");
+    expect(head({ internalDate: at(2027, 0, 1, 0, 0, 0) })).toBe("2027年1月1日(金) 0:00 <a@example.com>:");
+    expect(head({ internalDate: at(2026, 9, 25, 9, 59, 30) })).toBe("2026年10月25日(日) 9:59 <a@example.com>:");
+  });
+  it("internalDate が無い・数でない・0・負なら Date ヘッダーを使う", () => {
+    const date = new Date(at(2026, 9, 24, 23, 58, 44)).toUTCString();
+    for (const internalDate of [undefined, NaN, Infinity, 0, -1]) {
+      expect(head({ date, internalDate })).toBe("2026年10月24日(土) 23:58 <a@example.com>:");
+    }
+  });
+  it("どちらも使えなければ時刻を出さない（NaN年… にしない）", () => {
+    expect(quoteTimeOf({ date: "壊れた日付" })).toBeNull();
+    expect(quoteTimeOf({})).toBeNull();
+    expect(head({ date: "", internalDate: 0 })).toBe("<a@example.com>:");
+    expect(formatQuoteHeader(new Date("x"), "相手 <a@example.com>")).toBe("相手 <a@example.com>:");
+    const f = composeForwardBodies({ original: { from: "a@example.com", date: quoteTimeOf({ date: "x" }), subject: "s", to: "b@example.com", text: "本文" } });
+    expect(f.text).toContain("\nDate: \n");
+    expect(f.text).not.toContain("NaN");
+    expect(f.html).not.toContain("NaN");
   });
 });
 

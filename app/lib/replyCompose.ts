@@ -71,13 +71,28 @@ export function displayAddressList(list: string): string {
   return splitAddressList(list || "").map(displayAddress).join(", ");
 }
 
+// 引用・転送の見出しに出す時刻。純正 Gmail は Date ヘッダーではなく Gmail が受け取った時刻（internalDate）を
+// 分で切り捨てて出す（実機で確かめた。Date が :58 秒でも受信が次の分なら次の分になる）。
+// internalDate が無い（端末のキャッシュにある古いメール）・壊れているときは Date ヘッダー。どちらも使えなければ null
+export function quoteTimeOf(m: { date?: string; internalDate?: number }): Date | null {
+  const ms = m.internalDate;
+  if (typeof ms === "number" && Number.isFinite(ms) && ms > 0) return new Date(ms);
+  const d = new Date(m.date || "");
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatJaDateTime(date: Date): string {
+  const weekday = ["日", "月", "火", "水", "木", "金", "土"][date.getDay()];
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日(${weekday}) ${date.getHours()}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+const validDate = (date: Date | null): date is Date => !!date && !Number.isNaN(date.getTime());
+
 // 日本語版 Gmail の引用の見出し「2026年1月1日(木) 9:05 山田 太郎 <a@example.com>:」。
 // 時は0で埋めない（純正から送ったソースで「0:52」を確かめた）。秒は切り捨てる。
-// 純正は Date ヘッダーではなく受信した時刻（internalDate）を使うため、受信が次の分にずれたメールでは1分違う
-export function formatQuoteHeader(date: Date, from: string): string {
-  const weekday = ["日", "月", "火", "水", "木", "金", "土"][date.getDay()];
-  const mm = String(date.getMinutes()).padStart(2, "0");
-  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日(${weekday}) ${date.getHours()}:${mm} ${displayAddress(from)}:`;
+// 時刻が分からないときは「NaN年…」にせず、時刻を出さずに「山田 太郎 <a@example.com>:」だけにする
+export function formatQuoteHeader(date: Date | null, from: string): string {
+  return validDate(date) ? `${formatJaDateTime(date)} ${displayAddress(from)}:` : `${displayAddress(from)}:`;
 }
 
 export type ReplyComposeInput = {
@@ -131,17 +146,16 @@ export function forwardSubjectFor(original: string): string {
   return `Fwd: ${s}`;
 }
 
-// 日本語版 Gmail の転送の Date 行「2026年1月1日(木) 9:05」
-export function formatForwardDate(date: Date): string {
-  const weekday = ["日", "月", "火", "水", "木", "金", "土"][date.getDay()];
-  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日(${weekday}) ${date.getHours()}:${String(date.getMinutes()).padStart(2, "0")}`;
+// 日本語版 Gmail の転送の Date 行「2026年1月1日(木) 9:05」。時刻が分からないときは空（「Date: 」だけ）にする
+export function formatForwardDate(date: Date | null): string {
+  return validDate(date) ? formatJaDateTime(date) : "";
 }
 
 export type ForwardComposeInput = {
   // 転送に添える本文（Re:Mail の転送画面では今は書けないので、空のことが多い）
   text?: string;
   signatureHtml?: string;
-  original: { from: string; date: Date; subject: string; to: string; cc?: string; text: string; html?: string };
+  original: { from: string; date: Date | null; subject: string; to: string; cc?: string; text: string; html?: string };
 };
 
 // 転送の見出しの宛先（HTML）。純正 Gmail と同じく「表示名 &lt;アドレス&gt;」、表示名が無ければ「 &lt;アドレス&gt;」

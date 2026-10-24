@@ -9,7 +9,7 @@ import { type RoomKeyStr, decodeRoomKey } from "../lib/roomKey";
 import { withSignature, withQuote, signatureOf, sameSignature, buildQuoteHtml, hasQuote } from "../lib/composeHtml";
 import type { InlineImage } from "../lib/composeEditor";
 import { normalizeRecipients, excludesPartner, pickMoveTarget, replyChoices, recipientsKey, isValidRecipientAddress, displayRecipientName, type ComposeRecipient } from "../lib/composeRecipients";
-import { replySubjectFor, pickSendAs, formatQuoteHeader, extractHtmlBodyInner } from "../lib/replyCompose";
+import { replySubjectFor, pickSendAs, formatQuoteHeader, quoteTimeOf, extractHtmlBodyInner } from "../lib/replyCompose";
 import { logWarn } from "../lib/safeLog";
 import type { useSendAs } from "./useSendAs";
 import type { CarriedDraft, Attachment } from "./useDrafts";
@@ -213,7 +213,7 @@ export function useCompose({
       showErrorToast("引用を読み込めませんでした。送る前にもう一度読み込みます。");
       return;
     }
-    const quote = buildQuoteHtml(formatQuoteHeader(new Date(m.date), m.from), original.html ? extractHtmlBodyInner(original.html).inner : null, original.text || m.body || "");
+    const quote = buildQuoteHtml(formatQuoteHeader(quoteTimeOf({ date: m.date, internalDate: original.internalDate ?? m.internalDate }), m.from), original.html ? extractHtmlBodyInner(original.html).inner : null, original.text || m.body || "");
     const now = currentCompose();
     loadCompose(withQuote(now.html, quote), now.images);
   };
@@ -341,7 +341,7 @@ export function useCompose({
   // 返信・転送で引用するために、元のメールの HTML 本文を取り直す（画面用のテキストは整形済みで情報が欠けるため）。
   // 取れなければ null を返し、呼び出し側はテキスト版を使う
   // 引用・転送に使う元のメールの全体（HTML とテキスト。どちらも引用部分を含み、画面用の整形をしていないもの）
-  const fetchOriginalFull = async (message: Email, account: string): Promise<{ html: string | null; text: string | null }> => {
+  const fetchOriginalFull = async (message: Email, account: string): Promise<{ html: string | null; text: string | null; internalDate?: number }> => {
     if (typeof message.id !== "string" || message.id.startsWith("fake-") || message.isMissing) return { html: null, text: null };
     try {
       const params = new URLSearchParams({ messageId: message.id, html: "true", full: "true" });
@@ -349,10 +349,10 @@ export function useCompose({
       // 古い応答を使わないよう、ブラウザのキャッシュを通さない
       const res = await fetch(`/api/emails?${params.toString()}`, { cache: "no-store" });
       if (!res.ok) return { html: null, text: null };
-      const data = (await res.json()) as { htmlBody?: string | null; textBody?: string | null };
+      const data = (await res.json()) as { htmlBody?: string | null; textBody?: string | null; internalDate?: number | null };
       // HTML しか無いメールでは textBody に HTML が入るので、テキストとしては使わない
       const text = data.textBody && !/<\/?(html|body|div|p|br)\b/i.test(data.textBody) ? data.textBody : null;
-      return { html: data.htmlBody || null, text };
+      return { html: data.htmlBody || null, text, internalDate: data.internalDate ?? undefined };
     } catch (e) {
       logWarn("original.fetchHtml", {}, e);
       return { html: null, text: null };

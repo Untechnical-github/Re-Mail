@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   LIMITS, TRUNCATED_NOTICE, getTextBody, getHtmlBody, extractAttachments, extractHtmlLinks, stripHtmlQuote,
-  looksLikeForward, stripLooseCssRules, removeTagBlocks, cleanseBody, parseMessageDetail, type GmailMessagePart,
+  looksLikeForward, stripLooseCssRules, removeTagBlocks, cleanseBody, parseMessageDetail, parseInternalDate, type GmailMessagePart,
   extractContentIdParts, referencesContentId,
 } from "./messageParse";
 
@@ -163,6 +163,21 @@ describe("parseMessageDetail", () => {
     });
     expect(sent.bcc).toBe("鈴木 <b@example.com>");
     expect(parseMessageDetail({ id: "abc125", threadId: "t1", payload: { headers: [{ name: "To", value: "a@example.com" }] } }).bcc).toBeUndefined();
+  });
+
+  it("internalDate（Gmail が受け取った時刻）を数で持つ。無い・数字でない・0・負なら付けない", () => {
+    const base = { id: "abc126", threadId: "t1", payload: { headers: [{ name: "Date", value: "Sun, 25 Oct 2026 00:51:58 +0900" }] } };
+    expect(parseMessageDetail({ ...base, internalDate: "1792857131999" }).internalDate).toBe(1792857131999);
+    expect(parseMessageDetail(base).internalDate).toBeUndefined();
+    expect(parseMessageDetail({ ...base, internalDate: "abc" }).internalDate).toBeUndefined();
+    expect(parseMessageDetail({ ...base, internalDate: "0" }).internalDate).toBeUndefined();
+    expect(parseMessageDetail({ ...base, internalDate: "-1000" }).internalDate).toBeUndefined();
+    expect(parseMessageDetail({ ...base, internalDate: "" }).internalDate).toBeUndefined();
+  });
+  it("parseInternalDate は文字列・数のどちらも受け、壊れた値は undefined", () => {
+    expect(parseInternalDate("1")).toBe(1);
+    expect(parseInternalDate(1792857131999)).toBe(1792857131999);
+    for (const v of [undefined, null, "", " ", "abc", "1e400", 0, -1, NaN, Infinity, {}, []]) expect(parseInternalDate(v)).toBeUndefined();
   });
 
   it("payload が無い・壊れていても例外にしない", () => {
