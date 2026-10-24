@@ -6,7 +6,7 @@ import { getValidAccessToken } from "../../lib/googleToken";
 import { encryptSecret, decryptSecret, EncryptionKeyMissingError } from "../../lib/tokenCrypto";
 import { findLinkedAccount } from "../../lib/linkedAccountsStore";
 import { buildMimeSegments, buildGmailUploadBody, decodeMimeHeader } from "../../lib/mime";
-import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, getTextBody, extractAttachments, extractContentIdParts, referencesContentId, stripHtmlQuote, looksLikeForward, parseMessageDetail, parseInternalDate } from "../../lib/messageParse";
+import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, getTextBody, extractAttachments, extractContentIdParts, referencesContentId, stripHtmlQuote, looksLikeForward, parseMessageDetail, parseInternalDate, topReceivedTime } from "../../lib/messageParse";
 import type { MimeInlinePart } from "../../lib/mime";
 import { summarizeHistory, type GmailHistoryRecord } from "../../lib/historySync";
 import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
@@ -451,7 +451,7 @@ export async function GET(request: Request) {
       if (searchParams.get("full") === "true") {
         const rawText = message.payload ? getTextBody(message.payload) : "";
         // 受け取った時刻も返す（引用・転送の見出しの時刻。端末のキャッシュにある古いメールは持っていないため）
-        return NextResponse.json({ htmlBody: rawHtml.trim() || null, textBody: rawText || null, hasHtml: !!rawHtml.trim(), internalDate: parseInternalDate(message.internalDate) ?? null });
+        return NextResponse.json({ htmlBody: rawHtml.trim() || null, textBody: rawText || null, hasHtml: !!rawHtml.trim(), internalDate: parseInternalDate(message.internalDate) ?? null, receivedAt: topReceivedTime(message.payload?.headers || []) ?? null });
       }
       const subject = decodeMimeHeader(getHeader(message.payload?.headers || [], "Subject"));
       // HTML側の引用は "> " ではなく <blockquote>/gmail_quote タグで表現されるため、

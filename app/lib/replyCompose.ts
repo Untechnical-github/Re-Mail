@@ -71,13 +71,18 @@ export function displayAddressList(list: string): string {
   return splitAddressList(list || "").map(displayAddress).join(", ");
 }
 
-// 引用・転送の見出しに出す時刻（分で切り捨てて出す）。Gmail が受け取った時刻（internalDate）を優先し、
-// 無い（端末のキャッシュにある古いメール）・壊れているときは Date ヘッダー。どちらも使えなければ null。
-// 注意：純正 Gmail の Web から送られたメールでは internalDate が Date ヘッダーと同じ秒で、純正の見出しは
-// 実際に届いた時刻（一番上の Received、送信取り消しの待ち時間の分だけ遅い）の分になるため、1分ずれることがある（実機で確かめた）
-export function quoteTimeOf(m: { date?: string; internalDate?: number }): Date | null {
-  const ms = m.internalDate;
-  if (typeof ms === "number" && Number.isFinite(ms) && ms > 0) return new Date(ms);
+export type QuoteTimeSource = { date?: string; internalDate?: number; receivedAt?: number };
+const usableMs = (ms: number | undefined): ms is number => typeof ms === "number" && Number.isFinite(ms) && ms > 0;
+
+// 引用・転送の見出しに出す時刻（分で切り捨てて出す）。純正 Gmail は実際に届いた時刻（一番上の Received の日付）を使う
+// （実機で9通確かめた。Web から送られたメールは送信取り消しの待ち時間の分だけ Date ヘッダーや internalDate より遅く、
+// Date が :58 秒なら次の分になる）。Received が無い・読めない（端末のキャッシュにある古いメールなど）ときは internalDate、
+// 次に Date ヘッダー。どれも使えなければ null（見出しは時刻なし）。fresh は元のメールを取り直した値で、あればそちらを優先する
+export function quoteTimeOf(m: QuoteTimeSource, fresh?: QuoteTimeSource): Date | null {
+  const received = usableMs(fresh?.receivedAt) ? fresh.receivedAt : m.receivedAt;
+  if (usableMs(received)) return new Date(received);
+  const internal = usableMs(fresh?.internalDate) ? fresh.internalDate : m.internalDate;
+  if (usableMs(internal)) return new Date(internal);
   const d = new Date(m.date || "");
   return Number.isNaN(d.getTime()) ? null : d;
 }

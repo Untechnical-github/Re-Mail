@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   LIMITS, TRUNCATED_NOTICE, getTextBody, getHtmlBody, extractAttachments, extractHtmlLinks, stripHtmlQuote,
-  looksLikeForward, stripLooseCssRules, removeTagBlocks, cleanseBody, parseMessageDetail, parseInternalDate, type GmailMessagePart,
+  looksLikeForward, stripLooseCssRules, removeTagBlocks, cleanseBody, parseMessageDetail, parseInternalDate, parseReceivedTime, RECEIVED_HEADER_MAX, type GmailMessagePart,
   extractContentIdParts, referencesContentId,
 } from "./messageParse";
 
@@ -174,6 +174,30 @@ describe("parseMessageDetail", () => {
     expect(parseMessageDetail({ ...base, internalDate: "-1000" }).internalDate).toBeUndefined();
     expect(parseMessageDetail({ ...base, internalDate: "" }).internalDate).toBeUndefined();
   });
+  it("一番上の Received の日付を receivedAt に持つ", () => {
+    const m = parseMessageDetail({ id: "abc127", threadId: "t1", payload: { headers: [
+      { name: "Received", value: "by 2002:a05:6000:1:b0:1 with SMTP id x;\r\n        Sat, 24 Oct 2026 08:52:11 -0700 (PDT)" },
+      { name: "Received", value: "from mail.example.com by mx.example.com; Sat, 24 Oct 2026 08:40:00 -0700" },
+      { name: "Date", value: "Sun, 25 Oct 2026 00:51:58 +0900" },
+    ] } });
+    expect(m.receivedAt).toBe(Date.UTC(2026, 9, 24, 15, 52, 11));
+    expect(parseMessageDetail({ id: "abc128", threadId: "t1", payload: { headers: [{ name: "Date", value: "Sun, 25 Oct 2026 00:51:58 +0900" }] } }).receivedAt).toBeUndefined();
+  });
+
+  it("parseReceivedTime：「;」が無い・日付が壊れている・空・極端に長いものは読まない", () => {
+    expect(parseReceivedTime("by x; Sat, 24 Oct 2026 08:52:11 -0700 (PDT)")).toBe(Date.UTC(2026, 9, 24, 15, 52, 11));
+    expect(parseReceivedTime("by x;Sat, 24 Oct 2026 23:59:59 +0000")).toBe(Date.UTC(2026, 9, 24, 23, 59, 59));
+    // 最後の「;」より後ろを使う
+    expect(parseReceivedTime("from a (b; c) by x; Sat, 24 Oct 2026 08:52:11 +0000")).toBe(Date.UTC(2026, 9, 24, 8, 52, 11));
+    for (const v of [undefined, "", "by x with SMTP id y", "by x; 壊れた日付", "by x;", "by x; (PDT)", "by x; Thu, 01 Jan 1970 00:00:00 +0000"]) expect(parseReceivedTime(v)).toBeUndefined();
+    const long = "by " + "x".repeat(RECEIVED_HEADER_MAX) + "; Sat, 24 Oct 2026 08:52:11 +0000";
+    expect(parseReceivedTime(long)).toBeUndefined();
+    const justFits = "by x; Sat, 24 Oct 2026 08:52:11 +0000".padStart(RECEIVED_HEADER_MAX, " ");
+    expect(parseReceivedTime(justFits)).toBe(Date.UTC(2026, 9, 24, 8, 52, 11));
+    // 「(」や「;」だらけでも線形で終わる
+    expect(parseReceivedTime(";(".repeat(400))).toBeUndefined();
+  });
+
   it("parseInternalDate は文字列・数のどちらも受け、壊れた値は undefined", () => {
     expect(parseInternalDate("1")).toBe(1);
     expect(parseInternalDate(1792857131999)).toBe(1792857131999);

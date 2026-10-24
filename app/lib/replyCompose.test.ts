@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { replySubjectFor, buildReferences, pickSendAs, signatureToText, formatQuoteHeader, quoteTimeOf, composeReplyBodies, escapeHtml, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, displayAddressList } from "./replyCompose";
+import { replySubjectFor, buildReferences, pickSendAs, signatureToText, formatQuoteHeader, quoteTimeOf, type QuoteTimeSource, composeReplyBodies, escapeHtml, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, displayAddressList } from "./replyCompose";
 
 describe("replySubjectFor", () => {
   it("Re: を1回だけ付ける", () => {
@@ -76,7 +76,21 @@ describe("formatQuoteHeader", () => {
 
 describe("quoteTimeOf（純正 Gmail と同じく、受け取った時刻 internalDate を分で切り捨てて見出しに出す）", () => {
   const at = (y: number, mo: number, d: number, h: number, mi: number, s = 0, ms = 0) => new Date(y, mo, d, h, mi, s, ms).getTime();
-  const head = (m: { date?: string; internalDate?: number }) => formatQuoteHeader(quoteTimeOf(m), "a@example.com");
+  const head = (m: QuoteTimeSource) => formatQuoteHeader(quoteTimeOf(m), "a@example.com");
+  it("Received（receivedAt）を一番に使う。取り直した値（fresh）があればそちらを優先", () => {
+    // 実機：Date も internalDate も 0:51:58、届いたのは 0:52:11 → 純正は 0:52
+    const m = { date: "Sun, 25 Oct 2026 00:51:58 +0900", internalDate: at(2026, 9, 25, 0, 51, 58), receivedAt: at(2026, 9, 25, 0, 52, 11) };
+    expect(head(m)).toBe("2026年10月25日(日) 0:52 <a@example.com>:");
+    expect(formatQuoteHeader(quoteTimeOf({ ...m, receivedAt: undefined }, { receivedAt: at(2026, 9, 25, 0, 52, 11) }), "a@example.com")).toBe("2026年10月25日(日) 0:52 <a@example.com>:");
+    expect(formatQuoteHeader(quoteTimeOf(m, { receivedAt: at(2026, 9, 25, 0, 53, 0) }), "a@example.com")).toBe("2026年10月25日(日) 0:53 <a@example.com>:");
+    expect(head({ ...m, receivedAt: at(2026, 9, 25, 0, 51, 59, 999) })).toBe("2026年10月25日(日) 0:51 <a@example.com>:");
+    // Received が使えなければ internalDate、次に Date
+    for (const receivedAt of [undefined, NaN, 0, -1]) expect(head({ ...m, receivedAt })).toBe("2026年10月25日(日) 0:51 <a@example.com>:");
+    expect(formatQuoteHeader(quoteTimeOf({ ...m, receivedAt: undefined, internalDate: undefined }, { receivedAt: 0, internalDate: -1 }), "a@example.com")).toBe("2026年10月25日(日) 0:51 <a@example.com>:");
+    expect(head({ receivedAt: at(2026, 11, 31, 23, 59, 59, 999) })).toBe("2026年12月31日(木) 23:59 <a@example.com>:");
+    expect(head({ receivedAt: at(2027, 0, 1, 0, 0, 0) })).toBe("2027年1月1日(金) 0:00 <a@example.com>:");
+  });
+
   it("internalDate があればそれを使う（Date ヘッダーが前の分でも）", () => {
     // 実機：Date が 0:51:58、受信が 0:52:11 → 純正は 0:52
     expect(head({ date: new Date(at(2026, 9, 25, 0, 51, 58)).toUTCString(), internalDate: at(2026, 9, 25, 0, 52, 11) })).toBe("2026年10月25日(日) 0:52 <a@example.com>:");

@@ -66,7 +66,7 @@ export function useSend({
   partnerAddressOf: (room: RoomKeyStr | null) => string;
   askMoveForRecipients: (list: ComposeRecipient[]) => void;
   getReplyBase: (room: RoomKeyStr | null) => Email | null;
-  fetchOriginalFull: (message: Email, account: string) => Promise<{ html: string | null; text: string | null; internalDate?: number }>;
+  fetchOriginalFull: (message: Email, account: string) => Promise<{ html: string | null; text: string | null; internalDate?: number; receivedAt?: number }>;
   MAX_TOTAL_ATTACHMENT_BYTES: number;
   replyToMessage: Email | null;
   setReplyToMessage: SetState<Email | null>;
@@ -265,7 +265,7 @@ export function useSend({
           });
           return;
         }
-        html = withQuote(html, buildQuoteHtml(formatQuoteHeader(quoteTimeOf({ date: replyToMessage.date, internalDate: original.internalDate ?? replyToMessage.internalDate }), replyToMessage.from), original.html ? extractHtmlBodyInner(original.html).inner : null, original.text || replyToMessage.body || ""));
+        html = withQuote(html, buildQuoteHtml(formatQuoteHeader(quoteTimeOf(replyToMessage, original), replyToMessage.from), original.html ? extractHtmlBodyInner(original.html).inner : null, original.text || replyToMessage.body || ""));
       }
       const finalHtml = normalizeComposeHtml(html, replyToMessage ? "reply" : "new");
       if (finalHtml.length > COMPOSE_LIMITS.maxHtmlChars) {
@@ -400,7 +400,7 @@ export function useSend({
     const originalHtml = originalFull.html;
     const bodies = composeForwardBodies({
       signatureHtml: alias?.signature,
-      original: { from: message.from || "", date: quoteTimeOf({ date: message.date, internalDate: originalFull.internalDate ?? message.internalDate }), subject: message.subject || "", to: message.to || "", cc: message.cc, text: originalFull.text || message.body || "", html: originalHtml || undefined },
+      original: { from: message.from || "", date: quoteTimeOf(message, originalFull), subject: message.subject || "", to: message.to || "", cc: message.cc, text: originalFull.text || message.body || "", html: originalHtml || undefined },
     });
     const bodyText = bodies.text;
     const bodyHtml = bodies.html;

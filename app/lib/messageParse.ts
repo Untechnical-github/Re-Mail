@@ -339,6 +339,29 @@ export function parseInternalDate(v: unknown): number | undefined {
   return v !== "" && Number.isFinite(ms) && ms > 0 ? ms : undefined;
 }
 
+// Received ヘッダーの「;」より後ろの日付（ミリ秒）。極端に長いものは読まない。正規表現を使わず lastIndexOf で切る。
+// 読めなければ undefined
+export const RECEIVED_HEADER_MAX = 1000;
+export function parseReceivedTime(value: string | undefined): number | undefined {
+  if (!value || value.length > RECEIVED_HEADER_MAX) return undefined;
+  const semi = value.lastIndexOf(";");
+  if (semi === -1) return undefined;
+  let datePart = value.slice(semi + 1);
+  // 末尾の「(PDT)」のようなコメントは外す
+  const paren = datePart.indexOf("(");
+  if (paren !== -1) datePart = datePart.slice(0, paren);
+  datePart = datePart.trim();
+  if (!datePart) return undefined;
+  const ms = Date.parse(datePart);
+  return Number.isFinite(ms) && ms > 0 ? ms : undefined;
+}
+
+// 一番上（最初）の Received だけを使う（最後に受け取ったサーバー＝自分の Gmail が付けたもの）
+export function topReceivedTime(headers: GmailHeader[]): number | undefined {
+  const first = headers.find((h) => h.name.toLowerCase() === "received");
+  return parseReceivedTime(first?.value);
+}
+
 export function parseMessageDetail(message: GmailMessage) {
   const payload = message.payload;
   const headers = payload?.headers || [];
@@ -377,5 +400,6 @@ export function parseMessageDetail(message: GmailMessage) {
   const attachments = extractAttachments(payload, rawHtmlForCheck);
   const hasHtml = !!htmlBodyForLinks;
   const internalDate = parseInternalDate(message.internalDate);
-  return { id: message.id, threadId: message.threadId, subject, from, to, cc, bcc, replyTo, date, internalDate, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, references, inReplyTo, isForward, hasHtml };
+  const receivedAt = topReceivedTime(headers);
+  return { id: message.id, threadId: message.threadId, subject, from, to, cc, bcc, replyTo, date, internalDate, receivedAt, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, references, inReplyTo, isForward, hasHtml };
 }
