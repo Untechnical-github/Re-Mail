@@ -71,12 +71,13 @@ export function displayAddressList(list: string): string {
   return splitAddressList(list || "").map(displayAddress).join(", ");
 }
 
-// 日本語版 Gmail の引用の見出し「2026年1月1日(木) 10:00 山田 太郎 <a@example.com>:」
+// 日本語版 Gmail の引用の見出し「2026年1月1日(木) 9:05 山田 太郎 <a@example.com>:」。
+// 時は0で埋めない（純正から送ったソースで「0:52」を確かめた）。秒は切り捨てる。
+// 純正は Date ヘッダーではなく受信した時刻（internalDate）を使うため、受信が次の分にずれたメールでは1分違う
 export function formatQuoteHeader(date: Date, from: string): string {
   const weekday = ["日", "月", "火", "水", "木", "金", "土"][date.getDay()];
-  const hh = String(date.getHours()).padStart(2, "0");
   const mm = String(date.getMinutes()).padStart(2, "0");
-  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日(${weekday}) ${hh}:${mm} ${displayAddress(from)}:`;
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日(${weekday}) ${date.getHours()}:${mm} ${displayAddress(from)}:`;
 }
 
 export type ReplyComposeInput = {

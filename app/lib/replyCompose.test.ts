@@ -61,9 +61,16 @@ describe("signatureToText", () => {
 
 describe("formatQuoteHeader", () => {
   it("日本語版 Gmail と同じ見出しで、表示名の引用符は外す", () => {
-    expect(formatQuoteHeader(new Date(2026, 0, 1, 9, 5), "相手 <a@example.com>")).toBe("2026年1月1日(木) 09:05 相手 <a@example.com>:");
-    expect(formatQuoteHeader(new Date(2026, 0, 1, 9, 5), '"髙澤家" <a@example.com>')).toBe("2026年1月1日(木) 09:05 髙澤家 <a@example.com>:");
-    expect(formatQuoteHeader(new Date(2026, 0, 1, 9, 5), "a@example.com")).toBe("2026年1月1日(木) 09:05 <a@example.com>:");
+    expect(formatQuoteHeader(new Date(2026, 0, 1, 9, 5), "相手 <a@example.com>")).toBe("2026年1月1日(木) 9:05 相手 <a@example.com>:");
+    expect(formatQuoteHeader(new Date(2026, 0, 1, 9, 5), '"髙澤家" <a@example.com>')).toBe("2026年1月1日(木) 9:05 髙澤家 <a@example.com>:");
+    expect(formatQuoteHeader(new Date(2026, 0, 1, 9, 5), "a@example.com")).toBe("2026年1月1日(木) 9:05 <a@example.com>:");
+  });
+  it("時は0で埋めず、分は2桁、秒は切り捨てる（純正 Gmail の見出しと同じ）", () => {
+    expect(formatQuoteHeader(new Date(2026, 9, 25, 0, 52, 0), "a@example.com")).toBe("2026年10月25日(日) 0:52 <a@example.com>:");
+    expect(formatQuoteHeader(new Date(2026, 9, 24, 23, 58, 44), "a@example.com")).toBe("2026年10月24日(土) 23:58 <a@example.com>:");
+    expect(formatQuoteHeader(new Date(2026, 9, 24, 23, 59, 59, 999), "a@example.com")).toBe("2026年10月24日(土) 23:59 <a@example.com>:");
+    expect(formatQuoteHeader(new Date(2026, 11, 31, 10, 0, 30), "a@example.com")).toBe("2026年12月31日(木) 10:00 <a@example.com>:");
+    expect(formatQuoteHeader(new Date(2027, 0, 1, 0, 0, 0), "a@example.com")).toBe("2027年1月1日(金) 0:00 <a@example.com>:");
   });
 });
 
@@ -74,7 +81,7 @@ describe("displayAddressList", () => {
 });
 
 describe("composeReplyBodies", () => {
-  const quote = { header: "2026年1月1日(木) 09:05 相手 <a@example.com>:", originalText: "1行目\n\n2行目\n" };
+  const quote = { header: "2026年1月1日(木) 9:05 相手 <a@example.com>:", originalText: "1行目\n\n2行目\n" };
 
   it("署名も引用もなければ本文だけ", () => {
     expect(composeReplyBodies({ text: "了解です" })).toEqual({ text: "了解です", html: '<div dir="ltr">了解です</div>' });
@@ -83,13 +90,13 @@ describe("composeReplyBodies", () => {
   // 純正 Gmail から実際に返信したメールのソース（署名の設定は既定のまま）と同じ並び・空行にする
   it("本文 → 引用 → 署名 の順。テキスト版は > で引用し、空行は > だけにする", () => {
     const r = composeReplyBodies({ text: "了解です\n明日伺います", signatureHtml: "<b>山田</b>", quote });
-    expect(r.text).toBe("了解です\n明日伺います\n\n\n2026年1月1日(木) 09:05 相手 <a@example.com>:\n\n> 1行目\n>\n> 2行目\n>\n\n\n-- \n山田\n");
+    expect(r.text).toBe("了解です\n明日伺います\n\n\n2026年1月1日(木) 9:05 相手 <a@example.com>:\n\n> 1行目\n>\n> 2行目\n>\n\n\n-- \n山田\n");
     const sigAt = r.html.indexOf("gmail_signature");
     const quoteAt = r.html.indexOf("gmail_quote");
     expect(quoteAt).toBeGreaterThan(0);
     expect(sigAt).toBeGreaterThan(quoteAt);
     expect(r.html.startsWith('<div dir="ltr">了解です<br>明日伺います</div><br><div class="gmail_quote gmail_quote_container">')).toBe(true);
-    expect(r.html).toContain('<div dir="ltr" class="gmail_attr">2026年1月1日(木) 09:05 相手 &lt;a@example.com&gt;:<br></div>');
+    expect(r.html).toContain('<div dir="ltr" class="gmail_attr">2026年1月1日(木) 9:05 相手 &lt;a@example.com&gt;:<br></div>');
     expect(r.html.endsWith('</blockquote></div><div><br clear="all"></div><div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature"><b>山田</b></div>')).toBe(true);
   });
 
