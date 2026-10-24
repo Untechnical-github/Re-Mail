@@ -79,7 +79,7 @@ describe("quoteTimeOf（純正 Gmail と同じく、受け取った時刻 intern
   const head = (m: QuoteTimeSource) => formatQuoteHeader(quoteTimeOf(m), "a@example.com");
   it("Received（receivedAt）を一番に使う。取り直した値（fresh）があればそちらを優先", () => {
     // 実機：Date も internalDate も 0:51:58、届いたのは 0:52:11 → 純正は 0:52
-    const m = { date: "Sun, 25 Oct 2026 00:51:58 +0900", internalDate: at(2026, 9, 25, 0, 51, 58), receivedAt: at(2026, 9, 25, 0, 52, 11) };
+    const m = { date: new Date(at(2026, 9, 25, 0, 51, 58)).toUTCString(), internalDate: at(2026, 9, 25, 0, 51, 58), receivedAt: at(2026, 9, 25, 0, 52, 11) };
     expect(head(m)).toBe("2026年10月25日(日) 0:52 <a@example.com>:");
     expect(formatQuoteHeader(quoteTimeOf({ ...m, receivedAt: undefined }, { receivedAt: at(2026, 9, 25, 0, 52, 11) }), "a@example.com")).toBe("2026年10月25日(日) 0:52 <a@example.com>:");
     expect(formatQuoteHeader(quoteTimeOf(m, { receivedAt: at(2026, 9, 25, 0, 53, 0) }), "a@example.com")).toBe("2026年10月25日(日) 0:53 <a@example.com>:");
