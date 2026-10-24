@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
+import dynamic from "next/dynamic";
 import { getCachedAttachment, setCachedAttachment, memCache, getCachedVideoThumb, setCachedVideoThumb, videoThumbMemCache, attachmentCacheKey } from "./lib/attachmentCache";
 import { generateVideoThumbnail } from "./lib/videoThumbnail";
 import { signIn } from "next-auth/react";
@@ -12,7 +13,8 @@ import { chatConfigTab, isMineEmail } from "./lib/filterMatch";
 import type { Email } from "./types/email";
 import { summarizeRecipients, sentRecipientCounts, receivedRole, ROLE_LABELS, ROLE_HINTS } from "./lib/composeRecipients";
 import { gmailOpenUrl } from "./lib/gmailLink";
-import { replySubjectFor } from "./lib/replyCompose";
+// 書式付きの入力欄は、チャットを開いたときに読み込む（最初の表示を遅くしない）
+const ComposeEditor = dynamic(() => import("./components/ComposeEditor").then(m => m.ComposeEditor), { ssr: false, loading: () => <div className="flex-1 h-8" /> });
 
 function InlineAttachmentImage({ attachment, messageId, accountId, cacheKey, onOpen }: {
   attachment: { filename: string; mimeType: string; size: number; attachmentId?: string };
@@ -175,15 +177,8 @@ export default function Home() {
   const selectedRoom = app.state.selectedSender;
   const [recipientsOpenRoom, setRecipientsOpenRoom] = useState<string | null>(null);
   const recipientsOpen = !!selectedRoom && recipientsOpenRoom === selectedRoom;
-  // 本文の入力欄は最初は1行、入力に合わせて伸び、画面の高さの約40%（またはおよそ8行）で止まって中をスクロールする
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
-  const replyBodyValue = app.state.replyBody;
-  useEffect(() => {
-    const el = bodyRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [replyBodyValue, selectedRoom]);
+  // 「Aa」で開く、すべての書式のバー（送信スペースを開いているときだけ出す）
+  const [fullBarOpen, setFullBarOpen] = useState(false);
   // 送信スペース以外を押したらたたむ。確認画面・モーダルの中を押したときはたたまない（送信スペースから開いたものを操作している途中のため）
   const setComposeActive = app.actions.setComposeActive;
   useEffect(() => {
@@ -193,12 +188,13 @@ export default function Home() {
       if (target.closest?.('[role="dialog"], .fixed.inset-0')) return;
       setComposeActive(false);
       setRecipientsOpenRoom(null);
+      setFullBarOpen(false);
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
   }, [setComposeActive]);
   // メッセージ一覧のスクロールが始まったらたたむ（指やホイールで動かしたときだけ。読み込みでの自動のスクロールではたたまない）
-  const collapseCompose = () => { setComposeActive(false); setRecipientsOpenRoom(null); };
+  const collapseCompose = () => { setComposeActive(false); setRecipientsOpenRoom(null); setFullBarOpen(false); };
 
   if (auth.status === "loading") return <div className="flex h-screen items-center justify-center bg-[#313338] text-gray-400 font-bold">読み込み中...</div>;
   if (!auth.session || auth.session.error === "RefreshAccessTokenError") return (
@@ -220,7 +216,7 @@ export default function Home() {
   // 本文に何か書いてあるか、返信欄にキャレットがあるときだけ、送信元・送信先・返信元・件名を出す（PC・スマホ共通）
   // 送信先の欄を開いている間・入力欄から開いた確認画面や選ぶ画面を出している間も、たたまない（選んでいる途中で消えないように）
   const composeModalOpen = !!state.composeDialog || ["select_recipients", "select_reply_target", "select_send_account"].includes(state.modal?.type || "");
-  const showComposeExtras = !!state.replyBody.trim() || state.composeActive || composeModalOpen;
+  const showComposeExtras = !state.composeBodyEmpty || state.composeActive || composeModalOpen;
   const isGroupChat = !!selectedGroupConfig?.isGroup;
   const noRecipients = !isGroupChat && state.recipients.length === 0;
   const subjectFindHighlight = state.findBarOpen && state.findBarSearchSubject ? state.findBarKeyword : "";
@@ -1160,9 +1156,8 @@ export default function Home() {
                     {state.replyToMessage && (
                       <button title="返信元を外す" onClick={(e) => {
                         e.stopPropagation();
-                        // 返信元を選んだときに自動で入れた件名（Re: 元の件名）は一緒に消す。自分で書き換えた件名は残す
-                        if (state.replyToMessage && state.replySubject === replySubjectFor(state.replyToMessage.subject || "")) actions.setReplySubject("");
-                        actions.setReplyToMessage(null);
+                        // 引用と、返信元を選んだときに自動で入れた件名（Re: 元の件名）も一緒に消す。自分で書き換えた件名は残す
+                        actions.clearReplyTarget();
                       }} className="font-bold px-2 py-2 hover:text-white flex-shrink-0">×</button>
                     )}
                   </div>
@@ -1201,8 +1196,29 @@ export default function Home() {
                       />
                       {state.useIconLabels ? <PaperclipIcon className="w-5 h-5" /> : <span className="text-xs font-bold">添付</span>}
                     </label>
-                    <textarea ref={bodyRef} disabled={isSendDisabled || !state.isDraftReady} placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || actions.roomLocalKey(state.selectedSender!)}`} rows={1} value={state.replyBody} onChange={(e) => actions.setReplyBody(e.target.value)} onClick={(e) => e.stopPropagation()} style={{ maxHeight: "min(40dvh, 13rem)" }} className="flex-1 resize-none overflow-y-auto text-[15px] leading-6 bg-transparent text-white px-2 py-1 focus:outline-none placeholder-gray-500" />
-                    <button title={noRecipients ? "送信先がありません" : "送信"} onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={isSendDisabled || state.isSending || !state.isDraftReady || !state.replyBody.trim() || noRecipients} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
+                    {/* 書式（送信スペースを開いているときだけ出す） */}
+                    {showComposeExtras && !isSendDisabled && (
+                      <button type="button" title="書式" aria-label="書式" aria-pressed={fullBarOpen} onPointerDown={(e) => e.preventDefault()} onClick={(e) => { e.stopPropagation(); setFullBarOpen(!fullBarOpen); }} className={`flex-shrink-0 px-1.5 py-2 rounded text-sm font-bold transition ${fullBarOpen ? "text-white bg-[#5865F2]" : "text-gray-400 hover:text-white"}`}>
+                        Aa
+                      </button>
+                    )}
+                    <ComposeEditor
+                      loadSeq={state.editorLoad.seq}
+                      loadHtml={state.editorLoad.html}
+                      loadImages={state.editorLoad.images}
+                      allowRemoteImages={actions.alwaysLoadImagesFor(actions.roomAccountEmail(state.selectedSender!))}
+                      disabled={isSendDisabled || !state.isDraftReady}
+                      placeholder={`Message to ${state.chatConfigs[state.selectedSender!]?.customName || actions.roomLocalKey(state.selectedSender!)}`}
+                      bodyEmpty={state.composeBodyEmpty}
+                      fullBarOpen={fullBarOpen && showComposeExtras}
+                      apiRef={refs.editorApiRef}
+                      onChange={actions.onEditorChange}
+                      onFocus={() => actions.setComposeActive(true)}
+                      onError={(m) => actions.showErrorToast(m)}
+                      onDropFiles={(files) => actions.addReplyAttachments(files)}
+                      onOpenFullBar={() => { actions.setComposeActive(true); setFullBarOpen(true); }}
+                    />
+                    <button title={noRecipients ? "送信先がありません" : "送信"} onClick={(e) => { e.stopPropagation(); actions.handleSend(); }} disabled={isSendDisabled || state.isSending || !state.isDraftReady || state.composeBodyEmpty || noRecipients} className="text-white px-4 py-2 rounded font-bold text-sm bg-[#5865F2] hover:bg-[#4752C4] transition disabled:bg-[#3f4147] disabled:text-gray-500 active:scale-95">
                       {state.isSending ? "..." : (state.useIconLabels ? <SendIcon className="w-4 h-4" /> : "送信")}
                     </button>
                   </div>

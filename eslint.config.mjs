@@ -20,6 +20,20 @@ const eslintConfig = defineConfig([
     },
   },
   {
+    // 生の HTML の文字列を DOM に直接入れない（相手が送ってきたメールの HTML がスクリプトとして動く入口になるため）。
+    // 入力欄に HTML を入れるときは app/lib/composeHtml.ts の安全化（insertSafeHtml / replaceContent / safeFragment）を通す。
+    // 例外は composeHtml.ts の中の1か所だけ（その行に理由を書いて外している）
+    files: ["app/**/*.ts", "app/**/*.tsx"],
+    rules: {
+      "no-restricted-syntax": ["error",
+        { selector: "AssignmentExpression[left.property.name=/^(innerHTML|outerHTML)$/]", message: "innerHTML / outerHTML に代入しない。composeHtml.ts の安全化を通して入れる" },
+        { selector: "CallExpression[callee.property.name=/^(insertAdjacentHTML|write|writeln)$/]", message: "insertAdjacentHTML / document.write を使わない。composeHtml.ts の安全化を通して入れる" },
+        { selector: "CallExpression[callee.property.name='execCommand'][arguments.0.value=/^insertHTML$/i]", message: "execCommand(\"insertHTML\") は composeHtml.ts の insertSafeHtml だけで使う" },
+        { selector: "JSXAttribute[name.name='dangerouslySetInnerHTML']", message: "dangerouslySetInnerHTML を使わない" },
+      ],
+    },
+  },
+  {
     // safeLog だけは、形を確かめた項目を console に書き出す役目なので console を使ってよい
     files: ["app/lib/safeLog.ts"],
     rules: { "no-console": "off" },

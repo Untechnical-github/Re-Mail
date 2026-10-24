@@ -1,0 +1,56 @@
+{
+ "format": {
+  "html": "<div dir=\"ltr\"><div>RUN F1 見本</div><div>通常の行</div><div><br></div><div><b>太字</b> <i>斜体</i> <u>下線</u> <strike>取り消し線</strike></div><div><font face=\"ms pgothic, sans-serif\">フォント Ｐゴシック</font></div><div><font face=\"ms pmincho, sans-serif\">フォント Ｐ明朝</font></div><div><font face=\"ms gothic, monospace\">フォント ゴシック</font></div><div><font face=\"arial, sans-serif\">フォント Sans Serif</font></div><div><font face=\"times new roman, serif\">フォント Serif</font></div><div><font face=\"monospace\">フォント 固定幅</font></div><div><font face=\"arial black, sans-serif\">フォント 幅広</font></div><div><font face=\"arial narrow, sans-serif\">フォント 幅狭</font></div><div><font face=\"comic sans ms, sans-serif\">フォント Comic Sans MS</font></div><div><font face=\"garamond, times new roman, serif\">フォント Garamond</font></div><div><font face=\"georgia, serif\">フォント Georgia</font></div><div><font face=\"tahoma, sans-serif\">フォント Tahoma</font></div><div><font face=\"trebuchet ms, sans-serif\">フォント Trebuchet MS</font></div><div><font face=\"verdana, sans-serif\">フォント Verdana</font></div><div><font face=\"arial, sans-serif\" size=\"1\">サイズ 小</font></div><div><font face=\"arial, sans-serif\" size=\"4\">サイズ 大</font></div><div><font face=\"arial, sans-serif\" size=\"6\">サイズ 最大</font></div><div><font face=\"arial, sans-serif\">前 <font color=\"#ff0000\">赤い文字</font> 後</font></div><div><font face=\"arial, sans-serif\">前 <span style=\"background-color:rgb(255,255,0)\">黄色の背景</span> 後</font></div><div style=\"text-align:center\"><font face=\"arial, sans-serif\">中央揃え</font></div><div style=\"text-align:right\"><font face=\"arial, sans-serif\">右揃え</font></div><div style=\"text-align:left\"><font face=\"arial, sans-serif\">左に戻す</font></div><div style=\"text-align:left\"><ol><li><font face=\"arial, sans-serif\">番号1</font></li><li><font face=\"arial, sans-serif\">番号2</font></li></ol><div><ul><li><font face=\"arial, sans-serif\">箇条1</font></li><li><font face=\"arial, sans-serif\">箇条2</font></li></ul></div></div><blockquote style=\"margin:0 0 0 40px;border:none;padding:0px\"><div style=\"text-align:left\"><div><div><font face=\"arial, sans-serif\">インデント</font></div></div></div></blockquote><font face=\"arial, sans-serif\">インデント解除</font><div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\"><font face=\"arial, sans-serif\">引用の行</font></blockquote><div>引用の後</div><div><a href=\"https://example.com/path?a=1&amp;b=2\">リンクの文字</a>書式をクリアする文字 </div><div>最後の行</div><div><br></div><div><br></div><span class=\"gmail_signature_prefix\">-- </span><br><div dir=\"ltr\" class=\"gmail_signature\" data-smartmail=\"gmail_signature\"><div dir=\"ltr\">署名テスト</div></div></div></div>\r\n",
+  "text": "RUN F1 見本\r\n通常の行\r\n\r\n*太字* *斜体* *下線* 取り消し線\r\nフォント Ｐゴシック\r\nフォント Ｐ明朝\r\nフォント ゴシック\r\nフォント Sans Serif\r\nフォント Serif\r\nフォント 固定幅\r\nフォント 幅広\r\nフォント 幅狭\r\nフォント Comic Sans MS\r\nフォント Garamond\r\nフォント Georgia\r\nフォント Tahoma\r\nフォント Trebuchet MS\r\nフォント Verdana\r\nサイズ 小\r\nサイズ 大\r\nサイズ 最大\r\n前 赤い文字 後\r\n前 黄色の背景 後\r\n中央揃え\r\n右揃え\r\n左に戻す\r\n\r\n   1. 番号1\r\n   2. 番号2\r\n\r\n\r\n   - 箇条1\r\n   - 箇条2\r\n\r\nインデント\r\n\r\nインデント解除\r\n\r\n> 引用の行\r\n\r\n引用の後\r\nリンクの文字 <https://example.com/path?a=1&b=2>書式をクリアする文字\r\n最後の行\r\n\r\n\r\n-- \r\n署名テスト\r\n",
+  "structure": [
+   "multipart/alternative",
+   "  text/plain [base64]",
+   "  text/html [base64]"
+  ],
+  "inline": []
+ },
+ "image": {
+  "html": "<div dir=\"ltr\"><div>RUN I1 見本</div><div>画像の前の行</div><div><img src=\"cid:ii_mvlxvq8d0\" alt=\"IMG-A.png\" width=\"240\" height=\"120\"><br></div><div><img src=\"cid:ii_mvlxvv0b1\" alt=\"IMG-B.png\" width=\"558\" height=\"314\"><br></div><div>画像の後の行</div><div><br></div><div><br></div><span class=\"gmail_signature_prefix\">-- </span><br><div dir=\"ltr\" class=\"gmail_signature\" data-smartmail=\"gmail_signature\"><div dir=\"ltr\">署名テスト</div></div></div>\r\n\r\n",
+  "text": "RUN I1 見本\r\n画像の前の行\r\n[image: IMG-A.png]\r\n[image: IMG-B.png]\r\n画像の後の行\r\n\r\n\r\n-- \r\n署名テスト\r\n",
+  "structure": [
+   "multipart/related",
+   "  multipart/alternative",
+   "    text/plain [base64]",
+   "    text/html [quoted-printable]",
+   "  image/png [base64] (inline)",
+   "  image/png [base64] (inline)"
+  ],
+  "inline": [
+   {
+    "filename": "IMG-A.png",
+    "type": "image/png",
+    "disposition": "inline; filename=\"IMG-A.png\""
+   },
+   {
+    "filename": "IMG-B.png",
+    "type": "image/png",
+    "disposition": "inline; filename=\"IMG-B.png\""
+   }
+  ]
+ },
+ "table": {
+  "html": "<div dir=\"ltr\"><div>RUN T1 見本</div><div>表の前の行</div><div><table style=\"border-collapse:collapse;border:1px solid rgb(153,153,153)\"><thead><tr><th style=\"border:1px solid rgb(153,153,153);padding:4px;background:rgb(238,238,238)\">品名</th><th style=\"border:1px solid rgb(153,153,153);padding:4px;background:rgb(238,238,238)\">数量</th></tr></thead><tbody><tr><td style=\"border:1px solid rgb(153,153,153);padding:4px\">りんご</td><td style=\"border:1px solid rgb(153,153,153);padding:4px;text-align:right\">3</td></tr><tr><td style=\"border:1px solid rgb(153,153,153);padding:4px\"><b>みかん</b></td><td style=\"border:1px solid rgb(153,153,153);padding:4px;text-align:right\">12</td></tr></tbody></table></div><div><br></div><div><br></div><span class=\"gmail_signature_prefix\">-- </span><br><div dir=\"ltr\" class=\"gmail_signature\" data-smartmail=\"gmail_signature\"><div dir=\"ltr\">署名テスト表の後の行</div></div></div>\r\n\r\n",
+  "text": "RUN T1 見本\r\n表の前の行\r\n品名 数量\r\nりんご 3\r\n*みかん* 12\r\n\r\n\r\n-- \r\n署名テスト表の後の行\r\n",
+  "structure": [
+   "multipart/alternative",
+   "  text/plain [base64]",
+   "  text/html [quoted-printable]"
+  ],
+  "inline": []
+ },
+ "reply": {
+  "html": "<div dir=\"ltr\">RUN R2 一行目<div>二行目</div><div><br></div></div><br><div class=\"gmail_quote gmail_quote_container\"><div dir=\"ltr\" class=\"gmail_attr\">2026年10月23日(金) 23:52 相手 &lt;<a href=\"mailto:other@example.com\">other@example.com</a>&gt;:<br></div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\"><div dir=\"ltr\">RUN S0 受け取る側から（Cc あり）<div><br></div></div>\r\n</blockquote></div><div><br clear=\"all\"></div><div><br></div><span class=\"gmail_signature_prefix\">-- </span><br><div dir=\"ltr\" class=\"gmail_signature\"><div dir=\"ltr\">署名テスト</div></div>\r\n\r\n",
+  "text": "RUN R2 一行目\r\n二行目\r\n\r\n\r\n2026年10月23日(金) 23:52 相手 <other@example.com>:\r\n\r\n> RUN S0 受け取る側から（Cc あり）\r\n>\r\n>\r\n\r\n-- \r\n署名テスト\r\n",
+  "structure": [
+   "multipart/alternative",
+   "  text/plain [base64]",
+   "  text/html [quoted-printable]"
+  ],
+  "inline": []
+ }
+}

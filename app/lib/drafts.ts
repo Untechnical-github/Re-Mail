@@ -5,10 +5,18 @@ import localforage from "localforage";
 import type { Email } from "../types/email";
 import { decodeRoomKey } from "./roomKey";
 import { normalizeRecipients, type ComposeRecipient } from "./composeRecipients";
+import { isComposeBodyEmpty, textToComposeHtml, COMPOSE_LIMITS } from "./composeHtml";
+
+// 本文中の画像（cid: で参照する。中身は base64）
+export type DraftImage = { cid: string; filename: string; mimeType: string; size: number; data: string };
 
 export type ComposeDraft = {
   subject: string;
-  body: string;
+  // 入力欄の HTML（整えたもの。本文・引用・署名を1つの HTML のまま持つ。本文中の画像は cid:）
+  html: string;
+  images?: DraftImage[];
+  // 最後に入れた署名（手で書き換えたかを見分けるため）
+  insertedSignature?: string | null;
   replyToMessage: Email | null;
   attachments: { filename: string; mimeType: string; size: number; data: string }[];
   // 入力中の送信先。null は「既定（開いているチャットの相手を To に1人）」のまま。
@@ -20,14 +28,28 @@ export type ComposeDraft = {
 
 const store = localforage.createInstance({ name: "remail", storeName: "drafts" });
 
-export function isEmptyDraft(d: Pick<ComposeDraft, "subject" | "body" | "replyToMessage" | "attachments" | "recipients">): boolean {
-  return !d.subject.trim() && !d.body.trim() && !d.replyToMessage && d.attachments.length === 0 && !d.recipients;
+// 署名・引用を除いた本文に、文字・画像・表があるか
+const hasBody = (html: string) => !!html && !isComposeBodyEmpty(html);
+
+export function isEmptyDraft(d: Pick<ComposeDraft, "subject" | "html" | "replyToMessage" | "attachments" | "recipients">): boolean {
+  return !d.subject.trim() && !hasBody(d.html) && !d.replyToMessage && d.attachments.length === 0 && !d.recipients;
 }
 
 // 本文・件名・返信元・添付のどれかがあるか（送信先を変えただけの下書きは含めない）。
 // 新しいチャットを一覧に残すかの判断に使う（書いた内容が無く、やり取りも無ければチャットは片付ける）
-export function hasDraftContent(d: Pick<ComposeDraft, "subject" | "body" | "replyToMessage" | "attachments">): boolean {
-  return !!d.subject.trim() || !!d.body.trim() || !!d.replyToMessage || d.attachments.length > 0;
+export function hasDraftContent(d: Pick<ComposeDraft, "subject" | "html" | "replyToMessage" | "attachments">): boolean {
+  return !!d.subject.trim() || hasBody(d.html) || !!d.replyToMessage || d.attachments.length > 0;
+}
+
+// 端末に残っていた本文中の画像を読み戻す（形の正しくないもの・上限を超えた分は捨てる）
+function readImages(v: unknown): DraftImage[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((i): i is DraftImage => !!i && typeof i === "object"
+    && typeof (i as DraftImage).cid === "string" && /^ii_[0-9a-z]{1,24}$/.test((i as DraftImage).cid)
+    && typeof (i as DraftImage).data === "string" && typeof (i as DraftImage).mimeType === "string" && /^image\/(png|jpeg|gif|webp|bmp)$/.test((i as DraftImage).mimeType)
+    && typeof (i as DraftImage).size === "number" && (i as DraftImage).size <= COMPOSE_LIMITS.maxImageBytes)
+    .slice(0, COMPOSE_LIMITS.maxImages)
+    .map(i => ({ cid: i.cid, filename: typeof i.filename === "string" ? i.filename : "image.png", mimeType: i.mimeType, size: i.size, data: i.data }));
 }
 
 // 端末に残っていた送信先を読み戻す（壊れた値・上限を超えた分は捨てる）
@@ -37,11 +59,15 @@ function readRecipients(v: unknown): ComposeRecipient[] | null {
 
 export async function loadDraft(room: string): Promise<ComposeDraft | null> {
   try {
-    const d = await store.getItem<ComposeDraft>(room);
+    const d = await store.getItem<ComposeDraft & { body?: unknown }>(room);
     if (!d || typeof d !== "object") return null;
+    // 古い形（文字だけの body）の下書きは、純正と同じ行の HTML にする
+    const html = typeof d.html === "string" ? d.html.slice(0, COMPOSE_LIMITS.maxHtmlChars) : typeof d.body === "string" && d.body ? textToComposeHtml(d.body) : "";
     return {
       subject: typeof d.subject === "string" ? d.subject : "",
-      body: typeof d.body === "string" ? d.body : "",
+      html,
+      images: readImages(d.images),
+      insertedSignature: typeof d.insertedSignature === "string" ? d.insertedSignature : null,
       replyToMessage: d.replyToMessage && typeof d.replyToMessage === "object" ? d.replyToMessage : null,
       attachments: Array.isArray(d.attachments) ? d.attachments : [],
       recipients: readRecipients(d.recipients),

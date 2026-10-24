@@ -94,6 +94,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 - 受信箱・アーカイブ・送信済み・迷惑メール・ゴミ箱を**横断（クロスボックス）**して、同じ相手とのメールを1つのチャットに集める。どの箱を表示するかはチェックボックスで切り替える。
 - 複数の Google アカウントに同時にログインでき、どれも対等に扱う（画面に「連携」「メイン」の区別を出さない）。**チャット・設定・フィルターはアカウントごとに完全に分ける**（§7.1・§7.5）。
 - UI は Discord 風のダークテーマ：背景 `#313338`、アクセント `#5865F2`、ピン留め `#FEE75C`。PC は「チャット一覧（左）＋トーク画面（右）」の2ペイン、モバイルは1画面ずつ切り替える。
+- 入力欄は**純正 Gmail の作成画面と同じ書式**（フォント・大きさ・太字など・色・配置・リスト・インデント・引用・リンク・本文中の画像）を使える。署名と引用も入力欄の中に純正と同じ形で入り、送るメールは純正の作成画面から送ったものと同じ HTML とテキスト版になる（§10.3・§14.4・§15.6）。
 
 ### 1.2 運営方針
 - **自前のサーバーを持たない。** 費用は**ドメイン代**と **Cloudflare Workers の有料プラン**だけ。
@@ -229,11 +230,17 @@ Re-Mail/
 │   │   ├── config/route.test.ts
 │   │   └── emails/route.ts               # Gmail の取得・差分同期・送信・送信確認・移動・削除・添付・HTML 本文・sendAs（保存せず中継だけ）
 │   ├── components/
+│   │   ├── ComposeEditor.tsx             # 書式付きの入力欄（iframe・選んだ文字のバー・「Aa」の書式のバー・リンク・色・画像の大きさ。§14.4）
 │   │   ├── Modals.tsx                    # すべてのモーダル
 │   │   └── ui.tsx                        # ActionBar・アイコン・HighlightText・BodyWithLinks・formatFileSize
 │   ├── hooks/
 │   │   └── useMailApp.ts                 # 状態とロジックの中核（カスタムフック。§13）
 │   ├── lib/                              # React に依存しない純粋関数（ほぼすべてにテストあり。§12）
+│   │   ├── composeHtml.ts                # 入力欄の HTML の安全化・純正の形への整形・テキスト版・署名と引用（§10.3・§15.6）
+│   │   ├── composeEditor.ts              # 入力欄の編集の処理（iframe の中の CSP・イベント・見張り・貼り付け・画像。ブラウザでだけ動く）
+│   │   ├── htmlTree.ts                   # HTML を1回なめて木にする・戻す（DOM の無いテストでも同じに動く）
+│   │   ├── inlineImages.ts               # 送信の API に届いた本文中の画像の検証
+│   │   └── __fixtures__/gmailCompose.json # 純正 Gmail の作成画面から送ったメールの HTML とテキスト版（整形とテキスト版の正解の見本）
 │   ├── types/
 │   │   ├── mail.ts                       # ChatConfig / MessageConfig / SelectionMode / ModalState
 │   │   └── email.ts                      # Email / EmailAttachment
@@ -551,16 +558,21 @@ Gmail の読み取りはすべて `fetchWithRetry` を通す（§10.1）。詳�
 - メール全体を **7bit の ASCII** にする。ヘッダーは RFC 2047（`=?UTF-8?B?...?=`、1語45バイトまで、`CRLF＋空白` で折り返す。ASCII だけなら符号化しない）。本文はすべて base64（76文字で折り返す）。
 - ヘッダーの値から CR・LF を取り除き、ヘッダーの差し込みを防ぐ。
 - アドレスのヘッダー（From / To / Cc / Bcc / Reply-To）は、表示名だけを符号化し、`<アドレス>` はそのまま残す。
-- **Bcc**：Bcc ヘッダーを入れた raw を `messages.send` に渡すと、Gmail が受信者側のメールからは取り除き、自分の送信済みにだけ残す（純正と同じ）。Bcc だけで送るとき（To が空）は To ヘッダーを付けない（中身の無い `To:` は RFC 5322 に合わない）。純正 Gmail で送った送信済みのソースでの Bcc の位置は §17.2 で確かめ、違えば純正に合わせる。
+- **Bcc**：Bcc ヘッダーを入れた raw を `messages.send` に渡すと、Gmail が受信者側のメールからは取り除き、自分の送信済みにだけ残す（純正と同じ）。Bcc だけで送るとき（To が空）は To ヘッダーを付けない。受け取った側のメールには、純正と同じく Gmail が `To: undisclosed-recipients:;` を付ける。こちらで `undisclosed-recipients:;` を入れると Gmail API が 400（`invalidArgument`）で送信を断る（2026-10-24 に実機で確かめた）。そのため自分の送信済みにだけ、純正との違い（To の行が無い）が残る。宛先の分解（`splitAddressList`）は、中身の無いグループ（`undisclosed-recipients:;`）を宛先として数えない。
 - 構造：
   - テキストと HTML の両方を `multipart/alternative` にする。
-  - 本文中の画像（転送で引き継いだ cid: 画像）があれば、HTML と画像を `multipart/related` にまとめる。
+  - 本文中の画像（入力欄で入れた画像、転送で引き継いだ cid: 画像）があれば、HTML と画像を `multipart/related` にまとめる。各画像は `Content-Disposition: inline; filename=…`・`Content-ID: <ii_…>`・`X-Attachment-Id: ii_…`（純正と同じ）。入力欄の画像は画面から `inlineImages`（`{ contentId, filename, mimeType, data }`）で届き、サーバーが `validateInlineImages` で形（`ii_` で始まる ID・PNG/JPEG/GIF/WebP/BMP・1枚10MB・20枚まで・重なりなし）を確かめる。1つでも違えば送らずに 400 `INVALID_INLINE_IMAGES`。添付と合わせて 25MB まで。
   - 添付があれば、全体を `multipart/mixed` にする。添付のファイル名は `name=`（RFC 2047）・`filename=`（RFC 2047）・`filename*=UTF-8''...`（RFC 2231）を併記する。
   - 区切り文字は `remail_<UUID>`。
 - **ヘッダーの並び**は純正 Gmail に合わせて `MIME-Version` → `References` → `In-Reply-To` → `From` → `Date` → `Message-ID` → `Subject` → `To` → `Cc` → `Bcc` → `Reply-To`（無いものは出さない）。
 - **Message-ID は送る前にこちらで決める。** 形は純正 Gmail と同じ `<CA` ＋ 英数字40文字 ＋ `@mail.gmail.com>`。照合に使うためと、Re:Mail から送ったことが分からないようにするため。画面から有効な Message-ID が送られてくればそれを使う（再送で同じ ID を使えるように）。
 - **Date ヘッダーは付けない**（Gmail が付ける。純正と同じ）。
 - `From` は、既定ではない送信元エイリアスを使うときだけ付ける（既定なら Gmail が付ける）。
+- **本文の HTML とテキスト版**（`composeHtml.ts`）：入力欄の HTML（本文・引用・署名が1つの HTML）を、送る前に必ず `normalizeComposeHtml` で安全化して純正の形に整え、テキスト版は `composeHtmlToText` でその HTML から作る。どちらも純正 Gmail の作成画面から実際に送ったメール（`__fixtures__/gmailCompose.json`）と同じになることをテストで確かめている。
+  - HTML の形（純正の見本どおり）：全体を `<div dir="ltr">` で包む。1行は `<div>…</div>`、空行は `<div><br></div>`。返信は1行目を `<div dir="ltr">` の直下に置き、2行目から `<div>`。太字 `<b>`・斜体 `<i>`・下線 `<u>`・取り消し線 `<strike>`。フォント `<font face="arial, sans-serif">`（候補は §14.4）、大きさ `<font size="1|4|6">`（標準は付けない）、文字の色 `<font color="#ff0000">`、背景の色 `<span style="background-color:rgb(255,255,0)">`、配置 `<div style="text-align:center">`、リスト `<ol><li>`・`<ul><li>`、インデント `<blockquote style="margin:0 0 0 40px;border:none;padding:0px">`、引用のボタン `<blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">`、リンク `<a href>`、画像 `<img src="cid:ii_…" alt="ファイル名" width height>`（「元のサイズ」は width/height なし）。貼り付けた表は表の要素と見た目の属性・style を残し、色は `rgb(r,g,b)`（空白なし）。
+  - ブラウザごとの違い（`<p>`・`<strong>`・`<em>`・`<s>`・`<span style="font-weight:bold">`・Firefox の `align` 属性・WebKit の1行目の裸の文字やリストの項目の最後の `<br>`・style の空白）は、整えるときに純正の形にそろえる。入力欄だけの印（`data-remail-*`・`remail-` で始まるクラス）は残さない。
+  - 署名：新しいメールは本文の後ろに `<div><br></div><div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature">署名</div>` を `<div dir="ltr">` の中に、返信は引用の後ろに `<div><br clear="all"></div><div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature">署名</div>`（`data-smartmail` なし）。引用は本文の後ろに `<br><div class="gmail_quote gmail_quote_container">…</div>`（見出しのアドレスは mailto のリンク。`</blockquote>` の前に改行）。
+  - テキスト版の決まり（純正の見本どおり）：行は CRLF、最後も改行。太字・斜体・下線は `*文字*`、取り消し線・フォント・色・配置は付けない。番号付きリストは `   1. `、箇条書きは `   - `（前後に空行）。インデントは文字だけ（前後に空行）。引用のボタンの引用は `> ` を付けて後ろに空行。返信の引用は「見出し」「空行」「`> ` の行」「最後に `>` の行」。リンクは `文字 <URL>`（文字と URL が同じ・mailto なら文字だけ）。画像は `[image: ファイル名]`。表は1行に1行、セルは空白区切り。署名は `-- ` の行の後ろ。署名の前の `<br clear="all">` は改行にしない。行末の空白は消す（`-- ` は残す）。
 
 ### 10.4 返信と宛先（`replyCompose.ts` / `recipients.ts` / `composeRecipients.ts`）
 - **件名**：「Re: 元の件名」。すでに `Re:`（大文字小文字は問わない）で始まっていれば付け足さない。元の件名が空なら `Re: `。返信元があるときは件名の欄を出さない。
@@ -576,8 +588,8 @@ Gmail の読み取りはすべて `fetchWithRetry` を通す（§10.1）。詳�
   - **引用が元のやり取りにいなかった人に届くとき**（`quoteGoesToOutsiders`）：返信元があり、送信先に返信元のメールの差出人・Reply-To・To・Cc（自分を除く）が1人もいなければ、送る前に「元のメールの内容（引用）が、元のやり取りにいなかった人に届きます。送りますか？」と確かめる。
   - グループチャットの送信先はメンバー全員の To で固定し、編集できない（グループから送ったメールの判定を崩さないため）。
 - **送信元（`pickSendAs`）**：Gmail の sendAs 設定に従う。元のメールの宛先に自分のエイリアスが入っていればそのエイリアスから、そうでなければ既定の送信元から（純正の「受信したアドレスから返信する」と同じ）。
-- **署名**：sendAs の署名を使う。並びは純正の既定と同じ「本文 → 引用 → 署名」。テキストでは `-- `（ハイフン2つと空白）の行のあとに署名を置く。HTML では `<div class="gmail_signature">` で囲む。
-- **引用**：`gmail_quote` 形式で、やり取り全体（さらに前の引用を含む）を入れる。見出しは `2026年1月1日(木) 10:00 名前 <アドレス>:` の形（`formatQuoteHeader`）。HTML は `<div class="gmail_quote"><div class="gmail_attr">見出し<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">…</blockquote></div>`。引用の元は `html=true&full=true` で取った加工しない本文。Re:Mail の画面では引用を折りたたむ。
+- **署名**：**入力欄の中に、送るときと同じ形で入れる**（データを分けない。`withSignature`）。送信元（アカウント・エイリアス。`pickSendAs`）の sendAs の署名を、新しいメール・返信のどちらでも入れる。sendAs が読めるまでは入れない。送信元が変わったら署名の部分だけを入れ替える（純正と同じ）。署名を手で書き換えていたら、入れ替える前に「署名を 〇〇 の署名に入れ替えます。署名に書き足した内容は消えます。」（「入れ替える」「今の署名のまま」）と確かめる。最後に入れた署名は下書きにも残す（`insertedSignature`。手で書き換えたかを見分けるため）。自分で消した署名は入れ直さない。並びは純正の既定と同じ「本文 → 引用 → 署名」。
+- **引用**：返信元を選んだら（返信元の画面でも「リプライ」でも）`fetchOriginalFull`（`html=true&full=true`）で元のメールを取り、`buildQuoteHtml` で `gmail_quote` の形にして入力欄に入れる（`withQuote`。元の HTML は入れる前に安全化する）。見出しは `2026年1月1日(木) 10:00 名前 <アドレス>:`（`formatQuoteHeader`）。返信元を外したら引用も消す。取れなかったら「引用を読み込めませんでした。送る前にもう一度読み込みます。」と出し、送る前にもう一度取りにいく。それでも取れなければ「元のメールを読み込めなかったため、引用は画面に出ている本文（整形済み）で入れることになります。このまま送りますか？」（「このまま送る」）と確かめる。引用の中の外部の画像は、表示と同じ設定（「メールの外部の画像」）に従って読むかを決める。読まないときも送る HTML の `src` は元のまま残す。
 - **sendAs の読み込み**：10分キャッシュする。失敗したら4秒待って1回だけ取り直す。それでもだめなら、**送る前に「署名なし・既定のアドレスで送りますか」と確かめる**（ボタン「このまま送る」）。黙って署名なしで送らない。
 
 ### 10.5 転送
@@ -708,6 +720,10 @@ type FilterCriteria = {
 | ★`composeRecipients.ts` | §10.4。入力欄の送信先：`normalizeRecipients`（重なり・上限・形）・`recipientsFromHeader` / `recipientsHeader`・`summarizeRecipients`（「山田さん ほか2名（Cc 1・Bcc 1）」）・`pickMoveTarget`・`excludesPartner`・`replyChoices`・`originalParticipants`・`quoteGoesToOutsiders`・`validateSendHeaders`（サーバーの宛先の検証）・`sentRecipientCounts` / `receivedRole`（宛先の表示設定） |
 | ★`sendVerify.ts` | §10.1・§10.6 |
 | ★`emailHtml.ts` | §15.3 |
+| ★`composeHtml.ts` | §10.3・§15.6。入力欄の HTML：`sanitizeHtml(html, "paste" / "trusted")`（安全化。貼り付けは §2 の書式だけに減らす）・`normalizeComposeHtml`（純正の形に整える）・`composeHtmlToText`（テキスト版）・`withSignature` / `signatureOf` / `sameSignature`・`buildQuoteHtml` / `withQuote` / `hasQuote`・`isComposeBodyEmpty`（署名・引用を除いて文字・画像・表があるか）・`mapImageSources` / `imageCids`（blob: と cid:）・`imageDimensions`（小・最適・元のサイズ）・`makeInlineContentId`・`textToComposeHtml`（文字だけの古い下書き）・`isDangerousElement` / `isDangerousAttribute`（安全化と見張りで共通の決まり）・上限 `COMPOSE_LIMITS`。ブラウザでだけ使う `safeFragment` / `replaceContent` / `insertSafeHtml`（入力欄に HTML を入れる唯一の入口） |
+| ★`htmlTree.ts` | HTML を1回なめて木にする（`parseHtml`。入れ子は100まで、超えた部分は文字だけ）・戻す（`serializeHtml`。値と文字は必ずエスケープ）・文字参照を戻す（`decodeEntities`）。DOMParser を使わないので、テスト・Worker でも同じに動く |
+| `composeEditor.ts` | 入力欄の編集の処理（ブラウザでだけ動く。`ComposeEditorController`）：iframe の最初の HTML（`editorSrcDoc`）、イベント（入力・変換・ショートカット・貼り付け・ドロップ・選択）、見張り（MutationObserver）、書式の操作、本文中の画像、高さ、引用・署名のたたみ方。§14.4・§15.6 |
+| ★`inlineImages.ts` | `validateInlineImages`：送信の API に届いた本文中の画像の検証（§10.3） |
 
 ### 12.3 暗号・保存
 | ファイル | 役割 |
@@ -791,7 +807,7 @@ type FilterCriteria = {
 一覧・トークとも、下（トークは上）まで来たら次のページを読む。画面が埋まらないときも、埋まるまで自動で読む。
 
 ### 13.7 下書き
-- 入力中の返信（本文・件名・返信元・送信先・添付）を、**チャットごとに** IndexedDB に保存する（`drafts.ts`）。送信先は既定（相手を To に1人）のままなら保存しない（`null`）。送信の失敗・通信断・再読み込み・チャットの切り替えで失わない。空なら消す。
+- 入力中の返信（本文・件名・返信元・送信先・添付）を、**チャットごとに** IndexedDB に保存する（`drafts.ts`）。本文は入力欄の HTML（本文・引用・署名。本文中の画像は `cid:`）と本文中の画像（`images`。base64）と最後に入れた署名（`insertedSignature`）。文字だけの古い形（`body`）の下書きは、読むときに `<div>` の行に直す。「空」は署名・引用を除いた本文に文字・画像・表が無いこと（署名だけの下書きは残さず、開き直したときに署名を入れ直す）。送信先は既定（相手を To に1人）のままなら保存しない（`null`）。送信の失敗・通信断・再読み込み・チャットの切り替えで失わない。空なら消す。
 - チャットを切り替えたら、そのチャットの下書きを読み込む。読み込み終わるまで送信ボタンを押せなくする（`isDraftReady`）。以前は、別のチャットで書きかけた文が今のチャットに残って誤送信される問題があった。
 - 端末に保存できなかったら「入力中の内容を端末に保存できませんでした。再読み込みすると消えます…」と伝える。
 - **下書きチャット**：新しい宛先でチャットを作って、まだ送っていない状態。`remail_draft_chats` に持ち、送ると普通のチャットになる。ほかのチャットへ離れたとき、**書いた内容（本文・件名・添付・返信元）もその相手とのやり取りも無ければ**、一覧から消し、下書き（送信先を変えただけのものも）も消す。書いた内容があれば残す（離れる直前の入力はすぐ保存する）。入力を持って移った（送信先を変えて移る・送信元を切り替える）ときは、移り先で読み戻して移り元の下書きを消したあと（2秒後）に判断する。
@@ -799,11 +815,12 @@ type FilterCriteria = {
 ### 13.8 送信（`handleSend`）
 1. 受信専用のグループ・フィルターグループからは送れない（入力欄の上に理由を出す）。
 2. グループからは、メンバー全員のアドレス（保存した `groupMemberAddresses`）を To に入れて1通で送る。アドレスが読めない（壊れた）グループには送らず、「このグループはメンバーのアドレスが読めないため送信できません。グループを作り直してください。本文は入力欄に残っています。」と伝える。
-3. 個別チャットでは、宛先は入力欄の送信先そのもの（`recipientsHeader` で To / Cc / Bcc にする）。送る前に、送信先が0人なら「送信先がありません」と伝えて止め、今のチャットの相手を含まないなら移る確認（§10.4）を出して止め、引用が元のやり取りにいなかった人にだけ届くなら確かめる。返信元があれば `fetchOriginalFull`（`html=true&full=true`）で引用の元を取る。返信元はほかのチャットのメールでもよい（`threadId`・`In-Reply-To`・`References` はそのメールのもの）。
+3. 個別チャットでは、宛先は入力欄の送信先そのもの（`recipientsHeader` で To / Cc / Bcc にする）。送る前に、送信先が0人なら「送信先がありません」と伝えて止め、今のチャットの相手を含まないなら移る確認（§10.4）を出して止め、引用が元のやり取りにいなかった人にだけ届くなら確かめる。返信元はほかのチャットのメールでもよい（`threadId`・`In-Reply-To`・`References` はそのメールのもの）。
+   本文・署名・引用は組み立て直さず、**入力欄の HTML（`editorApiRef` で今の中身を取る）を `normalizeComposeHtml` で整えて送り、テキスト版は `composeHtmlToText` で作る**。引用がまだ入っていなければここで取りにいく（§10.4）。本文が空（署名・引用だけ）なら送らない。整えた HTML が100万文字を超えたら送らない。本文から参照している画像だけを `inlineImages` で送る。
 4. sendAs を取り（10分キャッシュ、失敗したら4秒後に1回だけ）、`pickSendAs` で送信元を決める。読めなければ「このまま送る」で確かめる。既定ではない送信元のときだけ From を付ける。
 5. 添付の合計が25MB を超えていたら送らずに伝える。
 6. `/api/emails` に `send` を POST する。Message-ID は画面で作って渡す（再送で同じ ID を使うため）。
-7. 結果は §10.6 のとおり。成功したら、送ったメールを画面に足し（実 ID、無ければ `fake-`。`to` / `cc` / `bcc` も入れる）、送った添付を添付キャッシュに先に書き、下書き（送信先を含む）を消す。
+7. 結果は §10.6 のとおり。成功したら、送ったメールを画面に足し（実 ID、無ければ `fake-`。`to` / `cc` / `bcc` も入れる。吹き出しの本文は署名・引用を除いたテキスト〔`composeBodyText`〕）、送った添付を添付キャッシュに先に書き、下書き（送信先を含む）を消し、入力欄を空にして署名を入れ直す。
 8. 失敗のトースト：「メールの送信に失敗しました。通信状況を確認してください。」など。結果が分からないときは、送信確認のダイアログ（「再送する」）を出す。
 
 **送信元のアカウントを切り替える（`switchSendAccount`）**：返信欄の「送信元」から別のアカウントを選ぶと、そのアカウントで同じ相手とのチャット（無ければ下書きチャット）を開く。入力中の本文・添付・送信先（返信元が無ければ件名も）を切り替え先へ持っていき、切り替え先で読み戻せたら**切り替え元の下書きは消す**（両方に残って二重に送られないように）。返信元はスレッドがアカウントごとのため外す。トースト「送信元を 〇〇 に切り替えました」。
@@ -913,7 +930,16 @@ type FilterCriteria = {
    - **送信先**：たたんでいるときは1行の要約「送信先：山田さん ほか2名（Cc 1・Bcc 1）」。押すと開き、1人ずつのチップ（`/api/avatar` のアイコン・名前〔無ければアドレス〕・立場のラベル「宛先」「ほかの人にも見せる（Cc）」「こっそり送る（Bcc）」と一言説明〔Cc：「全員がお互いの名前とアドレスを見られます」、Bcc：「ほかの受信者には、この人に送ったことが見えません」〕）と「＋ 送信先を追加」（`select_recipients`）を出す。欄を押すと開く／閉じる（「開く」「閉じる」の文言は出さない）。チップを押すと確認を挟んで外す（「〇〇さんを送信先から外しますか？」「外す」「やめる」）。0人なら「送信先がありません」。グループでは「グループのメンバー全員に送ります」とだけ出し、編集できない。
    - **返信元**：「返信元:」と元のメッセージ（無ければ「なし（新しいメール）」）と「×」（返信元を外す）。欄を押すと `select_reply_target`（「返信元を選択／変更」の文言は出さない）。「×」で外すと、返信元を選んだときに自動で入れた件名（Re: 元の件名）も一緒に消す（自分で書き換えた件名は残す）。
    - 件名「件名 (省略可)」は返信元が無いときだけ出す（返信の件名はスレッドが分かれないよう元の件名に揃える）。
-   - 添付（📎「ファイルを添付」。複数可、25MB まで）、本文、「送信」ボタン（本文が空・送信先が0人・送信中・下書きを読み込み中は押せない）。本文の欄は最初は1行で、入力に合わせて伸び、画面の高さの約40%（またはおよそ8行）で止まって中をスクロールする（PC・スマホ共通）。
+   - 添付（📎「ファイルを添付」。複数可、25MB まで）、「Aa」（書式。送信スペースを開いているときだけ）、本文、「送信」ボタン（本文が空・送信先が0人・送信中・下書きを読み込み中は押せない）。本文の欄は最初は1行で、入力に合わせて伸び、画面の高さの約40%（13rem まで）で止まって中をスクロールし、カーソルの位置が見えるようにする（PC・スマホ共通。スマホでキーボードが出たら、入力欄が隠れないようにスクロールする）。
+   - **本文は書式付きの入力欄**（`ComposeEditor.tsx` ＋ `composeEditor.ts`。チャットを開いたときに読み込む〔`next/dynamic`〕。§15.6 の iframe）。見た目は今の入力欄に合わせて暗い背景・明るい文字（入力欄の中の CSS だけ。送る HTML には画面の色を入れない。文字の色を付けたところだけ色が入る）。本文が空のときは「Message to 〇〇」を薄く出す。送信のキー操作は今までどおり（Enter は改行。送信は「送信」ボタン）。
+   - **書式のボタン**（純正の作成画面にあるものだけ。表を作る機能は付けない）：
+     - 文字を選んだとき：選んだ範囲の近く（スマホでは画面の下＝キーボードの上）に小さなバー（太字・斜体・下線・リンク・色・書式をクリア・「その他」）。
+     - 「Aa」を押したとき：すべての書式のバー（フォント〔Ｐゴシック・Ｐ明朝・ゴシック・Sans Serif・Serif・固定幅・幅広・幅狭・Comic Sans MS・Garamond・Georgia・Tahoma・Trebuchet MS・Verdana。純正の日本語版と同じ14種類〕・大きさ〔小・標準・大・最大〕・太字・斜体・下線・取り消し線・色〔純正と同じ64色。文字の色と背景の色〕・配置〔左・中央・右〕・番号付きリスト・箇条書き・インデント解除・インデント・引用・リンク・本文に画像を入れる・書式をクリア）。押している書式は明るくして分かるようにする。送信スペースをたたむと閉じる。
+     - ショートカット：Ctrl/⌘+B・I・U、取り消し線 Ctrl/⌘+Shift+X（純正の Alt+Shift+5 も）、リンク Ctrl/⌘+K、書式をクリア Ctrl/⌘+\、文字だけで貼り付け Ctrl/⌘+Shift+V、元に戻す Ctrl/⌘+Z、やり直す Ctrl/⌘+Shift+Z・Ctrl+Y。日本語の変換中（`compositionstart`〜`compositionend`、Safari の確定直後の keyCode 229）は、ショートカットも自動の整形も動かさない。
+     - リンク：「リンク」の画面で URL を入れる（http・https・mailto だけ。ほかは「リンクにできるのは http・https・mailto のアドレスだけです。」）。文字を選んでいなければ URL をそのまま文字にする。「リンクを外す」もある。
+     - 本文中の画像：「本文に画像を入れる」でファイルを選ぶ・貼り付ける・ドロップする（PNG・JPEG・GIF・WebP・BMP、1枚10MB、20枚まで。添付と合わせて25MB）。入れたときは「最適」（幅 558px まで）。画像を押すと「小」（最適の0.4倍）「最適」「元のサイズ」「削除」を出す（純正と同じ大きさ）。画像以外のファイルをドロップしたら添付にする。編集中は `blob:` で出し、送る・保存するときに `cid:` にする。
+     - 貼り付け：ほかのページの書式は §2 の書式だけに減らして入れる（§15.6）。表はそのまま入る（行・列の追加や削除はできない）。50万文字を超える貼り付けは「文字だけで貼り付けますか？」と聞く。本文が100万文字を超える貼り付けは入れずに理由を出す。
+   - **引用と署名**は入力欄の中に入り（§10.4）、まとめて「…」ボタンにたたむ。押すと開いて中も編集できる（純正と同じ）。
    - **宛先の表示設定**（共通設定・既定オフ）：送ったメールの時間の横に「To 1・Cc 2・Bcc 1」（0のものは出さない）、受け取ったメールの時間の横に自分の立場「To」「Cc」（どちらにも自分〔エイリアスを含む〕がいなければ「宛先に自分なし」。Bcc・メーリングリスト・自動転送のどれか分からないため「Bcc」とは書かない）。
    - 入力欄の確認画面（送信先を外す・チャットを移る・送信先を置き換える・返信／全員に返信・引用の注意）は、送信確認のダイアログと同じ形で出す。
    - 受信専用のグループでは「受信専用のグループチャットのため、送信・返信はできません」、フィルターグループでは「フィルターグループのため、送信・返信はできません」と出し、入力欄を薄くして押せなくする。
@@ -1032,12 +1058,23 @@ frame-ancestors 'none'
 - 外部への通信は Google（OAuth・Gmail API）だけ。CDN・解析・外部フォントは使わない。
 - テストやコメントに実在のメールアドレスや実データを書かない（例は `user@example.com`）。
 
+### 15.6 入力欄の iframe（`ComposeEditor.tsx`・`composeEditor.ts`・`composeHtml.ts`）
+入力欄に入る HTML（下書き・引用・貼り付け・ドロップ）は、相手が送ってきたメールを含むので信頼しない。スクリプトを動かさず、外部の画像・CSS・フォントを読まない（開封が伝わらないように）。守りは次の4枚。
+1. **iframe の中の CSP**：iframe は `srcDoc` で作り、最初の HTML の `<head>` の**先頭**に `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: cid:; style-src 'unsafe-inline'; font-src data:">` を置く。`script-src` は書かない（`default-src 'none'` でインラインのスクリプト・`on〜` 属性・`javascript:` も止まる）。nonce も渡さない。中身（本文・署名・引用）は、この最初の HTML を読み終わってから DOM の操作で入れる。「メールの外部の画像」が「毎回読み込む」のときだけ `img-src` に `https:` を足す（iframe を作り直す）。CSS・フォントの外部読み込みはどの設定でも許さない。
+2. **画面の CSP**（§15.1）：iframe も受け継ぐ（nonce の無いスクリプトは動かない）。
+3. **入れるときの安全化**：入る経路（下書きの読み込み・端末の下書きの読み戻し・引用の差し込み・署名の差し込み・入れ替え・貼り付け・ドロップ・画像の挿入）は、すべて `composeHtml.ts` の安全化（`sanitizeHtml`。`htmlTree.ts` で1回なめる）を通し、`replaceContent`（`DOMParser` で読んで `importNode`）か `insertSafeHtml`（元に戻すの履歴に残すため `execCommand("insertHTML")`。安全化した HTML だけ）で入れる。取り除くもの：要素 `script`・`iframe`・`frame`・`object`・`embed`・`form`（中身は残す）・`input`・`button`・`select`・`textarea`・`link`・`meta`・`base`・`svg`・`math`・`noscript`・`template`・`audio`・`video` など、`style`（貼り付けのときだけ。引用・下書きの `style` は残すが `@import`・式を含むものは消す）。属性 `on〜`・`srcdoc`・`formaction`・`action`・`srcset`・`xmlns`、`href` / `src` などが `javascript:`・`vbscript:`・`data:`（画像の `data:image/png|jpeg|gif|webp|bmp` は除く。SVG は不可）のもの。style の宣言のうち `expression(`・`javascript:`・`-moz-binding`・`behavior`、貼り付けでは外部の `url(` も。貼り付け・ドロップは親で受けて既定の動きを止め（`preventDefault`）、中身を安全化してから入れる。**生の HTML の文字列を `innerHTML`・`outerHTML`・`insertAdjacentHTML`・`document.write`・`execCommand("insertHTML")`・`dangerouslySetInnerHTML` で入れることは、ESLint（`no-restricted-syntax`）でアプリ全体に禁止している。** 例外は `composeHtml.ts` の `insertSafeHtml` の1か所だけ。
+4. **見張り**：親から iframe の body に `MutationObserver`（`childList`・`subtree`・`attributes`）を付け、足された要素・変わった属性を、安全化と同じ決まり（`isDangerousElement` / `isDangerousAttribute`）で調べてすぐ取り除く（ブラウザの既定の動きで入ったもの、元に戻すで戻ってきたものも）。取り除いたら `logWarn("compose.guard", { count })` で件数だけ残す。1回に調べるのは3000ノードまで、残りは次に回す。
+
+- `sandbox="allow-same-origin allow-scripts"`（ほかの項目は足さない）。**メール本文を表示する iframe（§15.3）とは別の部品で、設定も共有しない。表示の iframe には `allow-scripts` を足さない。** `allow-scripts` と `allow-same-origin` を両方付けた iframe は、中で動いたスクリプトが自分の sandbox を外せるので、sandbox はスクリプトの守りとしては働かない。守りは上の4枚（理由と試作の結果は §18.3・§19）。
+- 外への通信の報告（CSP の `report-uri` / `report-to`）は付けない（第三者に送らないため）。
+- **確かめ方**：`npm test` で、中の CSP の形・sandbox の値・表示の iframe に `allow-scripts` が無いこと（`composeEditor.test.ts`）と、攻撃の文字列の安全化（`composeHtml.test.ts`）を毎回確かめる。実際のブラウザでの攻撃の E2E（Chromium・Firefox・WebKit と iPhone・Pixel の画面の真似で、下書き・引用・貼り付け・ドロップ・ブラウザの既定の動き・元に戻すの経路ごとに、スクリプトが動かないこと・外への通信が0件・送る HTML に危ないものが残らないこと）は `remail-e2e/editor-test`（CI では動かせないので、入力欄・`composeHtml.ts`・CSP・`securityHeaders.ts` を変えたら手元で通して作業報告に書く）。Chromium は CSP で止めた読み込みも「出そうとした」記録を残すので、外への通信は計測用のサーバーに実際に届いた数で数える。
+
 ---
 
 ## 16. テスト
 
 - `npm test`（Vitest、`app/**/*.test.ts`、Node 環境）。
-- テストのあるファイル：`roomKey` `groupEmails` `filterMatch` `groupPaging` `searchFallback` `historySync` `messageParse` `mime` `replyCompose` `recipients` `sendVerify` `emailHtml` `safeLog` `tokenCrypto` `addressKey` `configCrypto` `configStore` `linkedAccountsStore` `migrations`（0003 が古い形式の行だけを消すか） `syncedSettings` `securityHeaders` `configSaveQueue` `pinnedIds` `drafts` `gmailLink` `publicSession`、`mailboxOps`、`configSpaces`（アカウントごとの置き場所）、`app/api/config/route.test.ts`。
+- テストのあるファイル：`roomKey` `groupEmails` `filterMatch` `groupPaging` `searchFallback` `historySync` `messageParse` `mime` `replyCompose` `recipients` `sendVerify` `emailHtml` `safeLog` `tokenCrypto` `addressKey` `configCrypto` `configStore` `linkedAccountsStore` `migrations`（0003 が古い形式の行だけを消すか） `syncedSettings` `securityHeaders` `configSaveQueue` `pinnedIds` `drafts` `gmailLink` `publicSession`、`mailboxOps`、`configSpaces`（アカウントごとの置き場所）、`composeHtml`（純正の見本 `__fixtures__/gmailCompose.json` と同じ HTML・テキスト版になるか、ブラウザごとの違いの吸収、署名・引用、本文が空か、攻撃の文字列、巨大・深い入力）、`composeEditor`（iframe の中の CSP と sandbox）、`inlineImages`、`app/api/config/route.test.ts`。
 - D1 は `fakeD1.testutil.ts` の偽物で試す。暗号は、テスト用に作った鍵を `process.env.TOKEN_ENCRYPTION_KEY` に入れて試す（本物の鍵は使わない）。
 - **必ず境界値のテストを書くもの**（壊れると絶対ルールに直結する）：送信の MIME の組み立て（日本語の件名、長い件名、絵文字、Cc あり、日本語のファイル名、ヘッダーへの改行の差し込み）、宛先の計算（Reply-To、自分が送ったメールへの返信、全員に返信で自分を除く）、暗号化と HMAC（古い形式の値は読まずに例外で止まらない・鍵が無いと平文で保存しない）、入力の上限（巨大な入力・深い入れ子・壊れた MIME）、ログの伏せ字、送信結果の分類。
 - `npm test`・`npm run lint`・`npx tsc --noEmit` の3つがすべて通ってから push する（CI でも確かめ、どれか失敗するとデプロイされない）。
@@ -1061,6 +1098,7 @@ frame-ancestors 'none'
 - [ ] 新しい設定は、共通設定（`SYNCED_SETTING_TYPES` / `COMMON_SETTING_KEYS`）かアカウント設定（`ACCOUNT_SETTING_TYPES`）のどちらかに足して D1 に置いたか（端末だけに置いていないか）
 - [ ] 設定・フィルター・グループ・送信元で、アカウントを取り違える経路はないか（ほかのアカウントのメールを混ぜていないか）
 - [ ] CSP を広げすぎていないか（`script-src` に `'unsafe-inline'` を戻さない、CSP を `next.config.ts` に入れない）
+- [ ] 入力欄に HTML を入れる経路を足したら、`composeHtml.ts` の安全化を通しているか。入力欄・`composeHtml.ts`・CSP・`securityHeaders.ts` を変えたら、`remail-e2e/editor-test` の攻撃の E2E（`node editor-test/build.mjs && node editor-test/run-attacks.mjs`）が全ブラウザで通るか
 - [ ] 常に見える画面の要素を増やしていないか、既存の色と部品に合っているか
 - [ ] 最初の表示やスクロールを遅くする処理を入れていないか
 - [ ] テスト・lint・型チェックが通るか
@@ -1077,6 +1115,10 @@ frame-ancestors 'none'
 - 返信で Cc を足す：スレッドがつながること、件名が「Re: 元の件名」のままのこと
 - ほかのチャットのメールを返信元にして、今のチャットの相手に送る：スレッドと引用
 - 送信結果が分からないときの照合：Bcc だけの送信でも `verifySent` が一致を見つけられること
+- **書式**：純正 Gmail と Re:Mail で同じ書式（フォント・大きさ・太字など・色・配置・リスト・インデント・引用・リンク）のメールを送り、受信側のソース（HTML とテキスト版）を比べる
+- **本文中の画像**入りのメールと、ほかの場所（Excel・Web ページ・Google スプレッドシート）からコピーした**表**を貼ったメールを、純正から同じように貼って送ったものと比べる。Gmail・Outlook・iPhone のメールでも見る
+- 純正で書式を付けた下書きの HTML を入れて（テスト用に貼り付ける）、書式を崩さずに編集・送信できること
+- iPhone・Android で日本語の入力・変換・取り消し・選んだ文字のバー・キーボードとの重なり
 
 ### 17.3 自動の結合テスト（まだ作っていない）
 今は Claude Code から実際の Gmail で送受信を確かめられない。テスト専用の Google アカウントを2つ用意し、トークンをローカルの `.dev.vars` に置けば、Re:Mail の送信処理で A から B に送り、B 側で `format=raw` を取ってヘッダー・スレッド・Cc・添付・文字コードを自動で調べられる。純正 Gmail から一度送ったソースを「正解」として保存しておけば、比べるところまで自動にできる。
@@ -1111,6 +1153,7 @@ README 作成時のコード確認で見つかった不具合は、すべて直�
 | --- | --- |
 | メール本文の iframe の `sandbox` に `allow-same-origin` が付いている | `allow-scripts` は無いので本文のスクリプトは動かない。これ以上の項目は足さない |
 | CSP の `style-src` に `'unsafe-inline'` が残っている | React の style 属性とメール本文の style が使うため。CSS ではスクリプトは動かない |
+| 入力欄の iframe に `allow-scripts` を付けている（`allow-same-origin allow-scripts`） | Safari（WebKit）は `allow-scripts` の無い iframe の中のイベントを親に渡さず、入力欄が作れないため（§19）。守りは中の CSP・画面の CSP・入れるときの安全化・見張りの4枚（§15.6）。メール本文を表示する iframe には付けない |
 
 ほかに、品質の改善候補として `next.config.ts` の `ignoreBuildErrors: true` がある（CI で `tsc` を通しているので実害は無い）。
 
@@ -1128,6 +1171,22 @@ README 作成時のコード確認で見つかった不具合は、すべて直�
 | 自前のサーバーを持たず、Cloudflare Workers ＋ D1 にする | 固定費をドメイン代と Workers の有料プランだけにするため |
 | メールを保存しない（R2 も使わない） | ルール1。添付の一時保管も個人情報の保存にあたる |
 | チャットはアカウントごとに完全に分ける | 文脈の混在と送信元の取り違え（ビジネス上の事故）を避けるため |
+| 書式付きの入力欄を、依存パッケージを足さずに自前で作る（iframe ＋ designMode、HTML の読み書きも自前） | 依存を増やさない方針（§0.3）。HTML の安全化・整形・テキスト版を、純正 Gmail から送った見本と比べて確かめられる形にするため |
+| 入力欄の iframe に `allow-scripts` を足す（案A） | 下の試作の結果。案C（`allow-scripts` なしのまま Safari だけ機能を減らす）は、iPhone のすべてのブラウザと Mac の Safari で Enter の決まり・ショートカット・文字だけの貼り付け・画像のドロップ・貼る前の安全化が使えず、選択範囲を定期的に見に行く無理も出て、ブラウザごとに2通りの動きを確かめ続けることになる。案B（iframe を使わず画面に直接置く）は、画面の CSP が外部の画像を許しているため、安全化を1つ取りこぼすと引用の中のトラッキング画像が読まれる（守りが1枚）。案A は全ブラウザで同じに動き、守りが4枚（§15.6）。弱いところは、sandbox がスクリプトの守りとして働かないこと（承知のうえで選んだ） |
+| HTML の読み書きを DOMParser ではなく自前の `htmlTree.ts` にする | DOM の無い Node のテストで、純正の見本との比較・攻撃の文字列の安全化を確かめるため。入れるときはブラウザの DOMParser で読み直し、見張りでもう一度確かめる |
+
+**入力欄の試作の結果（2026-10-24、Playwright。PC の Chromium・Firefox・WebKit と iPhone 13・Pixel 7 の画面の真似）**
+
+| 確かめたこと | `allow-same-origin` だけ（最初の指示の作り） | 案A `allow-same-origin allow-scripts` | 案B 画面の中の div |
+| --- | --- | --- | --- |
+| 画面側でキー入力・入力・貼り付けのイベントを受ける | Chromium・Firefox は OK、**WebKit（Safari・iPhone）は届かない** | すべて OK | すべて OK |
+| 貼り付けを受けて安全化してから入れる | WebKit はできない | すべて OK | すべて OK |
+| 中のスクリプトが動かない | すべて OK | すべて OK（CSP） | すべて OK（画面の CSP） |
+| 外部の画像・CSS・フォント（中の CSP あり） | 0件 | 0件 | **安全化を通らない分は読まれる**（画面の CSP が https を許すため） |
+| 中の CSP を外したとき | スクリプトは止まるが外部は読まれる（3〜5件） | 同左 | ― |
+| 元に戻す・やり直す、高さ、日本語の変換（Chromium の IME） | OK | OK | OK（WebKit は1行目の形が違う → 整形で吸収） |
+
+WebKit の記録には、スクリプトを許していない iframe でイベントの処理が呼ばれるたびに「sandbox でスクリプトの実行を止めました」が残っていた（WebKit は親が付けた処理でも、iframe の中の document でのイベントでは呼ばない）。
 | roomKey の区切りに `\u0000` を使い、`roomKey.ts` に集める | 表示名に区切りと同じ文字が入る衝突を構造的に防ぐため。型でも取り違えを防ぐ |
 | グループから送ったメールを D1 に残さず、To の集合で判定する | 送るたびに D1 のデータが増えないようにするため |
 | セッションを持たないアカウントのトークンは D1 に暗号化して置き、暗号化 Cookie には移さない | Cookie だと連携が「その端末・そのブラウザだけ」になりログアウトで消える／1つ約4KB で連携が多いと入らない／トークン更新のたびに書き換えて同時リクエストどうしで上書きし合う／D1 のトークンはすでに暗号化済みで、移しても安全性はそれほど上がらない |

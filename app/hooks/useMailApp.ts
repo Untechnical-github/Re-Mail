@@ -5,6 +5,12 @@ import { Email } from "../types/email";
 import { getCachedAttachment, setCachedAttachment, attachmentCacheKey, attachmentIdCacheKey } from "../lib/attachmentCache";
 import { clearDeviceData, clearAccountDeviceData, DEVICE_OWNER_KEY } from "../lib/deviceData";
 import { loadDraft, saveDraft, removeDraft, hasDraftContent, type ComposeDraft } from "../lib/drafts";
+import {
+  isComposeBodyEmpty, normalizeComposeHtml, composeHtmlToText, composeBodyText, withSignature, withQuote, signatureOf, sameSignature,
+  buildQuoteHtml, hasQuote, imageCids, COMPOSE_LIMITS,
+} from "../lib/composeHtml";
+import type { InlineImage } from "../lib/composeEditor";
+import type { ComposeEditorApi } from "../components/ComposeEditor";
 import { isMineEmail, getFindBarBoxKey, FilterCriteria, messageMatchesFilter, ChatListTab, chatConfigTab } from "../lib/filterMatch";
 import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, groupMemberAddresses, roomPartner } from "../lib/groupEmails";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
@@ -19,7 +25,7 @@ type InlineImageRef = { contentId: string; attachmentId: string; mimeType: strin
 // 本文中に出す画像の1枚あたりの上限。これより大きいものは出さず、Gmail で開く案内にする（端末のメモリを守るため）
 const INLINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 import { normalizeRecipients, recipientsHeader, excludesPartner, pickMoveTarget, replyChoices, quoteGoesToOutsiders, recipientsKey, isValidRecipientAddress, displayRecipientName, type ComposeRecipient } from "../lib/composeRecipients";
-import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, composeReplyBodies, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, type SendAsInfo } from "../lib/replyCompose";
+import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, type SendAsInfo } from "../lib/replyCompose";
 import { readPinnedIds, capPinnedIds, mergePinnedIds, missingPinnedEmail } from "../lib/pinnedIds";
 import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
 import { logError, logWarn } from "../lib/safeLog";
@@ -48,6 +54,8 @@ type SendApiPayload = {
   inReplyTo?: string;
   accountEmail: string;
   attachments?: { filename: string; mimeType: string; data: string }[];
+  // 本文中の画像（multipart/related のインライン画像。HTML から cid: で参照する）
+  inlineImages?: { contentId: string; filename: string; mimeType: string; data: string }[];
 };
 // unconfirmed: 送れたか分からず、送信済みにも見つからなかった / unverifiable: 送信済みを確かめることもできなかった
 type SendApiResult = { ok: true; id?: string; threadId?: string } | { ok: false; reason: "failed" | "unconfirmed" | "unverifiable"; status?: number; code?: string; gmailReason?: string };
@@ -63,7 +71,10 @@ type CarriedDraft = {
   room: string;
   fromRoom: string;
   subject: string;
-  body: string;
+  // 入力欄の HTML（本文・引用・署名。画像は cid:）と本文中の画像
+  html: string;
+  images: InlineImage[];
+  insertedSignature: string | null;
   attachments: Attachment[];
   recipients: ComposeRecipient[] | null;
   recipientsBase: ComposeRecipient[] | null;
@@ -330,7 +341,26 @@ export function useMailApp() {
   const [linkedAccountProfiles, setLinkedAccountProfiles] = useState<Record<string, { name?: string; picture?: string }>>({});
 
   const [replySubject, setReplySubject] = useState("");
-  const [replyBody, setReplyBody] = useState("");
+  // 入力欄の HTML（本文・引用・署名を1つの HTML のまま持つ。本文中の画像は cid:）と本文中の画像。
+  // 入力欄（ComposeEditor）が変わるたびに少し待って知らせてくる。中身を入れ替えるときは loadCompose で editorLoad の番号を増やす
+  const [composeHtml, setComposeHtml] = useState("");
+  const [composeImages, setComposeImages] = useState<InlineImage[]>([]);
+  const [editorLoad, setEditorLoad] = useState<{ seq: number; html: string; images: InlineImage[] }>({ seq: 0, html: "", images: [] });
+  const editorApiRef = useRef<ComposeEditorApi | null>(null);
+  // 最後に入れた署名（手で書き換えたかを見分けるため。下書きにも残す）
+  const insertedSignatureRef = useRef<string | null>(null);
+  const composeBodyEmpty = useMemo(() => isComposeBodyEmpty(composeHtml), [composeHtml]);
+  const loadCompose = (html: string, images: InlineImage[]) => {
+    setComposeHtml(html);
+    setComposeImages(images);
+    setEditorLoad(prev => ({ seq: prev.seq + 1, html, images }));
+  };
+  const onEditorChange = (html: string, images: InlineImage[]) => { setComposeHtml(html); setComposeImages(images); };
+  // 今の入力欄の中身（知らせの待ち時間のあいだに打った分も含める）
+  const currentCompose = (): { html: string; images: InlineImage[] } => {
+    const api = editorApiRef.current;
+    return api ? { html: api.getHtml(), images: api.getImages() } : { html: composeHtml, images: composeImages };
+  };
   const [isSending, setIsSending] = useState(false);
   const [replyToMessage, setReplyToMessage] = useState<Email | null>(null);
   // 非同期の処理（送信元の設定を待つあいだ）で、まだ同じ返信元を選んでいるかを見るため
@@ -370,9 +400,10 @@ export function useMailApp() {
       const carry = carryDraftRef.current && carryDraftRef.current.room === room ? carryDraftRef.current : null;
       if (carry) carryDraftRef.current = null;
       // 移り先に書きかけの下書きが無ければ、移り元で入力していた内容を使い、移り元の下書きは消す（両方に残って二重に送られないように）
-      if (carry && !d?.body && !d?.subject && !d?.attachments?.length && !d?.replyToMessage && !d?.recipients) {
+      if (carry && (!d?.html || isComposeBodyEmpty(d.html)) && !d?.subject && !d?.attachments?.length && !d?.replyToMessage && !d?.recipients) {
         setReplySubject(carry.subject);
-        setReplyBody(carry.body);
+        insertedSignatureRef.current = carry.insertedSignature;
+        loadCompose(carry.html, carry.images);
         setReplyToMessage(carry.replyToMessage);
         setReplyAttachments(carry.attachments);
         setRecipients(carry.recipients);
@@ -385,7 +416,8 @@ export function useMailApp() {
       // 移り先にも書きかけがあるときは、どちらも消さずに残す（入力を失わない）
       if (carry) showErrorToast("移り先のチャットに書きかけの内容があったため、入力中の内容は元のチャットに残しました。");
       setReplySubject(d?.subject || "");
-      setReplyBody(d?.body || "");
+      insertedSignatureRef.current = d?.insertedSignature ?? null;
+      loadCompose(d?.html || "", d?.images || []);
       setReplyToMessage(d?.replyToMessage || null);
       setReplyAttachments(d?.attachments || []);
       setRecipients(d?.recipients ?? null);
@@ -401,7 +433,7 @@ export function useMailApp() {
     if (!room || draftReadyRoom !== room) return;
     // 打つたびに書き込まないよう、少し待ってからまとめて保存する
     const timer = setTimeout(() => {
-      void saveDraft(room, { subject: replySubject, body: replyBody, replyToMessage, attachments: replyAttachments, recipients, recipientsBase, updatedAt: Date.now() }).then(ok => {
+      void saveDraft(room, { subject: replySubject, html: composeHtml, images: composeImages, insertedSignature: insertedSignatureRef.current, replyToMessage, attachments: replyAttachments, recipients, recipientsBase, updatedAt: Date.now() }).then(ok => {
         if (!ok && !draftSaveFailedRef.current) {
           draftSaveFailedRef.current = true;
           showErrorToast("入力中の内容を端末に保存できませんでした。再読み込みすると消えるので、送信するまで画面を閉じないでください。");
@@ -409,7 +441,7 @@ export function useMailApp() {
       });
     }, 300);
     return () => clearTimeout(timer);
-  }, [selectedSender, draftReadyRoom, replySubject, replyBody, replyToMessage, replyAttachments, recipients, recipientsBase]);
+  }, [selectedSender, draftReadyRoom, replySubject, composeHtml, composeImages, replyToMessage, replyAttachments, recipients, recipientsBase]);
 
   const [hasMouse, setHasMouse] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
@@ -619,7 +651,7 @@ export function useMailApp() {
       window.removeEventListener("pagehide", handleStateSave);
       document.removeEventListener("visibilitychange", handleVisibilityHidden);
     };
-  }, [selectedSender, selectionMode, selectedIds, modal, renameInput, replySubject, replyBody, replyToMessage, emailModal, attachmentModal, activeChatTab]);
+  }, [selectedSender, selectionMode, selectedIds, modal, renameInput, replySubject, composeHtml, replyToMessage, emailModal, attachmentModal, activeChatTab]);
 
   const allUniqueEmails = useMemo(() => {
     const map = new Map();
@@ -2046,7 +2078,8 @@ export function useMailApp() {
     if (carryDraftRef.current?.fromRoom === prev) { setTimeout(() => { void dropDraftChatIfEmpty(prev); }, 2000); return; }
     if (draftReadyRoom !== prev) { void dropDraftChatIfEmpty(prev); return; }
     // 打ってすぐ（保存の待ち時間のうち）に離れた分も失わないよう、書いた内容があれば今の入力をすぐ保存する（そのチャットは消さない）
-    const typed: ComposeDraft = { subject: replySubject, body: replyBody, replyToMessage, attachments: replyAttachments, recipients, recipientsBase, updatedAt: Date.now() };
+    const now = currentCompose();
+    const typed: ComposeDraft = { subject: replySubject, html: now.html, images: now.images, insertedSignature: insertedSignatureRef.current, replyToMessage, attachments: replyAttachments, recipients, recipientsBase, updatedAt: Date.now() };
     if (hasDraftContent(typed)) { void saveDraft(prev, typed); return; }
     void dropDraftChatIfEmpty(prev, typed);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 開いているチャットが変わったときだけ見る（入力のたびには動かさない）
@@ -2311,14 +2344,16 @@ export function useMailApp() {
     const { accountEmail: current, localKey } = decodeRoomKey(room);
     if (current.toLowerCase() === target.toLowerCase()) { closeModalEntry(); return; }
     const address = getRoomAddress(room) || localKey;
-    const hasInput = !!(replyBody || replyAttachments.length || (!replyToMessage && replySubject) || recipients);
+    const now = currentCompose();
+    const hasInput = !!(!isComposeBodyEmpty(now.html) || replyAttachments.length || (!replyToMessage && replySubject) || recipients);
     const dest = resolveDirectRoom(address, target);
     if (!dest) { closeModalEntry(); return; }
     // 開く前に決めておく（開いた直後に下書きの読み戻しが走るため）。
     // 持っていった内容は、切り替え先で読み戻せたら切り替え元の下書きから消す（両方に残って二重に送られないように）
     if (hasInput) {
       carryDraftRef.current = {
-        room: dest.room, fromRoom: room, subject: replyToMessage ? "" : replySubject, body: replyBody, attachments: replyAttachments,
+        room: dest.room, fromRoom: room, subject: replyToMessage ? "" : replySubject, html: replyToMessage ? withQuote(now.html, null) : now.html, images: now.images,
+        insertedSignature: insertedSignatureRef.current, attachments: replyAttachments,
         recipients, recipientsBase: null, replyToMessage: null,
       };
     }
@@ -2364,7 +2399,7 @@ export function useMailApp() {
       localStorage.setItem("remail_selected_sender", groupRoom);
       localStorage.removeItem("remail_scroll_main");
     }
-    setReplyToMessage(null); setReplySubject(""); setReplyBody("");
+    setReplyToMessage(null); setReplySubject("");
     if (isMobile) window.history.pushState({ chat: groupRoom }, '', '#chat');
 
     // 各メンバーの過去のやり取りを読み込んでおく（作成直後からグループの内容が見えるように）
@@ -2387,7 +2422,7 @@ export function useMailApp() {
       localStorage.setItem("remail_selected_sender", groupRoom);
       localStorage.removeItem("remail_scroll_main");
     }
-    setReplyToMessage(null); setReplySubject(""); setReplyBody("");
+    setReplyToMessage(null); setReplySubject("");
     if (isMobile) window.history.pushState({ chat: groupRoom }, '', '#chat');
   };
 
@@ -2703,7 +2738,7 @@ export function useMailApp() {
     const dest = resolveDirectRoom(target.address, accountEmail);
     if (!dest || dest.room === room) { setRecipients(list); return; }
     carryDraftRef.current = {
-      room: dest.room, fromRoom: room, subject: replySubject, body: replyBody, attachments: replyAttachments,
+      room: dest.room, fromRoom: room, subject: replySubject, html: currentCompose().html, images: currentCompose().images, insertedSignature: insertedSignatureRef.current, attachments: replyAttachments,
       recipients: list, recipientsBase, replyToMessage,
     };
     if (!dest.existing) addDraftChat(dest.room);
@@ -2761,6 +2796,29 @@ export function useMailApp() {
 
   // 返信元を選ぶ。自分と相手以外の宛先があるメールなら「返信」「全員に返信」を選んでもらい、送信先を置き換える。
   // 送信先を自分で変えていたときは、置き換える前に確かめる（やめたら送信先はそのまま）
+  // 返信元のメールを取り、入力欄に引用を入れる（純正と同じ「本文 → 引用 → 署名」）。取れなかったら知らせ、送る前にもう一度取りにいく
+  const insertQuoteFor = async (m: Email, room: RoomKeyStr) => {
+    const original = await fetchOriginalFull(m, roomAccountEmail(room));
+    // 待っているあいだにほかのチャットへ移ったり、別のメールを選び直したりしたら入れない
+    if (selectedSenderRef.current !== room || replyToMessageRef.current?.id !== m.id) return;
+    if (!original.html && !original.text) {
+      showErrorToast("引用を読み込めませんでした。送る前にもう一度読み込みます。");
+      return;
+    }
+    const quote = buildQuoteHtml(formatQuoteHeader(new Date(m.date), m.from), original.html ? extractHtmlBodyInner(original.html).inner : null, original.text || m.body || "");
+    const now = currentCompose();
+    loadCompose(withQuote(now.html, quote), now.images);
+  };
+
+  // 返信元を外す。引用も消し、返信元を選んだときに自動で入れた件名（Re: 元の件名）も消す（自分で書き換えた件名は残す）
+  const clearReplyTarget = () => {
+    const m = replyToMessage;
+    if (m && replySubject === replySubjectFor(m.subject || "")) setReplySubject("");
+    setReplyToMessage(null);
+    const now = currentCompose();
+    if (hasQuote(now.html)) loadCompose(withQuote(now.html, null), now.images);
+  };
+
   // 送信先の候補から自分のエイリアスを除くため、そのアカウントの送信元の設定が読めるまで待ってから決める
   // （読む前に決めると、自分のエイリアスが送信先に入って自分にも届く）
   const chooseReplyTarget = async (m: Email) => {
@@ -2768,6 +2826,7 @@ export function useMailApp() {
     if (!room) return;
     setReplyToMessage(m);
     setReplySubject(replySubjectFor(m.subject || ""));
+    void insertQuoteFor(m, room);
     if (chatConfigs[room]?.isGroup) return;
     const account = roomAccountEmail(room);
     // 待っているあいだに変わりうるので、押したときの送信先を先に持っておく
@@ -2882,6 +2941,52 @@ export function useMailApp() {
     return { account, address, displayName: alias?.displayName || undefined, isAlias: address.toLowerCase() !== account.toLowerCase() };
   };
 
+  // 署名：送信元（アカウント・エイリアス）の sendAs の署名を入力欄に入れる。送信元が変わったら署名の部分だけを入れ替える（純正と同じ）。
+  // 署名を手で書き換えていたら、入れ替える前に確かめる。sendAs が読めるまでは何もしない（読めなければ送る前の確認で伝える）
+  const signatureRoom = selectedSender && !chatConfigs[selectedSender]?.isGroup ? selectedSender : null;
+  const desiredSignature: string | null | undefined = (() => {
+    if (!selectedSender) return undefined;
+    const account = roomAccountEmail(selectedSender);
+    const list = sendAsByAccount[account];
+    if (!list) return undefined;
+    const base = getReplyBase(selectedSender);
+    const alias = pickSendAs(list, base ? `${base.to}, ${base.cc || ""}` : "", account);
+    return alias?.signature?.trim() ? alias.signature : null;
+  })();
+  const desiredSignatureLabel = (() => {
+    const from = getSendFrom(signatureRoom);
+    return from ? from.address : "";
+  })();
+  useEffect(() => {
+    const room = selectedSender;
+    if (!room || draftReadyRoom !== room || desiredSignature === undefined) return;
+    const now = currentCompose();
+    const current = signatureOf(now.html);
+    if (sameSignature(current, desiredSignature)) { insertedSignatureRef.current = desiredSignature; return; }
+    // 自分で消した署名は入れ直さない（同じ署名のまま）
+    if (current === null && insertedSignatureRef.current !== null && sameSignature(insertedSignatureRef.current, desiredSignature)) return;
+    const kind = replyToMessageRef.current ? "reply" : "new";
+    const apply = () => {
+      const latest = currentCompose();
+      insertedSignatureRef.current = desiredSignature;
+      loadCompose(withSignature(latest.html, desiredSignature, kind), latest.images);
+    };
+    if (current !== null && insertedSignatureRef.current !== null && !sameSignature(current, insertedSignatureRef.current)) {
+      setComposeDialog({
+        kind: "confirm",
+        message: desiredSignature ? `署名を ${desiredSignatureLabel} の署名に入れ替えます。署名に書き足した内容は消えます。` : `${desiredSignatureLabel} には署名がないため、署名を外します。署名に書き足した内容は消えます。`,
+        confirmLabel: desiredSignature ? "入れ替える" : "外す",
+        cancelLabel: "今の署名のまま",
+        onConfirm: apply,
+        // やめたら、今の署名を入れたものとして扱う（何度も聞かない）
+        onCancel: () => { insertedSignatureRef.current = desiredSignature; },
+      });
+      return;
+    }
+    apply();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- チャット・送信元の署名・入力欄の入れ替えが変わったときだけ見る（入力のたびには動かさない）
+  }, [selectedSender, draftReadyRoom, desiredSignature, editorLoad.seq]);
+
   // 返信・転送で引用するために、元のメールの HTML 本文を取り直す（画面用のテキストは整形済みで情報が欠けるため）。
   // 取れなければ null を返し、呼び出し側はテキスト版を使う
   // 引用・転送に使う元のメールの全体（HTML とテキスト。どちらも引用部分を含み、画面用の整形をしていないもの）
@@ -2979,8 +3084,11 @@ export function useMailApp() {
     });
   };
 
-  const handleSend = async (opts: { allowNoSendAs?: boolean; allowQuoteToOutsiders?: boolean } = {}) => {
-    if (!selectedSender || !replyBody.trim()) return;
+  const handleSend = async (opts: { allowNoSendAs?: boolean; allowQuoteToOutsiders?: boolean; allowFallbackQuote?: boolean } = {}) => {
+    if (!selectedSender) return;
+    // 入力欄の今の中身（署名・引用を含む HTML と本文中の画像）。本文が空なら送らない
+    const compose = currentCompose();
+    if (isComposeBodyEmpty(compose.html)) return;
     const groupCfg = chatConfigs[selectedSender];
     if (groupCfg?.isGroup && (groupCfg.groupMode === "inbound_only" || groupCfg.filterCriteria)) return; // 受信専用・フィルターグループは送信不可
     // 送る直前にも送信先を確かめる（どこかで抜けていても、相手を含まない送信先のまま今のチャットから送らない）
@@ -3030,7 +3138,6 @@ export function useMailApp() {
       // 件名を変えると Gmail がスレッドを分けてしまうため、返信先を選んでいるときは件名の入力欄を使わない）。
       // 本文の後に署名、その後に引用を付ける。Re:Mail の画面では、受信時の引用除去（stripQuotedReply・
       // stripHtmlQuote）で引用は折りたたまれ、代わりに「どのメッセージへの返信か」のチップで見せる
-      const finalBody = replyBody;
       let threadId: string | undefined = undefined;
       let inReplyTo: string | undefined = undefined;
       let references: string | undefined = undefined;
@@ -3058,25 +3165,43 @@ export function useMailApp() {
       // 既定のアドレス（primary）から送るときは From を付けず、Gmail に純正と同じ形で入れさせる
       const fromHeader = alias && !alias.isPrimary ? (alias.displayName ? `${alias.displayName} <${alias.sendAsEmail}>` : alias.sendAsEmail) : undefined;
 
-      let quote: { header: string; originalText: string; originalHtml?: string } | undefined;
-      if (replyToMessage) {
-        // 純正 Gmail と同じく、元のメールのやり取り全体（さらに前の引用も含む）を引用する
+      // 本文・署名・引用は組み立て直さず、入力欄の HTML を純正の形に整えて送る。
+      // 引用がまだ入っていない（返信元を選んだときに読み込めなかった）ときは、ここでもう一度取りにいく
+      let html = compose.html;
+      if (replyToMessage && !hasQuote(html)) {
         const original = await fetchOriginalFull(replyToMessage, sendAccountEmail);
-        const originalHtml = original.html;
-        quote = {
-          header: formatQuoteHeader(new Date(replyToMessage.date), replyToMessage.from),
-          originalText: original.text || replyToMessage.body || "",
-          originalHtml: originalHtml ? extractHtmlBodyInner(originalHtml).inner : undefined,
-        };
+        if (!original.html && !original.text && !opts.allowFallbackQuote) {
+          setSendConfirm({
+            message: "元のメールを読み込めなかったため、引用は画面に出ている本文（整形済み）で入れることになります。このまま送りますか？",
+            actionLabel: "このまま送る",
+            resend: async () => { setSendConfirm(null); await handleSend({ ...opts, allowFallbackQuote: true }); },
+          });
+          return;
+        }
+        html = withQuote(html, buildQuoteHtml(formatQuoteHeader(new Date(replyToMessage.date), replyToMessage.from), original.html ? extractHtmlBodyInner(original.html).inner : null, original.text || replyToMessage.body || ""));
       }
-      const bodies = composeReplyBodies({ text: replyBody, signatureHtml: alias?.signature, quote });
+      const finalHtml = normalizeComposeHtml(html, replyToMessage ? "reply" : "new");
+      if (finalHtml.length > COMPOSE_LIMITS.maxHtmlChars) {
+        showErrorToast("本文が長すぎるため送れません（本文は100万文字まで）。本文は入力欄に残っています。");
+        return;
+      }
+      const finalText = composeHtmlToText(finalHtml);
+      const finalBody = composeBodyText(finalHtml);
+      // 本文から参照している画像だけを、インライン画像として付ける
+      const usedCids = imageCids(finalHtml);
+      const inlineImages = compose.images.filter(i => usedCids.has(i.cid)).map(i => ({ contentId: i.cid, filename: i.filename, mimeType: i.mimeType, data: i.data }));
+      const totalBytes = replyAttachments.reduce((n, a) => n + a.size, 0) + compose.images.filter(i => usedCids.has(i.cid)).reduce((n, i) => n + i.size, 0);
+      if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
+        showErrorToast(`添付ファイルと本文中の画像が合わせて${Math.round(MAX_TOTAL_ATTACHMENT_BYTES / 1024 / 1024)}MBを超えるため送れません。本文は入力欄に残っています。`);
+        return;
+      }
 
       const attachmentsToSend = replyAttachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, data: a.data }));
 
       const payload: SendApiPayload = {
-        to: actualTo, cc: actualCc || undefined, bcc: actualBcc || undefined, subject: finalSubject, body: bodies.text, bodyHtml: bodies.html,
+        to: actualTo, cc: actualCc || undefined, bcc: actualBcc || undefined, subject: finalSubject, body: finalText, bodyHtml: finalHtml,
         threadId, inReplyTo, references, from: fromHeader, replyTo: alias?.replyToAddress || undefined,
-        accountEmail: sendAccountEmail, attachments: attachmentsToSend,
+        accountEmail: sendAccountEmail, attachments: attachmentsToSend, inlineImages: inlineImages.length ? inlineImages : undefined,
       };
       // 再送の確認ダイアログから呼ばれたときにも同じ内容で処理できるよう、送信時点の値を取っておく
       const sentReplyTo = replyToMessage;
@@ -3117,7 +3242,10 @@ export function useMailApp() {
         // 送れた分の下書きを消す。送信中に別のチャットへ移っていたら、そちらの入力欄は消さない
         void removeDraft(sentRoom);
         if (selectedSenderRef.current === sentRoom) {
-          setReplySubject(""); setReplyBody(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null); setRecipients(null); setRecipientsBase(null);
+          setReplySubject(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null); setRecipients(null); setRecipientsBase(null);
+          // 入力欄を空にする（署名は下の決まりで入れ直す）
+          insertedSignatureRef.current = null;
+          loadCompose("", []);
         }
         // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）
         if (sentRoom && draftChatsRef.current.includes(sentRoom)) removeDraftChat(sentRoom);
@@ -3981,7 +4109,7 @@ export function useMailApp() {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
       isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, useIconLabels, accountSettings,
       currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts, linkedAccountProfiles,
-      replySubject, replyBody, isSending, replyToMessage, replyAttachments, attachError,
+      replySubject, composeHtml, composeBodyEmpty, editorLoad, isSending, replyToMessage, replyAttachments, attachError,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
       revealedCrossPrompts, boxColors,
       chatCacheLimit,
@@ -3993,7 +4121,7 @@ export function useMailApp() {
     },
     actions: {
       setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setCheckAccounts, setUseIconLabels, setAccountSetting, alwaysLoadImagesFor, changeChatTab,
-      setReplySubject, setReplyBody, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
+      setReplySubject, onEditorChange, clearReplyTarget, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
       setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleMenuBarClick, handleBackgroundClick, toggleSelection,
       jumpToSearchResult, updateFindBarKeyword, goToNextFindMatch, goToPrevFindMatch, closeFindBar, openFindBar,
@@ -4011,7 +4139,7 @@ export function useMailApp() {
       setShowSentRecipients, setShowReceivedRecipients,
     },
     computed: { sendFrom: getSendFrom(selectedSender), allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
-    refs: { touchTimer, hasPushedSelectRef, activeLoadRef, searchTimeoutRef }
+    refs: { touchTimer, hasPushedSelectRef, activeLoadRef, searchTimeoutRef, editorApiRef }
   };
 }
 

@@ -13,6 +13,7 @@ import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId,
 import { logError, logWarn, logInfo } from "../../lib/safeLog";
 import { labelChangeFor, readLabelChange, sanitizeMessageIds, chunkIds } from "../../lib/mailboxOps";
 import { validateSendHeaders } from "../../lib/composeRecipients";
+import { validateInlineImages } from "../../lib/inlineImages";
 
 
 // Gmail API の生データ（必要なフィールドだけ）
@@ -576,6 +577,16 @@ export async function POST(request: Request) {
         }
         attachments.push(...forwarded.attachments);
         inline.push(...forwarded.inline);
+      }
+
+      // 本文中の画像（書式付きの入力欄で入れたもの）。HTML から cid: で参照する。形・件数・大きさ・種類をここでも確かめる
+      if (bodyData.inlineImages !== undefined) {
+        const checkedInline = validateInlineImages(bodyData.inlineImages);
+        if (!checkedInline.ok) {
+          logWarn("send.invalidInlineImages", { count: Array.isArray(bodyData.inlineImages) ? bodyData.inlineImages.length : 0 });
+          return NextResponse.json({ error: "INVALID_INLINE_IMAGES" }, { status: 400 });
+        }
+        inline.push(...checkedInline.images);
       }
 
       // 添付ファイルの合計サイズをサーバー側でも検証する（upload エンドポイントの上限はメール全体で

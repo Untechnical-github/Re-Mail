@@ -57,6 +57,7 @@ Gmail をチャット風 UI（相手ごとのトークルーム）で読み書�
 - 直したもの（例）：送信の自動再試行（429 だけ待って再試行、ほかは送信済みと照合）、Cc の欠落、ピン留めでの本文保存（D1 には Gmail のメッセージ ID だけ）、D1 の平文の個人情報（アドレスは HMAC に置き換え、中身は暗号化）、設定の保存失敗（自動で送り直す。`app/lib/configSaveQueue.ts`）、CSP の `script-src 'unsafe-inline'`（nonce に置き換え。`app/lib/securityHeaders.ts` と `worker.ts`）。
 - 残っているもの（ユーザーが決めたので、そのままにする）：
   - メール本文の iframe の `sandbox` に `allow-same-origin` が付いている（`allow-scripts` は無いので本文のスクリプトは動かない）。これ以上の項目は足さない。
+  - 書式付きの入力欄の iframe には `allow-scripts` を付けている（`allow-same-origin allow-scripts`。Safari が allow-scripts の無い iframe の中のイベントを親に渡さないため。README §18.3・§19）。守りは iframe の中の CSP・画面の CSP・入れるときの安全化（`composeHtml.ts`）・見張り（MutationObserver）の4枚（README §15.6）。
   - CSP の `style-src` に `'unsafe-inline'` が残っている（React の style 属性とメール本文の style が使うため。CSS ではスクリプトは動かない）。
 - 新しくルール違反を見つけたら、別の作業でそこに触れても**状態を今より悪くしない**。ついでに直せる小さなものは直してよいが、大きいものは勝手に直さず、作業報告で「見つけたルール違反」として伝える。
 
@@ -81,7 +82,8 @@ Gmail をチャット風 UI（相手ごとのトークルーム）で読み書�
   - この環境の wrangler は本番の認証が通らないので、Claude はシークレットを登録・変更できない。新しい環境変数やシークレットが要る変更では、push する前に、登録してほしい名前とコマンドをユーザーに伝えて登録してもらう（登録前にデプロイすると動作確認に失敗して前の版に戻る）。
 - `TOKEN_ENCRYPTION_KEY` を変える・消す前提のコードを書かない。D1 の暗号化済みデータ（`encv1:` 始まり）が復号できなくなり、連携アカウントが全滅する。鍵を足す・更新する場合は、新旧どちらの形式でも読めるようにする。
   - Cloudflare に登録したシークレットは後から値を読み出せない。`TOKEN_ENCRYPTION_KEY` の控えは、ユーザーがリポジトリ・Cloudflare・GitHub の外（パスワードマネージャーなど）に保管する。Claude は鍵の値を見ない・書かない・保管場所を聞き出さない。
-- メール本文を表示する iframe の `sandbox` に `allow-scripts` / `allow-same-origin` / `allow-forms` / `allow-top-navigation` を足さない。メール内のスクリプトやフォームが動き、XSS や情報の持ち出しにつながる。
+- メール本文を表示する iframe（`EmailModal` など）の `sandbox` に `allow-scripts` / `allow-forms` / `allow-top-navigation` などを足さない。メール内のスクリプトやフォームが動き、XSS や情報の持ち出しにつながる。入力欄の iframe だけは案A の理由で `allow-scripts` を足している（README §18.3）。入力欄の iframe と表示の iframe で部品・設定を共有しない。
+- 入力欄の iframe に HTML を入れるときは、必ず `composeHtml.ts` の安全化（`insertSafeHtml` / `replaceContent` / `safeFragment`）を通す。生の HTML を `innerHTML`・`outerHTML`・`insertAdjacentHTML`・`document.write`・`execCommand("insertHTML")`・`dangerouslySetInnerHTML` で入れない（ESLint で止めている。例外は `composeHtml.ts` の1か所だけ）。入力欄の中の CSP（`editorSrcDoc`）に `script-src`・`'unsafe-inline'`（スクリプト）・nonce を足さない。
 - 送信処理を `fetchWithRetry` に戻さない（絶対ルール2）。
 
 ## D1（データベース）のルール
@@ -127,6 +129,7 @@ Gmail をチャット風 UI（相手ごとのトークルーム）で読み書�
 - [ ] 有料サービス・依存パッケージ・Workers / Gmail API の呼び出し回数を増やしていないか（増やしたなら量と理由）
 - [ ] 常に見える画面要素を増やしていないか、既存のテーマと部品に合っているか
 - [ ] 最初の表示やスクロールを遅くする処理を入れていないか
+- [ ] 入力欄に HTML を入れる経路を足したら、`composeHtml.ts` の安全化を通しているか。入力欄・`composeHtml.ts`・CSP・`securityHeaders.ts` を変えたら、`remail-e2e/editor-test` の攻撃の E2E（`node editor-test/build.mjs && node editor-test/run-attacks.mjs`）が全ブラウザで通るか（CI では動かせないので、結果を作業報告に書く）
 
 ### コマンドとテスト
 - `npm test`・`npm run lint`・`npx tsc --noEmit` がすべて通ってから push する（3つとも CI でも確認し、失敗するとデプロイされない）。
