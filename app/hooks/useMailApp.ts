@@ -2254,7 +2254,9 @@ export function useMailApp() {
       const asideEl = document.querySelector("aside > div.flex-1");
       if (asideEl) localStorage.setItem(`remail_scroll_aside_${activeChatTab}`, asideEl.scrollTop.toString());
     }
-    setReplyToMessage(null);
+    // 返信元はここでは外さない。チャットを切り替えたら、下書きの読み戻しが移り先の下書きの返信元を入れ直す。
+    // ここで外すと、開いているチャットを一覧でもう一度押しただけで返信元が外れ、本文と件名「Re:」だけ残って
+    // スレッドの分かれた新しいメールとして送られてしまう（実機で起きた）
     setMsgStatusMessage(null);
     if (isMobile) {
       // 検索結果からのジャンプなど、現在の履歴エントリ(検索モーダル用)を新規に積まず
