@@ -25,12 +25,13 @@ type InlineImageRef = { contentId: string; attachmentId: string; mimeType: strin
 // 本文中に出す画像の1枚あたりの上限。これより大きいものは出さず、Gmail で開く案内にする（端末のメモリを守るため）
 const INLINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 import { normalizeRecipients, recipientsHeader, excludesPartner, pickMoveTarget, replyChoices, quoteGoesToOutsiders, recipientsKey, isValidRecipientAddress, displayRecipientName, type ComposeRecipient } from "../lib/composeRecipients";
-import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, type SendAsInfo } from "../lib/replyCompose";
+import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies } from "../lib/replyCompose";
 import { readPinnedIds, capPinnedIds, mergePinnedIds, missingPinnedEmail } from "../lib/pinnedIds";
 import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
 import { logError, logWarn } from "../lib/safeLog";
 import { createSaveQueue, type SaveQueue } from "../lib/configSaveQueue";
 import { groupIdsByAccount, type MoveDestination } from "../lib/mailboxOps";
+import { useSendAs } from "./useSendAs";
 import { mapWithConcurrency, reconcileFakeSentEmails, getSavedBoxSettings, getSavedAccountSettings, parseAddressSet, sameAddressSet, countOccurrences } from "../lib/mailAppHelpers";
 
 const CONFIG_SAVE_FAILED = "設定（ピン留め・名前変更など）を保存できませんでした。再読み込みすると元に戻ります。通信状況を確認して、もう一度お試しください。";
@@ -285,12 +286,23 @@ export function useMailApp() {
   // 送信スペース（送信元・送信先・返信元・件名）を開いているか。送信スペースを押す・リプライを押すと開き、
   // 送信スペース以外を押す・メッセージ一覧のスクロールが始まるとたたむ（page.tsx）
   const [composeActive, setComposeActive] = useState(false);
-  // アカウントごとの送信元（自分のアドレスとエイリアス）。開いたチャットのアカウントの分だけ取りにいく（下の getSendAs）
-  const [sendAsByAccount, setSendAsByAccount] = useState<Record<string, SendAsInfo[]>>({});
-  const sendAsByAccountRef = useRef(sendAsByAccount);
-  useEffect(() => { sendAsByAccountRef.current = sendAsByAccount; }, [sendAsByAccount]);
-  // 自分のアドレスとエイリアス（読み込めている分）。返信の宛先・Reply-To・受け取った立場の判定で「自分」を除くのに使う
-  const myAddressesFor = (account: string): string[] => [account, ...(sendAsByAccount[account] || []).map(s => s.sendAsEmail)].filter(Boolean);
+
+  // UI表示用: 複合キーからアカウント内のローカルな識別子（表示名など）だけを取り出す。
+  // customNameが無いチャットのフォールバック表示など、Modals.tsx側で複合キーをそのまま
+  // 画面に出してしまわないようにするために使う（roomKeyの直接パースを一元化するルールのため、
+  // UI側はこのヘルパー経由でのみローカル部分を取得する）
+  const roomLocalKey = (room: string): string => {
+    try { return decodeRoomKey(room).localKey; } catch { return room; }
+  };
+
+  // UI表示用: 複合キーが属するアカウントのメールアドレスを取り出す（アカウントバッジ表示用）
+  const roomAccountEmail = (room: string): string => {
+    try { return decodeRoomKey(room).accountEmail; } catch { return session?.user?.email || ""; }
+  };
+
+  const openRoomAccount = selectedSender ? roomAccountEmail(selectedSender) : "";
+  const sendAsAccountsKey = [session?.user?.email || "", ...((linkedAccounts as string[]) || [])].filter(Boolean).join(",");
+  const { sendAsByAccount, setSendAsByAccount, myAddressesFor, getSendAs } = useSendAs({ sessionEmail: session?.user?.email || "", openRoomAccount, sendAsAccountsKey });
 
   // 入力中の返信はチャットごとの下書きとして端末に保存し、チャットを開いたら読み戻す（送信の失敗・通信断・
   // 再読み込みで失わないため。また、別のチャットで書きかけた文が今のチャットに残って誤送信されないため）。
@@ -1768,19 +1780,6 @@ export function useMailApp() {
   const groupedEmailsRef = useRef(groupedEmails);
   useEffect(() => { groupedEmailsRef.current = groupedEmails; }, [groupedEmails]);
 
-  // UI表示用: 複合キーからアカウント内のローカルな識別子（表示名など）だけを取り出す。
-  // customNameが無いチャットのフォールバック表示など、Modals.tsx側で複合キーをそのまま
-  // 画面に出してしまわないようにするために使う（roomKeyの直接パースを一元化するルールのため、
-  // UI側はこのヘルパー経由でのみローカル部分を取得する）
-  const roomLocalKey = (room: string): string => {
-    try { return decodeRoomKey(room).localKey; } catch { return room; }
-  };
-
-  // UI表示用: 複合キーが属するアカウントのメールアドレスを取り出す（アカウントバッジ表示用）
-  const roomAccountEmail = (room: string): string => {
-    try { return decodeRoomKey(room).accountEmail; } catch { return session?.user?.email || ""; }
-  };
-
   // アカウント連携の解除。D1のlinked_accounts行だけを消す（chat_configsは再連携時に復元できるようあえて残す。
   // /api/accounts のDELETEハンドラ自体の方針と同じ）。ローカル側はそのアカウント分のメールを一覧から
   // 即座に取り除き、開いていたチャットがそのアカウントのものだった場合は閉じる
@@ -2784,72 +2783,6 @@ export function useMailApp() {
     proceedChecked();
   };
 
-  // 送信元（自分のアドレスとエイリアス）と署名の設定。アカウントごとに一度だけ取りにいく（送信のたびに API を呼ばない）。
-  // 読めなかったときは null を返し、次の送信で取り直す
-  const sendAsCacheRef = useRef(new Map<string, { promise: Promise<SendAsInfo[] | null>; at: number }>());
-  const getSendAs = (account: string): Promise<SendAsInfo[] | null> => {
-    // Gmail で署名を変えたときに、再読み込みしなくても反映されるよう10分で取り直す
-    const cached = sendAsCacheRef.current.get(account);
-    if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.promise;
-    const myEmail = session?.user?.email || "";
-    const params = new URLSearchParams({ sendAs: "1" });
-    if (account !== myEmail) params.append("accountEmail", account);
-    const loadOnce = async (): Promise<SendAsInfo[] | null> => {
-      try {
-        const res = await fetch(`/api/emails?${params.toString()}`);
-        if (!res.ok) { logWarn("sendAs.load", { status: res.status }); return null; }
-        const data = (await res.json()) as { sendAs?: SendAsInfo[] };
-        return data.sendAs || [];
-      } catch (e) {
-        logWarn("sendAs.load", {}, e);
-        return null;
-      }
-    };
-    // 開いた直後はメールの一括取得で Gmail のレート制限に触れやすく、実機テストでもここが失敗した。
-    // すぐ「署名なしで送りますか」と聞かないよう、少し待ってから1回だけ取り直す
-    const promise = (async () => {
-      const first = await loadOnce();
-      if (first !== null) return first;
-      await new Promise(r => setTimeout(r, 4000));
-      return loadOnce();
-    })();
-    sendAsCacheRef.current.set(account, { promise, at: Date.now() });
-    void promise.then(v => { if (v === null) sendAsCacheRef.current.delete(account); });
-    return promise;
-  };
-
-  // 返信欄に出す「送信元」：送るときと同じ決め方（元のメールが自分のエイリアス宛てならそのエイリアス）で、実際の From を出す。
-  // 送信元の設定はアカウントごとに10分に1回だけ取る（getSendAs のキャッシュ）。開いた直後の一括取得とぶつからないよう少し待つ
-  // チャットのまとめ方（Reply-To が自分のエイリアスなら無視する）と返信の宛先（自分のエイリアスを除く）に要るので、
-  // 起動時にログイン中のすべてのアカウントの分を1回ずつ取る（開いているチャットのアカウントを先に。1件ずつ間をあけて、
-  // 開いた直後のメールの一括取得と Gmail のレート制限でぶつからないようにする）。読めなかった分は、チャットを開いたときに取り直す
-  const openRoomAccount = selectedSender ? roomAccountEmail(selectedSender) : "";
-  const sendAsAccountsKey = [session?.user?.email || "", ...((linkedAccounts as string[]) || [])].filter(Boolean).join(",");
-  useEffect(() => {
-    const all = sendAsAccountsKey ? sendAsAccountsKey.split(",") : [];
-    const order = [openRoomAccount, ...all.filter(a => a !== openRoomAccount)].filter(a => a && !sendAsByAccountRef.current[a]);
-    if (order.length === 0) return;
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      // 読めなかった分は、Gmail の利用上限が戻るのを待って取り直す（最大3回。署名を入力欄に入れるのに要るため）
-      let pending = order;
-      for (let round = 0; round < 3 && pending.length; round++) {
-        if (round > 0) await new Promise(r => setTimeout(r, 20_000 * round));
-        const failed: string[] = [];
-        for (const account of pending) {
-          if (cancelled) return;
-          const list = await getSendAs(account);
-          if (cancelled) return;
-          if (list) setSendAsByAccount(prev => ({ ...prev, [account]: list }));
-          else failed.push(account);
-          await new Promise(r => setTimeout(r, 1500));
-        }
-        pending = failed;
-      }
-    }, 1500);
-    return () => { cancelled = true; clearTimeout(timer); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- アカウントの顔ぶれ・開いているチャットのアカウントが変わったときだけ取りにいく（関数は描画ごとに作り直されるため入れない）
-  }, [openRoomAccount, sendAsAccountsKey]);
   const getSendFrom = (room: RoomKeyStr | null): { account: string; address: string; displayName?: string; isAlias: boolean } | null => {
     if (!room || chatConfigs[room]?.isGroup) return null;
     const account = roomAccountEmail(room);
