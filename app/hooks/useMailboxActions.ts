@@ -2,7 +2,7 @@
 // useMailApp.ts から分けた（動きは変えない）。Gmail への反映はアカウントごとに1回だけ送る（postMailboxChange）
 import { useState, useEffect, useRef, type MutableRefObject } from "react";
 import type { Session } from "next-auth";
-import type { ChatConfig, MessageConfig, ModalState } from "../types/mail";
+import type { ChatConfig, MessageConfig, ModalState, SelectionMode, ModalTargetMode } from "../types/mail";
 import type { Email } from "../types/email";
 import { messageMatchesFilter } from "../lib/filterMatch";
 import { type LocalKey, type RoomKeyStr, asLocalKey, decodeRoomKey, keysOf } from "../lib/roomKey";
@@ -11,12 +11,14 @@ import { logError, logWarn } from "../lib/safeLog";
 import { groupIdsByAccount, type MoveDestination } from "../lib/mailboxOps";
 import type { AccountSettings } from "../lib/syncedSettings";
 import type { SetState, ConfigsApi, EmailModalState } from "./mailAppTypes";
+import type { useMailSync } from "./useMailSync";
 
 export function useMailboxActions({
   session, selectedSender, setSelectedSender, groupedEmails, emailRoomMap, allUniqueEmails, emails, setEmails, persistedEmails, setPersistedEmails,
   chatConfigs, chatConfigsRef, messageConfigsRef, updateMessageConfig, updateChatConfig, updateChatConfigByRoomKey, syncConfigs, applySyncedPersisted,
   resolveMessageAccountEmail, modal, exitAfterAction, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, revealedCrossPrompts, setRevealedCrossPrompts,
   showErrorToast, accountSettings, emailModal,
+  selectionMode, setSelectionMode, selectedIds, setSelectedIds, setModal, hasPushedSelectRef, emailsRef, fetchChatCrossbox, safeBack,
 }: {
   session: Session | null;
   selectedSender: RoomKeyStr | null;
@@ -49,6 +51,15 @@ export function useMailboxActions({
   showErrorToast: (message: string) => void;
   accountSettings: Record<string, AccountSettings>;
   emailModal: EmailModalState;
+  selectionMode: SelectionMode;
+  setSelectionMode: SetState<SelectionMode>;
+  selectedIds: string[];
+  setSelectedIds: SetState<string[]>;
+  setModal: SetState<ModalState>;
+  hasPushedSelectRef: MutableRefObject<boolean>;
+  emailsRef: MutableRefObject<Email[]>;
+  fetchChatCrossbox: ReturnType<typeof useMailSync>["fetchChatCrossbox"];
+  safeBack: () => void;
 }) {
   // メッセージ単位の非表示のコア処理。modal状態に依存しないため、確認モーダル経由の実行と
   // 継続フィルターの自動適用エンジンの両方から呼べる
@@ -405,7 +416,102 @@ export function useMailboxActions({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allUniqueEmails]);
 
+  // 選択モード（長押し・メニューから入る・選ぶ・抜ける）とメニューバーの操作
+  const enterSelectionMode = (type: "chat" | "msg", id: string) => {
+    const mode: SelectionMode = type === "chat" ? "chat_select" : "msg_select";
+    setSelectionMode(mode);
+    setSelectedIds([id]);
+    if (type === "chat") {
+      const { accountEmail, localKey } = decodeRoomKey(id);
+      fetchChatCrossbox(localKey, accountEmail, false, emailsRef.current, true);
+    }
+    // 重複して積まない（既にselect履歴エントリがある場合はスキップ）
+    if (!hasPushedSelectRef.current && window.history.state?.action !== "select") {
+      window.history.pushState({ action: "select" }, "", window.location.href);
+      hasPushedSelectRef.current = true;
+    } else if (window.history.state?.action === "select") {
+      hasPushedSelectRef.current = true;
+    }
+  };
+
+  const handleMenuBarClick = (mode: string) => {
+    const targetMode = mode.startsWith("chat") ? "chat" : "msg";
+    const act = mode.replace("chat_", "").replace("msg_", "");
+    const inSelection = selectionMode === `${targetMode}_select`;
+    const hasSelection = inSelection && selectedIds.length > 0;
+
+    // リセットは常にクリック可能（このボタン自体はチャット画面にしか無い）。選択中のチャットが
+    // あればその範囲だけ、無ければ全チャット/メッセージから選ぶ画面を開く
+    if (act === "reset") {
+      const specificTargets = hasSelection ? [...selectedIds] : [];
+      setModal({ type: "reset_select", targetMode: "chat", targets: specificTargets, resetScope: hasSelection ? "specific" : "all" });
+      setSelectedIds([]);
+      setSelectionMode("none");
+      window.history.pushState({ action: "modal" }, "", window.location.href);
+      return;
+    }
+
+    if (!inSelection || selectedIds.length === 0) return;
+
+    if (act === "pin") {
+      if (targetMode === "chat") {
+        setModal({ type: "confirm_pin", targetMode: "chat", targets: [...selectedIds] });
+      } else {
+        setModal({ type: "categorized_action_select", targetMode: "msg", targets: [...selectedIds], action: "pin" });
+      }
+    } else if (act === "unpin") {
+      setModal({ type: "confirm_unpin", targetMode: targetMode as ModalTargetMode, targets: [...selectedIds] });
+    } else if (act === "hide") {
+      if (targetMode === "chat") {
+        setModal({ type: "confirm_hide", targetMode: "chat", targets: [...selectedIds] });
+      } else {
+        setModal({ type: "categorized_action_select", targetMode: "msg", targets: [...selectedIds], action: "hide" });
+      }
+    } else if (act === "delete") {
+      // 選択がすべてグループチャットの場合は、実メールを一切触らない専用の削除フローにする
+      if (targetMode === "chat" && selectedIds.every(id => chatConfigsRef.current[id as RoomKeyStr]?.isGroup)) {
+        setModal({ type: "confirm_delete_group", targetMode: "chat", targets: [...selectedIds] });
+      } else {
+        setModal({ type: "categorized_action_select", targetMode: targetMode as ModalTargetMode, targets: [...selectedIds], action: "delete" });
+      }
+    } else if (act === "move") {
+      setModal({ type: "categorized_action_select", targetMode: targetMode as ModalTargetMode, targets: [...selectedIds], action: "move" });
+    } else if (act === "read" || act === "unread") {
+      // 確認の画面は出さずにすぐ行う（いつでも戻せる操作のため）。チャットなら、そのチャットに表示されているメールすべて
+      applyReadToIds(getActionableEmails([...selectedIds], targetMode).map(e => e.id), act === "read");
+      // モーダルを開いていないので、選択の履歴を1つだけ戻して選択を終える（exitAfterAction はモーダルの分まで戻り、ページから出てしまう）
+      safeBack();
+      return;
+    }
+    window.history.pushState({ action: "modal" }, "", window.location.href);
+  };
+
+  const handleBackgroundClick = () => {
+    if (selectionMode !== "none") safeBack();
+  };
+
+  const toggleSelection = (id: string) => {
+    const isAdding = !selectedIds.includes(id);
+    const next = isAdding ? [...selectedIds, id] : selectedIds.filter(i => i !== id);
+    setSelectedIds(next);
+    if (isAdding && selectionMode.startsWith("chat_")) {
+      const { accountEmail, localKey } = decodeRoomKey(id);
+      fetchChatCrossbox(localKey, accountEmail, false, emailsRef.current, true);
+    }
+    if (next.length === 0) {
+      setSelectionMode("none");
+      if (hasPushedSelectRef.current) {
+        hasPushedSelectRef.current = false;
+        // 選択用の履歴エントリを取り除く
+        if (window.history.state?.action === "select") {
+          window.history.back();
+        }
+      }
+    }
+  };
+
   return {
     applyHideToIds, applyPinToIds, executeResetSelection, executePin, getActionableEmails, applyReadToIds, applyDeleteToIds, executeConfirmedAction, applyMoveToIds, executeBatchMove,
+    enterSelectionMode, handleMenuBarClick, handleBackgroundClick, toggleSelection,
   };
 }
