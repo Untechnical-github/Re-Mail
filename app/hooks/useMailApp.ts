@@ -243,7 +243,7 @@ export function useMailApp() {
   const [recipientsBase, setRecipientsBase] = useState<ComposeRecipient[] | null>(null);
   const [composeDialog, setComposeDialog] = useState<ComposeDialog | null>(null);
   // 送信スペース（送信元・送信先・返信元・件名）を開いているか。送信スペースを押す・リプライを押すと開き、
-  // 送信スペース以外を押す・メッセージ一覧のスクロールが始まるとたたむ（page.tsx）
+  // 送信スペース以外を押す・メッセージ一覧のスクロールが始まるとたたむ（page.tsx。スクロールは TalkView.tsx から呼ぶ）
   const [composeActive, setComposeActive] = useState(false);
 
   // UI表示用: 複合キーからアカウント内のローカルな識別子（表示名など）だけを取り出す。
@@ -2597,7 +2597,7 @@ export function useMailApp() {
         };
         // 添付ファイルの中身は既にローカルで持っているため、再取得を待たずに
         // アタッチメントキャッシュへ先回りで書き込んでおく（再取得後の実IDでもキーが一致するように、
-        // page.tsx側のattachmentCacheKeyと同じ組み立て方＝messageId+添付順+ファイル名+サイズを使う）
+        // TalkView.tsx側のattachmentCacheKeyと同じ組み立て方＝messageId+添付順+ファイル名+サイズを使う）
         sentAttachmentsData.forEach((a, idx) => {
           setCachedAttachment(attachmentCacheKey(sendAccountEmail, sentId, idx, a.filename, a.size), a.data);
         });

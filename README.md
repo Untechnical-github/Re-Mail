@@ -239,7 +239,10 @@ Re-Mail/
 │   │   ├── modals/                       # モーダルの種類ごとのファイル（SettingsModal・FilterToolModal・SearchModal・AccountMenuModal・ComposeNewChatModal・ReplyTargetModal・ConfirmModals など。共通の部品は shared.tsx）
 │   │   └── ui.tsx                        # ActionBar・アイコン・HighlightText・BodyWithLinks・formatFileSize
 │   ├── hooks/
-│   │   └── useMailApp.ts                 # 状態とロジックの中核（カスタムフック。§13）
+│   │   ├── useMailApp.ts                 # 状態とロジックの中核（カスタムフック。下の3つを組み合わせて state / actions / computed を返す。§13）
+│   │   ├── useSendAs.ts                  # 送信元の設定（アカウントごとの sendAs・エイリアス・署名の取得）
+│   │   ├── useConfigs.ts                 # 設定の読み込みと保存（チャットの設定・共通設定・アカウント設定。失敗したら送り直す）
+│   │   └── useDrafts.ts                  # 下書き（チャットごとの入力中の内容・ほかのチャットへ持っていく内容・下書きチャット）
 │   ├── lib/                              # React に依存しない純粋関数（ほぼすべてにテストあり。§12）
 │   │   ├── composeHtml.ts                # 入力欄の HTML の安全化・純正の形への整形・テキスト版・署名と引用（§10.3・§15.6）
 │   │   ├── composeEditor.ts              # 入力欄の編集の処理（iframe の中の CSP・イベント・見張り・貼り付け・画像。ブラウザでだけ動く）
