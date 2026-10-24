@@ -71,9 +71,10 @@ export function displayAddressList(list: string): string {
   return splitAddressList(list || "").map(displayAddress).join(", ");
 }
 
-// 引用・転送の見出しに出す時刻。純正 Gmail は Date ヘッダーではなく Gmail が受け取った時刻（internalDate）を
-// 分で切り捨てて出す（実機で確かめた。Date が :58 秒でも受信が次の分なら次の分になる）。
-// internalDate が無い（端末のキャッシュにある古いメール）・壊れているときは Date ヘッダー。どちらも使えなければ null
+// 引用・転送の見出しに出す時刻（分で切り捨てて出す）。Gmail が受け取った時刻（internalDate）を優先し、
+// 無い（端末のキャッシュにある古いメール）・壊れているときは Date ヘッダー。どちらも使えなければ null。
+// 注意：純正 Gmail の Web から送られたメールでは internalDate が Date ヘッダーと同じ秒で、純正の見出しは
+// 実際に届いた時刻（一番上の Received、送信取り消しの待ち時間の分だけ遅い）の分になるため、1分ずれることがある（実機で確かめた）
 export function quoteTimeOf(m: { date?: string; internalDate?: number }): Date | null {
   const ms = m.internalDate;
   if (typeof ms === "number" && Number.isFinite(ms) && ms > 0) return new Date(ms);

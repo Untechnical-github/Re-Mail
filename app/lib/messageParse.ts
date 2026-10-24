@@ -331,8 +331,8 @@ export function cleanseBody(text: string, isForward = false): string {
 }
 
 // 一覧取得・返信元の単体検索の両方で使う、メッセージ生データ→フロントエンド向け整形の共通処理
-// Gmail の internalDate（受け取った時刻のミリ秒。API は文字列で返す）。引用・転送の見出しの時刻にだけ使う
-// （純正 Gmail がこれを使うため）。無い・数でない・0 以下なら undefined
+// Gmail の internalDate（受け取った時刻のミリ秒。API は文字列で返す）。引用・転送の見出しの時刻にだけ使う。
+// 無い・数でない・0 以下なら undefined
 export function parseInternalDate(v: unknown): number | undefined {
   if (typeof v !== "string" && typeof v !== "number") return undefined;
   const ms = Number(v);

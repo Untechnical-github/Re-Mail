@@ -21,7 +21,7 @@ export type Email = {
   bcc?: string;
   replyTo?: string;
   date: string;
-  // Gmail が受け取った時刻（ミリ秒）。引用・転送の見出しの時刻にだけ使う（純正 Gmail と同じ）。
+  // Gmail が受け取った時刻（ミリ秒）。引用・転送の見出しの時刻にだけ使う。
   // 並び順・差分同期・一覧の時刻には使わない。端末のキャッシュにある古いメールには無い
   internalDate?: number;
   body: string;
