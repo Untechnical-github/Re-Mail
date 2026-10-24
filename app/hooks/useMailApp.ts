@@ -1,12 +1,12 @@
 import { useSession, signOut } from "next-auth/react";
 import { useState, useEffect, useMemo, useRef } from "react";
-import { ChatConfig, MessageConfig, SelectionMode, ModalState, ModalTargetMode, GroupMode } from "../types/mail";
+import { ChatConfig, MessageConfig, SelectionMode, ModalState, ModalTargetMode } from "../types/mail";
 import { Email } from "../types/email";
 import { clearDeviceData, clearAccountDeviceData, DEVICE_OWNER_KEY } from "../lib/deviceData";
-import { isComposeBodyEmpty, withQuote } from "../lib/composeHtml";
+import { isComposeBodyEmpty } from "../lib/composeHtml";
 import type { InlineImage } from "../lib/composeEditor";
 import type { ComposeEditorApi } from "../components/ComposeEditor";
-import { FilterCriteria, ChatListTab, chatConfigTab } from "../lib/filterMatch";
+import { ChatListTab, chatConfigTab } from "../lib/filterMatch";
 import { RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { type AccountSettings } from "../lib/syncedSettings";
 
@@ -26,6 +26,7 @@ import { useLoadMore } from "./useLoadMore";
 import { useFindBar } from "./useFindBar";
 import { useRooms } from "./useRooms";
 import { useChatList } from "./useChatList";
+import { useChatNavigation } from "./useChatNavigation";
 import type { EmailModalState, AttachmentModalState } from "./mailAppTypes";
 import { getSavedBoxSettings, getSavedAccountSettings } from "../lib/mailAppHelpers";
 
@@ -709,235 +710,13 @@ export function useMailApp() {
     }
   };
 
-  const safeBack = () => {
-    const state = window.history.state;
-    if (state && (state.action || state.chat)) {
-      window.history.back();
-    } else if (isMobile && selectedSender) {
-      // スマホ表示でメッセージ画面が開いているのに、履歴側に「チャットを開いた」記録が無いケース
-      // （PC表示で開いた後に画面幅が縮んでスマホ表示に切り替わった場合など）へのフォールバック。
-      // history.back() 任せだと戻れずメッセージ画面に固定されてしまうため、直接チャット一覧に戻す
-      setSelectedSender(null);
-      localStorage.removeItem("remail_selected_sender");
-      setModal(null); setSelectionMode("none"); setSelectedIds([]);
-    } else {
-      setModal(null); setSelectionMode("none"); setSelectedIds([]);
-    }
-  };
-
-  // アクション実行後: モーダルと選択モードを両方終了し履歴も整理する
-  const exitAfterAction = () => {
-    setModal(null);
-    setSelectionMode("none");
-    setSelectedIds([]);
-    const steps = hasPushedSelectRef.current ? 2 : 1;
-    hasPushedSelectRef.current = false;
-    window.history.go(-steps);
-  };
-
-  const openChat = async (sender: RoomKeyStr, opts?: { replaceHistory?: boolean }) => {
-    // 現在のチャットを LRU キャッシュに保存
-    const prevSender = selectedSender;
-    if (prevSender && prevSender !== sender && chatCacheLimitRef.current > 0) {
-      const { localKey: prevLocal } = decodeRoomKey(prevSender);
-      const senderEmails = emailsRef.current.filter((e) => {
-        if (e.senderRoom === prevLocal) return true;
-        const room = e.from?.split("<")[0].replace(/"/g, "").trim() || "Unknown";
-        return room === prevLocal || e.from?.includes(prevLocal) || e.to?.includes(prevLocal);
-      });
-      chatCacheRef.current.set(prevSender, {
-        emails: senderEmails,
-        chatNextPageToken: chatNextPageTokenRef.current,
-        groupMemberTokens: chatConfigsRef.current[prevSender]?.isGroup ? { ...groupMemberTokensRef.current } : undefined,
-        lruTime: Date.now(),
-      });
-      // LRU 上限を超えた古いエントリを削除
-      if (chatCacheRef.current.size > chatCacheLimitRef.current) {
-        const sorted = [...chatCacheRef.current.entries()].sort(([, a], [, b]) => a.lruTime - b.lruTime);
-        chatCacheRef.current.delete(sorted[0][0]);
-      }
-    }
-
-    setSelectedSender(sender);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("remail_selected_sender", sender);
-      localStorage.removeItem("remail_scroll_main");
-      const asideEl = document.querySelector("aside > div.flex-1");
-      if (asideEl) localStorage.setItem(`remail_scroll_aside_${activeChatTab}`, asideEl.scrollTop.toString());
-    }
-    // 返信元はここでは外さない。チャットを切り替えたら、下書きの読み戻しが移り先の下書きの返信元を入れ直す。
-    // ここで外すと、開いているチャットを一覧でもう一度押しただけで返信元が外れ、本文と件名「Re:」だけ残って
-    // スレッドの分かれた新しいメールとして送られてしまう（実機で起きた）
-    setMsgStatusMessage(null);
-    if (isMobile) {
-      // 検索結果からのジャンプなど、現在の履歴エントリ(検索モーダル用)を新規に積まず
-      // その場でチャット用エントリに置き換えたい場合に replaceHistory を使う
-      // （go()/back() は非同期のため、直後に別のpushStateを行うと競合してしまう。
-      //   replaceStateは同期的なのでこの問題が起きない）
-      if (opts?.replaceHistory) window.history.replaceState({ chat: sender }, '', `#chat`);
-      else window.history.pushState({ chat: sender }, '', `#chat`);
-    }
-
-    // キャッシュがあれば復元、なければ通常フェッチ
-    const cached = chatCacheRef.current.get(sender);
-    if (cached) {
-      cached.lruTime = Date.now();
-      setEmails(prev => {
-        const map = new Map(prev.map((e) => [e.id, e]));
-        cached.emails.forEach((e) => map.set(e.id, e));
-        return Array.from(map.values());
-      });
-      groupMemberTokensRef.current = cached.groupMemberTokens ? { ...cached.groupMemberTokens } : {};
-      setChatNextPageToken(cached.chatNextPageToken || "FIRST_PAGE");
-      chatNextPageTokenRef.current = cached.chatNextPageToken || "FIRST_PAGE";
-    } else {
-      groupMemberTokensRef.current = {};
-      setChatNextPageToken("FIRST_PAGE");
-      await fetchCrossboxForRoom(sender);
-    }
-    // 追加読み込みはuseEffectベースの自動トリガー（chatNextPageToken変化で発火）に委ねる
-  };
-
-  // 「作成」モーダルの確定操作: 既にやり取りのある宛先ならそのチャットを開き、
-  // 初めての宛先なら未送信の下書きチャットとして新規に開く
-  // accountEmail は新規アドレスを複合化する際にだけ使う（「作成」モーダルのアカウント選択UIから渡される。
-  // 未指定時はメインアカウント）。既存の宛先（contactDirectory由来の複合キー）を選んだ場合は
-  // そのままそのアカウントで開くため、accountEmailは無視される
-  // 宛先とアカウントから、開くチャット（既存ならそのチャット、無ければ新しいチャットのキー）を決める
-  const resolveDirectRoom = (identifier: string, accountEmail?: string): { room: RoomKeyStr; existing: boolean } | null => {
-    const trimmed = identifier.trim();
-    if (!trimmed) return null;
-    const myEmail = session?.user?.email || "";
-    const targetAccountEmail = accountEmail || myEmail;
-    // contactDirectory の候補選択は既に複合キー（room）そのものが渡ってくる。
-    // 新規入力のメールアドレス/表示名は区切り文字を含まないので、選択されたアカウント名義で複合化する
-    let directKey: RoomKeyStr;
-    try {
-      decodeRoomKey(trimmed);
-      directKey = trimmed as RoomKeyStr;
-    } catch {
-      directKey = encodeRoomKey(targetAccountEmail, asLocalKey(trimmed));
-    }
-
-    let existingRoom: RoomKeyStr | null = null;
-    if (groupedEmails[directKey] && !chatConfigs[directKey]?.isGroup) {
-      existingRoom = directKey;
-    } else {
-      const idLower = trimmed.toLowerCase();
-      // 対象アカウント（targetAccountEmail）が一致するルームだけを既存チャットの候補にする。
-      // これを見ないと、別アカウントに同じアドレスの相手がいる場合、そちらのチャットを
-      // 誤って開いてしまう（新規に選んだアカウントではなく既存のアカウント側が開かれる）
-      existingRoom = keysOf(groupedEmails).find(room =>
-        !chatConfigs[room]?.isGroup &&
-        decodeRoomKey(room).accountEmail === targetAccountEmail &&
-        getRoomAddress(room) === idLower
-      ) || null;
-    }
-
-    return existingRoom ? { room: existingRoom, existing: true } : { room: directKey, existing: false };
-  };
-
-  const createOrOpenChat = async (identifier: string, accountEmail?: string, opts?: { replaceHistory?: boolean }): Promise<RoomKeyStr | null> => {
-    const target = resolveDirectRoom(identifier, accountEmail);
-    if (!target) return null;
-    if (!target.existing) addDraftChat(target.room);
-    await openChat(target.room, opts);
-    return target.room;
-  };
-
-  // 返信欄の「送信元」を別のアカウントに切り替える。切り替え先のアカウントで、同じ相手との既存のチャット
-  // （無ければ新しいチャット）を開く。入力中の本文・添付・送信先は切り替え先へ持っていく。
-  // 返信元は外す（スレッドはアカウントごとのため、別のアカウントのメールには返信できない）
-  const switchSendAccount = async (target: string) => {
-    const room = selectedSender;
-    setModal(null);
-    const cameFromModal = typeof window !== "undefined" && window.history.state?.action === "modal";
-    const closeModalEntry = () => { if (cameFromModal) window.history.replaceState(isMobile && room ? { chat: room } : {}, "", window.location.href); };
-    if (!room) { closeModalEntry(); return; }
-    const { accountEmail: current, localKey } = decodeRoomKey(room);
-    if (current.toLowerCase() === target.toLowerCase()) { closeModalEntry(); return; }
-    const address = getRoomAddress(room) || localKey;
-    const now = currentCompose();
-    const hasInput = !!(!isComposeBodyEmpty(now.html) || replyAttachments.length || (!replyToMessage && replySubject) || recipients);
-    const dest = resolveDirectRoom(address, target);
-    if (!dest) { closeModalEntry(); return; }
-    // 開く前に決めておく（開いた直後に下書きの読み戻しが走るため）。
-    // 持っていった内容は、切り替え先で読み戻せたら切り替え元の下書きから消す（両方に残って二重に送られないように）
-    if (hasInput) {
-      carryDraftRef.current = {
-        room: dest.room, fromRoom: room, subject: replyToMessage ? "" : replySubject, html: replyToMessage ? withQuote(now.html, null) : now.html, images: now.images,
-        insertedSignature: insertedSignatureRef.current, attachments: replyAttachments,
-        recipients, recipientsBase: null, replyToMessage: null,
-      };
-    }
-    if (!dest.existing) addDraftChat(dest.room);
-    await openChat(dest.room, { replaceHistory: cameFromModal });
-    if (!isMobile && cameFromModal) window.history.replaceState({}, "", window.location.href);
-    showInfoToast(`送信元を ${target} に切り替えました`, 2500);
-  };
-
-  // 「作成」モーダルで複数の宛先を選んだ場合のグループチャット作成。
-  // members/hideMemberIndividualChats は contactDirectory 由来の複合キーと、新規入力の生アドレスが混在する。
-  // accountEmail はこのグループ自身をどのアカウント名義で作るか（「作成」モーダルのアカウント選択UIから
-  // 渡される。未指定時はメインアカウント）
-  const createGroupChat = async (name: string, members: string[], memberAddresses: string[], mode: GroupMode, hideMemberIndividualChats: string[], accountEmail?: string) => {
-    const myEmail = accountEmail || session?.user?.email || "";
-    const groupRoomLocal = asLocalKey(`group:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
-    const groupRoom = encodeRoomKey(myEmail, groupRoomLocal);
-
-    const toMemberKey = (m: string): RoomKeyStr => {
-      try { decodeRoomKey(m); return m as RoomKeyStr; } catch { return encodeRoomKey(myEmail, asLocalKey(m)); }
-    };
-    const localMembers = members.map(m => decodeRoomKey(toMemberKey(m)).localKey);
-
-    // グループ作成によって新たに非表示にするメンバーだけを記録する（既に非表示だったものは対象外。
-    // グループ削除時にこの一覧の分だけ非表示を解除するため）
-    const groupHiddenMembers = hideMemberIndividualChats
-      .map(toMemberKey)
-      .filter(member => groupedEmails[member] && !chatConfigsRef.current[member]?.isHidden)
-      .map(member => decodeRoomKey(member).localKey);
-
-    await updateChatConfig(groupRoomLocal, {
-      customName: name, isGroup: true, groupMembers: localMembers, groupMemberAddresses: memberAddresses, groupMode: mode,
-      groupHiddenMembers,
-    }, myEmail);
-
-    groupHiddenMembers.forEach(member => {
-      // unhideOnNew は明示的に false にする（新着があっても自動で表示に戻らないようにするため）
-      updateChatConfig(member, { isHidden: true, hiddenAtDate: new Date().toISOString(), unhideOnNew: false }, myEmail);
-    });
-
-    setSelectedSender(groupRoom);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("remail_selected_sender", groupRoom);
-      localStorage.removeItem("remail_scroll_main");
-    }
-    setReplyToMessage(null); setReplySubject("");
-    if (isMobile) window.history.pushState({ chat: groupRoom }, '', '#chat');
-
-    // 各メンバーの過去のやり取りを読み込んでおく（作成直後からグループの内容が見えるように）
-    await Promise.all(localMembers.map(m => fetchChatCrossbox(m, myEmail, false).catch(() => {})));
-  };
-
-  // フィルターツールで作成するグループ。宛先の集合ではなく条件（FilterCriteria）でメッセージを
-  // 動的に集約する。新着メールも条件に合えば自動的に含まれ続ける。常に受信専用チャットとして扱う
-  const createFilterGroup = async (name: string, filterCriteria: FilterCriteria, hideOriginal: boolean, includeExisting: boolean = true) => {
-    // フィルターは必ずどれか1つのアカウントのもの。そのアカウントの名義で作る（そのアカウントだけでログインしても使えるように）
-    const myEmail = filterCriteria.accountEmail || session?.user?.email || "";
-    const groupRoomLocal = asLocalKey(`group:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
-    const groupRoom = encodeRoomKey(myEmail, groupRoomLocal);
-    await updateChatConfig(groupRoomLocal, {
-      customName: name, isGroup: true, filterCriteria, filterHideOriginal: hideOriginal, groupMode: "inbound_only",
-      filterIncludeExisting: includeExisting, filterCreatedAt: new Date().toISOString(),
-    }, myEmail);
-    setSelectedSender(groupRoom);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("remail_selected_sender", groupRoom);
-      localStorage.removeItem("remail_scroll_main");
-    }
-    setReplyToMessage(null); setReplySubject("");
-    if (isMobile) window.history.pushState({ chat: groupRoom }, '', '#chat');
-  };
+  // チャットを開く・作る・戻る・送信元のアカウントの切り替えは useChatNavigation.ts
+  const { safeBack, exitAfterAction, openChat, resolveDirectRoom, createOrOpenChat, switchSendAccount, createGroupChat, createFilterGroup } = useChatNavigation({
+    session, isMobile, setEmails, emailsRef, selectedSender, setSelectedSender, groupedEmails, chatConfigs, chatConfigsRef, activeChatTab, getRoomAddress, updateChatConfig,
+    setModal, setSelectionMode, setSelectedIds, hasPushedSelectRef, chatCacheRef, chatCacheLimitRef, chatNextPageTokenRef, setChatNextPageToken, groupMemberTokensRef,
+    setMsgStatusMessage, fetchCrossboxForRoom, fetchChatCrossbox, addDraftChat, carryDraftRef, currentCompose, insertedSignatureRef,
+    replyAttachments, replyToMessage, setReplyToMessage, replySubject, setReplySubject, recipients, showInfoToast,
+  });
 
   const enterSelectionMode = (type: "chat" | "msg", id: string) => {
     const mode: SelectionMode = type === "chat" ? "chat_select" : "msg_select";
