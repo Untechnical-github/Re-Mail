@@ -13,6 +13,7 @@ import { clearDeviceData } from "../lib/deviceData";
 import { gmailOpenUrl } from "../lib/gmailLink";
 import { ROLE_HINTS } from "../lib/composeRecipients";
 import { ComposeNewChatModal } from "./modals/ComposeNewChatModal";
+import { ModalTabs, accountTabLabel, type BoxKey, SEARCH_BOX_LABELS, getSearchBoxInfo } from "./modals/shared";
 
 // 選択アイテムを場所別チェックボックス（件数表示）で確認させる中間モーダル
 function CategorizedActionSelect({ app, modal }: { app: MailAppHook; modal: NonNullable<ModalState> }) {
@@ -1195,29 +1196,6 @@ export function AttachmentModal({ app }: { app: MailAppHook }) {
   );
 }
 
-// 設定・フィルターの画面のタブ。見た目はチャット一覧のタブ（個人チャット／グループチャット／フィルター）と同じ
-function ModalTabs({ tabs, active, onChange }: { tabs: { key: string; label: string; title?: string }[]; active: string; onChange: (key: string) => void }) {
-  return (
-    <div className="flex gap-1 overflow-x-auto mb-4">
-      {tabs.map(t => (
-        <button
-          key={t.key}
-          title={t.title}
-          onClick={() => onChange(t.key)}
-          className={`flex-1 min-w-[5rem] px-2 py-1.5 rounded text-xs font-bold transition truncate ${active === t.key ? "bg-[#5865F2] text-white" : "bg-[#2B2D31] text-gray-400 hover:bg-[#3f4147]"}`}
-        >
-          {t.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// タブに出すアカウントの短い名前（名前があれば名前、無ければアドレスの @ より前）
-function accountTabLabel(account: string, name?: string): string {
-  return name || account.split("@")[0] || account;
-}
-
 export function Modals({ app }: { app: MailAppHook }) {
   // アカウントメニューで「ログアウト」を押したアカウント（確認を出している間だけ）
   const [logoutConfirm, setLogoutConfirm] = useState<string | null>(null);
@@ -1788,20 +1766,6 @@ export function Modals({ app }: { app: MailAppHook }) {
 
 type SearchTab = "all" | "recipient" | "address" | "subject" | "body";
 type SearchSort = "newest" | "oldest" | "kana";
-type BoxKey = "inbox" | "archive" | "sent" | "spam" | "trash";
-
-const SEARCH_BOX_LABELS: Record<BoxKey, string> = {
-  inbox: "受信箱", archive: "アーカイブ", sent: "送信済み", spam: "迷惑メール", trash: "ゴミ箱",
-};
-
-function getSearchBoxInfo(e: Email): { key: BoxKey; name: string } {
-  const isTrash = e.labelIds?.includes("TRASH");
-  const isSpam = e.labelIds?.includes("SPAM");
-  const isInbox = e.labelIds?.includes("INBOX");
-  const isSent = e.labelIds?.includes("SENT") || e.isMe;
-  const key: BoxKey = isSent ? "sent" : isTrash ? "trash" : isSpam ? "spam" : isInbox ? "inbox" : "archive";
-  return { key, name: SEARCH_BOX_LABELS[key] };
-}
 
 // 検索結果一覧: チャット画面の検索ボタンから開かれる（すべて/宛先名/アドレス/件名/本文の5タブ）。
 // メッセージ画面の検索は、このモーダルを経由せずメッセージ画面上部の検索バー（Ctrl+F風）で直接行う。
