@@ -93,11 +93,14 @@ describe("readGmailLink / isRetryableSaveStatus", () => {
     expect(readGmailLink({ draftId: "a/b", messageId: "<x>", messageIdHeader: "a\r\nBcc: x", syncedFingerprint: 1 }))
       .toEqual({ draftId: null, messageId: null, messageIdHeader: null, syncedFingerprint: null, createAttempted: undefined });
   });
-  it("送り直すのは 429・5xx・通信断だけ", () => {
+  it("送り直すのは 429・5xx・通信断・レート制限の 403 だけ", () => {
     expect(isRetryableSaveStatus(null)).toBe(true);
     expect(isRetryableSaveStatus(429)).toBe(true);
     expect(isRetryableSaveStatus(503)).toBe(true);
     expect(isRetryableSaveStatus(400)).toBe(false);
     expect(isRetryableSaveStatus(409)).toBe(false);
+    // Gmail はレート制限を 403 でも返す（理由コードで見分ける）
+    expect(isRetryableSaveStatus(403, "rateLimitExceeded")).toBe(true);
+    expect(isRetryableSaveStatus(403, "insufficientPermissions")).toBe(false);
   });
 });

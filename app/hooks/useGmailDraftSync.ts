@@ -134,7 +134,7 @@ export function useGmailDraftSync({
     retryRef.current.delete(room);
   };
 
-  type SaveResponse = { error?: string; draftId?: string; gmailMessageId?: string };
+  type SaveResponse = { error?: string; reason?: string; draftId?: string; gmailMessageId?: string };
   const post = async (body: Record<string, unknown>): Promise<{ status: number | null; data: SaveResponse }> => {
     try {
       const res = await fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -145,7 +145,7 @@ export function useGmailDraftSync({
   };
 
   // 失敗の知らせと送り直し。401 は再ログインの案内、404 はほかで送信・削除された、409 はほかで書き換えられた
-  const handleFailure = (room: string, status: number | null, error?: string) => {
+  const handleFailure = (room: string, status: number | null, error?: string, reason?: string) => {
     if (status === 401) { setNotice(room, NOTICE.reauth); return; }
     if (error === "DRAFT_GONE") {
       // 入力は消さず、Gmail の下書きとのつながりだけ外す（次の保存では新しい下書きになる）
@@ -154,9 +154,9 @@ export function useGmailDraftSync({
       return;
     }
     if (error === "DRAFT_CONFLICT") { setNotice(room, NOTICE.conflict); return; }
-    logWarn("draft.save.failed", { status: status ?? undefined, reason: error });
+    logWarn("draft.save.failed", { status: status ?? undefined, reason: reason || error });
     setNotice(room, NOTICE.failed);
-    if (isRetryableSaveStatus(status)) scheduleRetry(room);
+    if (isRetryableSaveStatus(status, reason)) scheduleRetry(room);
   };
 
   const saveRoom = async (room: string, given?: RoomContent) => {
@@ -180,7 +180,7 @@ export function useGmailDraftSync({
     if (plan === "delete") {
       const r = await post({ action: "draftDelete", accountEmail: accountOf(room), draftId: link.draftId, expectMessageId: link.messageId });
       if (r.status === 200) { resetRetry(room); setNotice(room, null); setLink(room, { ...EMPTY_LINK, syncedFingerprint: fp }); return; }
-      handleFailure(room, r.status, r.data.error);
+      handleFailure(room, r.status, r.data.error, r.data.reason);
       return;
     }
     const prepare = prepareRef.current;
@@ -205,7 +205,7 @@ export function useGmailDraftSync({
       setLink(room, { draftId: r.data.draftId, messageId: r.data.gmailMessageId || null, messageIdHeader: header, syncedFingerprint: fp });
       return;
     }
-    handleFailure(room, r.status, r.data.error);
+    handleFailure(room, r.status, r.data.error, r.data.reason);
   };
 
   // 今 Gmail に保存しているチャット（タブを閉じるときの保存と重ねて、二重に作らないため）

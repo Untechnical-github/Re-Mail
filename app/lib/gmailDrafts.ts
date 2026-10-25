@@ -3,6 +3,7 @@
 import type { Email } from "../types/email";
 import type { ComposeRecipient } from "./composeRecipients";
 import { isComposeBodyEmpty } from "./composeHtml";
+import { isRateLimitReason } from "./sendVerify";
 
 // 端末の下書きに足す、Gmail の下書きとの同期の状態
 export type GmailDraftLink = {
@@ -100,10 +101,10 @@ export function fitsKeepalive(json: string): boolean {
   return new TextEncoder().encode(json).length <= KEEPALIVE_MAX_BYTES;
 }
 
-// 保存に失敗したとき、間をあけて送り直す回数と待ち時間（ミリ秒）。429・5xx・通信断だけ
+// 保存に失敗したとき、間をあけて送り直す回数と待ち時間（ミリ秒）。429・5xx・通信断と、レート制限の 403 だけ
 export const SAVE_RETRY_DELAYS_MS = [15_000, 60_000, 180_000];
-export function isRetryableSaveStatus(status: number | null): boolean {
-  return status === null || status === 429 || status >= 500;
+export function isRetryableSaveStatus(status: number | null, reason?: string): boolean {
+  return status === null || status === 429 || status >= 500 || (status === 403 && isRateLimitReason(reason));
 }
 
 // 下書きを送った（drafts.send）結果を、画面でどう扱うかに直す
