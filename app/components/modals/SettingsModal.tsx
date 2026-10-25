@@ -83,6 +83,20 @@ export function SettingsModal({ app, settingsTab, setSettingsTab }: { app: MailA
               <button onClick={() => app.actions.setAccountSetting(a, { alwaysLoadImages: true })} className={toggleClass(always)}>毎回読み込む</button>
             </div>
           </div>
+          {/* Gmail の下書きとの同期。既定はオン（保存していない＝オン）。オフにしても、どちらの下書きも消さない */}
+          {(() => {
+            const on = app.state.accountSettings[a]?.gmailDraftSync !== false;
+            return (
+              <div className="bg-[#2B2D31] rounded p-3 mt-3">
+                <div className="text-sm font-bold text-gray-200 mb-1">Gmail の下書きと同期する</div>
+                <div className="text-xs text-gray-500 mb-3">Re:Mail の書きかけを Gmail の下書きに保存し、Gmail の下書きをチャットの入力欄に出します。オフにすると同期をやめるだけで、どちらの下書きも消しません</div>
+                <div className="flex gap-2">
+                  <button onClick={() => app.actions.setAccountSetting(a, { gmailDraftSync: false })} className={toggleClass(!on)}>オフ</button>
+                  <button onClick={() => app.actions.setAccountSetting(a, { gmailDraftSync: true })} className={toggleClass(on)}>オン</button>
+                </div>
+              </div>
+            );
+          })()}
           {/* 既読：Gmail の既読と同じ（UNREAD ラベル）。既定はオフ（開いただけでは既読にしない） */}
           {([
             ["autoReadOnOpenChat", "チャットを開いたら既読にする", "オンにすると、このアカウントのチャットを開いたとき、そのチャットに表示されているメールを Gmail でも既読にします。開いている間に届いたメールも既読にします（画面を見ていないときは既読にしません）"],

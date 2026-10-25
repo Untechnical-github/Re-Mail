@@ -6,6 +6,8 @@ import type { RoomKeyStr } from "../lib/roomKey";
 import type { InlineImage } from "../lib/composeEditor";
 import type { ComposeRecipient } from "../lib/composeRecipients";
 import { loadDraft, saveDraft, removeDraft, hasDraftContent, type ComposeDraft } from "../lib/drafts";
+import { EMPTY_LINK, type GmailDraftLink } from "../lib/gmailDrafts";
+import type { DraftLinkRef } from "./useGmailDraftSync";
 import { isComposeBodyEmpty } from "../lib/composeHtml";
 
 export type Attachment = { filename: string; mimeType: string; size: number; data: string };
@@ -27,6 +29,7 @@ type SetState<T> = Dispatch<SetStateAction<T>>;
 
 export function useDrafts({
   selectedSender, showErrorToast, setReplySubject, insertedSignatureRef, loadCompose, setReplyToMessage, setReplyAttachments, setRecipients, setRecipientsBase, setAttachError, replySubject, composeHtml, composeImages, replyToMessage, replyAttachments, recipients, recipientsBase,
+  linkRef, onCarriedRef,
 }: {
   selectedSender: RoomKeyStr | null;
   showErrorToast: (message: string) => void;
@@ -45,6 +48,10 @@ export function useDrafts({
   replyAttachments: Attachment[];
   recipients: ComposeRecipient[] | null;
   recipientsBase: ComposeRecipient[] | null;
+  // 開いているチャットの Gmail の下書きとの同期の状態（useGmailDraftSync.ts と共有する）
+  linkRef: DraftLinkRef;
+  // 入力中の内容を持ってほかのチャットへ移れたとき（Gmail の下書きを持っていく・消す）
+  onCarriedRef: MutableRefObject<((fromRoom: string, toRoom: string, fromLink: GmailDraftLink | undefined) => void) | null>;
 }) {
   // 「作成」機能で作った、まだ1通も送信していない下書きチャット（未送信のまま離脱すると破棄する）
   // リロード/タブ復元では維持したいので localStorage に保存する
@@ -71,6 +78,7 @@ export function useDrafts({
       if (cancelled) return;
       const carry = carryDraftRef.current && carryDraftRef.current.room === room ? carryDraftRef.current : null;
       if (carry) carryDraftRef.current = null;
+      if (room) linkRef.current = { room, link: d?.gmail ?? { ...EMPTY_LINK } };
       // 移り先に書きかけの下書きが無ければ、移り元で入力していた内容を使い、移り元の下書きは消す（両方に残って二重に送られないように）
       if (carry && (!d?.html || isComposeBodyEmpty(d.html)) && !d?.subject && !d?.attachments?.length && !d?.replyToMessage && !d?.recipients) {
         setReplySubject(carry.subject);
@@ -82,7 +90,11 @@ export function useDrafts({
         setRecipientsBase(carry.recipientsBase);
         setAttachError(null);
         setDraftReadyRoom(room);
-        void removeDraft(carry.fromRoom);
+        // 移り元の Gmail の下書きは、同じアカウントなら持っていき、違うアカウントなら消す（useGmailDraftSync.ts）
+        void loadDraft(carry.fromRoom).then(from => {
+          onCarriedRef.current?.(carry.fromRoom, room as string, from?.gmail);
+          return removeDraft(carry.fromRoom);
+        });
         return;
       }
       // 移り先にも書きかけがあるときは、どちらも消さずに残す（入力を失わない）
@@ -106,7 +118,8 @@ export function useDrafts({
     if (!room || draftReadyRoom !== room) return;
     // 打つたびに書き込まないよう、少し待ってからまとめて保存する
     const timer = setTimeout(() => {
-      void saveDraft(room, { subject: replySubject, html: composeHtml, images: composeImages, insertedSignature: insertedSignatureRef.current, replyToMessage, attachments: replyAttachments, recipients, recipientsBase, updatedAt: Date.now() }).then(ok => {
+      const gmail = linkRef.current?.room === room ? linkRef.current.link : undefined;
+      void saveDraft(room, { subject: replySubject, html: composeHtml, images: composeImages, insertedSignature: insertedSignatureRef.current, replyToMessage, attachments: replyAttachments, recipients, recipientsBase, updatedAt: Date.now(), gmail }).then(ok => {
         if (!ok && !draftSaveFailedRef.current) {
           draftSaveFailedRef.current = true;
           showErrorToast("入力中の内容を端末に保存できませんでした。再読み込みすると消えるので、送信するまで画面を閉じないでください。");

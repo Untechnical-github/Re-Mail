@@ -17,6 +17,8 @@ import { logError, logWarn } from "../lib/safeLog";
 import { useSendAs } from "./useSendAs";
 import { useConfigs } from "./useConfigs";
 import { useDrafts, useDraftChatCleanup } from "./useDrafts";
+import { useGmailDraftSync, type DraftLinkRef, type GmailDraftSyncApi } from "./useGmailDraftSync";
+import type { OutgoingContent, PreparedOutgoing } from "./useSend";
 import { useMailboxActions } from "./useMailboxActions";
 import { useCompose } from "./useCompose";
 import { useSend } from "./useSend";
@@ -87,6 +89,8 @@ export function useMailApp() {
   // 今は「メールの外部の画像を、押さずに毎回読み込むか」だけ（既定はオフ。読み込むと送り手に開封が伝わる）。
   // そのアカウントの D1 の置き場所に持ち、ログアウトしても変えない。読み込むまでは既定（オフ）のまま
   const [accountSettings, setAccountSettings] = useState<Record<string, AccountSettings>>({});
+  // アカウント設定を読み終えたか（Gmail の下書きとの同期は、読み終えるまで始めない。オフにしている人の分を保存しないため）
+  const [accountSettingsLoaded, setAccountSettingsLoaded] = useState(false);
   // 宛先の表示設定（共通設定・既定はオフ）。送ったメールに「To 1・Cc 2・Bcc 1」、受け取ったメールに自分の立場（To / Cc）を出す
   const [showSentRecipients, setShowSentRecipients] = useState(false);
   const [showReceivedRecipients, setShowReceivedRecipients] = useState(false);
@@ -268,8 +272,13 @@ export function useMailApp() {
     errorToastTimerRef.current = setTimeout(() => setErrorToast(null), 4000);
   };
   // 下書き（チャットごとの入力中の内容と、まだ送っていない下書きチャット）は useDrafts.ts
+  // 開いているチャットの Gmail の下書きとの同期の状態と、そのためのつなぎ（useGmailDraftSync.ts。下の useSend の後で入れる）
+  const draftLinkRef: DraftLinkRef = useRef(null);
+  const onCarriedRef = useRef<GmailDraftSyncApi["onCarried"] | null>(null);
+  const prepareOutgoingRef = useRef<((c: OutgoingContent, opts?: { noFetch?: boolean }) => Promise<PreparedOutgoing>) | null>(null);
   const { draftChats, draftChatsRef, addDraftChat, removeDraftChat, draftReadyRoom, carryDraftRef } = useDrafts({
     selectedSender, showErrorToast, setReplySubject, insertedSignatureRef, loadCompose, setReplyToMessage, setReplyAttachments, setRecipients, setRecipientsBase, setAttachError, replySubject, composeHtml, composeImages, replyToMessage, replyAttachments, recipients, recipientsBase,
+    linkRef: draftLinkRef, onCarriedRef,
   });
 
   // 連携アカウントの連携が切れたら、黙らずに知らせる（絶対ルール3）。メールが出ないだけでは気づけないため。
@@ -520,7 +529,7 @@ export function useMailApp() {
   const {
     loadD1Configs, applySyncedSettings, setSyncedSettingsReady, savedSyncedKeyRef, setAccountSetting, alwaysLoadImagesFor, saveGlobalSettings, updateChatConfig, updateMessageConfig, deleteChatConfig, updateChatConfigByRoomKey, deleteChatConfigByRoomKey, syncConfigs,
   } = useConfigs({
-    session, showErrorToast, showInfoToast, selectedSender, setSelectedSender, setChatConfigs, setMessageConfigs, chatConfigsRef, messageConfigsRef, setPersistedEmails, hydratePinnedEmails, accountSettings, setAccountSettings, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, showSentRecipients, showReceivedRecipients, checkAccounts, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setUseIconLabels, setShowSentRecipients, setShowReceivedRecipients, setCheckAccounts,
+    session, showErrorToast, showInfoToast, selectedSender, setSelectedSender, setChatConfigs, setMessageConfigs, chatConfigsRef, messageConfigsRef, setPersistedEmails, hydratePinnedEmails, accountSettings, setAccountSettings, setAccountSettingsLoaded, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, showSentRecipients, showReceivedRecipients, checkAccounts, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setUseIconLabels, setShowSentRecipients, setShowReceivedRecipients, setCheckAccounts,
   });
 
   useEffect(() => {
@@ -650,7 +659,7 @@ export function useMailApp() {
 
   // 入力欄まわり（添付・送信先・返信元と引用・送信元と署名）は useCompose.ts
   const {
-    MAX_TOTAL_ATTACHMENT_BYTES, addReplyAttachments, removeReplyAttachment, getReplyBase, partnerRecipient, partnerAddressOf, effectiveRecipients, recipientsCustomized, partnerLabel,
+    MAX_TOTAL_ATTACHMENT_BYTES, addReplyAttachments, removeReplyAttachment, partnerRecipient, partnerAddressOf, effectiveRecipients, recipientsCustomized, partnerLabel,
     askMoveForRecipients, addComposeRecipients, removeComposeRecipient, clearReplyTarget, chooseReplyTarget, getSendFrom, fetchOriginalFull,
   } = useCompose({
     session, selectedSender, selectedSenderRef, chatConfigs, groupedEmails, getRoomPartner, roomAccountEmail, resolveDirectRoom, openChat,
@@ -659,13 +668,24 @@ export function useMailApp() {
     sendAsByAccount, setSendAsByAccount, getSendAs, showInfoToast, showErrorToast,
   });
 
-  // 送る（送信 API・送る前の確認・返信・転送）は useSend.ts
-  const { handleSend, forwardMessageTo } = useSend({
-    session, selectedSender, selectedSenderRef, chatConfigs, chatConfigsRef, groupedEmails, roomAccountEmail, getRoomRecipient, setEmails,
-    currentCompose, loadCompose, insertedSignatureRef, effectiveRecipients, partnerAddressOf, askMoveForRecipients, getReplyBase, fetchOriginalFull, MAX_TOTAL_ATTACHMENT_BYTES,
-    replyToMessage, setReplyToMessage, replySubject, setReplySubject, replyAttachments, setReplyAttachments, setAttachError, setRecipients, setRecipientsBase,
-    setComposeDialog, setIsSending, setSendConfirm, myAddressesFor, getSendAs, draftChatsRef, removeDraftChat, showInfoToast, setInfoToast, showErrorToast,
+  // Gmail の下書きとの同期（書きかけを Gmail の下書きに保存する）は useGmailDraftSync.ts。アカウント設定で切れる（既定はオン）
+  const gmailDrafts = useGmailDraftSync({
+    selectedSender, draftReadyRoom, replySubject, composeHtml, composeImages, replyToMessage, replyAttachments, recipients, recipientsBase,
+    insertedSignatureRef, currentCompose, linkRef: draftLinkRef, carryDraftRef, chatConfigsRef, partnerRecipient, prepareRef: prepareOutgoingRef,
+    isEnabled: (account: string) => accountSettings[account]?.gmailDraftSync !== false,
+    settingsReady: accountSettingsLoaded,
+    accounts: sendAsAccountsKey ? sendAsAccountsKey.split(",") : [],
   });
+  useEffect(() => { onCarriedRef.current = gmailDrafts.onCarried; });
+
+  // 送る（送信 API・送る前の確認・返信・転送）は useSend.ts
+  const { handleSend, forwardMessageTo, prepareOutgoing } = useSend({
+    session, selectedSender, selectedSenderRef, chatConfigs, chatConfigsRef, groupedEmails, roomAccountEmail, getRoomRecipient, setEmails,
+    currentCompose, loadCompose, insertedSignatureRef, effectiveRecipients, partnerAddressOf, askMoveForRecipients, fetchOriginalFull, MAX_TOTAL_ATTACHMENT_BYTES,
+    replyToMessage, setReplyToMessage, replySubject, setReplySubject, replyAttachments, setReplyAttachments, setAttachError, setRecipients, setRecipientsBase,
+    setComposeDialog, setIsSending, setSendConfirm, myAddressesFor, getSendAs, draftChatsRef, removeDraftChat, showInfoToast, setInfoToast, showErrorToast, gmailDrafts,
+  });
+  useEffect(() => { prepareOutgoingRef.current = prepareOutgoing; });
 
   // 選択したチャット・メールへの操作と、継続フィルターの自動適用・開いたら既読にする は useMailboxActions.ts
   const {
@@ -707,7 +727,7 @@ export function useMailApp() {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
       isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, useIconLabels, accountSettings,
       currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts, linkedAccountProfiles,
-      replySubject, composeHtml, composeBodyEmpty, editorLoad, isSending, replyToMessage, replyAttachments, attachError,
+      replySubject, composeHtml, composeBodyEmpty, editorLoad, isSending, replyToMessage, replyAttachments, attachError, gmailDraftNotice: gmailDrafts.notice,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
       revealedCrossPrompts, boxColors,
       chatCacheLimit,

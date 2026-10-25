@@ -6,49 +6,48 @@ import type { ChatConfig } from "../types/mail";
 import type { Email } from "../types/email";
 import { setCachedAttachment, attachmentCacheKey } from "../lib/attachmentCache";
 import { removeDraft } from "../lib/drafts";
-import { isComposeBodyEmpty, normalizeComposeHtml, composeHtmlToText, composeBodyText, withSignature, withQuote, signatureOf, buildQuoteHtml, hasQuote, imageCids, COMPOSE_LIMITS } from "../lib/composeHtml";
+import { isComposeBodyEmpty, withSignature, withQuote, signatureOf, buildQuoteHtml, hasQuote } from "../lib/composeHtml";
 import type { InlineImage } from "../lib/composeEditor";
 import { groupMemberAddresses } from "../lib/groupEmails";
 import { type RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey } from "../lib/roomKey";
 import { makeMessageId, isRateLimitReason } from "../lib/sendVerify";
-import { recipientsHeader, excludesPartner, quoteGoesToOutsiders, type ComposeRecipient } from "../lib/composeRecipients";
-import { replySubjectFor, buildReferences, pickSendAs, formatQuoteHeader, quoteTimeOf, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies } from "../lib/replyCompose";
+import { excludesPartner, quoteGoesToOutsiders, type ComposeRecipient } from "../lib/composeRecipients";
+import { buildReferences, pickSendAs, formatQuoteHeader, quoteTimeOf, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies } from "../lib/replyCompose";
+import { finalizeOutgoing, headersOf, fromHeaderOf, type SendApiPayload } from "../lib/outgoingMail";
+import { judgeDraftSend, type DraftSendVerdict } from "../lib/gmailDrafts";
+import { isMineEmail } from "../lib/filterMatch";
 import { logError, logWarn } from "../lib/safeLog";
 import type { useSendAs } from "./useSendAs";
 import type { useDrafts, Attachment } from "./useDrafts";
 import type { ComposeDialog } from "./useMailApp";
+import type { GmailDraftSyncApi } from "./useGmailDraftSync";
 import type { SetState } from "./mailAppTypes";
 
-// /api/emails の送信 API に渡す内容と、その結果
-type SendApiPayload = {
-  to: string;
-  cc?: string;
-  bcc?: string;
-  from?: string;
-  replyTo?: string;
-  references?: string;
-  // 転送のとき、このメッセージ ID のメールの添付をサーバー側で取り直して一緒に送る
-  forwardAttachmentsFrom?: string;
-  subject: string;
-  body: string;
-  bodyHtml?: string;
-  threadId?: string;
-  inReplyTo?: string;
-  accountEmail: string;
-  attachments?: { filename: string; mimeType: string; data: string }[];
-  // 本文中の画像（multipart/related のインライン画像。HTML から cid: で参照する）
-  inlineImages?: { contentId: string; filename: string; mimeType: string; data: string }[];
-};
 // unconfirmed: 送れたか分からず、送信済みにも見つからなかった / unverifiable: 送信済みを確かめることもできなかった
 type SendApiResult = { ok: true; id?: string; threadId?: string } | { ok: false; reason: "failed" | "unconfirmed" | "unverifiable"; status?: number; code?: string; gmailReason?: string };
+// 送る中身（開いているチャットの入力。Gmail の下書きに保存するときは、開いていないチャットの端末の下書き）
+export type OutgoingContent = {
+  room: RoomKeyStr;
+  subject: string;
+  html: string;
+  images: InlineImage[];
+  insertedSignature: string | null;
+  replyToMessage: Email | null;
+  attachments: Attachment[];
+  // 送信先（既定のときは開いているチャットの相手を To に1人）
+  recipients: ComposeRecipient[];
+};
+export type PreparedOutgoing =
+  | { ok: true; payload: SendApiPayload; bodyText: string; subject: string; threadId?: string; to: string; cc: string; bcc: string }
+  | { ok: false; kind: "groupNoAddress" | "noSendAs" | "noQuote" | "tooLong" | "tooLarge" };
 type SendAsApi = ReturnType<typeof useSendAs>;
 type DraftsApi = ReturnType<typeof useDrafts>;
 
 export function useSend({
   session, selectedSender, selectedSenderRef, chatConfigs, chatConfigsRef, groupedEmails, roomAccountEmail, getRoomRecipient, setEmails,
-  currentCompose, loadCompose, insertedSignatureRef, effectiveRecipients, partnerAddressOf, askMoveForRecipients, getReplyBase, fetchOriginalFull, MAX_TOTAL_ATTACHMENT_BYTES,
+  currentCompose, loadCompose, insertedSignatureRef, effectiveRecipients, partnerAddressOf, askMoveForRecipients, fetchOriginalFull, MAX_TOTAL_ATTACHMENT_BYTES,
   replyToMessage, setReplyToMessage, replySubject, setReplySubject, replyAttachments, setReplyAttachments, setAttachError, setRecipients, setRecipientsBase,
-  setComposeDialog, setIsSending, setSendConfirm, myAddressesFor, getSendAs, draftChatsRef, removeDraftChat, showInfoToast, setInfoToast, showErrorToast,
+  setComposeDialog, setIsSending, setSendConfirm, myAddressesFor, getSendAs, draftChatsRef, removeDraftChat, showInfoToast, setInfoToast, showErrorToast, gmailDrafts,
 }: {
   session: Session | null;
   selectedSender: RoomKeyStr | null;
@@ -65,7 +64,6 @@ export function useSend({
   effectiveRecipients: ComposeRecipient[];
   partnerAddressOf: (room: RoomKeyStr | null) => string;
   askMoveForRecipients: (list: ComposeRecipient[]) => void;
-  getReplyBase: (room: RoomKeyStr | null) => Email | null;
   fetchOriginalFull: (message: Email, account: string) => Promise<{ html: string | null; text: string | null; internalDate?: number; receivedAt?: number }>;
   MAX_TOTAL_ATTACHMENT_BYTES: number;
   replyToMessage: Email | null;
@@ -87,6 +85,7 @@ export function useSend({
   showInfoToast: (message: string | null, durationMs?: number) => void;
   setInfoToast: SetState<string | null>;
   showErrorToast: (message: string) => void;
+  gmailDrafts: GmailDraftSyncApi;
 }) {
   // 送信 API を呼ぶ。送信は自動で再試行しない（二重送信になるため）。
   // 結果が分からないとき（ブラウザと Worker の通信断、Worker が途中で落ちた）は送信済みフォルダと照合する
@@ -139,16 +138,7 @@ export function useSend({
     const r = await postSendApi(payload, messageId);
     if (r.ok) { onSent(r); return; }
     if (r.reason === "failed") {
-      showErrorToast(
-        isRateLimitReason(r.gmailReason) || r.status === 429 ? `Gmail の利用上限に一時的に達したため${label}できませんでした。1分ほど待ってからもう一度お試しください。`
-        : r.code === "FORWARD_ATTACHMENTS_FAILED" ? "元のメールの添付ファイルを取得できなかったため、転送しませんでした。時間をおいてもう一度お試しください。"
-        : r.status === 401 ? `ログインの有効期限が切れたため${label}できませんでした。再読み込みしてからもう一度お試しください。`
-        : r.status === 413 ? `添付ファイルが大きすぎるため${label}できませんでした（合計25MBまで）。`
-        : r.code === "NO_RECIPIENTS" ? `送信先がないため${label}できませんでした。送信先を足してからもう一度お試しください。`
-        : r.code === "TOO_MANY_RECIPIENTS" ? `送信先が多すぎるため${label}できませんでした（合計500件まで）。`
-        : r.code === "INVALID_RECIPIENTS" ? `送信先のメールアドレスに正しくないものがあるため${label}できませんでした。送信先を確認してください。`
-        : `メールの${label}に失敗しました。宛先が正しいか確認してください。`
-      );
+      showSendFailure(r, label);
       return;
     }
     const message = r.reason === "unconfirmed"
@@ -160,6 +150,140 @@ export function useSend({
         setSendConfirm(null);
         setIsSending(true);
         try { await sendWithConfirm(payload, label, onSent, messageId); } finally { setIsSending(false); }
+      },
+    });
+  };
+
+  // 送る中身を組み立てる（送信と Gmail の下書きの保存で同じものを使う：絶対ルール2）。
+  // 送信元（エイリアス）と署名は Gmail の設定に従い、引用がまだ入っていなければ元のメールから取りにいく。
+  // noFetch のときは通信が要る補い（引用の取り直し）をせず、要るなら失敗にする（タブを閉じるときの保存の下ごしらえ用）
+  const prepareOutgoing = async (c: OutgoingContent, opts: { allowNoSendAs?: boolean; allowFallbackQuote?: boolean; noFetch?: boolean } = {}): Promise<PreparedOutgoing> => {
+    const groupCfg = chatConfigsRef.current[c.room];
+    const { accountEmail } = decodeRoomKey(c.room);
+    let to: string;
+    let cc = "";
+    let bcc = "";
+    if (groupCfg?.isGroup) {
+      // グループチャット: メンバー全員へ1通のメールとして一斉送信する
+      to = Array.from(groupMemberAddresses(groupCfg)).join(", ");
+      // メンバーのアドレスが保存されていない（壊れた）グループには送らない（宛先なしで送ったり、推測した相手に送ったりしない）
+      if (!to) return { ok: false, kind: "groupNoAddress" };
+    } else {
+      // 宛先は入力欄の送信先そのもの（返信元を選んだときに、純正 Gmail と同じ決まりで初期値を入れてある）
+      ({ to, cc, bcc } = headersOf(c.recipients));
+    }
+    // 送信元（エイリアス）と署名は Gmail の設定に従う。元のメールが自分のエイリアス宛てなら、そのエイリアスから返す
+    const sendAsList = await getSendAs(accountEmail);
+    // 読めなかったときは、純正と違う形（署名なし・既定の送信元）になる。送信なら送る前に確かめる（絶対ルール2）
+    if (sendAsList === null && !opts.allowNoSendAs) return { ok: false, kind: "noSendAs" };
+    const base = c.replyToMessage || (groupCfg?.isGroup ? null : (groupedEmails[c.room] || []).find(e => !isMineEmail(e, accountEmail) && !e.isMissing) || null);
+    const alias = sendAsList ? pickSendAs(sendAsList, base ? `${base.to}, ${base.cc || ""}` : "", accountEmail) : null;
+
+    // 署名を一度も入れられていない（送信元の設定が今まで読めなかった）のに入力欄に署名が無ければ、ここで入れる
+    // （黙って署名なしで送らない。自分で消した署名は入れ直さない）
+    let html = c.html;
+    if (alias?.signature?.trim() && c.insertedSignature === null && signatureOf(html) === null) {
+      html = withSignature(html, alias.signature, c.replyToMessage ? "reply" : "new");
+    }
+    // 本文・署名・引用は組み立て直さず、入力欄の HTML を純正の形に整えて送る。
+    // 引用がまだ入っていない（返信元を選んだときに読み込めなかった）ときは、ここでもう一度取りにいく
+    if (c.replyToMessage && !hasQuote(html)) {
+      if (opts.noFetch) return { ok: false, kind: "noQuote" };
+      const original = await fetchOriginalFull(c.replyToMessage, accountEmail);
+      if (!original.html && !original.text && !opts.allowFallbackQuote) return { ok: false, kind: "noQuote" };
+      html = withQuote(html, buildQuoteHtml(formatQuoteHeader(quoteTimeOf(c.replyToMessage, original), c.replyToMessage.from), original.html ? extractHtmlBodyInner(original.html).inner : null, original.text || c.replyToMessage.body || ""));
+    }
+    const r = finalizeOutgoing({
+      accountEmail, html, images: c.images, attachments: c.attachments, to, cc, bcc, subject: c.subject,
+      replyToMessage: c.replyToMessage, alias, maxTotalBytes: MAX_TOTAL_ATTACHMENT_BYTES,
+    });
+    if (!r.ok) return { ok: false, kind: r.error };
+    return { ok: true, payload: r.payload, bodyText: r.bodyText, subject: r.subject, threadId: r.threadId, to, cc, bcc };
+  };
+
+  // 送れなかった理由を伝える（次の行動を添える）
+  const showSendFailure = (r: { status?: number; code?: string; gmailReason?: string }, label: "送信" | "転送") => {
+    showErrorToast(
+      isRateLimitReason(r.gmailReason) || r.status === 429 ? `Gmail の利用上限に一時的に達したため${label}できませんでした。1分ほど待ってからもう一度お試しください。`
+      : r.code === "FORWARD_ATTACHMENTS_FAILED" ? "元のメールの添付ファイルを取得できなかったため、転送しませんでした。時間をおいてもう一度お試しください。"
+      : r.status === 401 ? `ログインの有効期限が切れたため${label}できませんでした。再読み込みしてからもう一度お試しください。`
+      : r.status === 413 ? `添付ファイルが大きすぎるため${label}できませんでした（合計25MBまで）。`
+      : r.code === "NO_RECIPIENTS" ? `送信先がないため${label}できませんでした。送信先を足してからもう一度お試しください。`
+      : r.code === "TOO_MANY_RECIPIENTS" ? `送信先が多すぎるため${label}できませんでした（合計500件まで）。`
+      : r.code === "INVALID_RECIPIENTS" ? `送信先のメールアドレスに正しくないものがあるため${label}できませんでした。送信先を確認してください。`
+      : `メールの${label}に失敗しました。宛先が正しいか確認してください。`
+    );
+  };
+
+  // Gmail の下書きを送る（drafts.send）。下書きがある入力は必ずこれで送り、失敗しても messages.send に勝手に切り替えない。
+  // 最後の保存から変わっていれば今の中身を付けて送る（withContent）。自動では再送しない
+  const postDraftSendApi = async (payload: SendApiPayload, draftId: string, withContent: boolean, messageId: string): Promise<DraftSendVerdict> => {
+    const sentAfterMs = Date.now();
+    // 中身を付けないときは、照合に使う宛先・件名・本文の文字だけを渡す（添付・画像は送らない）
+    const body = withContent ? payload : { ...payload, bodyHtml: undefined, attachments: undefined, inlineImages: undefined };
+    const verify = async () => {
+      try {
+        const v = await fetch("/api/emails", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "verifySent", accountEmail: payload.accountEmail, draftId, messageId, to: payload.to, cc: payload.cc, bcc: payload.bcc, subject: payload.subject, body: payload.body, sentAfterMs }),
+        });
+        return v.ok ? ((await v.json()) as { found: boolean; id?: string; threadId?: string; draftExists?: boolean }) : null;
+      } catch {
+        return null;
+      }
+    };
+    let res: Response;
+    try {
+      res = await fetch("/api/emails", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "draftSend", ...body, draftId, withContent, messageId }),
+      });
+    } catch {
+      return judgeDraftSend({ status: null, verify: await verify() });
+    }
+    const d = (await res.json().catch(() => ({}))) as { error?: string; reason?: string; id?: string; threadId?: string };
+    // JSON を返さない 5xx は Worker が途中で落ちた可能性があり、送れたかどうか分からないので照合する
+    if (res.status >= 500 && !d.error) return judgeDraftSend({ status: null, verify: await verify() });
+    const verdict = judgeDraftSend({ status: res.status, error: d.error, reason: d.reason, id: d.id, threadId: d.threadId });
+    if (verdict.kind === "failed") logWarn("draft.send.failed", { status: res.status, reason: d.reason });
+    return verdict;
+  };
+
+  // 下書きを送って、結果に応じて伝える・確かめる。onGone は「ほかで送信済み」のとき（入力欄を空に戻す）
+  const sendDraftWithConfirm = async (
+    payload: SendApiPayload, draft: { room: RoomKeyStr; draftId: string; withContent: boolean; messageId: string },
+    onSent: (sent: { id?: string; threadId?: string }) => void, onAlreadySent: () => void,
+  ): Promise<void> => {
+    gmailDrafts.sendingRoomsRef.current.add(draft.room);
+    let v: DraftSendVerdict;
+    try { v = await postDraftSendApi(payload, draft.draftId, draft.withContent, draft.messageId); } finally { gmailDrafts.sendingRoomsRef.current.delete(draft.room); }
+    if (v.kind === "sent") { onSent(v); return; }
+    if (v.kind === "alreadySent") { showInfoToast("このメールは別の場所から送信済みです", 4000); onAlreadySent(); return; }
+    if (v.kind === "failed") { showSendFailure({ status: v.status, code: v.code, gmailReason: v.reason }, "送信"); return; }
+    if (v.kind === "askResend") {
+      setSendConfirm({
+        message: "送信されていません。再送しますか？",
+        resend: async () => {
+          setSendConfirm(null);
+          setIsSending(true);
+          try { await sendDraftWithConfirm(payload, draft, onSent, onAlreadySent); } finally { setIsSending(false); }
+        },
+      });
+      return;
+    }
+    // 下書きが無くなっていた（ほかで削除・送信された）。送信済みに見つからなければ、新しいメールとして送るかを聞く。
+    // 送れたか確かめられなかったときも、Gmail の送信済みを見てから決めてもらう。どちらも「送る」のときだけ messages.send
+    gmailDrafts.forgetLink(draft.room);
+    setSendConfirm({
+      message: v.kind === "askNew"
+        ? "この下書きは別の場所で削除されたか、送信済みです。本文は入力欄に残っています。新しいメールとして送りますか？"
+        : "送信できたか確認できませんでした。Gmail の送信済みを確認してから、必要なら再送してください。",
+      actionLabel: v.kind === "askNew" ? "送る" : undefined,
+      resend: async () => {
+        setSendConfirm(null);
+        setIsSending(true);
+        // 新しいメールは新しい Message-ID で送る（確かめられなかったときの再送は、同じメールとして扱われやすいよう同じものを使う）
+        try { await sendWithConfirm(payload, "送信", onSent, v.kind === "askNew" ? undefined : draft.messageId); } finally { setIsSending(false); }
       },
     });
   };
@@ -196,106 +320,51 @@ export function useSend({
       // 送信元アカウントはチャット自身の複合キーから決める（開いているチャットがどの連携アカウント
       // 宛のやり取りかによって、送信に使うGmailアカウントを切り替えるため）
       const { accountEmail: sendAccountEmail, localKey: sendLocalKey } = decodeRoomKey(selectedSender);
-      let actualTo: string;
-      let actualCc = "";
-      let actualBcc = "";
-      if (groupCfg?.isGroup) {
-        // グループチャット: メンバー全員へ1通のメールとして一斉送信する
-        actualTo = Array.from(groupMemberAddresses(groupCfg)).join(", ");
-        if (!actualTo) {
-          // メンバーのアドレスが保存されていない（壊れた）グループには送らない（宛先なしで送ったり、推測した相手に送ったりしない）
-          showErrorToast("このグループはメンバーのアドレスが読めないため送信できません。グループを作り直してください。本文は入力欄に残っています。");
-          return;
-        }
-      } else {
-        // 宛先は入力欄の送信先そのもの（返信元を選んだときに、純正 Gmail と同じ決まりで初期値を入れてある）
-        actualTo = recipientsHeader(sendRecipients, "to");
-        actualCc = recipientsHeader(sendRecipients, "cc");
-        actualBcc = recipientsHeader(sendRecipients, "bcc");
-      }
-      
       // 返信は純正 Gmail と同じ形にする（threadId・In-Reply-To・References を付け、件名は「Re: 元の件名」に揃える。
       // 件名を変えると Gmail がスレッドを分けてしまうため、返信先を選んでいるときは件名の入力欄を使わない）。
       // 本文の後に署名、その後に引用を付ける。Re:Mail の画面では、受信時の引用除去（stripQuotedReply・
       // stripHtmlQuote）で引用は折りたたまれ、代わりに「どのメッセージへの返信か」のチップで見せる
-      let threadId: string | undefined = undefined;
-      let inReplyTo: string | undefined = undefined;
-      let references: string | undefined = undefined;
-      let finalSubject = replySubject;
-      if (replyToMessage) {
-        threadId = replyToMessage.threadId || undefined;
-        inReplyTo = replyToMessage.messageIdHeader;
-        references = buildReferences(replyToMessage.references, replyToMessage.messageIdHeader) || undefined;
-        finalSubject = replySubjectFor(replyToMessage.subject);
-      }
-
-      // 送信元（エイリアス）と署名は Gmail の設定に従う。元のメールが自分のエイリアス宛てなら、そのエイリアスから返す
-      const sendAsList = await getSendAs(sendAccountEmail);
-      // 読めなかったときは、純正と違う形（署名なし・既定の送信元）になることを送る前に伝えて確かめる（絶対ルール2）
-      if (sendAsList === null && !opts.allowNoSendAs) {
-        setSendConfirm({
+      const content: OutgoingContent = {
+        room: selectedSender, subject: replySubject, html: compose.html, images: compose.images, insertedSignature: insertedSignatureRef.current,
+        replyToMessage, attachments: replyAttachments, recipients: sendRecipients,
+      };
+      const prep = await prepareOutgoing(content, opts);
+      if (!prep.ok) {
+        if (prep.kind === "groupNoAddress") showErrorToast("このグループはメンバーのアドレスが読めないため送信できません。グループを作り直してください。本文は入力欄に残っています。");
+        else if (prep.kind === "noSendAs") setSendConfirm({
           message: "署名と送信元の設定を読み込めませんでした。純正 Gmail と違い、署名なし・既定のアドレスで送ることになります。このまま送りますか？",
           actionLabel: "このまま送る",
           resend: async () => { setSendConfirm(null); await handleSend({ ...opts, allowNoSendAs: true }); },
         });
+        else if (prep.kind === "noQuote") setSendConfirm({
+          message: "元のメールを読み込めなかったため、引用は画面に出ている本文（整形済み）で入れることになります。このまま送りますか？",
+          actionLabel: "このまま送る",
+          resend: async () => { setSendConfirm(null); await handleSend({ ...opts, allowFallbackQuote: true }); },
+        });
+        else if (prep.kind === "tooLong") showErrorToast("本文が長すぎるため送れません（本文は100万文字まで）。本文は入力欄に残っています。");
+        else showErrorToast(`添付ファイルと本文中の画像が合わせて${Math.round(MAX_TOTAL_ATTACHMENT_BYTES / 1024 / 1024)}MBを超えるため送れません。本文は入力欄に残っています。`);
         return;
       }
-      const base = getReplyBase(selectedSender);
-      const alias = sendAsList ? pickSendAs(sendAsList, base ? `${base.to}, ${base.cc || ""}` : "", sendAccountEmail) : null;
-      // 既定のアドレス（primary）から送るときは From を付けず、Gmail に純正と同じ形で入れさせる
-      const fromHeader = alias && !alias.isPrimary ? (alias.displayName ? `${alias.displayName} <${alias.sendAsEmail}>` : alias.sendAsEmail) : undefined;
-
-      // 署名を一度も入れられていない（送信元の設定が今まで読めなかった）のに入力欄に署名が無ければ、ここで入れる
-      // （黙って署名なしで送らない。自分で消した署名は入れ直さない）
-      let composed = compose.html;
-      if (alias?.signature?.trim() && insertedSignatureRef.current === null && signatureOf(composed) === null) {
-        composed = withSignature(composed, alias.signature, replyToMessage ? "reply" : "new");
-      }
-
-      // 本文・署名・引用は組み立て直さず、入力欄の HTML を純正の形に整えて送る。
-      // 引用がまだ入っていない（返信元を選んだときに読み込めなかった）ときは、ここでもう一度取りにいく
-      let html = composed;
-      if (replyToMessage && !hasQuote(html)) {
-        const original = await fetchOriginalFull(replyToMessage, sendAccountEmail);
-        if (!original.html && !original.text && !opts.allowFallbackQuote) {
-          setSendConfirm({
-            message: "元のメールを読み込めなかったため、引用は画面に出ている本文（整形済み）で入れることになります。このまま送りますか？",
-            actionLabel: "このまま送る",
-            resend: async () => { setSendConfirm(null); await handleSend({ ...opts, allowFallbackQuote: true }); },
-          });
-          return;
-        }
-        html = withQuote(html, buildQuoteHtml(formatQuoteHeader(quoteTimeOf(replyToMessage, original), replyToMessage.from), original.html ? extractHtmlBodyInner(original.html).inner : null, original.text || replyToMessage.body || ""));
-      }
-      const finalHtml = normalizeComposeHtml(html, replyToMessage ? "reply" : "new");
-      if (finalHtml.length > COMPOSE_LIMITS.maxHtmlChars) {
-        showErrorToast("本文が長すぎるため送れません（本文は100万文字まで）。本文は入力欄に残っています。");
-        return;
-      }
-      const finalText = composeHtmlToText(finalHtml);
-      const finalBody = composeBodyText(finalHtml);
-      // 本文から参照している画像だけを、インライン画像として付ける
-      const usedCids = imageCids(finalHtml);
-      const inlineImages = compose.images.filter(i => usedCids.has(i.cid)).map(i => ({ contentId: i.cid, filename: i.filename, mimeType: i.mimeType, data: i.data }));
-      const totalBytes = replyAttachments.reduce((n, a) => n + a.size, 0) + compose.images.filter(i => usedCids.has(i.cid)).reduce((n, i) => n + i.size, 0);
-      if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
-        showErrorToast(`添付ファイルと本文中の画像が合わせて${Math.round(MAX_TOTAL_ATTACHMENT_BYTES / 1024 / 1024)}MBを超えるため送れません。本文は入力欄に残っています。`);
-        return;
-      }
-
-      const attachmentsToSend = replyAttachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, data: a.data }));
-
-      const payload: SendApiPayload = {
-        to: actualTo, cc: actualCc || undefined, bcc: actualBcc || undefined, subject: finalSubject, body: finalText, bodyHtml: finalHtml,
-        threadId, inReplyTo, references, from: fromHeader, replyTo: alias?.replyToAddress || undefined,
-        accountEmail: sendAccountEmail, attachments: attachmentsToSend, inlineImages: inlineImages.length ? inlineImages : undefined,
-      };
+      const { payload, bodyText: finalBody, subject: finalSubject, threadId, to: actualTo, cc: actualCc, bcc: actualBcc } = prep;
       // 再送の確認ダイアログから呼ばれたときにも同じ内容で処理できるよう、送信時点の値を取っておく
       const sentReplyTo = replyToMessage;
       const sentAttachmentsData = replyAttachments;
       const sentRoom = selectedSender;
 
-      await sendWithConfirm(payload, "送信", (sentData) => {
+      // 送れた・ほかで送信済みだったときに、入力欄と端末の下書きを空に戻す。送信中に別のチャットへ移っていたら、そちらの入力欄は消さない
+      const clearSentCompose = () => {
+        gmailDrafts.forgetLink(sentRoom);
+        void removeDraft(sentRoom);
+        if (selectedSenderRef.current === sentRoom) {
+          setReplySubject(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null); setRecipients(null); setRecipientsBase(null);
+          // 入力欄を空にする（署名は下の決まりで入れ直す）
+          insertedSignatureRef.current = null;
+          loadCompose("", []);
+        }
+        // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）
+        if (sentRoom && draftChatsRef.current.includes(sentRoom)) removeDraftChat(sentRoom);
+      };
+      const onSent = (sentData: { id?: string; threadId?: string }) => {
         // Gmailが実際に採番したIDを使う（リロード後の再取得でも同じメールとして同一視できるようにするため）。
         // 取得できなかった場合のみ、その場限りのフェイクIDにフォールバックする
         const sentId: string = sentData.id || `fake-${Date.now()}`;
@@ -326,17 +395,23 @@ export function useSend({
           setCachedAttachment(attachmentCacheKey(sendAccountEmail, sentId, idx, a.filename, a.size), a.data);
         });
         setEmails(prev => [sentFake, ...prev]);
-        // 送れた分の下書きを消す。送信中に別のチャットへ移っていたら、そちらの入力欄は消さない
-        void removeDraft(sentRoom);
-        if (selectedSenderRef.current === sentRoom) {
-          setReplySubject(""); setReplyToMessage(null); setReplyAttachments([]); setAttachError(null); setRecipients(null); setRecipientsBase(null);
-          // 入力欄を空にする（署名は下の決まりで入れ直す）
-          insertedSignatureRef.current = null;
-          loadCompose("", []);
+        clearSentCompose();
+      };
+
+      // Gmail の下書きがある入力は drafts.send で送る（純正の下書きと二重に残らない・二重に送られないように）。
+      // 保存の途中なら終わるのを待ち、送っている間は保存しない
+      gmailDrafts.sendingRoomsRef.current.add(sentRoom);
+      try {
+        await gmailDrafts.waitIdle();
+        const link = gmailDrafts.linkForSend(sentRoom);
+        if (link?.draftId && link.messageIdHeader) {
+          await sendDraftWithConfirm(payload, { room: sentRoom, draftId: link.draftId, withContent: gmailDrafts.isDirtyNow(sentRoom), messageId: link.messageIdHeader }, onSent, clearSentCompose);
+          return;
         }
-        // 送信できたので下書きチャットではなくなった（送信済みメールにより通常のチャットとして表示される）
-        if (sentRoom && draftChatsRef.current.includes(sentRoom)) removeDraftChat(sentRoom);
-      });
+        await sendWithConfirm(payload, "送信", onSent);
+      } finally {
+        gmailDrafts.sendingRoomsRef.current.delete(sentRoom);
+      }
     } catch (error) { logError("send.reply", {}, error); showErrorToast("メールの送信に失敗しました。通信状況を確認してください。"); } finally { setIsSending(false); }
   };
 
@@ -393,7 +468,7 @@ export function useSend({
       return;
     }
     const alias = sendAsList ? pickSendAs(sendAsList, `${message.to}, ${message.cc || ""}`, sendAccountEmail) : null;
-    const fromHeader = alias && !alias.isPrimary ? (alias.displayName ? `${alias.displayName} <${alias.sendAsEmail}>` : alias.sendAsEmail) : undefined;
+    const fromHeader = fromHeaderOf(alias);
 
     // 画面用のテキストは整形済みで情報が欠けるため、元の HTML 本文を取り直してそのまま使う
     const originalFull = await fetchOriginalFull(message, sendAccountEmail);
@@ -434,5 +509,5 @@ export function useSend({
     });
   };
 
-  return { handleSend, forwardMessageTo };
+  return { handleSend, forwardMessageTo, prepareOutgoing };
 }

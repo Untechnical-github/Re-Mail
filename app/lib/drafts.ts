@@ -6,6 +6,7 @@ import type { Email } from "../types/email";
 import { decodeRoomKey } from "./roomKey";
 import { normalizeRecipients, type ComposeRecipient } from "./composeRecipients";
 import { isComposeBodyEmpty, textToComposeHtml, COMPOSE_LIMITS } from "./composeHtml";
+import { readGmailLink, type GmailDraftLink } from "./gmailDrafts";
 
 // 本文中の画像（cid: で参照する。中身は base64）
 export type DraftImage = { cid: string; filename: string; mimeType: string; size: number; data: string };
@@ -23,10 +24,25 @@ export type ComposeDraft = {
   // recipientsBase は返信元を選んで置き換えたときの内容（自分で変えたかどうかの判定に使う。null は既定）
   recipients?: ComposeRecipient[] | null;
   recipientsBase?: ComposeRecipient[] | null;
+  // 最後に入力を変えた時刻（localUpdatedAt）
   updatedAt: number;
+  // Gmail の下書きとの同期の状態（下書き ID など。中身は持たない）。無ければまだ Gmail に保存していない
+  gmail?: GmailDraftLink;
 };
 
 const store = localforage.createInstance({ name: "remail", storeName: "drafts" });
+
+// 同じチャットの下書きへの書き込み（保存・同期の状態の書き換え・削除）は、呼んだ順に1つずつ行う。
+// 読んでから書く処理のあいだに別の書き込みが入って、新しい入力や消した下書きを古い値で書き戻さないため
+const roomLocks = new Map<string, Promise<unknown>>();
+function inRoomOrder<T>(room: string, fn: () => Promise<T>): Promise<T> {
+  const prev = roomLocks.get(room) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  const tail = next.catch(() => {});
+  roomLocks.set(room, tail);
+  void tail.then(() => { if (roomLocks.get(room) === tail) roomLocks.delete(room); });
+  return next;
+}
 
 // 署名・引用を除いた本文に、文字・画像・表があるか
 const hasBody = (html: string) => !!html && !isComposeBodyEmpty(html);
@@ -73,26 +89,57 @@ export async function loadDraft(room: string): Promise<ComposeDraft | null> {
       recipients: readRecipients(d.recipients),
       recipientsBase: readRecipients(d.recipientsBase),
       updatedAt: typeof d.updatedAt === "number" ? d.updatedAt : 0,
+      gmail: readGmailLink(d.gmail),
     };
   } catch {
     return null;
   }
 }
 
-// 中身が空なら消す（空の下書きを溜めない）
-export async function saveDraft(room: string, draft: ComposeDraft): Promise<boolean> {
+// 中身が空なら消す（空の下書きを溜めない）。Gmail の下書きがまだ残っている（消す前）ときは、消すために状態だけ残す。
+// gmail を渡さないときは、端末に入っている Gmail の下書きとの同期の状態をそのまま残す（外すときは EMPTY_LINK を渡す）
+export function saveDraft(room: string, given: ComposeDraft): Promise<boolean> {
+  return inRoomOrder(room, async () => {
   try {
-    if (isEmptyDraft(draft)) await store.removeItem(room);
+    let draft = given;
+    if (draft.gmail === undefined) {
+      const cur = await store.getItem<{ gmail?: unknown }>(room);
+      const kept = cur && typeof cur === "object" ? readGmailLink(cur.gmail) : undefined;
+      if (kept) draft = { ...draft, gmail: kept };
+    }
+    if (isEmptyDraft(draft) && !draft.gmail?.draftId) await store.removeItem(room);
     else await store.setItem(room, draft);
     return true;
   } catch {
     // 端末の容量不足などで保存できなかった（呼び出し側で利用者に伝える）
     return false;
   }
+  });
 }
 
-export async function removeDraft(room: string): Promise<void> {
-  try { await store.removeItem(room); } catch { /* 消せなくても、次に保存するときに上書きされる */ }
+// Gmail の下書きとの同期の状態だけを書き換える（中身は今の端末の下書きのまま。保存の途中で入力が進んでいても上書きしない）。
+// 中身が空で Gmail の下書きも無くなったら、端末の下書きごと消す
+export function updateDraftLink(room: string, link: GmailDraftLink): Promise<void> {
+  return inRoomOrder(room, async () => {
+  try {
+    const d = await loadDraft(room);
+    if (!d) return;
+    const next = { ...d, gmail: link };
+    if (isEmptyDraft(next) && !link.draftId) await store.removeItem(room);
+    else await store.setItem(room, next);
+  } catch { /* 書けなくても、次の保存でもう一度 Gmail と合わせる */ }
+  });
+}
+
+// 端末にある下書きのチャット（複合キー）の一覧
+export async function draftRooms(): Promise<string[]> {
+  try { return await store.keys(); } catch { return []; }
+}
+
+export function removeDraft(room: string): Promise<void> {
+  return inRoomOrder(room, async () => {
+    try { await store.removeItem(room); } catch { /* 消せなくても、次に保存するときに上書きされる */ }
+  });
 }
 
 export async function removeAccountDrafts(account: string): Promise<void> {

@@ -41,6 +41,7 @@ export type UseConfigsParams = {
   hydratePinnedEmails: (chatCfgs: Record<RoomKeyStr, ChatConfig>, msgCfgs: Record<RoomKeyStr, MessageConfig>, have: Email[]) => Promise<unknown>;
   accountSettings: Record<string, AccountSettings>;
   setAccountSettings: SetState<Record<string, AccountSettings>>;
+  setAccountSettingsLoaded: SetState<boolean>;
   checkInbox: boolean; checkArchive: boolean; checkSpam: boolean; checkTrash: boolean; checkSent: boolean;
   useIconLabels: boolean; showSentRecipients: boolean; showReceivedRecipients: boolean; checkAccounts: Record<string, boolean>;
   setCheckInbox: SetState<boolean>; setCheckArchive: SetState<boolean>; setCheckSpam: SetState<boolean>; setCheckTrash: SetState<boolean>; setCheckSent: SetState<boolean>;
@@ -48,7 +49,7 @@ export type UseConfigsParams = {
 };
 
 export function useConfigs({
-  session, showErrorToast, showInfoToast, selectedSender, setSelectedSender, setChatConfigs, setMessageConfigs, chatConfigsRef, messageConfigsRef, setPersistedEmails, hydratePinnedEmails, accountSettings, setAccountSettings, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, showSentRecipients, showReceivedRecipients, checkAccounts, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setUseIconLabels, setShowSentRecipients, setShowReceivedRecipients, setCheckAccounts,
+  session, showErrorToast, showInfoToast, selectedSender, setSelectedSender, setChatConfigs, setMessageConfigs, chatConfigsRef, messageConfigsRef, setPersistedEmails, hydratePinnedEmails, accountSettings, setAccountSettings, setAccountSettingsLoaded, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, showSentRecipients, showReceivedRecipients, checkAccounts, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setUseIconLabels, setShowSentRecipients, setShowReceivedRecipients, setCheckAccounts,
 }: UseConfigsParams) {
   // 設定の保存は、失敗したら自動で送り直す（中身は app/lib/configSaveQueue.ts）。同じ行への保存は新しい値だけを送る。
   // 送り直してもだめなら、画面の表示はもう変わっているので、保存されていないこと（再読み込みで元に戻ること）を伝える（絶対ルール3）
@@ -109,8 +110,8 @@ export function useConfigs({
       const res = await fetch("/api/config");
       if (res.ok) {
         const data = await res.json();
+        loadedAccountSettings = {};
         if (data.accountSettings && typeof data.accountSettings === "object") {
-          loadedAccountSettings = {};
           for (const [acc, v] of Object.entries(data.accountSettings as Record<string, unknown>)) loadedAccountSettings[acc] = sanitizeAccountSettings(v);
         }
         (data.configs as D1ConfigRow[] | undefined)?.forEach((c) => {
@@ -172,6 +173,8 @@ export function useConfigs({
       showErrorToast("ピン留め・名前変更などの設定を読み込めませんでした。通信状況を確認して再読み込みしてください。");
     }
     if (loadedAccountSettings) setAccountSettings(loadedAccountSettings);
+    // 読めたときだけ「読み終えた」にする（読めなかったら、オフにしているかもしれないので Gmail の下書きとの同期を始めない）
+    if (loadedAccountSettings) setAccountSettingsLoaded(true);
     return { globalSettings, formatted };
   };
 

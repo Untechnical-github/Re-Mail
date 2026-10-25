@@ -289,8 +289,17 @@ export function assembleBytes(segments: MimeSegment[]): Uint8Array<ArrayBuffer> 
 // Gmail の upload エンドポイント（uploadType=multipart）に送る本体。
 // 1つ目のパートがメタデータ（threadId）、2つ目がメール本体そのもの
 export function buildGmailUploadBody(message: MimeSegment[], threadId?: string): { body: Uint8Array<ArrayBuffer>; contentType: string } {
+  return buildGmailUploadBodyWithMeta(message, threadId ? { threadId } : {});
+}
+
+// 下書きの upload（drafts.create / update / send）は、メタデータが Draft の形（{ id, message: { threadId } }）になる
+export function buildDraftUploadBody(message: MimeSegment[], draftId?: string, threadId?: string): { body: Uint8Array<ArrayBuffer>; contentType: string } {
+  return buildGmailUploadBodyWithMeta(message, { ...(draftId ? { id: draftId } : {}), message: threadId ? { threadId } : {} });
+}
+
+function buildGmailUploadBodyWithMeta(message: MimeSegment[], meta: Record<string, unknown>): { body: Uint8Array<ArrayBuffer>; contentType: string } {
   const b = newBoundary();
-  const metadata = JSON.stringify(threadId ? { threadId } : {});
+  const metadata = JSON.stringify(meta);
   const segments: MimeSegment[] = [
     `--${b}${CRLF}Content-Type: application/json; charset=UTF-8${CRLF}${CRLF}${metadata}${CRLF}`,
     `--${b}${CRLF}Content-Type: message/rfc822${CRLF}${CRLF}`,

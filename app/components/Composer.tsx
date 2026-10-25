@@ -174,6 +174,10 @@ export function Composer({ app, composeRef, selectedRoom, recipientsOpen, setRec
                   {state.attachError && (
                     <div className="text-xs text-red-400 mb-2">{state.attachError}</div>
                   )}
+                  {/* Gmail の下書きに保存できていないときだけ、小さく出す（トーストは出さない。入力は端末に残っている） */}
+                  {state.gmailDraftNotice && (
+                    <div className="text-[11px] text-gray-400 mb-1">{state.gmailDraftNotice}</div>
+                  )}
                   <div className="flex items-end gap-2">
                     <label
                       title="ファイルを添付"

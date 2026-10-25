@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   encodeHeaderText, splitAddressList, parseAddress, formatAddressHeader,
-  buildMimeSegments, assembleBytes, buildGmailUploadBody, cleanBase64, utf8ToBase64, decodeMimeHeader,
+  buildMimeSegments, assembleBytes, buildGmailUploadBody, buildDraftUploadBody, cleanBase64, utf8ToBase64, decodeMimeHeader,
 } from "./mime";
 
 // テスト用: encoded-word を元の文字列に戻す

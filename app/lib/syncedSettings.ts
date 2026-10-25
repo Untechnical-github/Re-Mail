@@ -34,6 +34,8 @@ export const ACCOUNT_SETTING_TYPES = {
   autoReadOnOpenChat: "boolean",
   // メールを開いたら（詳細を表示したら）、そのメールを既読にするか（既定はオフ）
   autoReadOnOpenMail: "boolean",
+  // Re:Mail の書きかけを Gmail の下書きに保存し、Gmail の下書きをチャットの入力欄に出すか（既定はオン。保存していない＝オン）
+  gmailDraftSync: "boolean",
 } as const;
 export type AccountSettings = { -readonly [K in keyof typeof ACCOUNT_SETTING_TYPES]?: boolean };
 

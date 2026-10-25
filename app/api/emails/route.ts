@@ -5,11 +5,11 @@ import { auth } from "../../../auth";
 import { getValidAccessToken } from "../../lib/googleToken";
 import { encryptSecret, decryptSecret, EncryptionKeyMissingError } from "../../lib/tokenCrypto";
 import { findLinkedAccount } from "../../lib/linkedAccountsStore";
-import { buildMimeSegments, buildGmailUploadBody, decodeMimeHeader } from "../../lib/mime";
+import { buildMimeSegments, buildGmailUploadBody, buildDraftUploadBody, decodeMimeHeader, type MimeSegment } from "../../lib/mime";
 import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, getTextBody, extractAttachments, extractContentIdParts, referencesContentId, stripHtmlQuote, looksLikeForward, parseMessageDetail, parseInternalDate, topReceivedTime } from "../../lib/messageParse";
 import type { MimeInlinePart } from "../../lib/mime";
 import { summarizeHistory, type GmailHistoryRecord } from "../../lib/historySync";
-import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
+import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, addressSet, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
 import { logError, logWarn, logInfo } from "../../lib/safeLog";
 import { labelChangeFor, readLabelChange, sanitizeMessageIds, chunkIds } from "../../lib/mailboxOps";
 import { validateSendHeaders } from "../../lib/composeRecipients";
@@ -61,12 +61,12 @@ const INLINE_IMAGE_LIMIT = 30;
 
 // 送信は fetchWithRetry を通さない（5xx やタイムアウトでも Gmail 側では送れていることがあり、
 // 再試行すると二重送信になる）。再試行するのは、Gmail が受け付けを断った（＝送られていない）429 とレート制限の 403 だけ
-async function postSendOnce(upload: { body: Uint8Array<ArrayBuffer>; contentType: string }, accessToken: string): Promise<{ outcome: SendOutcome; res?: Response }> {
+async function postSendOnce(upload: { body: Uint8Array<ArrayBuffer>; contentType: string }, accessToken: string, url: string = GMAIL_SEND_URL): Promise<{ outcome: SendOutcome; res?: Response }> {
   const maxAttempts = 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let res: Response;
     try {
-      res = await fetch(GMAIL_SEND_URL, {
+      res = await fetch(url, {
         method: "POST",
         headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": upload.contentType },
         body: upload.body,
@@ -190,6 +190,173 @@ async function findSentMessage(accessToken: string, exp: SentExpectation): Promi
     }
   }
   return null;
+}
+
+const GMAIL_DRAFTS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
+const GMAIL_DRAFTS_UPLOAD_URL = "https://gmail.googleapis.com/upload/gmail/v1/users/me/drafts";
+type GmailDraftResponse = { id?: string; message?: { id?: string; threadId?: string } };
+
+// Gmail の下書き ID（r1234… / r-1234…）とメッセージ ID（16進）の形
+function isValidDraftId(v: unknown): v is string {
+  return typeof v === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(v);
+}
+function isValidGmailId(v: unknown): v is string {
+  return typeof v === "string" && /^[0-9a-f]{6,32}$/i.test(v);
+}
+
+type DraftState =
+  | { state: "ok"; messageId: string; threadId?: string }
+  | { state: "gone" }
+  | { state: "unauthorized" }
+  | { state: "error"; status: number; reason?: string };
+
+// 下書きが今どうなっているか（drafts.get の minimal。中身は読まない）。404 は「ほかで送信・削除された」
+async function getDraftState(accessToken: string, draftId: string): Promise<DraftState> {
+  try {
+    const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}/${encodeURIComponent(draftId)}?format=minimal&fields=id,message(id,threadId)`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (res.status === 404) return { state: "gone" };
+    if (res.status === 401) return { state: "unauthorized" };
+    if (!res.ok) {
+      const reason = gmailErrorReason(await res.json().catch(() => null));
+      logWarn("draft.get.failed", { status: res.status, reason });
+      return { state: "error", status: res.status >= 400 ? res.status : 502, reason };
+    }
+    const d = (await res.json()) as GmailDraftResponse;
+    return d.message?.id ? { state: "ok", messageId: d.message.id, threadId: d.message.threadId } : { state: "gone" };
+  } catch (e) {
+    logWarn("draft.get.noResponse", {}, e);
+    return { state: "error", status: 502 };
+  }
+}
+
+// Message-ID で下書きを探す（作ろうとして結果を受け取れなかったときに、二重に作らないため）。見つからなければ null
+async function findDraftByMessageId(accessToken: string, messageIdHeader: string): Promise<string | null> {
+  try {
+    const q = encodeURIComponent(`in:drafts rfc822msgid:${messageIdHeader.slice(1, -1)}`);
+    const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}?maxResults=1&fields=drafts(id)&q=${q}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!res.ok) return null;
+    const id = ((await res.json()) as { drafts?: { id?: string }[] }).drafts?.[0]?.id;
+    return isValidDraftId(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+// 下書きの宛先・件名・HTML が、これから保存するものと同じか（中身は比べるだけで、ログにも返り値にも出さない）
+async function draftEquals(accessToken: string, draftId: string, exp: SentExpectation, html: string): Promise<boolean> {
+  if (!html) return false;
+  try {
+    const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}/${encodeURIComponent(draftId)}?format=full&fields=message(payload)`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!res.ok) return false;
+    const payload = ((await res.json()) as { message?: GmailMessage }).message?.payload;
+    if (!payload) return false;
+    const norm = (s: string) => s.replace(/\r\n/g, "\n").trim();
+    const h = payload.headers || [];
+    const sameAddr = (a: string, b: string | undefined) => [...addressSet(decodeMimeHeader(a))].sort().join(",") === [...addressSet(b || "")].sort().join(",");
+    return norm(decodeMimeHeader(getHeader(h, "Subject"))) === norm(exp.subject)
+      && sameAddr(getHeader(h, "To"), exp.to) && sameAddr(getHeader(h, "Cc"), exp.cc) && sameAddr(getHeader(h, "Bcc"), exp.bcc)
+      && norm(getHtmlBody(payload)) === norm(html);
+  } catch {
+    return false;
+  }
+}
+
+// 下書きを送って結果が分からなかったとき：下書きが残っていれば送られていない（draftExists）。無ければ送信済みと照合する
+async function verifyDraftSend(accessToken: string, draftId: string, exp: SentExpectation): Promise<{ found: { id: string; threadId: string } | null; draftExists: boolean }> {
+  await sleep(1500);
+  const st = await getDraftState(accessToken, draftId);
+  if (st.state === "ok") return { found: null, draftExists: true };
+  const found = await findSentMessage(accessToken, exp);
+  logInfo("draft.send.verified", { count: found ? 1 : 0 });
+  return { found, draftExists: false };
+}
+
+type PreparedMime =
+  | { ok: true; segments: MimeSegment[]; messageId: string; threadId?: string; exp: SentExpectation }
+  | { ok: false; response: NextResponse };
+
+// 送信・下書きの保存で同じ MIME を作る（宛先・本文中の画像・添付・大きさを確かめる。転送では元のメールの添付を取り直す）
+async function prepareSendMime(bodyData: Record<string, unknown>, accessToken: string): Promise<PreparedMime> {
+  const { subject, body, bodyHtml, threadId, inReplyTo, references, from, replyTo } = bodyData;
+  // 宛先（To / Cc / Bcc）は画面の送信先から作られて届く。件数（合計500）・長さ・改行をここでも確かめ、
+  // 1件も無い・壊れているときは送らない（宛先を勝手に直さない）
+  const checked = validateSendHeaders({ to: bodyData.to, cc: bodyData.cc, bcc: bodyData.bcc });
+  if (!checked.ok) {
+    logWarn("send.invalidRecipients", { reason: checked.error });
+    return { ok: false, response: NextResponse.json({ error: checked.error }, { status: 400 }) };
+  }
+  const { to, cc, bcc } = checked.headers;
+  const attachments = (Array.isArray(bodyData.attachments) ? bodyData.attachments : []) as { filename: string; mimeType: string; data: string }[];
+  const html = typeof bodyHtml === "string" ? bodyHtml : "";
+
+  // 転送: 元のメールの添付も純正 Gmail と同じく一緒に送る。添付の ID は取り直すたびに変わることがあるため、
+  // クライアントから受け取らず、ここで元のメールから読み直す。1つでも取れなければ送らない（黙って添付を落とさない）
+  // 転送で、元のメールの本文中の画像（cid: で参照されるもの）
+  const inline: MimeInlinePart[] = [];
+  const forwardFrom = bodyData.forwardAttachmentsFrom;
+  if (typeof forwardFrom === "string" && forwardFrom) {
+    if (!/^[0-9a-f]{6,32}$/i.test(forwardFrom)) return { ok: false, response: NextResponse.json({ error: "FORWARD_ATTACHMENTS_FAILED" }, { status: 400 }) };
+    const forwarded = await loadForwardAttachments(accessToken, forwardFrom, html);
+    if (!forwarded.ok) {
+      const { stage, status, reason } = forwarded;
+      return { ok: false, response: NextResponse.json({ error: "FORWARD_ATTACHMENTS_FAILED", stage, status, reason }, { status: 502 }) };
+    }
+    attachments.push(...forwarded.attachments);
+    inline.push(...forwarded.inline);
+  }
+
+  // 本文中の画像（書式付きの入力欄で入れたもの）。HTML から cid: で参照する。形・件数・大きさ・種類をここでも確かめる
+  if (bodyData.inlineImages !== undefined) {
+    const checkedInline = validateInlineImages(bodyData.inlineImages);
+    if (!checkedInline.ok) {
+      logWarn("send.invalidInlineImages", { count: Array.isArray(bodyData.inlineImages) ? bodyData.inlineImages.length : 0 });
+      return { ok: false, response: NextResponse.json({ error: "INVALID_INLINE_IMAGES" }, { status: 400 }) };
+    }
+    inline.push(...checkedInline.images);
+  }
+
+  // 添付ファイルの合計サイズをサーバー側でも検証する（upload エンドポイントの上限はメール全体で
+  // 35MB。添付は base64 で約1.37倍に膨らむため、純正 Gmail と同じ 25MB を上限にする）
+  const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+  if (attachments.length > 0 || inline.length > 0) {
+    // 本文中の画像（インライン）も合計に入れる
+    const totalBytes = [...attachments, ...inline].reduce((sum, a) => sum + Math.floor(((a.data || "").length * 3) / 4), 0);
+    if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
+      return { ok: false, response: NextResponse.json({ error: "Attachments too large", details: { totalBytes, limit: MAX_TOTAL_ATTACHMENT_BYTES } }, { status: 413 }) };
+    }
+  }
+
+  // Message-ID は送信前に決めておく（結果が分からないときの照合に使う）。
+  // クライアントが付けてきた場合はそれを使う（ブラウザ側の通信断のあとにクライアントからも照合できるように。
+  // 下書きは保存のたびに同じ Message-ID を使う）
+  const messageId = isValidMessageId(bodyData.messageId) ? bodyData.messageId : makeMessageId(crypto.getRandomValues(new Uint8Array(40)));
+  const sentAfterMs = Date.now();
+  const text = typeof body === "string" ? body : "";
+
+  // 転送など、元の HTML をそのまま保ちたい場合は bodyHtml を使い、テキスト版と一緒に
+  // multipart/alternative で送る（受信側が HTML を表示できない場合にも読めるように）
+  const segments = buildMimeSegments({
+    to,
+    cc: cc || undefined,
+    bcc: bcc || undefined,
+    subject: typeof subject === "string" ? subject : "",
+    text: text || (html ? undefined : ""),
+    html: html || undefined,
+    attachments,
+    inline,
+    inReplyTo: typeof inReplyTo === "string" ? inReplyTo : undefined,
+    references: typeof references === "string" ? references : undefined,
+    // エイリアスから送るときだけ From を付ける（付けなければ Gmail が既定の送信元を純正と同じ形で入れる）。
+    // 登録されていないアドレスを指定しても、Gmail 側で既定の送信元に置き換えられる
+    from: typeof from === "string" ? from : undefined,
+    replyTo: typeof replyTo === "string" ? replyTo : undefined,
+    messageId,
+  });
+  return {
+    ok: true, segments, messageId,
+    threadId: typeof threadId === "string" && threadId ? threadId : undefined,
+    exp: { messageId, subject: typeof subject === "string" ? subject : "", to, cc, bcc, body: text, sentAfterMs },
+  };
 }
 
 // accountEmail が未指定、またはメインアカウント自身の場合はNextAuthのセッションが持つ
@@ -553,81 +720,12 @@ export async function POST(request: Request) {
 
     // ① メールの送信
     if (action === "send" || !action) {
-      const { subject, body, bodyHtml, threadId, inReplyTo, references, from, replyTo } = bodyData;
-      // 宛先（To / Cc / Bcc）は画面の送信先から作られて届く。件数（合計500）・長さ・改行をここでも確かめ、
-      // 1件も無い・壊れているときは送らない（宛先を勝手に直さない）
-      const checked = validateSendHeaders({ to: bodyData.to, cc: bodyData.cc, bcc: bodyData.bcc });
-      if (!checked.ok) {
-        logWarn("send.invalidRecipients", { reason: checked.error });
-        return NextResponse.json({ error: checked.error }, { status: 400 });
-      }
-      const { to, cc, bcc } = checked.headers;
-      const attachments = (bodyData.attachments || []) as { filename: string; mimeType: string; data: string }[];
-
-      // 転送: 元のメールの添付も純正 Gmail と同じく一緒に送る。添付の ID は取り直すたびに変わることがあるため、
-      // クライアントから受け取らず、ここで元のメールから読み直す。1つでも取れなければ送らない（黙って添付を落とさない）
-      // 転送で、元のメールの本文中の画像（cid: で参照されるもの）
-      const inline: MimeInlinePart[] = [];
-      const forwardFrom = bodyData.forwardAttachmentsFrom;
-      if (typeof forwardFrom === "string" && forwardFrom) {
-        if (!/^[0-9a-f]{6,32}$/i.test(forwardFrom)) return NextResponse.json({ error: "FORWARD_ATTACHMENTS_FAILED" }, { status: 400 });
-        const forwarded = await loadForwardAttachments(accessToken, forwardFrom, typeof bodyHtml === "string" ? bodyHtml : "");
-        if (!forwarded.ok) {
-          const { stage, status, reason } = forwarded;
-          return NextResponse.json({ error: "FORWARD_ATTACHMENTS_FAILED", stage, status, reason }, { status: 502 });
-        }
-        attachments.push(...forwarded.attachments);
-        inline.push(...forwarded.inline);
-      }
-
-      // 本文中の画像（書式付きの入力欄で入れたもの）。HTML から cid: で参照する。形・件数・大きさ・種類をここでも確かめる
-      if (bodyData.inlineImages !== undefined) {
-        const checkedInline = validateInlineImages(bodyData.inlineImages);
-        if (!checkedInline.ok) {
-          logWarn("send.invalidInlineImages", { count: Array.isArray(bodyData.inlineImages) ? bodyData.inlineImages.length : 0 });
-          return NextResponse.json({ error: "INVALID_INLINE_IMAGES" }, { status: 400 });
-        }
-        inline.push(...checkedInline.images);
-      }
-
-      // 添付ファイルの合計サイズをサーバー側でも検証する（upload エンドポイントの上限はメール全体で
-      // 35MB。添付は base64 で約1.37倍に膨らむため、純正 Gmail と同じ 25MB を上限にする）
-      const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-      if (attachments.length > 0 || inline.length > 0) {
-        // 本文中の画像（インライン）も合計に入れる
-        const totalBytes = [...attachments, ...inline].reduce((sum, a) => sum + Math.floor(((a.data || "").length * 3) / 4), 0);
-        if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
-          return NextResponse.json({ error: "Attachments too large", details: { totalBytes, limit: MAX_TOTAL_ATTACHMENT_BYTES } }, { status: 413 });
-        }
-      }
-
-      // Message-ID は送信前に決めておく（結果が分からないときの照合に使う）。
-      // クライアントが付けてきた場合はそれを使う（ブラウザ側の通信断のあとにクライアントからも照合できるように）
-      const messageId = isValidMessageId(bodyData.messageId) ? bodyData.messageId : makeMessageId(crypto.getRandomValues(new Uint8Array(40)));
-      const sentAfterMs = Date.now();
-
-      // 転送など、元の HTML をそのまま保ちたい場合は bodyHtml を使い、テキスト版と一緒に
-      // multipart/alternative で送る（受信側が HTML を表示できない場合にも読めるように）
-      const segments = buildMimeSegments({
-        to,
-        cc: cc || undefined,
-        bcc: bcc || undefined,
-        subject: subject || "",
-        text: body || (bodyHtml ? undefined : ""),
-        html: bodyHtml || undefined,
-        attachments,
-        inline,
-        inReplyTo: typeof inReplyTo === "string" ? inReplyTo : undefined,
-        references: typeof references === "string" ? references : undefined,
-        // エイリアスから送るときだけ From を付ける（付けなければ Gmail が既定の送信元を純正と同じ形で入れる）。
-        // 登録されていないアドレスを指定しても、Gmail 側で既定の送信元に置き換えられる
-        from: typeof from === "string" ? from : undefined,
-        replyTo: typeof replyTo === "string" ? replyTo : undefined,
-        messageId,
-      });
+      const prep = await prepareSendMime(bodyData, accessToken);
+      if (!prep.ok) return prep.response;
+      const { segments, messageId, threadId, exp } = prep;
       // raw を JSON に入れる通常の send は数MBで失敗するため、上限 35MB の upload エンドポイントに
       // メール本体をそのまま送る（JSON 用に base64 で包み直さないので、サイズも約 1.37 倍に膨らまない）
-      const upload = buildGmailUploadBody(segments, typeof threadId === "string" && threadId ? threadId : undefined);
+      const upload = buildGmailUploadBody(segments, threadId);
 
       const { outcome, res } = await postSendOnce(upload, accessToken);
 
@@ -640,7 +738,7 @@ export async function POST(request: Request) {
       }
       if (outcome === "unknown") {
         if (res) logWarn("send.serverError", { status: res.status });
-        const found = await findSentMessage(accessToken, { messageId, subject: subject || "", to, cc, bcc, body: body || "", sentAfterMs });
+        const found = await findSentMessage(accessToken, exp);
         if (found) {
           logInfo("send.verifiedSent", { messageId: found.id, threadId: found.threadId });
           return NextResponse.json({ success: true, id: found.id, threadId: found.threadId, messageId, verified: true });
@@ -659,6 +757,127 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: true, id: sentData.id, threadId: sentData.threadId, messageId });
     }
 
+    // ② Gmail の下書きに保存する（新しく作る・上書きする）。中身は Gmail にだけ置き、ここでは通すだけ（ログにも出さない）。
+    // 上書きの前に今の下書きのメッセージ ID を確かめ、ほかで書き換えられていたら上書きしない（409）。
+    // ほかで送信・削除されていたら 404（DRAFT_GONE）
+    if (action === "draftSave") {
+      const rawId = bodyData.draftId;
+      if (rawId !== undefined && rawId !== null && !isValidDraftId(rawId)) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+      const expect = isValidGmailId(bodyData.expectMessageId) ? bodyData.expectMessageId : null;
+      const prep = await prepareSendMime(bodyData, accessToken);
+      if (!prep.ok) return prep.response;
+      const { segments, messageId, threadId } = prep;
+      let targetId: string | null = isValidDraftId(rawId) ? rawId : null;
+      if (targetId) {
+        const cur = await getDraftState(accessToken, targetId);
+        if (cur.state === "unauthorized") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        if (cur.state === "gone") return NextResponse.json({ error: "DRAFT_GONE" }, { status: 404 });
+        if (cur.state === "error") return NextResponse.json({ error: "DRAFT_SAVE_FAILED", reason: cur.reason }, { status: cur.status });
+        if (expect && cur.messageId !== expect) {
+          // 中身が今から保存するものと同じなら、書き換えの競合ではない（タブを閉じたときの保存が届いていた、など）
+          if (await draftEquals(accessToken, targetId, prep.exp, typeof bodyData.bodyHtml === "string" ? bodyData.bodyHtml : "")) {
+            return NextResponse.json({ success: true, draftId: targetId, gmailMessageId: cur.messageId, threadId: cur.threadId, messageId, unchanged: true });
+          }
+          logInfo("draft.conflict", { messageId: cur.messageId });
+          return NextResponse.json({ error: "DRAFT_CONFLICT", messageId: cur.messageId }, { status: 409 });
+        }
+      } else if (bodyData.mayExist === true) {
+        // 前に作ろうとして結果を受け取れなかった（タブを閉じたときの保存など）。同じ Message-ID の下書きがあれば、
+        // それを上書きする（二重に作らない）
+        targetId = await findDraftByMessageId(accessToken, messageId);
+      }
+      const upload = buildDraftUploadBody(segments, targetId || undefined, threadId);
+      let res: Response | undefined;
+      try {
+        // 上書き（update）は何度送っても同じ結果なので、429・5xx は待って送り直す。新しく作る（create）は
+        // 5xx で送り直すと二重にできることがあるため、受け付けを断られた 429 だけ送り直す（postSendOnce と同じ）
+        res = targetId
+          ? await fetchWithRetry(`${GMAIL_DRAFTS_UPLOAD_URL}/${encodeURIComponent(targetId)}?uploadType=multipart`, {
+              method: "PUT", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": upload.contentType }, body: upload.body,
+            })
+          : (await postSendOnce(upload, accessToken, `${GMAIL_DRAFTS_UPLOAD_URL}?uploadType=multipart`)).res;
+      } catch (e) {
+        logWarn("draft.save.noResponse", {}, e);
+      }
+      if (res?.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      if (targetId && res?.status === 404) return NextResponse.json({ error: "DRAFT_GONE" }, { status: 404 });
+      if (!res || !res.ok) {
+        const reason = gmailErrorReason(await res?.json().catch(() => null));
+        logWarn("draft.save.failed", { status: res?.status, reason });
+        // 新しく作ろうとして結果が分からないときは、できていたかを Message-ID で探す
+        if (!targetId && (!res || res.status >= 500)) {
+          const made = await findDraftByMessageId(accessToken, messageId);
+          const st = made ? await getDraftState(accessToken, made) : null;
+          if (made && st?.state === "ok") return NextResponse.json({ success: true, draftId: made, gmailMessageId: st.messageId, threadId: st.threadId, messageId });
+        }
+        return NextResponse.json({ error: "DRAFT_SAVE_FAILED", reason }, { status: res && res.status >= 400 ? res.status : 502 });
+      }
+      const d = (await res.json().catch(() => ({}))) as GmailDraftResponse;
+      logInfo("draft.saved", { messageId: d.message?.id });
+      return NextResponse.json({ success: true, draftId: d.id, gmailMessageId: d.message?.id, threadId: d.message?.threadId, messageId });
+    }
+
+    // ③ Gmail の下書きを送る（drafts.send）。下書きがある入力は必ずこれで送り、失敗しても messages.send に切り替えない。
+    // withContent のときは今の中身で置き換えて送る。自動では再送しない（429 だけ待って送り直す。postSendOnce と同じ）
+    if (action === "draftSend") {
+      if (!isValidDraftId(bodyData.draftId)) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+      const draftId: string = bodyData.draftId;
+      const withContent = bodyData.withContent === true;
+      const prep = await prepareSendMime(bodyData, accessToken);
+      if (!prep.ok) return prep.response;
+      const { segments, messageId, threadId, exp } = prep;
+      const upload = withContent
+        ? buildDraftUploadBody(segments, draftId, threadId)
+        : { body: new TextEncoder().encode(JSON.stringify({ id: draftId })), contentType: "application/json" };
+      const { outcome, res } = await postSendOnce(upload, accessToken, withContent ? `${GMAIL_DRAFTS_UPLOAD_URL}/send?uploadType=multipart` : `${GMAIL_DRAFTS_URL}/send`);
+      if (outcome === "unauthorized") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      if (outcome === "ok") {
+        const sent = (await res!.json().catch(() => ({}))) as { id?: string; threadId?: string };
+        logInfo("draft.sent", { messageId: sent.id });
+        return NextResponse.json({ success: true, id: sent.id, threadId: sent.threadId, messageId });
+      }
+      if (outcome === "failed" && res?.status === 404) {
+        // ほかで送信・削除された。送信済みに同じメールがあれば「送信済み」、無ければ利用者に確かめる（ここでは送らない）。
+        // 純正から送られたのは少し前のことがあるので、照合する時刻の幅を広げる
+        const found = await findSentMessage(accessToken, { ...exp, sentAfterMs: exp.sentAfterMs - 24 * 3600_000 });
+        logInfo("draft.send.gone", { count: found ? 1 : 0 });
+        return found
+          ? NextResponse.json({ error: "DRAFT_ALREADY_SENT", id: found.id, threadId: found.threadId }, { status: 409 })
+          : NextResponse.json({ error: "DRAFT_GONE" }, { status: 404 });
+      }
+      if (outcome === "failed") {
+        const reason = gmailErrorReason(await res?.json().catch(() => null));
+        logError("draft.send.failed", { status: res?.status, reason });
+        return NextResponse.json({ error: "Failed to send email", reason, messageId }, { status: res?.status || 500 });
+      }
+      // 送れたか分からない：下書きが残っていれば送られていない。無ければ送信済みと照合する（自動では再送しない）
+      if (res) logWarn("draft.send.serverError", { status: res.status });
+      const verdict = await verifyDraftSend(accessToken, draftId, exp);
+      if (verdict.found) return NextResponse.json({ success: true, id: verdict.found.id, threadId: verdict.found.threadId, messageId, verified: true });
+      return NextResponse.json({ error: verdict.draftExists ? "SEND_UNCONFIRMED" : "SEND_UNVERIFIED", messageId }, { status: 502 });
+    }
+
+    // ④ Gmail の下書きを消す（純正の「下書きを破棄」と同じ）。ほかで書き換えられていたら消さない（409）
+    if (action === "draftDelete") {
+      if (!isValidDraftId(bodyData.draftId)) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+      const draftId: string = bodyData.draftId;
+      const expect = isValidGmailId(bodyData.expectMessageId) ? bodyData.expectMessageId : null;
+      const cur = await getDraftState(accessToken, draftId);
+      if (cur.state === "unauthorized") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      if (cur.state === "gone") return NextResponse.json({ success: true, gone: true });
+      if (cur.state === "error") return NextResponse.json({ error: "DRAFT_DELETE_FAILED", reason: cur.reason }, { status: cur.status });
+      if (expect && cur.messageId !== expect) return NextResponse.json({ error: "DRAFT_CONFLICT", messageId: cur.messageId }, { status: 409 });
+      const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}/${encodeURIComponent(draftId)}`, { method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` } });
+      if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      if (!res.ok && res.status !== 404) {
+        const reason = gmailErrorReason(await res.json().catch(() => null));
+        logWarn("draft.delete.failed", { status: res.status, reason });
+        return NextResponse.json({ error: "DRAFT_DELETE_FAILED", reason }, { status: res.status >= 400 ? res.status : 502 });
+      }
+      logInfo("draft.deleted", { messageId: cur.messageId });
+      return NextResponse.json({ success: true });
+    }
+
     // ブラウザと Worker の間の通信が切れて送信の結果を受け取れなかったときに、
     // クライアントから「そのメールが送れていたか」を確かめる（再送はしない）
     if (action === "verifySent") {
@@ -666,11 +885,17 @@ export async function POST(request: Request) {
       if (!isValidMessageId(messageId) || typeof sentAfterMs !== "number") {
         return NextResponse.json({ error: "Invalid request" }, { status: 400 });
       }
-      const found = await findSentMessage(accessToken, {
+      const exp: SentExpectation = {
         messageId, subject: typeof subject === "string" ? subject : "",
         to: typeof to === "string" ? to : "", cc: typeof cc === "string" ? cc : "", bcc: typeof bcc === "string" ? bcc : "",
         body: typeof body === "string" ? body : "", sentAfterMs,
-      });
+      };
+      // 下書きを送ったとき：下書きが残っていれば送られていない
+      if (isValidDraftId(bodyData.draftId)) {
+        const verdict = await verifyDraftSend(accessToken, bodyData.draftId, exp);
+        return NextResponse.json(verdict.found ? { found: true, id: verdict.found.id, threadId: verdict.found.threadId } : { found: false, draftExists: verdict.draftExists });
+      }
+      const found = await findSentMessage(accessToken, exp);
       return NextResponse.json(found ? { found: true, id: found.id, threadId: found.threadId } : { found: false });
     }
 
