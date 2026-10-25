@@ -14,6 +14,6 @@ Playwright と Chromium はリモート環境に入っている（`require("play
 - 要る環境変数（リモート環境の設定で、ユーザーが入れる。Claude は値を見ない・出力しない・会話で聞かない）：
   `GOOGLE_CLIENT_ID` `GOOGLE_CLIENT_SECRET`（ローカル開発と同じ値） `RE_MAIL_TEST_EMAIL` `RE_MAIL_TEST_REFRESH_TOKEN`
 - `AUTH_SECRET` と `TOKEN_ENCRYPTION_KEY` は入れなくてよい（`dev.sh` がこの環境の中だけの鍵を作る）。
-- リフレッシュトークンは、ユーザーが手元の PC で `node script/browser/get-refresh-token.mjs` を実行して取る（ローカルの next dev は止めておく）。
+- トークンはユーザーが取る（スマホなら OAuth 2.0 Playground、PC なら `get-refresh-token.mjs`）。ユーザー向けの手順は `docs/remote-browser-check.md`。`check.mjs --login` が `login: 失敗` を出したら、その手順の B で取り直してもらうよう伝える（値をチャットで受け取らない）。
 - 実際のメールが画面に出るので、**テスト用の Google アカウントを使う**。送信の確認は、テスト用アカウントから自分自身か別のテスト用アカウントあてに送る。
 - Google Cloud の OAuth 同意画面が「テスト中」だと、リフレッシュトークンは7日で切れる。`invalid_grant` が出たら取り直してもらう。

@@ -40,6 +40,17 @@ const origin = new URL(url).origin;
       : { viewport: { width: 1280, height: 800 } },
   );
   if (login) await addLoginCookie(context, url);
+  // ログインが通ったかを、ページを開く前に確かめる（失敗するとページ側がすぐログアウトして理由が消えるため。トークンが切れていたら、ユーザーに取り直してもらう。手順は docs/remote-browser-check.md）
+  let loginState = "";
+  if (login) {
+    const sessionRes = await context.request.get(`${origin}/api/auth/session`);
+    const session = sessionRes.ok() ? await sessionRes.json().catch(() => null) : null;
+    loginState = !session?.user
+      ? "失敗（セッションがありません）"
+      : session.error
+        ? `失敗（${session.error}。トークンが切れたか、GOOGLE_CLIENT_ID がトークンを取ったものと違う）`
+        : "OK";
+  }
   const page = await context.newPage();
   const errors = [];
   const external = new Set();
@@ -60,6 +71,7 @@ const origin = new URL(url).origin;
       `status: ${res ? res.status() : "なし"}`,
       `final url: ${page.url()}`,
       `title: ${await page.title()}`,
+      ...(login ? [`login: ${loginState}`] : []),
       `screenshot: ${file}`,
       `errors: ${errors.length ? "\n  " + errors.join("\n  ") : "なし"}`,
       `blocked external: ${external.size ? [...external].join(", ") : "なし"}`,
