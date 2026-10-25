@@ -10,8 +10,8 @@ export type GmailDraftLink = {
   draftId: string | null;
   // 最後に同期したときの下書きのメッセージ ID（Gmail は下書きを更新するたびに変える。ほかで書き換えられたかの判定に使う）
   messageId: string | null;
-  // 下書きの Message-ID ヘッダー。Gmail は保存のときに付け替えるので、保存したあとに Gmail が付けたものを入れる
-  // （送ったあと・ほかで送られたときに、送信済みを rfc822msgid で探すのに使う）
+  // 下書きに付ける Message-ID ヘッダー（保存のたびに同じものを付ける）。Gmail は下書きの保存と送信のときに付け替えるので、
+  // 送ったあとの照合は宛先・件名・時刻・本文の冒頭で行う（rfc822msgid では見つからない）
   messageIdHeader: string | null;
   // 最後に Gmail に保存した中身の指紋。今の中身の指紋と違えば「まだ保存していない変更がある（dirty）」
   syncedFingerprint: string | null;

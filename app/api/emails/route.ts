@@ -246,19 +246,6 @@ async function findSameDraft(accessToken: string, exp: SentExpectation, html: st
   }
 }
 
-// 下書きの今のメッセージ ID と、Gmail が付けた Message-ID（送ったあとの照合に使う）。読めなければ null
-async function draftHeaderOf(accessToken: string, draftId: string): Promise<{ gmailMessageId: string; threadId?: string; messageIdHeader?: string } | null> {
-  try {
-    const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}/${encodeURIComponent(draftId)}?format=metadata&metadataHeaders=Message-ID&fields=message(id,threadId,payload/headers)`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (!res.ok) return null;
-    const m = ((await res.json()) as { message?: { id?: string; threadId?: string; payload?: { headers?: GmailHeader[] } } }).message;
-    if (!m?.id) return null;
-    const header = getHeader(m.payload?.headers || [], "Message-ID");
-    return { gmailMessageId: m.id, threadId: m.threadId, messageIdHeader: isValidMessageId(header) ? header : undefined };
-  } catch {
-    return null;
-  }
-}
 
 // 下書きの宛先・件名・HTML が、これから保存するものと同じか（中身は比べるだけで、ログにも返り値にも出さない）
 async function draftEquals(accessToken: string, draftId: string, exp: SentExpectation, html: string): Promise<boolean> {
@@ -795,8 +782,7 @@ export async function POST(request: Request) {
         if (expect && cur.messageId !== expect) {
           // 中身が今から保存するものと同じなら、書き換えの競合ではない（タブを閉じたときの保存が届いていた、など）
           if (await draftEquals(accessToken, targetId, prep.exp, html)) {
-            const h = await draftHeaderOf(accessToken, targetId);
-            return NextResponse.json({ success: true, draftId: targetId, gmailMessageId: cur.messageId, threadId: cur.threadId, messageIdHeader: h?.messageIdHeader, unchanged: true });
+            return NextResponse.json({ success: true, draftId: targetId, gmailMessageId: cur.messageId, threadId: cur.threadId, unchanged: true });
           }
           logInfo("draft.conflict", { messageId: cur.messageId });
           return NextResponse.json({ error: "DRAFT_CONFLICT", messageId: cur.messageId }, { status: 409 });
@@ -827,16 +813,14 @@ export async function POST(request: Request) {
         // 新しく作ろうとして結果が分からないときは、できていたかを中身で探す
         if (!targetId && (!res || res.status >= 500)) {
           const made = await findSameDraft(accessToken, prep.exp, html);
-          const h = made ? await draftHeaderOf(accessToken, made) : null;
-          if (made && h) return NextResponse.json({ success: true, draftId: made, gmailMessageId: h.gmailMessageId, threadId: h.threadId, messageIdHeader: h.messageIdHeader });
+          const st = made ? await getDraftState(accessToken, made) : null;
+          if (made && st?.state === "ok") return NextResponse.json({ success: true, draftId: made, gmailMessageId: st.messageId, threadId: st.threadId });
         }
         return NextResponse.json({ error: "DRAFT_SAVE_FAILED", reason }, { status: res && res.status >= 400 ? res.status : 502 });
       }
       const d = (await res.json().catch(() => ({}))) as GmailDraftResponse;
       logInfo("draft.saved", { messageId: d.message?.id });
-      // Gmail は下書きの Message-ID を付け替えるので、付いたものを読んで返す（送ったあと・ほかで送られたときの照合に使う）
-      const h = d.id ? await draftHeaderOf(accessToken, d.id) : null;
-      return NextResponse.json({ success: true, draftId: d.id, gmailMessageId: d.message?.id, threadId: d.message?.threadId, messageIdHeader: h?.messageIdHeader });
+      return NextResponse.json({ success: true, draftId: d.id, gmailMessageId: d.message?.id, threadId: d.message?.threadId });
     }
 
     // ③ Gmail の下書きを送る（drafts.send）。下書きがある入力は必ずこれで送り、失敗しても messages.send に切り替えない。

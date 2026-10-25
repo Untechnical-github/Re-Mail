@@ -134,7 +134,7 @@ export function useGmailDraftSync({
     retryRef.current.delete(room);
   };
 
-  type SaveResponse = { error?: string; draftId?: string; gmailMessageId?: string; messageIdHeader?: string };
+  type SaveResponse = { error?: string; draftId?: string; gmailMessageId?: string };
   const post = async (body: Record<string, unknown>): Promise<{ status: number | null; data: SaveResponse }> => {
     try {
       const res = await fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -192,7 +192,8 @@ export function useGmailDraftSync({
       if (prep.kind === "noSendAs" || prep.kind === "noQuote") scheduleRetry(room);
       return;
     }
-    // Message-ID は下書きごとに1つ持つ（Gmail が付け替えたもの）。新しく作るときは「作ろうとした」ことを先に残す
+    // Message-ID は下書きごとに1つ決めて付ける（Gmail は保存・送信のときに付け替えるので、照合には使えない。§10.6）。
+    // 新しく作るときは「作ろうとした」ことを先に残す
     // （結果を受け取れなかったら、次は同じ中身の下書きを探してから作る。二重にしないため）
     const header = link.messageIdHeader || makeMessageId(crypto.getRandomValues(new Uint8Array(40)));
     const mayExist = !link.draftId && !!link.createAttempted;
@@ -201,8 +202,7 @@ export function useGmailDraftSync({
     if (r.status === 200 && r.data.draftId) {
       resetRetry(room);
       setNotice(room, null);
-      // Message-ID は Gmail が付け替えたものを持つ（読めなかったときは送ったもの）
-      setLink(room, { draftId: r.data.draftId, messageId: r.data.gmailMessageId || null, messageIdHeader: r.data.messageIdHeader || header, syncedFingerprint: fp });
+      setLink(room, { draftId: r.data.draftId, messageId: r.data.gmailMessageId || null, messageIdHeader: header, syncedFingerprint: fp });
       return;
     }
     handleFailure(room, r.status, r.data.error);
