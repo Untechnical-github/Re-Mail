@@ -134,10 +134,11 @@ export function useGmailDraftSync({
     retryRef.current.delete(room);
   };
 
-  const post = async (body: Record<string, unknown>): Promise<{ status: number | null; data: { error?: string; draftId?: string; gmailMessageId?: string } }> => {
+  type SaveResponse = { error?: string; draftId?: string; gmailMessageId?: string; messageIdHeader?: string };
+  const post = async (body: Record<string, unknown>): Promise<{ status: number | null; data: SaveResponse }> => {
     try {
       const res = await fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      return { status: res.status, data: (await res.json().catch(() => ({}))) as { error?: string; draftId?: string; gmailMessageId?: string } };
+      return { status: res.status, data: (await res.json().catch(() => ({}))) as SaveResponse };
     } catch {
       return { status: null, data: {} };
     }
@@ -191,8 +192,8 @@ export function useGmailDraftSync({
       if (prep.kind === "noSendAs" || prep.kind === "noQuote") scheduleRetry(room);
       return;
     }
-    // Message-ID は下書きごとに1つ決めて、保存のたびに同じものを使う。新しく作るときは「作ろうとした」ことを先に残す
-    // （結果を受け取れなかったら、次は同じ Message-ID の下書きを探してから作る。二重にしないため）
+    // Message-ID は下書きごとに1つ持つ（Gmail が付け替えたもの）。新しく作るときは「作ろうとした」ことを先に残す
+    // （結果を受け取れなかったら、次は同じ中身の下書きを探してから作る。二重にしないため）
     const header = link.messageIdHeader || makeMessageId(crypto.getRandomValues(new Uint8Array(40)));
     const mayExist = !link.draftId && !!link.createAttempted;
     if (!link.draftId) { link = { ...link, messageIdHeader: header, createAttempted: true }; setLink(room, link); }
@@ -200,18 +201,22 @@ export function useGmailDraftSync({
     if (r.status === 200 && r.data.draftId) {
       resetRetry(room);
       setNotice(room, null);
-      setLink(room, { draftId: r.data.draftId, messageId: r.data.gmailMessageId || null, messageIdHeader: header, syncedFingerprint: fp });
+      // Message-ID は Gmail が付け替えたものを持つ（読めなかったときは送ったもの）
+      setLink(room, { draftId: r.data.draftId, messageId: r.data.gmailMessageId || null, messageIdHeader: r.data.messageIdHeader || header, syncedFingerprint: fp });
       return;
     }
     handleFailure(room, r.status, r.data.error);
   };
 
+  // 今 Gmail に保存しているチャット（タブを閉じるときの保存と重ねて、二重に作らないため）
+  const savingRef = useRef<string | null>(null);
   const enqueue = (room: string, given?: RoomContent): Promise<void> => {
     if (!given && queuedRef.current.has(room)) return queueRef.current;
     queuedRef.current.add(room);
     queueRef.current = queueRef.current.then(async () => {
       queuedRef.current.delete(room);
-      try { await saveRoom(room, given); } catch (e) { logWarn("draft.sync", {}, e); }
+      savingRef.current = room;
+      try { await saveRoom(room, given); } catch (e) { logWarn("draft.sync", {}, e); } finally { savingRef.current = null; }
     });
     return queueRef.current;
   };
@@ -272,7 +277,8 @@ export function useGmailDraftSync({
     const onPageHide = () => {
       const k = keepaliveRef.current;
       const room = liveRef.current.room;
-      if (!k || !room || k.room !== room || !liveRef.current.ready || queuedRef.current.has(room)) return;
+      // 保存の途中・待ちがあれば送らない（先に離れたとき〔visibilitychange〕の保存と重ねて二重に作らない。届かなければ次の起動で拾う）
+      if (!k || !room || k.room !== room || !liveRef.current.ready || queuedRef.current.has(room) || savingRef.current === room) return;
       const c = liveContent();
       const link = linkOf(room);
       // 作っておいた中身が今の入力と同じで、まだ保存していないときだけ送る
@@ -280,7 +286,7 @@ export function useGmailDraftSync({
       try {
         void fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: k.body, keepalive: true }).catch(() => {});
       } catch { /* 送れなくても、端末の下書きから次に起動したときに保存する */ }
-      // 結果は受け取れないので、新しく作ったかもしれないことだけ残す（次は同じ Message-ID の下書きを探してから作る）
+      // 結果は受け取れないので、新しく作ったかもしれないことだけ残す（次は同じ中身の下書きを探してから作る）
       if (!link.draftId) setLink(room, { ...link, createAttempted: true });
     };
     document.addEventListener("visibilitychange", onHidden);

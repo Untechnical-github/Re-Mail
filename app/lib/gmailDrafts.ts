@@ -10,11 +10,12 @@ export type GmailDraftLink = {
   draftId: string | null;
   // 最後に同期したときの下書きのメッセージ ID（Gmail は下書きを更新するたびに変える。ほかで書き換えられたかの判定に使う）
   messageId: string | null;
-  // 下書きに付ける Message-ID ヘッダー（保存のたびに同じものを使う。送ったあとの照合・二重作成の防止に使う）
+  // 下書きの Message-ID ヘッダー。Gmail は保存のときに付け替えるので、保存したあとに Gmail が付けたものを入れる
+  // （送ったあと・ほかで送られたときに、送信済みを rfc822msgid で探すのに使う）
   messageIdHeader: string | null;
   // 最後に Gmail に保存した中身の指紋。今の中身の指紋と違えば「まだ保存していない変更がある（dirty）」
   syncedFingerprint: string | null;
-  // 新しく作ろうとして結果を受け取れなかった（タブを閉じたときの保存など）。次は同じ Message-ID の下書きを探してから作る
+  // 新しく作ろうとして結果を受け取れなかった（タブを閉じたときの保存など）。次は同じ中身の下書きを探してから作る
   createAttempted?: boolean;
 };
 
@@ -28,7 +29,7 @@ export function readGmailLink(v: unknown): GmailDraftLink | undefined {
   return {
     draftId: str(o.draftId, /^[A-Za-z0-9_-]{1,64}$/),
     messageId: str(o.messageId, /^[0-9a-f]{6,32}$/i),
-    messageIdHeader: str(o.messageIdHeader, /^<[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+>$/),
+    messageIdHeader: str(o.messageIdHeader, /^<[A-Za-z0-9._+=-]{1,190}@[A-Za-z0-9.-]{1,100}>$/),
     syncedFingerprint: str(o.syncedFingerprint, /^[0-9a-z]{1,40}$/),
     createAttempted: o.createAttempted === true || undefined,
   };

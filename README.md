@@ -550,7 +550,7 @@ Gmail の読み取りはすべて `fetchWithRetry` を通す（§10.1）。詳�
 | --- | --- | --- |
 | `send`（省略時も） | `to, cc, bcc, subject, body, bodyHtml, threadId, inReplyTo, references, from, replyTo, attachments[{filename,mimeType,data}], forwardAttachmentsFrom, messageId` | §10。宛先は `validateSendHeaders` で確かめ、1件も無ければ `400 NO_RECIPIENTS`、合計500件を超えたら `400 TOO_MANY_RECIPIENTS`、改行・形が正しくないアドレスがあれば `400 INVALID_RECIPIENTS`（宛先を勝手に直さない） |
 | `verifySent` | `messageId, to, cc, bcc, subject, body, sentAfterMs`（下書きを送ったときは `draftId` も） | 送信済みフォルダを照合し、`{ found, id?, threadId? }`。`draftId` があれば先に下書きが残っているかを見て、残っていれば `{ found: false, draftExists: true }`（送られていない） |
-| `draftSave` | `send` と同じ ＋ `draftId?, expectMessageId?, mayExist?` | Gmail の下書きに保存する（`drafts.create` / `drafts.update`。upload の口）。`draftId` があれば先に `drafts.get`（minimal）で今のメッセージ ID を見て、`expectMessageId` と違えば `409 DRAFT_CONFLICT`（ただし宛先・件名・HTML が同じなら競合にせず成功）。下書きが無ければ `404 DRAFT_GONE`。update は 429・5xx を `fetchWithRetry` で送り直し、create は 429 だけ送り直す（5xx で送り直すと二重にできるため。結果が分からなければ Message-ID で下書きを探す）。`mayExist` なら作る前に同じ Message-ID の下書きを探して上書きする。成功は `{ success, draftId, gmailMessageId, threadId }` |
+| `draftSave` | `send` と同じ ＋ `draftId?, expectMessageId?, mayExist?` | Gmail の下書きに保存する（`drafts.create` / `drafts.update`。upload の口）。`draftId` があれば先に `drafts.get`（minimal）で今のメッセージ ID を見て、`expectMessageId` と違えば `409 DRAFT_CONFLICT`（ただし宛先・件名・HTML が同じなら競合にせず成功）。下書きが無ければ `404 DRAFT_GONE`。update は 429・5xx を `fetchWithRetry` で送り直し、create は 429 だけ送り直す（5xx で送り直すと二重にできるため。結果が分からなければ同じ中身の下書きを探す）。`mayExist` なら作る前に、新しい順に10件の下書きから宛先・件名・HTML が同じものを探して上書きする（Gmail は下書きの Message-ID を保存のときに付け替えるので、Message-ID では探せない）。成功は `{ success, draftId, gmailMessageId, threadId, messageIdHeader }`（`messageIdHeader` は保存したあとに `drafts.get`〔metadata〕で読んだ、Gmail が付けた Message-ID） |
 | `draftSend` | `send` と同じ ＋ `draftId, withContent` | `drafts.send`。`withContent` なら今の中身で置き換えて送る（upload の口）。429 だけ待って送り直し、ほかは送り直さない。404 なら送信済みと照合し、見つかれば `409 DRAFT_ALREADY_SENT`、無ければ `404 DRAFT_GONE`（どちらも `messages.send` に切り替えない）。結果が分からなければ下書きが残っているかを見て、残っていれば `502 SEND_UNCONFIRMED`（送られていない）、無ければ送信済みと照合して見つからなければ `502 SEND_UNVERIFIED` |
 | `draftDelete` | `draftId, expectMessageId?` | `drafts.delete`（純正の「下書きを破棄」と同じ）。メッセージ ID が違えば `409 DRAFT_CONFLICT`（消さない）。もう無ければ成功 |
 | `delete` | `trashIds` | ゴミ箱へ移す（`TRASH` を付け、`INBOX`・`SPAM` を外す）。`permanentIds` が付いていれば `400 { error: "Permanent delete is not supported" }`（完全削除は `gmail.modify` では使えない。スコープは増やさない） |
@@ -641,7 +641,7 @@ Gmail の読み取りはすべて `fetchWithRetry` を通す（§10.1）。詳�
 6. **Gmail の下書きがある入力**（§13.7）は `drafts.send` で送る（`draftSend`。最後の保存から変えていれば中身を付けて送る）。保存の途中なら終わるのを待ち、送っている間は保存しない。失敗しても `messages.send` に勝手に切り替えない。
    - 404（ほかで送信・削除された）：送信済みに見つかれば「このメールは別の場所から送信済みです」と出して入力欄と端末の下書きを空に戻す。見つからなければ「この下書きは別の場所で削除されたか、送信済みです。本文は入力欄に残っています。新しいメールとして送りますか？」と確かめ、「送る」のときだけ新しい Message-ID で `messages.send`。
    - 結果が分からない：下書きが残っていれば「送信されていません。再送しますか？」（再送は同じ下書きを `drafts.send`）。無ければ送信済みと照合し、見つからなければ「送信できたか確認できませんでした。Gmail の送信済みを確認してから、必要なら再送してください。」
-   - 下書きには保存のたびに同じ Message-ID を付けるので、送ったあとの照合（`rfc822msgid:`）にもそれを使う。
+   - **Gmail は下書きの Message-ID を保存のときに付け替える**（2026-10-25 に実機で確認。こちらで付けた `<CA…>` は残らない）。そのため保存のたびに Gmail が付けたものを読み直して端末に持ち、送ったあとの照合（`rfc822msgid:`）にはそれを使う。見つからなければ宛先・件名・時刻・本文の冒頭で照合する（上の 5 と同じ）。
 7. 実 ID が取れなかったとき（照合でも ID が分からないとき）だけ、画面に `fake-` で始まる仮 ID のメールを置く。次に一覧を取ったとき、`reconcileFakeSentEmails` で本物と重複する仮のメールを消す。仮 ID は Gmail に存在しないので、API に渡さない。
 
 ---

@@ -43,7 +43,8 @@ export function makeMessageId(randomBytes: Uint8Array): string {
 
 // クライアントから受け取った Message-ID を、そのままヘッダーに入れてよい形かどうか
 export function isValidMessageId(value: unknown): value is string {
-  return typeof value === "string" && value.length <= 200 && /^<[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+>$/.test(value);
+  // Gmail が付ける Message-ID（下書きなど）には = も入る（<CAH…=…@mail.gmail.com>）
+  return typeof value === "string" && value.length <= 200 && /^<[A-Za-z0-9._+=-]+@[A-Za-z0-9.-]+>$/.test(value);
 }
 
 export function addressSet(list: string): Set<string> {

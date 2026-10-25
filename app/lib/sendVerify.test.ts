@@ -37,6 +37,10 @@ describe("makeMessageId / isValidMessageId", () => {
     expect(isValidMessageId(id)).toBe(true);
   });
 
+  it("Gmail が下書きに付ける形（+ - _ = を含む）も通す", () => {
+    expect(isValidMessageId("<CAHp+K6cgft-MNeQ_x9=A+B@mail.gmail.com>")).toBe(true);
+  });
+
   it("改行や空白を含むものは通さない", () => {
     expect(isValidMessageId("<a@b>\r\nBcc: x@example.com")).toBe(false);
     expect(isValidMessageId("<a b@example.com>")).toBe(false);
