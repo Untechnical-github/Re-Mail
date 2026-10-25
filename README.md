@@ -254,6 +254,8 @@ Re-Mail/
 │   │   ├── useEmailModals.ts             # メールの詳細と添付のプレビューのモーダル
 │   │   ├── useCompose.ts                 # 入力欄まわり（添付・送信先・返信元と引用・送信元と署名）
 │   │   ├── useSend.ts                    # 送る（送信 API・送る前の確認・返信・転送。自動で再試行しない）
+│   │   ├── useGmailDraftSync.ts          # Gmail の下書きとの同期（Re:Mail → Gmail：保存・消す・送るときの下書き。§13.7）
+│   │   ├── useGmailDraftInbound.ts       # Gmail の下書きとの同期（Gmail → Re:Mail：読み込み・出し先・ほかの下書き・競合。§13.7）
 │   │   ├── useMailboxActions.ts          # 選択モードと操作（非表示・ピン留め・移動・削除・既読／未読・継続フィルター）
 │   │   └── useFindBar.ts                 # 検索バーと、検索結果・返信元へのジャンプ
 │   ├── lib/                              # React に依存しない純粋関数（ほぼすべてにテストあり。§12）
@@ -555,8 +557,8 @@ Gmail の読み取りはすべて `fetchWithRetry` を通す（§10.1）。詳�
 | --- | --- | --- |
 | `send`（省略時も） | `to, cc, bcc, subject, body, bodyHtml, threadId, inReplyTo, references, from, replyTo, attachments[{filename,mimeType,data}], forwardAttachmentsFrom, messageId` | §10。宛先は `validateSendHeaders` で確かめ、1件も無ければ `400 NO_RECIPIENTS`、合計500件を超えたら `400 TOO_MANY_RECIPIENTS`、改行・形が正しくないアドレスがあれば `400 INVALID_RECIPIENTS`（宛先を勝手に直さない） |
 | `verifySent` | `messageId, to, cc, bcc, subject, body, sentAfterMs`（下書きを送ったときは `draftId` も） | 送信済みフォルダを照合し、`{ found, id?, threadId? }`。`draftId` があれば先に下書きが残っているかを見て、残っていれば `{ found: false, draftExists: true }`（送られていない） |
-| `draftSave` | `send` と同じ ＋ `draftId?, expectMessageId?, mayExist?` | Gmail の下書きに保存する（`drafts.create` / `drafts.update`。upload の口）。`draftAttachments`（Gmail から読み込んだ下書きの添付の名前と大きさ）があれば、今の下書きから名前と大きさで取り直して付ける（1つでも取れなければ `DRAFT_ATTACHMENTS_FAILED`。下書きが無い `send` でも同じ）。`draftId` があれば先に `drafts.get`（minimal）で今のメッセージ ID を見て（`DRAFT` ラベルが無ければ、もう下書きではない＝ほかで送信された。純正から送った下書きは、しばらく同じ ID で送ったメールが返るため）、`expectMessageId` と違えば `409 DRAFT_CONFLICT`（ただし宛先・件名・HTML が同じなら競合にせず成功）。下書きが無ければ `404 DRAFT_GONE`。update は 429・5xx を `fetchWithRetry` で送り直し、create は 429 だけ送り直す（5xx で送り直すと二重にできるため。結果が分からなければ同じ中身の下書きを探す）。`mayExist` なら作る前に、新しい順に10件の下書きから宛先・件名・HTML が同じものを探して上書きする（Gmail は下書きの Message-ID を保存のときに付け替えるので、Message-ID では探せない。一覧を読めなかった〔開いた直後のレート制限など〕ときは、作らずに失敗で返して画面に送り直させる。読めないまま作ると二重にできていた。一覧は `fields` で絞らない〔絞ると読めず0件になっていた〕）。成功は `{ success, draftId, gmailMessageId, threadId }` |
-| `draftSend` | `send` と同じ ＋ `draftId, withContent` | `drafts.send`。`withContent` なら今の中身で置き換えて送る（upload の口）。429 だけ待って送り直し、ほかは送り直さない。404（または 400 で下書きがもう無い。ほかで送られた下書きは 400 invalidArgument になる）なら送信済みと照合し、見つかれば `409 DRAFT_ALREADY_SENT`、無ければ `404 DRAFT_GONE`（どちらも `messages.send` に切り替えない）。結果が分からなければ下書きが残っているかを見て、残っていれば `502 SEND_UNCONFIRMED`（送られていない）、無ければ送信済みと照合して見つからなければ `502 SEND_UNVERIFIED` |
+| `draftSave` | `send` と同じ ＋ `draftId?, expectMessageId?, mayExist?` | Gmail の下書きに保存する（`drafts.create` / `drafts.update`。upload の口）。`draftAttachments`（Gmail から読み込んだ下書きの添付の名前と大きさ）があれば、今の下書きから名前と大きさで取り直して付ける（1つでも取れなければ `DRAFT_ATTACHMENTS_FAILED`。下書きが無い・下書きにもうその添付が無いときは取り直しても取れないので 409、ほかは 502。下書きが無い `send` でも同じ）。`draftId` があれば先に `drafts.get`（minimal）で今のメッセージ ID を見て（`DRAFT` ラベルが無ければ、もう下書きではない＝ほかで送信された。純正から送った下書きは、しばらく同じ ID で送ったメールが返るため）、`expectMessageId` と違えば `409 DRAFT_CONFLICT`（ただし宛先・件名・HTML が同じなら競合にせず成功）。下書きが無ければ `404 DRAFT_GONE`。update は 429・5xx を `fetchWithRetry` で送り直し、create は 429 だけ送り直す（5xx で送り直すと二重にできるため。結果が分からなければ同じ中身の下書きを探す）。`mayExist` なら作る前に、新しい順に10件の下書きから宛先・件名・HTML が同じものを探して上書きする（Gmail は下書きの Message-ID を保存のときに付け替えるので、Message-ID では探せない。一覧を読めなかった〔開いた直後のレート制限など〕ときは、作らずに失敗で返して画面に送り直させる。読めないまま作ると二重にできていた。一覧は `fields` で絞らない〔絞ると読めず0件になっていた〕）。成功は `{ success, draftId, gmailMessageId, threadId }` |
+| `draftSend` | `send` と同じ ＋ `draftId, withContent, expectMessageId?` | `drafts.send`。`withContent` なら今の中身で置き換えて送る（upload の口）。中身を付けずに送るときに `expectMessageId` があれば、先に `drafts.get`（minimal）で今のメッセージ ID を見て、違えば送らずに `409 DRAFT_CONFLICT`（純正で書き換えた直後に、画面に無い中身が送られないように）。429 だけ待って送り直し、ほかは送り直さない。404（または 400 で下書きがもう無い。ほかで送られた下書きは 400 invalidArgument になる）なら送信済みと照合し、見つかれば `409 DRAFT_ALREADY_SENT`、無ければ `404 DRAFT_GONE`（どちらも `messages.send` に切り替えない）。結果が分からなければ下書きが残っているかを見て、残っていれば `502 SEND_UNCONFIRMED`（送られていない）、無ければ送信済みと照合して見つからなければ `502 SEND_UNVERIFIED` |
 | `draftDelete` | `draftId, expectMessageId?` | `drafts.delete`（純正の「下書きを破棄」と同じ）。メッセージ ID が違えば `409 DRAFT_CONFLICT`（消さない）。もう無ければ成功 |
 | `delete` | `trashIds` | ゴミ箱へ移す（`TRASH` を付け、`INBOX`・`SPAM` を外す）。`permanentIds` が付いていれば `400 { error: "Permanent delete is not supported" }`（完全削除は `gmail.modify` では使えない。スコープは増やさない） |
 | `move` | `ids`, `destination` | `labelChangeFor(destination)` のラベルを付け外しする（§12.2 の `mailboxOps.ts`）。移動先が `INBOX` / `ARCHIVE` / `SPAM` / `TRASH` 以外なら `400 { error: "Invalid destination" }` |
@@ -762,6 +764,8 @@ type FilterCriteria = {
 | ★`htmlTree.ts` | HTML を1回なめて木にする（`parseHtml`。入れ子は100まで、超えた部分は文字だけ）・戻す（`serializeHtml`。値と文字は必ずエスケープ）・文字参照を戻す（`decodeEntities`）。DOMParser を使わないので、テスト・Worker でも同じに動く |
 | `composeEditor.ts` | 入力欄の編集の処理（ブラウザでだけ動く。`ComposeEditorController`）：iframe の最初の HTML（`editorSrcDoc`）、イベント（入力・変換・ショートカット・貼り付け・ドロップ・選択）、見張り（MutationObserver）、書式の操作、本文中の画像、高さ、引用・署名のたたみ方。§14.4・§15.6 |
 | ★`inlineImages.ts` | `validateInlineImages`：送信の API に届いた本文中の画像の検証（§10.3） |
+| ★`outgoingMail.ts` | 送る中身の仕上げ（送信と Gmail の下書きの保存で共通）：`finalizeOutgoing`（HTML を純正の形に整え、件名・`threadId`・`In-Reply-To`・`References`・From・Reply-To・添付・本文中の画像を API の形にする。下書きの添付は `draftAttachments` に分ける）・`headersOf`（送信先から To / Cc / Bcc）・`fromHeaderOf` |
+| ★`gmailDrafts.ts` | §13.7。Gmail の下書きとの同期の判断：`draftFingerprint` / `normalizedFingerprint`（中身の指紋）・`hasUnsavedChanges`（最後の保存から書き換えたか）・`planDraftSave`（保存・消す・何もしない）・`judgeDraftSend`（`drafts.send` の結果の扱い）・`planDraftReconcile`（一覧と端末の下書きを比べる）・`draftTargetAddress`（出し先）・`normalizeDraftCids`・`readGmailLink`（端末に残す同期の状態の検証） |
 
 ### 12.3 暗号・保存
 | ファイル | 役割 |
@@ -854,17 +858,19 @@ type FilterCriteria = {
   - 保存するのは、チャットを離れたとき（送信先を変えて移る・送信元を切り替えるときは移り先で）、タブ・アプリを離れたとき（`visibilitychange` の `hidden`）、タブを閉じる・再読み込みするとき（`pagehide`。打つのが2秒止まったときに作っておいた中身を `fetch` の `keepalive` で送る。60KB を超えるものは送らず次の起動で拾う。閉じるときブラウザは `pagehide` のあとに `visibilitychange` の `hidden` を出すので、閉じる途中は通常の保存を出さない〔両方で下書きが2つできていた〕）、起動したとき（端末にまだ保存していない下書きがあれば、アカウント設定を読み終えてから2秒ずつあけて1件ずつ）、入力が60秒止まったとき。中身の指紋（`draftFingerprint`）が最後に保存したときと同じなら呼ばない。保存は全チャットで1件ずつ順に行う。起動したときは、タブを閉じるときに作ろうとした（結果が分からない）下書きを、開いているチャットの分も含めて先に照合する。チャットの相手のアドレスがまだ分からない（メールの読み込み前）ときは、飛ばさずに少しあとで試し直す。
   - 中身は送信と同じ `prepareOutgoing`（`useSend.ts`）→ `finalizeOutgoing`（`outgoingMail.ts`）で作る。たたんでいる引用・署名も含む。署名と送信元の設定が読めない・引用が取れないときは保存しない（完成形でない下書きを置かない）。
   - 本文が空で添付も無く、件名・送信先・返信元が既定に戻った入力は `drafts.delete`（`planDraftSave`）。
-  - 同じアカウントのチャットへ入力を持って移ったら、Gmail の下書きも持っていく。違うアカウントへ切り替えたら、元のアカウントの下書きを消す。
+  - 同じアカウントのチャットへ入力を持って移ったら、Gmail の下書きも持っていく。違うアカウントへ切り替えたら、元のアカウントの下書きを消す。ただし Gmail から読み込んだ下書きの添付（`fromDraft`）があれば、その添付は外して名前を伝え、元の下書きは消さない（添付は元の下書きからしか取り出せないため）。
   - 失敗したら入力欄の近くに小さく「Gmail に保存できていません（この端末には残っています）」（401 は再ログインの案内、409 は「別の場所でも変更されたため上書きしていません」、404 は「Gmail で送信または削除されました。入力中の内容は残っています」と出して下書きとのつながりを外す）。429・5xx・通信断は15秒・1分・3分あけて3回まで送り直す。
   - 同期をオフにしても、どちらの下書きも消さない。ログアウトで消えるのは端末の分だけ（Gmail の下書きは消さない）。
 - **Gmail の下書きとの同期（Gmail → Re:Mail。`useGmailDraftInbound.ts`）**：
-  - 読むのは、起動したとき（残っていた分を保存し終え、最初のメールの一覧を読み終えたあと〔読む前は出し先の既存のチャットが分からず、同じ相手の下書きチャットを別に作ってしまうため〕。アカウントごとに `drafts=1` を1回。読めなければ30秒・2分・5分あけて読み直す）と、差分同期で `draftChanged` か知っている下書きのメッセージ ID の削除があったときだけ。保存と同じ列で順に行う（自分で作った下書きを「知らない下書き」と見ないため）。知らない・変わった下書きだけ `draft=…&meta=1` で宛先を取る（同時に3件まで。メッセージ ID ごとに覚えて取り直さない）。
+  - 読むのは、起動したとき（残っていた分を保存し終え、最初のメールの一覧を読み終えたあと〔読む前は出し先の既存のチャットが分からず、同じ相手の下書きチャットを別に作ってしまうため〕。アカウントごとに `drafts=1` を1回。読めなければ30秒・2分・5分あけて読み直す）と、差分同期で `draftChanged` か知っている下書きのメッセージ ID の削除があったときだけ。保存と同じ列で順に行う（自分で作った下書きを「知らない下書き」と見ないため）。メールの一覧を待つのは列の外（列の中で待つと、送信が最大2分止まっていた）。知らない・変わった下書きだけ `draft=…&meta=1` で宛先を取る（同時に3件まで。メッセージ ID ごとに覚えて取り直さない）。
   - 出し先：To の最初、無ければ Cc、Bcc の最初の人（`draftTargetAddress`）の同じアカウントの個人チャット。無ければ下書きチャットを作る。宛先が無い・100件を超えた分は、一覧の上に「宛先のない下書きが○件あります」「Re:Mail で扱えない下書きが○件あります」（押すと Gmail の下書きを開く）。
-  - 入力欄が既定のまま（何も書いていない・ほかの下書きとつながっていない）なら、一番新しい下書きを黙って入れる。ほかは「ほかに下書きが○件」に並べ、押すと一覧（宛先・件名・本文の冒頭・日時）から選べる。選ぶと今の入力は先に Gmail に保存してから入れ替える。
-  - 入れるとき：HTML は入力欄の安全化（`composeEditor.ts` の `load` → `replaceContent`）を通す。本文中の画像は1枚ずつ取って `ii_` の ID にそろえる（1枚でも取れなければ入れない）。送信先は To / Cc / Bcc のまま（チャットの相手を To に1人だけなら既定）。返信元は `In-Reply-To` のメール（無ければ `lookupByMessageId`）。見つからない・件名を変えてあれば返信元なしで、件名と `threadId`・`In-Reply-To`・`References` をそのまま残す（`threadRef`）。署名は入れ替えない（`keepSignature`）。添付は一覧だけ持ち、保存・送信のときにサーバーが下書きから取り直す（`fromDraft`）。
+  - 入力欄が既定のまま（何も書いていない・ほかの下書きとつながっていない）なら、一番新しい下書きを黙って入れる。ほかは「ほかに下書きが○件」に並べ、押すと一覧（宛先・件名・本文の冒頭・日時）から選べる。選ぶと今の入力は先に Gmail に保存してから入れ替える（保存できなかった〔送信先が無い・25MB 超・通信断・競合中など〕ときは入れ替えずにトーストで伝える）。
+  - 入れるとき：HTML は入力欄の安全化（`composeEditor.ts` の `load` → `replaceContent`）を通す。本文中の画像は1枚ずつ取って `ii_` の ID にそろえる（1枚でも取れなければ入れない）。送信先は To / Cc / Bcc のまま（チャットの相手を To に1人だけなら既定）。返信元は `In-Reply-To` のメール（無ければ `lookupByMessageId`）。見つからない・件名を変えてあれば返信元なしで、件名と `threadId`・`In-Reply-To`・`References` をそのまま残す（`threadRef`）。署名は入れ替えない（`keepSignature`）。差出人（From）のアドレスを覚え（`fromAddress`）、送信元の設定にあるアドレスなら保存・送信でそのエイリアスを使う。添付は一覧だけ持ち、保存・送信のときにサーバーが下書きから取り直す（`fromDraft`）。
   - Gmail 側だけ変わっていれば黙って入れ直す。この画面でも書き換えていれば上書きせず「この下書きは別の場所でも変更されました。どちらを残しますか？」（両方の冒頭と日時、「Gmail のほうを使う」「この画面のほうを使う」）。答えるまで Gmail には保存しない。Gmail のほうを使ったら今の入力を1つだけ控え、「元に戻す」で1度だけ戻せる。この画面のほうを使ったら、そのあと Gmail 側がまた変わっていても確かめずに上書きする（本人が選んだため）。
   - 読み込んだだけで「書き換えた」としない：入力欄に入れると HTML の書き方が変わるので、Gmail から読み込んだ中身を送るときと同じ形に整えた指紋（`normalizedFingerprint`）を持ち（`baseNormFp`）、入力欄の部品が出てから15秒のあいだ、整えた指紋が同じなら今の中身を保存済みとみなす。自分で書いた分は指紋が変わるので、保存し、送るときは中身を付けて送る。書き換えていなければ中身を付けずに `drafts.send`（純正のままの形で送る）。
-  - 一覧から消えた（純正で送信・削除された）：書き換えていなければ入力欄を既定に戻して端末の下書きを消し、送信済みに同じメールがあれば「この下書きは Gmail から送信されました」。書き換えていれば入力は残し「この下書きは Gmail で送信または削除されました。入力中の内容は残っています」と出して下書きとのつながりを外す。
+  - 入力欄を書き換える直前に、判断したときの中身（整えた指紋）から変わっていないかをもう一度見る。読み込み（数秒）のあいだに打った分があれば書き換えず、書き換えていたものとして扱う（変わった下書きはどちらを残すか聞く、知らない下書きは「ほかに下書きが○件」に並べる）。
+  - 純正で書き換えた直後（差分同期が拾う前）に、書き換えていない入力を送ると、サーバーが `409 DRAFT_CONFLICT` で止める。「この下書きは Gmail で書き換えられていたため、送信しませんでした…」と出し、下書きを読み直して新しい中身を入力欄に出す。
+  - 一覧から消えた（純正で送信・削除された）：一覧は100件までなので、100件を超えるとき（`more` > 0）は1件ずつ `draft=…&meta=1` で確かめ、404 のときだけ消えたとする（残っていれば変わったかを見る。確かめられなければ何もしない）。書き換えていなければ入力欄を既定に戻して端末の下書きを消し、送信済みに同じメールがあれば「この下書きは Gmail から送信されました」。書き換えていれば入力は残し「この下書きは Gmail で送信または削除されました。入力中の内容は残っています」と出して下書きとのつながりを外す。
 
 ### 13.8 送信（`handleSend`。`useSend.ts`、入力欄まわりは `useCompose.ts`）
 1. 受信専用のグループ・フィルターグループからは送れない（入力欄の上に理由を出す）。
@@ -1178,7 +1184,7 @@ frame-ancestors 'none'
 - **Gmail の下書きとの同期（Re:Mail → Gmail）**：純正 Gmail（PC とスマホ）と Re:Mail を並べて
   - Re:Mail で書いてチャットを移る／タブを閉じる／1分待つ → 純正の下書きに、書式・引用・署名の付いた完成形で出る。返信なら純正のスレッドの中に出る
   - その下書きを純正から送る → 受信側のソースが Re:Mail から送ったものと同じ
-  - Re:Mail で送る（`drafts.send`）→ 純正の下書きが消え、送信済みに1通だけ。Message-ID が下書きに付けたものと同じか（Gmail が付け直さないか）
+  - Re:Mail で送る（`drafts.send`）→ 純正の下書きが消え、送信済みに1通だけ。Gmail は送るときに Message-ID を付け替えるので（§10.6）、照合は宛先・件名・時刻・本文の冒頭で行われること
   - 純正で送った直後に Re:Mail で送信を押す → 二重に送られず「別の場所から送信済みです」と出る
   - 本文を消して既定に戻す → 純正の下書きが消える
   - 通信を切って書く → 再接続・再起動で Gmail に保存される

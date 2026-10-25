@@ -30,7 +30,7 @@ async function accessToken(refreshToken) {
     }),
   });
   const t = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`トークンを取れませんでした（${t.error || res.status}）。docs/remote-browser-check.md の B で取り直してもらう`);
+  if (!res.ok) throw new Error(`トークンを取れませんでした（${t.error || res.status}）。リフレッシュトークンを取り直して環境の設定に入れ直してもらう`);
   return t.access_token;
 }
 

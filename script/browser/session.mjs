@@ -2,7 +2,7 @@
 // Google のログイン画面は自動では通れないので、環境変数のリフレッシュトークンから NextAuth の Cookie を作る。
 //   1つ目: RE_MAIL_TEST_EMAIL   / RE_MAIL_TEST_REFRESH_TOKEN
 //   2つ目: RE_MAIL_TEST_EMAIL_2 / RE_MAIL_TEST_REFRESH_TOKEN_2（送受信の確認の相手）
-// トークンはユーザーが取る（docs/remote-browser-check.md）。Cookie はメモリの中だけで使い、ファイルやログに書かない。
+// トークンはユーザーが取って環境の設定に入れる。Cookie はメモリの中だけで使い、ファイルやログに書かない。
 // アクセストークンは入れず期限切れにしておくので、最初の通信でサーバー（auth.ts）が Google から取り直す。
 import fs from "node:fs";
 import path from "node:path";
@@ -31,7 +31,7 @@ function requireAccount(n) {
   const a = testAccount(n);
   if (!a) {
     const s = n === 1 ? "" : `_${n}`;
-    throw new Error(`RE_MAIL_TEST_EMAIL${s} と RE_MAIL_TEST_REFRESH_TOKEN${s} がありません。docs/remote-browser-check.md の手順で環境の設定に入れてもらってください`);
+    throw new Error(`RE_MAIL_TEST_EMAIL${s} と RE_MAIL_TEST_REFRESH_TOKEN${s} がありません。ユーザーに取ってもらい、環境の設定に入れてもらってください`);
   }
   return a;
 }
