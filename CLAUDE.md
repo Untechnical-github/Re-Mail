@@ -1,10 +1,10 @@
 # Re:Mail（Claude Code 向け）
 
-Gmail をチャット風（相手ごとのトークルーム）で読み書きする Web アプリ。Next.js（App Router）を OpenNext で Cloudflare Workers に載せ、設定は D1。仕様の正は `README.md`。中核は `app/hooks/useMailApp.ts`（役割ごとのフック `app/hooks/use*.ts` を組み合わせる。どれに何があるかは README §5・§13）、純粋関数は `app/lib/`。
+Gmail をチャット風（相手ごとのトークルーム）で読み書きする Web アプリ。Next.js（App Router）を OpenNext で Cloudflare Workers に載せ、設定は D1。仕様の正は `README.md`。中核は `app/hooks/useMailApp.ts`、純粋関数は `app/lib/`。
 
 ## 読み方（トークンを節約する。必ず守る）
-- **大きいファイルは全体を読まない。** `README.md`・`composeHtml.ts`・`modals/FilterToolModal.tsx`・`useMailApp.ts`・`useMailSync.ts`・`api/emails/route.ts`・`composeEditor.ts` などは、`grep -n` で場所を探し、Read の offset / limit で要る範囲（目安200行まで）だけ読む。README は `grep -n "^##" README.md` で節を探し、その節だけ読む。
-- 広く探す・調べる（どこで使われているか、関係するファイルの洗い出し）ときは Explore サブエージェントに任せ、結論（ファイルと行番号）だけ受け取る。
+- **大きいファイルは全体を読まない。** `README.md`・`useMailApp.ts`・`Modals.tsx`・`page.tsx`・`api/emails/route.ts`・`composeHtml.ts`・`composeEditor.ts` などは、`grep -n` で場所を探し、Read の offset / limit で要る範囲（目安200行まで）だけ読む。README は `grep -n "^##" README.md` で節を探し、その節だけ読む。
+- サブエージェントは原則使わない（同じファイルを読み直すことになり、かえって増えて遅くなる）。使うのは、何十ものファイルをまたいで探し、結果の一覧が長くなりそうなときの Explore だけ。
 - 同じ範囲を読み直さない。編集の後に確かめるための読み直しもしない。
 - コマンドの出力は絞る：`npm test 2>&1 | tail -40`、`npx tsc --noEmit 2>&1 | head -40`、`npm run lint 2>&1 | tail -40`。CI は `gh run watch --exit-status > /dev/null && echo OK || gh run view --log-failed | tail -80`。
 - スクリーンショット・画像は、失敗の原因を見るときだけ開く。
@@ -18,11 +18,9 @@ Gmail をチャット風（相手ごとのトークルーム）で読み書き�
 | シークレット・環境変数・デプロイの失敗・本番の確認 | `docs/claude/secrets-deploy.md` |
 
 ## 大きな指示文の進め方（コンテキストを溜めない）
-- 指示文を、単独でテスト・コミットできる段階に分けて TaskCreate で並べる。
-- **各段階は general-purpose サブエージェントに渡す。** 渡すもの：その段階の指示（指示文の該当部分をそのまま）、関係する絶対ルール、触るファイルと行の当たり。サブエージェントは実装・テスト・コミット・push・CI の確認まで行い、「変えたファイル／テストと CI の結果／§毎回のチェックの結果／未解決のこと」だけを15行以内で返す。
-- 親は全体を読み込まない。報告をつなぎ、次の段階を渡す。全部終わったら最終報告を書く。
-- 段階が終わるたびに `.claude/handoff.md`（git 管理外）を書き直す：終わった段階・次の段階・決まったこと・注意点（20行以内）。会話が圧縮されたり新しい会話で再開したりしたら、まずこれを読む。
-- 指示文に「止まって報告」とある所では、サブエージェントに任せず止まる。
+- 指示文を、単独でテスト・コミットできる段階に分けて TaskCreate で並べ、1つずつ終わらせて commit・push する。
+- 段階が終わるたびに `.claude/handoff.md`（git 管理外）を書き直す：終わった段階・次の段階・決まったこと・注意点（20行以内）。会話が圧縮されたり新しい会話で再開したりしたら、まずこれを読む（ほかのファイルを読み直す前に）。
+- 指示文に「止まって報告」とある所では、先に進まず止まる。
 
 ## 絶対ルール（すべてより優先。ぶつかったら実装せず、どのルールとぶつかるかを報告して止まる）
 1. **個人情報を漏らさない・貯めない**：D1・ログにメールの中身や平文の個人情報を置かない（要るものは `tokenCrypto.ts` で暗号化・HMAC）。ログは `safeLog.ts` だけ（`console.*` 禁止）。外部への通信（CDN・解析・外部フォント・外部 API）を増やさない。HTML メールの外部の画像は本人の操作か設定なしに読まない。端末に置くものはアカウント別で、ログアウトで消える（`deviceData.ts`）。OAuth スコープを増やさない。
