@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // Playwright でページを開き、スクリーンショットとコンソールのエラーを出す（Claude Code のリモート環境での確認用）。
-// 使い方: node script/browser/check.mjs [URL] [--mobile] [--out=ディレクトリ]
+// 使い方: node script/browser/check.mjs [URL] [--mobile] [--login] [--wait=ミリ秒] [--out=ディレクトリ]
 //   既定の URL は http://localhost:3000/ 、出力先は .playwright/（git 管理外）。
+//   --login：テスト用アカウントでログインした状態で開く（session.mjs。環境変数の準備は docs/claude/browser.md）。
+//   --wait：読み込みの後、スクリーンショットまで待つ時間（メールの一覧を待つときなど。既定 0）。
 // 依存は足さない。Playwright はリモート環境に入っているもの（/opt/node-tools）を使う。
 // 外部への通信は読まずに止め、一覧だけ出す（このアプリは外部に通信しない決まりなので、出たら違反の手がかり）。
 import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import { addLoginCookie } from "./session.mjs";
 
 // createRequire の解決は NODE_PATH を見るので、リモート環境の全体に入った playwright が見つかる
 const require = createRequire(import.meta.url);
@@ -21,6 +24,9 @@ try {
 const args = process.argv.slice(2);
 const url = args.find((a) => !a.startsWith("--")) || "http://localhost:3000/";
 const mobile = args.includes("--mobile");
+const login = args.includes("--login");
+const waitArg = args.find((a) => a.startsWith("--wait="));
+const waitMs = Math.min(Number(waitArg ? waitArg.slice(7) : 0) || 0, 120000);
 const outArg = args.find((a) => a.startsWith("--out="));
 const outDir = path.resolve(outArg ? outArg.slice(6) : ".playwright");
 const origin = new URL(url).origin;
@@ -33,6 +39,7 @@ const origin = new URL(url).origin;
       ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }
       : { viewport: { width: 1280, height: 800 } },
   );
+  if (login) await addLoginCookie(context, url);
   const page = await context.newPage();
   const errors = [];
   const external = new Set();
@@ -45,7 +52,8 @@ const origin = new URL(url).origin;
     return route.abort();
   });
   const res = await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
-  const file = path.join(outDir, `${mobile ? "mobile" : "desktop"}.png`);
+  if (waitMs) await page.waitForTimeout(waitMs);
+  const file = path.join(outDir, `${login ? "login-" : ""}${mobile ? "mobile" : "desktop"}.png`);
   await page.screenshot({ path: file, fullPage: true });
   process.stdout.write(
     [

@@ -8,7 +8,6 @@ Gmail をチャット風（相手ごとのトークルーム）で読み書き�
 - 同じ範囲を読み直さない。編集の後に確かめるための読み直しもしない。
 - コマンドの出力は絞る：`npm test 2>&1 | tail -40`、`npx tsc --noEmit 2>&1 | head -40`、`npm run lint 2>&1 | tail -40`。CI は `gh run watch --exit-status > /dev/null && echo OK || gh run view --log-failed | tail -80`。
 - スクリーンショット・画像は、失敗の原因を見るときだけ開く。
-- 画面の確認（リモート環境）：`script/browser/dev.sh` で開発サーバーを起動し、`node script/browser/check.mjs [URL] [--mobile]` で `.playwright/` にスクリーンショットとコンソールのエラーを出す。終わったら `script/browser/dev.sh stop`。ログインはできない（ダミーの値で起動する）。
 - 詳しい決まりは `docs/claude/` にある。**下の表の作業をするときだけ**、その1つを読む。
 
 | 作業 | 読む |
@@ -17,6 +16,7 @@ Gmail をチャット風（相手ごとのトークルーム）で読み書き�
 | 複数アカウント・roomKey・設定の種類・送受信まわりのコード | `docs/claude/code.md` |
 | 入力欄・`composeHtml.ts`・CSP・`securityHeaders.ts`・iframe | `docs/claude/editor-security.md` |
 | シークレット・環境変数・デプロイの失敗・本番の確認 | `docs/claude/secrets-deploy.md` |
+| ブラウザでの画面の確認（Playwright・テスト用アカウントでのログイン） | `docs/claude/browser.md` |
 
 ## 大きな指示文の進め方（コンテキストを溜めない）
 - 指示文を、単独でテスト・コミットできる段階に分けて TaskCreate で並べ、1つずつ終わらせて commit・push する。
