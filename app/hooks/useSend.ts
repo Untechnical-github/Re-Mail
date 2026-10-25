@@ -38,6 +38,8 @@ export type OutgoingContent = {
   recipients: ComposeRecipient[];
   // Gmail から読み込んだ下書きで、返信元のメールが見つからなかったときに残すスレッドの情報
   threadRef?: { threadId?: string; inReplyTo?: string; references?: string };
+  // Gmail から読み込んだ下書きの差出人のアドレス（純正で選んだエイリアスのまま保存・送信する）
+  fromAddress?: string;
 };
 export type PreparedOutgoing =
   | { ok: true; payload: SendApiPayload; bodyText: string; subject: string; threadId?: string; to: string; cc: string; bcc: string }
@@ -179,7 +181,10 @@ export function useSend({
     // 読めなかったときは、純正と違う形（署名なし・既定の送信元）になる。送信なら送る前に確かめる（絶対ルール2）
     if (sendAsList === null && !opts.allowNoSendAs) return { ok: false, kind: "noSendAs" };
     const base = c.replyToMessage || (groupCfg?.isGroup ? null : (groupedEmails[c.room] || []).find(e => !isMineEmail(e, accountEmail) && !e.isMissing) || null);
-    const alias = sendAsList ? pickSendAs(sendAsList, base ? `${base.to}, ${base.cc || ""}` : "", accountEmail) : null;
+    // Gmail から読み込んだ下書きは、純正で選んだ差出人を使う（送信元の設定に無いアドレスなら、いつもの決まりで選ぶ）
+    const draftFrom = c.fromAddress?.toLowerCase();
+    const draftAlias = draftFrom && sendAsList ? sendAsList.find(s => s.sendAsEmail.toLowerCase() === draftFrom) : undefined;
+    const alias = sendAsList ? (draftAlias ?? pickSendAs(sendAsList, base ? `${base.to}, ${base.cc || ""}` : "", accountEmail)) : null;
 
     // 署名を一度も入れられていない（送信元の設定が今まで読めなかった）のに入力欄に署名が無ければ、ここで入れる
     // （黙って署名なしで送らない。自分で消した署名は入れ直さない）
@@ -221,7 +226,9 @@ export function useSend({
 
   // Gmail の下書きを送る（drafts.send）。下書きがある入力は必ずこれで送り、失敗しても messages.send に勝手に切り替えない。
   // 最後の保存から変わっていれば今の中身を付けて送る（withContent）。自動では再送しない
-  const postDraftSendApi = async (payload: SendApiPayload, draftId: string, withContent: boolean, messageId: string): Promise<DraftSendVerdict> => {
+  // 中身を付けないときは、最後に読んだ・保存した下書きのメッセージ ID（expectMessageId）を渡し、Gmail 側で書き換えられていたら送らない
+  // （画面に無い中身を送らない）
+  const postDraftSendApi = async (payload: SendApiPayload, draftId: string, withContent: boolean, messageId: string, expectMessageId: string | null): Promise<DraftSendVerdict> => {
     const sentAfterMs = Date.now();
     // 中身を付けないときは、照合に使う宛先・件名・本文の文字だけを渡す（添付・画像は送らない）
     const body = withContent ? payload : { ...payload, bodyHtml: undefined, attachments: undefined, inlineImages: undefined, draftAttachments: undefined };
@@ -240,7 +247,7 @@ export function useSend({
     try {
       res = await fetch("/api/emails", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "draftSend", ...body, draftId, withContent, messageId }),
+        body: JSON.stringify({ action: "draftSend", ...body, draftId, withContent, messageId, expectMessageId: expectMessageId || undefined }),
       });
     } catch {
       return judgeDraftSend({ status: null, verify: await verify() });
@@ -255,13 +262,18 @@ export function useSend({
 
   // 下書きを送って、結果に応じて伝える・確かめる。onGone は「ほかで送信済み」のとき（入力欄を空に戻す）
   const sendDraftWithConfirm = async (
-    payload: SendApiPayload, draft: { room: RoomKeyStr; draftId: string; withContent: boolean; messageId: string },
+    payload: SendApiPayload, draft: { room: RoomKeyStr; draftId: string; withContent: boolean; messageId: string; expectMessageId: string | null },
     onSent: (sent: { id?: string; threadId?: string }) => void, onAlreadySent: () => void,
   ): Promise<void> => {
     gmailDrafts.sendingRoomsRef.current.add(draft.room);
     let v: DraftSendVerdict;
-    try { v = await postDraftSendApi(payload, draft.draftId, draft.withContent, draft.messageId); } finally { gmailDrafts.sendingRoomsRef.current.delete(draft.room); }
+    try { v = await postDraftSendApi(payload, draft.draftId, draft.withContent, draft.messageId, draft.expectMessageId); } finally { gmailDrafts.sendingRoomsRef.current.delete(draft.room); }
     if (v.kind === "sent") { onSent(v); return; }
+    if (v.kind === "conflict") {
+      showErrorToast("この下書きは Gmail で書き換えられていたため、送信しませんでした。最新の下書きを読み込みますので、内容を確かめてからもう一度送ってください。");
+      gmailDrafts.reportConflict(draft.room);
+      return;
+    }
     if (v.kind === "alreadySent") { showInfoToast("このメールは別の場所から送信済みです", 4000); onAlreadySent(); return; }
     if (v.kind === "failed") { showSendFailure({ status: v.status, code: v.code, gmailReason: v.reason }, "送信"); return; }
     if (v.kind === "askResend") {
@@ -331,6 +343,7 @@ export function useSend({
       const content: OutgoingContent = {
         room: selectedSender, subject: replySubject, html: compose.html, images: compose.images, insertedSignature: insertedSignatureRef.current,
         replyToMessage, attachments: replyAttachments, recipients: sendRecipients, threadRef: gmailDrafts.threadRefFor(selectedSender),
+        fromAddress: gmailDrafts.fromAddressFor(selectedSender),
       };
       const prep = await prepareOutgoing(content, opts);
       if (!prep.ok) {
@@ -415,7 +428,7 @@ export function useSend({
         // これが無いと messages.send に回っていた（Gmail の下書きが残り、下書きの添付も付けられずに止まっていた）
         if (link?.draftId) {
           const messageId = link.messageIdHeader || makeMessageId(crypto.getRandomValues(new Uint8Array(40)));
-          await sendDraftWithConfirm(payload, { room: sentRoom, draftId: link.draftId, withContent: gmailDrafts.isDirtyNow(sentRoom), messageId }, onSent, clearSentCompose);
+          await sendDraftWithConfirm(payload, { room: sentRoom, draftId: link.draftId, withContent: gmailDrafts.isDirtyNow(sentRoom), messageId, expectMessageId: link.messageId }, onSent, clearSentCompose);
           return;
         }
         await sendWithConfirm(payload, "送信", onSent);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { draftFingerprint, planDraftSave, fitsKeepalive, KEEPALIVE_MAX_BYTES, judgeDraftSend, readGmailLink, isRetryableSaveStatus, EMPTY_LINK, draftTargetAddress, draftRecipients, recipientsOrDefault, planDraftReconcile, newestDraft, normalizeDraftCids, normalizedFingerprint, type DraftContent } from "./gmailDrafts";
+import { draftFingerprint, planDraftSave, fitsKeepalive, KEEPALIVE_MAX_BYTES, judgeDraftSend, readGmailLink, isRetryableSaveStatus, EMPTY_LINK, draftTargetAddress, draftRecipients, recipientsOrDefault, planDraftReconcile, newestDraft, normalizeDraftCids, normalizedFingerprint, hasUnsavedChanges, type DraftContent } from "./gmailDrafts";
 
 const content: DraftContent = { subject: "", html: "<div>本文</div>", images: [], attachments: [], replyToMessage: null, recipients: null };
 
@@ -83,6 +83,9 @@ describe("judgeDraftSend（下書きの有無 × 送信済みに見つかるか�
   it("そのほかの失敗は理由をそのまま返す", () => {
     expect(judgeDraftSend({ status: 400, error: "INVALID_RECIPIENTS" })).toEqual({ kind: "failed", status: 400, code: "INVALID_RECIPIENTS", reason: undefined });
   });
+  it("中身を付けずに送ろうとして Gmail 側で書き換えられていたら、送っていない（競合）", () => {
+    expect(judgeDraftSend({ status: 409, error: "DRAFT_CONFLICT" }).kind).toBe("conflict");
+  });
 });
 
 describe("readGmailLink / isRetryableSaveStatus", () => {
@@ -92,6 +95,12 @@ describe("readGmailLink / isRetryableSaveStatus", () => {
       .toEqual({ draftId: "r-123", messageId: "18abcdef", messageIdHeader: "<CAx@mail.gmail.com>", syncedFingerprint: "abc1", createAttempted: undefined });
     expect(readGmailLink({ draftId: "a/b", messageId: "<x>", messageIdHeader: "a\r\nBcc: x", syncedFingerprint: 1 }))
       .toEqual({ draftId: null, messageId: null, messageIdHeader: null, syncedFingerprint: null, createAttempted: undefined });
+  });
+  it("差出人のアドレスは形が正しいものだけ残す", () => {
+    expect(readGmailLink({ fromAddress: "alias@example.com" })?.fromAddress).toBe("alias@example.com");
+    expect(readGmailLink({ fromAddress: "a@example.com\r\nBcc: x@example.com" })?.fromAddress).toBeUndefined();
+    expect(readGmailLink({ fromAddress: "Name <a@example.com>" })?.fromAddress).toBeUndefined();
+    expect(readGmailLink({ fromAddress: `${"a".repeat(250)}@example.com` })?.fromAddress).toBeUndefined();
   });
   it("送り直すのは 429・5xx・通信断・レート制限の 403 だけ", () => {
     expect(isRetryableSaveStatus(null)).toBe(true);
@@ -169,5 +178,22 @@ describe("normalizedFingerprint", () => {
     const crlf = { ...content, html: '<div dir="ltr">本文</div><blockquote class="gmail_quote"><div>引用</div>\r\n</blockquote>' };
     const lf = { ...content, html: '<div dir="ltr">本文</div><blockquote class="gmail_quote"><div>引用</div>\n</blockquote>' };
     expect(normalizedFingerprint(crlf)).toBe(normalizedFingerprint(lf));
+  });
+});
+
+describe("hasUnsavedChanges", () => {
+  it("保存した指紋と同じなら変更なし、違えば変更あり", () => {
+    const c = { ...content, html: "<div>一</div>" };
+    expect(hasUnsavedChanges(c, { ...EMPTY_LINK, syncedFingerprint: draftFingerprint(c) })).toBe(false);
+    expect(hasUnsavedChanges({ ...c, html: "<div>一二</div>" }, { ...EMPTY_LINK, syncedFingerprint: draftFingerprint(c) })).toBe(true);
+    expect(hasUnsavedChanges(c, EMPTY_LINK)).toBe(true);
+  });
+  it("Gmail から読み込んだばかりで入力欄が整えただけなら変更なし（読み込みのあとでなければ変更あり）", () => {
+    const raw = { ...content, html: "一<div>二</div>" };
+    const tidy = { ...content, html: '<div dir="ltr"><div>一</div><div>二</div></div>' };
+    const link = { ...EMPTY_LINK, syncedFingerprint: draftFingerprint(raw), baseNormFp: normalizedFingerprint(raw) };
+    expect(hasUnsavedChanges(tidy, { ...link, fromGmail: true })).toBe(false);
+    expect(hasUnsavedChanges(tidy, link)).toBe(true);
+    expect(hasUnsavedChanges({ ...tidy, html: '<div dir="ltr"><div>一</div><div>二三</div></div>' }, { ...link, fromGmail: true })).toBe(true);
   });
 });

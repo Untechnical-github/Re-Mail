@@ -8,14 +8,14 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { Email } from "../types/email";
 import type { InlineImage } from "../lib/composeEditor";
-import type { ComposeRecipient } from "../lib/composeRecipients";
+import { recipientsFromHeader, type ComposeRecipient } from "../lib/composeRecipients";
 import { type RoomKeyStr } from "../lib/roomKey";
 import { loadDraft, saveDraft, removeDraft, draftRooms, type ComposeDraft } from "../lib/drafts";
 import { textToComposeHtml, signatureOf, composeBodyText, composeHtmlToText, normalizeComposeHtml, COMPOSE_LIMITS } from "../lib/composeHtml";
 import { replySubjectFor } from "../lib/replyCompose";
 import { headersOf } from "../lib/outgoingMail";
 import {
-  EMPTY_LINK, draftFingerprint, normalizedFingerprint, isDefaultContent, planDraftReconcile, draftTargetAddress, draftRecipients, recipientsOrDefault, newestDraft, normalizeDraftCids,
+  EMPTY_LINK, draftFingerprint, normalizedFingerprint, hasUnsavedChanges, isDefaultContent, planDraftReconcile, draftTargetAddress, draftRecipients, recipientsOrDefault, newestDraft, normalizeDraftCids,
   type GmailDraftMeta, type GmailDraftLink, type LocalDraftState,
 } from "../lib/gmailDrafts";
 import { logWarn } from "../lib/safeLog";
@@ -125,6 +125,11 @@ export function useGmailDraftInbound({
     const d = await loadDraft(room);
     return d ? { content: core.fromDraft(d), link: d.gmail ?? EMPTY_LINK } : null;
   };
+  // 今の中身の（HTML を整えたうえでの）指紋。読み込みのあいだに打った分があるかを、入力欄を書き換える直前に見る
+  const currentNfp = async (room: string): Promise<string | null> => {
+    const l = await localOf(room);
+    return l ? normalizedFingerprint(l.content) : null;
+  };
 
   // 返信元：下書きの In-Reply-To に一致するメール（読み込んでいなければ Gmail で探す）
   const findReplySource = async (account: string, inReplyTo: string | undefined): Promise<Email | null> => {
@@ -136,19 +141,20 @@ export function useGmailDraftInbound({
     return r.data?.found && r.data.email ? { ...r.data.email, accountId: account } : null;
   };
 
-  // 下書きを入力欄（と端末の下書き）に入れる。本文中の画像が1枚でも取れなければ入れない（黙って欠けた下書きにしない）
-  const applyDraft = async (room: string, meta: GmailDraftMeta, opts: { newChat?: boolean } = {}): Promise<boolean> => {
+  // 下書きを入力欄（と端末の下書き）に入れる。本文中の画像が1枚でも取れなければ入れない（黙って欠けた下書きにしない）。
+  // expectNfp を渡したときは、書き換える直前に今の中身がその指紋のままかを見て、違えば（読み込みのあいだに打った）入れない（stale）
+  const applyDraft = async (room: string, meta: GmailDraftMeta, opts: { newChat?: boolean; expectNfp?: string | null } = {}): Promise<"ok" | "failed" | "stale"> => {
     const account = core.accountOf(room);
     const r = await getJson<DraftFull>({ draft: meta.draftId, accountEmail: account });
     const full = r.data;
-    if (!full) return false;
+    if (!full) return "failed";
     // 本文中の画像（cid:）は1枚ずつ取り、入力欄の決まりと同じ形（ii_ で始まる ID）にそろえる
     const imgs = full.inlineImages.slice(0, COMPOSE_LIMITS.maxImages);
     const fetched: { contentId: string; data: string; mimeType: string; size: number; filename: string }[] = [];
     for (const ref of imgs) {
-      if (!IMAGE_TYPES.test(ref.mimeType.toLowerCase()) || ref.size > COMPOSE_LIMITS.maxImageBytes) { logWarn("draft.inbound.image", { count: imgs.length }); return false; }
+      if (!IMAGE_TYPES.test(ref.mimeType.toLowerCase()) || ref.size > COMPOSE_LIMITS.maxImageBytes) { logWarn("draft.inbound.image", { count: imgs.length }); return "failed"; }
       const d = await getJson<{ data?: string | null }>({ messageId: full.messageId, attachmentId: ref.attachmentId, accountEmail: account });
-      if (!d.data?.data) { logWarn("draft.inbound.image", { status: d.status ?? undefined }); return false; }
+      if (!d.data?.data) { logWarn("draft.inbound.image", { status: d.status ?? undefined }); return "failed"; }
       const b64 = d.data.data.replace(/-/g, "+").replace(/_/g, "/");
       fetched.push({ contentId: ref.contentId, data: b64 + "===".slice((b64.length + 3) % 4), mimeType: ref.mimeType.toLowerCase(), size: ref.size, filename: ref.filename || "image.png" });
     }
@@ -173,7 +179,10 @@ export function useGmailDraftInbound({
     const link: GmailDraftLink = {
       draftId: full.draftId, messageId: full.messageId, messageIdHeader: null, syncedFingerprint: draftFingerprint(content),
       threadRef, fromGmail: true, keepSignature: true, baseNormFp: normalizedFingerprint(content),
+      // 純正で選んだ差出人（エイリアス）。保存・送信のときに同じ差出人を使う
+      fromAddress: recipientsFromHeader(full.from || "", "to")[0]?.address || undefined,
     };
+    if (opts.expectNfp !== undefined && (await currentNfp(room)) !== opts.expectNfp) return "stale";
     if (opts.newChat) latest.current.addDraftChat(room);
     if (core.isOpen(room)) {
       // 開いているチャット：入力欄を入れ替える（入力欄が整えたあとの中身を、少しあとで「保存済み」とみなす）
@@ -191,7 +200,7 @@ export function useGmailDraftInbound({
     const draft: ComposeDraft = { ...content, updatedAt: full.internalDate || nowMs(), gmail: link };
     await saveDraft(room, draft);
     metaCacheRef.current.set(full.messageId, meta);
-    return true;
+    return "ok";
   };
 
   // 入力欄が整えたあとの中身を「保存済み」とみなす。入力欄の部品が出るのを待ち（出るまでは画面の値しか読めない）、
@@ -224,26 +233,12 @@ export function useGmailDraftInbound({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 開いたチャットの下書きを読み終えたときだけ
   }, [selectedSender, draftReadyRoom]);
 
-  // 一覧から消えた（純正で送信・削除された）下書き
-  const handleVanished = async (v: LocalDraftState) => {
+  // 一覧から消えた（純正で送信・削除された）下書き。nfp は消えたと判断したときの中身の指紋
+  const handleVanished = async (v: LocalDraftState, nfp: string) => {
     const local = await localOf(v.room);
     if (!local) return;
-    if (v.dirty) {
-      // 入力中の内容は消さず、下書きとのつながりだけ外す（次の保存では新しい下書きになる）
-      core.setLink(v.room, { ...EMPTY_LINK });
-      // Gmail の下書きにしか無かった添付は、もう取り出せない。黙って落とさず、外したことと名前を伝える
-      const atts: Attachment[] = local.content.attachments;
-      const lost = atts.filter(a => a.fromDraft);
-      if (lost.length) {
-        const kept = atts.filter(a => !a.fromDraft);
-        if (core.isOpen(v.room)) setReplyAttachments(kept);
-        await saveDraft(v.room, { ...local.content, attachments: kept, updatedAt: nowMs(), gmail: { ...EMPTY_LINK } });
-        core.setNotice(v.room, `この下書きは Gmail で送信または削除されました。入力中の内容は残っていますが、Gmail の下書きにあった添付ファイル（${lost.map(a => a.filename).join("、")}）は取り出せないため外しました。必要なら付け直してください`);
-        return;
-      }
-      core.setNotice(v.room, "この下書きは Gmail で送信または削除されました。入力中の内容は残っています");
-      return;
-    }
+    // 判断したあとに打った分があれば、書き換えていたものとして扱う（入力を消さない）
+    if (v.dirty || normalizedFingerprint(local.content) !== nfp) { await keepInput(v.room, local); return; }
     // 送信済みに同じメールがあれば「Gmail から送信されました」と伝える（照合は宛先・件名・本文の冒頭）
     const c = local.content;
     const list = c.recipients ?? (() => { const p = latest.current.partnerRecipient(v.room as RoomKeyStr); return p ? [p] : []; })();
@@ -260,6 +255,9 @@ export function useGmailDraftInbound({
       });
       sent = res.ok && !!((await res.json()) as { found?: boolean }).found;
     } catch { /* 確かめられなくても、入力欄は戻す（下書きはもう無い） */ }
+    // 照合を待つあいだに打った分があれば、消さずに残す
+    const now = await localOf(v.room);
+    if (now && normalizedFingerprint(now.content) !== nfp) { await keepInput(v.room, now); return; }
     // 入力欄を既定に戻し、端末の下書きを消す
     core.sentRef.current.set(v.room, core.sentKey(c));
     if (core.isOpen(v.room)) {
@@ -270,6 +268,19 @@ export function useGmailDraftInbound({
     }
     await removeDraft(v.room);
     if (sent) showInfoToast("この下書きは Gmail から送信されました", 4000);
+  };
+  // 消えた下書きの入力を残す：入力中の内容は消さず、下書きとのつながりだけ外す（次の保存では新しい下書きになる。スレッドと差出人は残す）
+  const keepInput = async (room: string, local: { content: RoomContent["content"]; link: GmailDraftLink }) => {
+    const unlinked: GmailDraftLink = { ...EMPTY_LINK, threadRef: local.link.threadRef, fromAddress: local.link.fromAddress };
+    core.setLink(room, unlinked);
+    // Gmail の下書きにしか無かった添付は、もう取り出せない。黙って落とさず、外したことと名前を伝える
+    const atts: Attachment[] = local.content.attachments;
+    const lost = atts.filter(a => a.fromDraft);
+    if (!lost.length) { core.setNotice(room, "この下書きは Gmail で送信または削除されました。入力中の内容は残っています"); return; }
+    const kept = atts.filter(a => !a.fromDraft);
+    if (core.isOpen(room)) setReplyAttachments(kept);
+    await saveDraft(room, { ...local.content, attachments: kept, updatedAt: nowMs(), gmail: unlinked });
+    core.setNotice(room, `この下書きは Gmail で送信または削除されました。入力中の内容は残っていますが、Gmail の下書きにあった添付ファイル（${lost.map(a => a.filename).join("、")}）は取り出せないため外しました。必要なら付け直してください`);
   };
 
   // 両方で書き換えられた：どちらを残すか聞く（答えるまで Gmail には上書きしない）
@@ -299,7 +310,7 @@ export function useGmailDraftInbound({
     const before = await localOf(room);
     conflictMetaRef.current.delete(room);
     core.conflictRoomsRef.current.delete(room);
-    if (!(await applyDraft(room, meta))) { core.setNotice(room, "Gmail の下書きを読み込めませんでした。時間をおいてもう一度お試しください（この端末の入力は残っています）"); return; }
+    if ((await applyDraft(room, meta)) !== "ok") { core.setNotice(room, "Gmail の下書きを読み込めませんでした。時間をおいてもう一度お試しください（この端末の入力は残っています）"); return; }
     if (before) undoRef.current.set(room, before);
     core.setNotice(room, { text: "Gmail の下書きに置き換えました", actionLabel: "元に戻す", onAction: () => { void undo(room); } });
   };
@@ -339,16 +350,21 @@ export function useGmailDraftInbound({
     const key = account.toLowerCase();
     if (!account || refreshingRef.current.has(key)) return;
     refreshingRef.current.add(key);
-    void core.enqueueTask(async () => {
-      try { await refreshAccountNow(account); } finally { refreshingRef.current.delete(key); }
-    });
+    void (async () => {
+      try {
+        // 最初のメールの一覧を読み終えるまで待つ（読む前に出し先を決めると、既存のチャットが見つからず
+        // 同じ相手の下書きチャットを別に作ってしまっていた：2026-10-25 に実機で確認）。
+        // 待つのは保存の列の外で行う（列の中で待つと、送信が保存の列を待って最大2分止まっていた）
+        for (let i = 0; i < 120 && !isMailReady(); i++) await new Promise(r => setTimeout(r, 1000));
+        if (!isMailReady()) { setTimeout(() => refreshAccount(account), LIST_RETRY_MS[0]); return; }
+        await core.enqueueTask(() => refreshAccountNow(account));
+      } finally {
+        refreshingRef.current.delete(key);
+      }
+    })();
   };
   const refreshAccountNow = async (account: string) => {
     if (!core.enabledForAccount(account)) return;
-    // 最初のメールの一覧を読み終えるまで待つ（読む前に出し先を決めると、既存のチャットが見つからず
-    // 同じ相手の下書きチャットを別に作ってしまっていた：2026-10-25 に実機で確認）
-    for (let i = 0; i < 120 && !isMailReady(); i++) await new Promise(r => setTimeout(r, 1000));
-    if (!isMailReady()) { setTimeout(() => refreshAccount(account), LIST_RETRY_MS[0]); return; }
     const list = await getJson<{ drafts: { id: string; messageId: string; threadId?: string }[]; more: number }>({ drafts: "1", accountEmail: account });
     if (!list.data) {
       logWarn("draft.inbound.list", { status: list.status ?? undefined });
@@ -361,31 +377,47 @@ export function useGmailDraftInbound({
       return;
     }
     listRetryRef.current.delete(account.toLowerCase());
+    const more = list.data.more || 0;
     const gmail = list.data.drafts.map(d => ({ draftId: d.id, messageId: d.messageId }));
     // 端末の下書き（このアカウントの分）
     const rooms = (await draftRooms()).filter(r => core.accountOf(r).toLowerCase() === account.toLowerCase());
-    const locals: (LocalDraftState & { hasInput: boolean })[] = [];
+    const locals: (LocalDraftState & { nfp: string })[] = [];
     for (const room of rooms) {
       if (core.sendingRoomsRef.current.has(room)) continue;
       const l = await localOf(room);
       if (!l) continue;
       // Gmail から読み込んだばかりで入力欄が整えただけのものは、書き換えたことにしない
-      const dirty = draftFingerprint(l.content) !== l.link.syncedFingerprint
-        && !(l.link.fromGmail && l.link.baseNormFp && normalizedFingerprint(l.content) === l.link.baseNormFp);
-      locals.push({ room, draftId: l.link.draftId, messageId: l.link.messageId, dirty, hasInput: !isDefaultContent(l.content) });
+      locals.push({ room, draftId: l.link.draftId, messageId: l.link.messageId, dirty: hasUnsavedChanges(l.content, l.link), nfp: normalizedFingerprint(l.content) });
     }
-    // 開いているチャットに端末の下書きがまだ無い（何も書いていない）ときも、出し先の候補に入れる
+    // 判断したときの中身の指紋（入力欄を書き換える直前に、読み込みのあいだに打った分が無いかを見る）
+    const nfpOf = (room: string) => locals.find(l => l.room === room)?.nfp ?? null;
     const plan = planDraftReconcile(gmail, locals);
-    for (const v of plan.vanished) await handleVanished(v);
+    // 一覧は新しい順に100件まで。それより多いときは、一覧に無いだけで消えていないことがあるので1件ずつ確かめる
+    // （404 のときだけ消えたとする。残っていれば変わったかを見る。確かめられなければ何もしない）
+    let vanished = plan.vanished;
+    const extraMsgIds: string[] = [];
+    if (more > 0 && vanished.length) {
+      const checked = await mapLimit(vanished, META_CONCURRENCY, async v => ({ v, r: await getJson<GmailDraftMeta>({ draft: v.draftId as string, meta: "1", accountEmail: account }) }));
+      vanished = [];
+      for (const { v, r } of checked) {
+        if (r.status === 404) { vanished.push(v); continue; }
+        if (!r.data) continue;
+        extraMsgIds.push(r.data.messageId);
+        metaCacheRef.current.set(r.data.messageId, r.data);
+        if (r.data.messageId !== v.messageId) plan.changed.push({ local: v, draftId: r.data.draftId, messageId: r.data.messageId });
+      }
+    }
+    for (const v of vanished) await handleVanished(v, nfpOf(v.room) ?? "");
     const need = [...plan.changed.map(c => ({ draftId: c.draftId, messageId: c.messageId })), ...plan.unknown];
     const metas = new Map<string, GmailDraftMeta>();
     (await mapLimit(need, META_CONCURRENCY, d => getMeta(account, d))).forEach(m => { if (m) metas.set(m.draftId, m); });
-    // Gmail 側で書き換えられた：この画面で書き換えていなければ黙って入れ、書き換えていれば聞く
+    // Gmail 側で書き換えられた：この画面で書き換えていなければ黙って入れ、書き換えていれば聞く。
+    // 読み込みのあいだに打った分があれば（stale）、書き換えていたものとして聞く
     for (const c of plan.changed) {
       const meta = metas.get(c.draftId);
       if (!meta || core.conflictRoomsRef.current.has(c.local.room)) continue;
-      if (c.local.dirty) raiseConflict(c.local.room, meta);
-      else await applyDraft(c.local.room, meta);
+      if (c.local.dirty) { raiseConflict(c.local.room, meta); continue; }
+      if ((await applyDraft(c.local.room, meta, { expectNfp: nfpOf(c.local.room) })) === "stale") raiseConflict(c.local.room, meta);
     }
     // 知らない下書き：出し先のチャットを決める
     const byRoom = new Map<string, { metas: GmailDraftMeta[]; existing: boolean }>();
@@ -402,12 +434,13 @@ export function useGmailDraftInbound({
     }
     const nextOthers: Record<string, GmailDraftMeta[]> = {};
     for (const [room, { metas: list2, existing }] of byRoom) {
-      const local = locals.find(l => l.room === room);
-      // 入力欄が既定のまま（何も書いていない・ほかの下書きともつながっていない）なら、一番新しいものを黙って入れる
-      const canTake = !local || (!local.draftId && !local.hasInput);
+      // 入力欄が既定のまま（何も書いていない・ほかの下書きともつながっていない）なら、一番新しいものを黙って入れる。
+      // 一覧を読んでいるあいだに打ち始めているかもしれないので、今の中身で決める
+      const now = await localOf(room);
+      const canTake = !now || (!now.link.draftId && isDefaultContent(now.content));
       if (canTake) {
         const newest = newestDraft(list2);
-        if (newest && (await applyDraft(room, newest, { newChat: !existing }))) {
+        if (newest && (await applyDraft(room, newest, { newChat: !existing, expectNfp: now ? normalizedFingerprint(now.content) : null })) === "ok") {
           const rest = list2.filter(m => m.draftId !== newest.draftId);
           if (rest.length) nextOthers[room] = rest;
           continue;
@@ -420,8 +453,8 @@ export function useGmailDraftInbound({
       for (const [room, v] of Object.entries(prev)) if (core.accountOf(room).toLowerCase() !== account.toLowerCase()) next[room] = v;
       return { ...next, ...nextOthers };
     });
-    setOrphans(prev => ({ ...prev, [account.toLowerCase()]: { noRecipient, more: list.data!.more || 0 } }));
-    knownMsgIdsRef.current.set(account.toLowerCase(), new Set(list.data.drafts.map(d => d.messageId)));
+    setOrphans(prev => ({ ...prev, [account.toLowerCase()]: { noRecipient, more } }));
+    knownMsgIdsRef.current.set(account.toLowerCase(), new Set([...list.data.drafts.map(d => d.messageId), ...extraMsgIds]));
   };
 
   // 起動したとき（残っていた分を保存し終えたあと）に、アカウントごとに1回読む
@@ -457,10 +490,20 @@ export function useGmailDraftInbound({
           const meta = list.find(m => m.draftId === key);
           if (!meta) return;
           void (async () => {
-            // 今の入力は、先に Gmail に保存してから入れ替える（入力を失わない）
-            if (local && !isDefaultContent(local.content)) await core.enqueue(room);
-            const ok = await applyDraft(room, meta);
-            if (!ok) { showErrorToast("Gmail の下書きを読み込めませんでした。時間をおいてもう一度お試しください。Gmail の下書きから開くこともできます。"); return; }
+            // 今の入力は、先に Gmail に保存してから入れ替える（入力を失わない）。保存できなかった（送信先が無い・25MB を超える・
+            // 通信断・競合中など）ときは入れ替えない
+            const before = await localOf(room);
+            if (before && !isDefaultContent(before.content)) {
+              await core.enqueue(room);
+              const after = await localOf(room);
+              if (after && !isDefaultContent(after.content) && hasUnsavedChanges(after.content, after.link)) {
+                showErrorToast("今の入力を Gmail の下書きに保存できなかったため、入れ替えませんでした。入力は残っています。入力欄の近くの知らせを確かめてから、もう一度お試しください。");
+                return;
+              }
+            }
+            const res = await applyDraft(room, meta, { expectNfp: await currentNfp(room) });
+            if (res === "stale") { showErrorToast("読み込みの途中で入力が変わったため、入れ替えませんでした。入力は残っています。もう一度選んでください。"); return; }
+            if (res === "failed") { showErrorToast("Gmail の下書きを読み込めませんでした。時間をおいてもう一度お試しください。Gmail の下書きから開くこともできます。"); return; }
             refreshAccount(core.accountOf(room));
           })();
         },

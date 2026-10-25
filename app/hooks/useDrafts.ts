@@ -2,13 +2,18 @@
 // まだ1通も送っていない下書きチャット。useMailApp.ts から分けた（動きは変えない）。端末の下書きの中身は app/lib/drafts.ts
 import { useState, useEffect, useRef, type Dispatch, type SetStateAction, type MutableRefObject } from "react";
 import type { Email } from "../types/email";
-import type { RoomKeyStr } from "../lib/roomKey";
+import { decodeRoomKey, type RoomKeyStr } from "../lib/roomKey";
 import type { InlineImage } from "../lib/composeEditor";
 import type { ComposeRecipient } from "../lib/composeRecipients";
 import { loadDraft, saveDraft, removeDraft, hasDraftContent, type ComposeDraft } from "../lib/drafts";
 import { EMPTY_LINK, type GmailDraftLink } from "../lib/gmailDrafts";
 import type { DraftLinkRef } from "./useGmailDraftSync";
 import { isComposeBodyEmpty } from "../lib/composeHtml";
+
+// 2つのチャットが同じアカウントのものか
+function sameAccountRooms(a: string, b: string): boolean {
+  try { return decodeRoomKey(a).accountEmail.toLowerCase() === decodeRoomKey(b).accountEmail.toLowerCase(); } catch { return false; }
+}
 
 // fromDraft は Gmail から読み込んだ下書きの添付（data は空。保存・送信のときにサーバーが下書きから取り直す）
 export type Attachment = { filename: string; mimeType: string; size: number; data: string; fromDraft?: boolean };
@@ -52,7 +57,7 @@ export function useDrafts({
   // 開いているチャットの Gmail の下書きとの同期の状態（useGmailDraftSync.ts と共有する）
   linkRef: DraftLinkRef;
   // 入力中の内容を持ってほかのチャットへ移れたとき（Gmail の下書きを持っていく・消す）
-  onCarriedRef: MutableRefObject<((fromRoom: string, toRoom: string, fromLink: GmailDraftLink | undefined) => void) | null>;
+  onCarriedRef: MutableRefObject<((fromRoom: string, toRoom: string, fromLink: GmailDraftLink | undefined, hasDraftAttachments: boolean) => void) | null>;
 }) {
   // 「作成」機能で作った、まだ1通も送信していない下書きチャット（未送信のまま離脱すると破棄する）
   // リロード/タブ復元では維持したいので localStorage に保存する
@@ -86,14 +91,17 @@ export function useDrafts({
         insertedSignatureRef.current = carry.insertedSignature;
         loadCompose(carry.html, carry.images);
         setReplyToMessage(carry.replyToMessage);
-        setReplyAttachments(carry.attachments);
+        // Gmail の下書きにしか無い添付は、別のアカウントの下書き・送信には付けられない。外して名前を伝え、元の下書きは Gmail に残す
+        const lost = sameAccountRooms(carry.fromRoom, room as string) ? [] : carry.attachments.filter(a => a.fromDraft);
+        setReplyAttachments(lost.length ? carry.attachments.filter(a => !a.fromDraft) : carry.attachments);
+        if (lost.length) showErrorToast(`Gmail の下書きにあった添付ファイル（${lost.map(a => a.filename).join("、")}）は別のアカウントへ持っていけないため外しました。元のアカウントの Gmail の下書きは残しています。必要なら付け直してください。`);
         setRecipients(carry.recipients);
         setRecipientsBase(carry.recipientsBase);
         setAttachError(null);
         setDraftReadyRoom(room);
         // 移り元の Gmail の下書きは、同じアカウントなら持っていき、違うアカウントなら消す（useGmailDraftSync.ts）
         void loadDraft(carry.fromRoom).then(from => {
-          onCarriedRef.current?.(carry.fromRoom, room as string, from?.gmail);
+          onCarriedRef.current?.(carry.fromRoom, room as string, from?.gmail, carry.attachments.some(a => a.fromDraft));
           return removeDraft(carry.fromRoom);
         });
         return;

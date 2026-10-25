@@ -26,6 +26,8 @@ export type GmailDraftLink = {
   keepSignature?: boolean;
   // 新しく作ろうとして結果を受け取れなかった（タブを閉じたときの保存など）。次は同じ中身の下書きを探してから作る
   createAttempted?: boolean;
+  // Gmail から読み込んだ下書きの差出人のアドレス（純正でエイリアスを選んで書いた下書きを、同じ差出人のまま保存・送信する）
+  fromAddress?: string;
 };
 
 export const EMPTY_LINK: GmailDraftLink = { draftId: null, messageId: null, messageIdHeader: null, syncedFingerprint: null };
@@ -55,6 +57,7 @@ export function readGmailLink(v: unknown): GmailDraftLink | undefined {
     fromGmail: o.fromGmail === true || undefined,
     baseNormFp: typeof o.baseNormFp === "string" && /^[0-9a-z]{1,40}$/.test(o.baseNormFp) ? o.baseNormFp : undefined,
     keepSignature: o.keepSignature === true || undefined,
+    fromAddress: typeof o.fromAddress === "string" && o.fromAddress.length <= 254 && /^[^\s@<>",]+@[^\s@<>",]+$/.test(o.fromAddress) ? o.fromAddress : undefined,
   };
 }
 
@@ -102,6 +105,12 @@ export function normalizedFingerprint(d: DraftContent): string {
   return draftFingerprint({ ...d, html: d.html ? normalizeComposeHtml(d.html.replace(/\r\n?/g, "\n")) : "" });
 }
 
+// 最後に Gmail に保存してから書き換えたか。Gmail から読み込んだばかりで入力欄が整えただけのものは、書き換えたことにしない
+export function hasUnsavedChanges(content: DraftContent, link: GmailDraftLink): boolean {
+  if (draftFingerprint(content) === link.syncedFingerprint) return false;
+  return !(link.fromGmail && link.baseNormFp && normalizedFingerprint(content) === link.baseNormFp);
+}
+
 export type SavePlan = "skip" | "save" | "delete" | "forget";
 
 // 保存のときに何をするか。
@@ -147,6 +156,8 @@ export type DraftSendVerdict =
   | { kind: "askResend" }
   // 送れたか分からず、下書きも無く、送信済みにも見つからない
   | { kind: "unverified" }
+  // 中身を付けずに送ろうとしたら、Gmail 側で書き換えられていた（画面に無い中身を送らないよう、送っていない）
+  | { kind: "conflict" }
   | { kind: "failed"; status: number; code?: string; reason?: string };
 
 export function judgeDraftSend(res: { status: number | null; error?: string; reason?: string; id?: string; threadId?: string; verify?: { found: boolean; id?: string; threadId?: string; draftExists?: boolean } | null }): DraftSendVerdict {
@@ -159,6 +170,7 @@ export function judgeDraftSend(res: { status: number | null; error?: string; rea
   if (res.status >= 200 && res.status < 300) return { kind: "sent", id: res.id, threadId: res.threadId };
   if (res.error === "DRAFT_ALREADY_SENT") return { kind: "alreadySent" };
   if (res.error === "DRAFT_GONE") return { kind: "askNew" };
+  if (res.error === "DRAFT_CONFLICT") return { kind: "conflict" };
   if (res.error === "SEND_UNCONFIRMED") return { kind: "askResend" };
   if (res.error === "SEND_UNVERIFIED") return { kind: "unverified" };
   return { kind: "failed", status: res.status, code: res.error, reason: res.reason };

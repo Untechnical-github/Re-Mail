@@ -371,7 +371,8 @@ async function prepareSendMime(bodyData: Record<string, unknown>, accessToken: s
     if (want.length > 0) {
       if (!isValidDraftId(bodyData.draftId)) return { ok: false, response: NextResponse.json({ error: "DRAFT_ATTACHMENTS_FAILED", stage: "noDraft" }, { status: 409 }) };
       const got = await loadDraftAttachments(accessToken, bodyData.draftId, want);
-      if (!got.ok) return { ok: false, response: NextResponse.json({ error: "DRAFT_ATTACHMENTS_FAILED", stage: got.stage, status: got.status }, { status: 502 }) };
+      // 下書きにもう無い添付（missing）は取り直しても取れないので 409（画面は送り直さず、外して付け直すよう伝える）
+      if (!got.ok) return { ok: false, response: NextResponse.json({ error: "DRAFT_ATTACHMENTS_FAILED", stage: got.stage, status: got.status }, { status: got.stage === "missing" ? 409 : 502 }) };
       attachments.push(...got.attachments);
     }
   }
@@ -987,6 +988,18 @@ export async function POST(request: Request) {
       const prep = await prepareSendMime(bodyData, accessToken);
       if (!prep.ok) return prep.response;
       const { segments, messageId, threadId, exp } = prep;
+      // 中身を付けずに送るときは、画面が最後に読んだ・保存した下書きと同じかを先に確かめる。純正で書き換えられていたら送らない
+      // （画面に無い中身を送らない。絶対ルール2）。消えていたら、下の drafts.send の 404 と同じ扱いにする
+      const expect = isValidGmailId(bodyData.expectMessageId) ? bodyData.expectMessageId : null;
+      if (!withContent && expect) {
+        const cur = await getDraftState(accessToken, draftId);
+        if (cur.state === "unauthorized") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        if (cur.state === "error") return NextResponse.json({ error: "Failed to send email", reason: cur.reason, messageId }, { status: cur.status });
+        if (cur.state === "ok" && cur.messageId !== expect) {
+          logInfo("draft.send.conflict", { messageId: cur.messageId });
+          return NextResponse.json({ error: "DRAFT_CONFLICT", messageId: cur.messageId }, { status: 409 });
+        }
+      }
       const upload = withContent
         ? buildDraftUploadBody(segments, draftId, threadId)
         : { body: new TextEncoder().encode(JSON.stringify({ id: draftId })), contentType: "application/json" };

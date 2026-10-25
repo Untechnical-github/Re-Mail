@@ -9,7 +9,7 @@ import type { InlineImage } from "../lib/composeEditor";
 import type { ComposeRecipient } from "../lib/composeRecipients";
 import { type RoomKeyStr, decodeRoomKey } from "../lib/roomKey";
 import { loadDraft, saveDraft, updateDraftLink, draftRooms, markPendingCreate, hasPendingCreate, clearPendingCreate, type ComposeDraft } from "../lib/drafts";
-import { EMPTY_LINK, draftFingerprint, normalizedFingerprint, planDraftSave, isDefaultContent, fitsKeepalive, isRetryableSaveStatus, SAVE_RETRY_DELAYS_MS, type DraftContent, type GmailDraftLink } from "../lib/gmailDrafts";
+import { EMPTY_LINK, draftFingerprint, normalizedFingerprint, hasUnsavedChanges, planDraftSave, isDefaultContent, fitsKeepalive, isRetryableSaveStatus, SAVE_RETRY_DELAYS_MS, type DraftContent, type GmailDraftLink } from "../lib/gmailDrafts";
 import { makeMessageId } from "../lib/sendVerify";
 import { logWarn } from "../lib/safeLog";
 import type { Attachment, CarriedDraft } from "./useDrafts";
@@ -132,7 +132,7 @@ export function useGmailDraftSync({
   const toOutgoing = (room: string, c: RoomContent["content"], link?: GmailDraftLink): OutgoingContent => ({
     room: room as RoomKeyStr, subject: c.subject, html: c.html, images: c.images, insertedSignature: c.insertedSignature,
     replyToMessage: c.replyToMessage, attachments: c.attachments, recipients: effectiveRecipientsOf(room, c.recipients),
-    threadRef: link?.threadRef,
+    threadRef: link?.threadRef, fromAddress: link?.fromAddress,
   });
 
   const scheduleRetry = (room: string) => {
@@ -160,11 +160,11 @@ export function useGmailDraftSync({
   };
 
   // 失敗の知らせと送り直し。401 は再ログインの案内、404 はほかで送信・削除された、409 はほかで書き換えられた
-  const handleFailure = (room: string, status: number | null, error?: string, reason?: string) => {
+  const handleFailure = (room: string, status: number | null, error: string | undefined, reason: string | undefined, link: GmailDraftLink) => {
     if (status === 401) { setNotice(room, NOTICE.reauth); return; }
     if (error === "DRAFT_GONE") {
-      // 入力は消さず、Gmail の下書きとのつながりだけ外す（次の保存では新しい下書きになる）
-      setLink(room, { ...EMPTY_LINK });
+      // 入力は消さず、Gmail の下書きとのつながりだけ外す（次の保存では新しい下書きになる）。スレッドと差出人は残す
+      setLink(room, { ...EMPTY_LINK, threadRef: link.threadRef, fromAddress: link.fromAddress });
       setNotice(room, NOTICE.gone);
       return;
     }
@@ -213,7 +213,7 @@ export function useGmailDraftSync({
     if (plan === "delete") {
       const r = await post({ action: "draftDelete", accountEmail: accountOf(room), draftId: link.draftId, expectMessageId: link.messageId });
       if (r.status === 200) { resetRetry(room); setNotice(room, null); clearPendingCreate(room); setLink(room, { ...EMPTY_LINK, syncedFingerprint: fp }); return; }
-      handleFailure(room, r.status, r.data.error, r.data.reason);
+      handleFailure(room, r.status, r.data.error, r.data.reason, link);
       return;
     }
     const prepare = prepareRef.current;
@@ -237,10 +237,10 @@ export function useGmailDraftSync({
       resetRetry(room);
       setNotice(room, null);
       clearPendingCreate(room);
-      setLink(room, { draftId: r.data.draftId, messageId: r.data.gmailMessageId || null, messageIdHeader: header, syncedFingerprint: fp, threadRef: link.threadRef });
+      setLink(room, { draftId: r.data.draftId, messageId: r.data.gmailMessageId || null, messageIdHeader: header, syncedFingerprint: fp, threadRef: link.threadRef, fromAddress: link.fromAddress });
       return;
     }
-    handleFailure(room, r.status, r.data.error, r.data.reason);
+    handleFailure(room, r.status, r.data.error, r.data.reason, link);
   };
 
   // 保存と同じ列で順に行う処理（Gmail の下書きの読み直し。保存と入れ違って、自分で作った下書きを「知らない下書き」と見ないため）
@@ -396,14 +396,10 @@ export function useGmailDraftSync({
       return link.draftId ? link : null;
     },
     // 最後に Gmail に保存してから、入力を変えたか
-    isDirtyNow: (room: string): boolean => {
-      if (!isOpen(room)) return false;
-      const link = linkOf(room);
-      const c = liveContent();
-      if (draftFingerprint(c) === link.syncedFingerprint) return false;
-      // Gmail から読み込んだばかりで、入力欄が整えただけなら書き換えていない（中身を付けずに送り、純正のままの形で送る）
-      return !(link.fromGmail && link.baseNormFp && normalizedFingerprint(c) === link.baseNormFp);
-    },
+    // Gmail から読み込んだばかりで、入力欄が整えただけなら書き換えていない（中身を付けずに送り、純正のままの形で送る）
+    isDirtyNow: (room: string): boolean => isOpen(room) && hasUnsavedChanges(liveContent(), linkOf(room)),
+    // 中身を付けずに送ろうとしたら Gmail 側で書き換えられていた：読み直して、新しい中身を画面に出す（useGmailDraftInbound.ts）
+    reportConflict: (room: string) => { onConflictRef.current?.(room); },
     // 送った・ほかで送信済みだった・下書きが無くなっていた：Gmail の下書きとのつながりを外す
     // 送れた・ほかで送信済みだった中身を覚える（同じ中身では保存しない）
     markSent: (room: string, c: DraftContent) => {
@@ -413,17 +409,21 @@ export function useGmailDraftSync({
     forgetLink: (room: string) => { resetRetry(room); setNotice(room, null); clearPendingCreate(room); setLink(room, { ...EMPTY_LINK }); },
     // 入力中の内容を持ってほかのチャットへ移ったとき：同じアカウントなら Gmail の下書きもそのまま持っていく。
     // 送信元のアカウントを変えたときは、元のアカウントの下書きを消す（同じ内容が2つのアカウントに残らないように）
-    onCarried: (fromRoom: string, toRoom: string, fromLink: GmailDraftLink | undefined) => {
+    // 元の下書きにしか無い添付（fromDraft）を持っていくときは、元の下書きを消さない（消すと添付を取り出せなくなる）
+    onCarried: (fromRoom: string, toRoom: string, fromLink: GmailDraftLink | undefined, hasDraftAttachments: boolean) => {
       if (!fromLink?.draftId) return;
       const sameAccount = accountOf(fromRoom).toLowerCase() === accountOf(toRoom).toLowerCase();
       if (sameAccount && linkRef.current?.room === toRoom && !linkRef.current.link.draftId) {
         setLink(toRoom, { ...fromLink, syncedFingerprint: null });
         return;
       }
+      if (hasDraftAttachments) return;
       void post({ action: "draftDelete", accountEmail: accountOf(fromRoom), draftId: fromLink.draftId, expectMessageId: fromLink.messageId });
     },
     // Gmail から読み込んだ下書きで、返信元が見つからなかったときに残すスレッドの情報
     threadRefFor: (room: string) => linkOf(room).threadRef,
+    // Gmail から読み込んだ下書きの差出人（エイリアス）
+    fromAddressFor: (room: string) => linkOf(room).fromAddress,
     // 開いているチャットの知らせ
     notice: selectedSender ? notices[selectedSender] ?? null : null,
     // Gmail → Re:Mail（useGmailDraftInbound.ts）から使うもの
