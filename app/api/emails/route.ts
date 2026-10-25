@@ -8,7 +8,7 @@ import { findLinkedAccount } from "../../lib/linkedAccountsStore";
 import { buildMimeSegments, buildGmailUploadBody, buildDraftUploadBody, decodeMimeHeader, type MimeSegment } from "../../lib/mime";
 import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, getTextBody, extractAttachments, extractContentIdParts, referencesContentId, stripHtmlQuote, looksLikeForward, parseMessageDetail, parseInternalDate, topReceivedTime } from "../../lib/messageParse";
 import type { MimeInlinePart } from "../../lib/mime";
-import { summarizeHistory, type GmailHistoryRecord } from "../../lib/historySync";
+import { summarizeHistory, draftHistory, type GmailHistoryRecord } from "../../lib/historySync";
 import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, addressSet, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
 import { logError, logWarn, logInfo } from "../../lib/safeLog";
 import { labelChangeFor, readLabelChange, sanitizeMessageIds, chunkIds } from "../../lib/mailboxOps";
@@ -196,6 +196,8 @@ async function findSentMessage(accessToken: string, exp: SentExpectation): Promi
 
 const GMAIL_DRAFTS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
 const GMAIL_DRAFTS_UPLOAD_URL = "https://gmail.googleapis.com/upload/gmail/v1/users/me/drafts";
+// Re:Mail で扱う Gmail の下書きの数（超えた分は「Gmail で開く」）
+const DRAFT_LIST_MAX = 100;
 type GmailDraftResponse = { id?: string; message?: { id?: string; threadId?: string } };
 
 // Gmail の下書き ID（r1234… / r-1234…）とメッセージ ID（16進）の形
@@ -283,6 +285,50 @@ async function verifyDraftSend(accessToken: string, draftId: string, exp: SentEx
   return { found, draftExists: false };
 }
 
+// 画面から届いた「下書きから取り直す添付」の一覧（名前と大きさ）。壊れていれば null
+function readDraftAttachmentList(v: unknown): { filename: string; size: number }[] | null {
+  if (!Array.isArray(v) || v.length > 50) return null;
+  const out: { filename: string; size: number }[] = [];
+  for (const x of v) {
+    const o = x as { filename?: unknown; size?: unknown } | null;
+    if (!o || typeof o.filename !== "string" || o.filename.length > 255 || typeof o.size !== "number" || !Number.isFinite(o.size) || o.size < 0) return null;
+    out.push({ filename: o.filename, size: o.size });
+  }
+  return out;
+}
+
+// 下書きの添付を、今の下書きのメールから取り直す（名前と大きさで合わせる。添付の ID は下書きを保存するたびに変わるため）
+async function loadDraftAttachments(accessToken: string, draftId: string, want: { filename: string; size: number }[]): Promise<{ ok: true; attachments: { filename: string; mimeType: string; data: string }[] } | { ok: false; stage: "get" | "missing" | "download" | "tooLarge" | "exception"; status?: number }> {
+  const auth = { headers: { Authorization: `Bearer ${accessToken}` } };
+  try {
+    const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}/${encodeURIComponent(draftId)}?format=full&fields=message(id,payload)`, auth);
+    if (!res.ok) { logWarn("draft.attachments.get", { status: res.status }); return { ok: false, stage: "get", status: res.status }; }
+    const m = ((await res.json()) as { message?: GmailMessage }).message;
+    if (!m?.id) return { ok: false, stage: "get" };
+    const html = getHtmlBody(m.payload);
+    const pool = extractAttachments(m.payload, html);
+    if (want.reduce((n, w) => n + w.size, 0) > 25 * 1024 * 1024) return { ok: false, stage: "tooLarge" };
+    const out: { filename: string; mimeType: string; data: string }[] = [];
+    // 大きな添付を一度に何本も抱えないよう、1つずつ取る
+    for (const w of want) {
+      const i = pool.findIndex(a => a.filename === w.filename && a.size === w.size);
+      if (i < 0) { logWarn("draft.attachments.missing", { count: want.length }); return { ok: false, stage: "missing" }; }
+      const [a] = pool.splice(i, 1);
+      const r = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(m.id)}/attachments/${encodeURIComponent(a.attachmentId)}`, auth);
+      if (!r.ok) { logWarn("draft.attachments.download", { status: r.status }); return { ok: false, stage: "download", status: r.status }; }
+      const data = ((await r.json()) as { data?: string }).data;
+      if (!data) return { ok: false, stage: "download" };
+      // Gmail は base64url で返すので、MIME 用の通常の base64 に直す
+      const b64 = data.replace(/-/g, "+").replace(/_/g, "/");
+      out.push({ filename: a.filename, mimeType: a.mimeType, data: b64 + "===".slice((b64.length + 3) % 4) });
+    }
+    return { ok: true, attachments: out };
+  } catch (e) {
+    logError("draft.attachments", {}, e);
+    return { ok: false, stage: "exception" };
+  }
+}
+
 type PreparedMime =
   | { ok: true; segments: MimeSegment[]; messageId: string; threadId?: string; exp: SentExpectation }
   | { ok: false; response: NextResponse };
@@ -315,6 +361,19 @@ async function prepareSendMime(bodyData: Record<string, unknown>, accessToken: s
     }
     attachments.push(...forwarded.attachments);
     inline.push(...forwarded.inline);
+  }
+
+  // Gmail から読み込んだ下書きの添付（中身は画面に持たない）。保存・送信のときに、今の下書きから取り直して付ける。
+  // 1つでも取れなければ送らない・保存しない（黙って落とさない）。下書きが無い（messages.send）ときも取れない
+  if (bodyData.draftAttachments !== undefined) {
+    const want = readDraftAttachmentList(bodyData.draftAttachments);
+    if (!want) return { ok: false, response: NextResponse.json({ error: "DRAFT_ATTACHMENTS_FAILED" }, { status: 400 }) };
+    if (want.length > 0) {
+      if (!isValidDraftId(bodyData.draftId)) return { ok: false, response: NextResponse.json({ error: "DRAFT_ATTACHMENTS_FAILED", stage: "noDraft" }, { status: 409 }) };
+      const got = await loadDraftAttachments(accessToken, bodyData.draftId, want);
+      if (!got.ok) return { ok: false, response: NextResponse.json({ error: "DRAFT_ATTACHMENTS_FAILED", stage: got.stage, status: got.status }, { status: 502 }) };
+      attachments.push(...got.attachments);
+    }
   }
 
   // 本文中の画像（書式付きの入力欄で入れたもの）。HTML から cid: で参照する。形・件数・大きさ・種類をここでも確かめる
@@ -450,6 +509,81 @@ export async function GET(request: Request) {
   }
   if (!accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  // Gmail の下書きの一覧（Gmail → Re:Mail の同期。最大100件。超えた分は件数だけ返す）。中身は返さない
+  if (searchParams.get("drafts") === "1") {
+    try {
+      const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}?maxResults=${DRAFT_LIST_MAX}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      if (!res.ok) {
+        const reason = gmailErrorReason(await res.json().catch(() => null));
+        logWarn("drafts.list", { status: res.status, reason });
+        return NextResponse.json({ error: "DRAFTS_LIST_FAILED", reason }, { status: res.status >= 400 ? res.status : 502 });
+      }
+      const d = (await res.json().catch(() => ({}))) as { drafts?: { id?: string; message?: { id?: string; threadId?: string } }[]; nextPageToken?: string; resultSizeEstimate?: number };
+      const drafts = (d.drafts || [])
+        .filter(x => isValidDraftId(x.id) && isValidGmailId(x.message?.id))
+        .map(x => ({ id: x.id as string, messageId: x.message!.id as string, threadId: x.message?.threadId }));
+      // 100件を超えた分（Re:Mail では扱わない。画面で「Gmail で開く」を出す）
+      const more = d.nextPageToken ? Math.max(1, (d.resultSizeEstimate || 0) - drafts.length) : 0;
+      logInfo("drafts.list", { count: drafts.length });
+      return NextResponse.json({ drafts, more });
+    } catch (e) {
+      logError("drafts.list", {}, e);
+      return NextResponse.json({ error: "DRAFTS_LIST_FAILED" }, { status: 502 });
+    }
+  }
+
+  // Gmail の下書き1件。meta=1 なら出し先を決めるための宛先・件名・冒頭だけ、そうでなければ入力欄に入れる中身
+  // （HTML は画面が入力欄の安全化を通してから入れる。本文中の画像と添付は一覧だけを返し、中身は要るときに取る）
+  const draftParam = searchParams.get("draft");
+  if (draftParam !== null) {
+    if (!isValidDraftId(draftParam)) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    const meta = searchParams.get("meta") === "1";
+    try {
+      const url = meta
+        ? `${GMAIL_DRAFTS_URL}/${encodeURIComponent(draftParam)}?format=metadata&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Bcc&metadataHeaders=Subject&fields=id,message(id,threadId,labelIds,internalDate,snippet,payload/headers)`
+        : `${GMAIL_DRAFTS_URL}/${encodeURIComponent(draftParam)}?format=full&fields=id,message(id,threadId,labelIds,internalDate,snippet,payload)`;
+      const res = await fetchWithRetry(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (res.status === 404) return NextResponse.json({ error: "DRAFT_GONE" }, { status: 404 });
+      if (res.status === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      if (!res.ok) {
+        const reason = gmailErrorReason(await res.json().catch(() => null));
+        logWarn("drafts.get", { status: res.status, reason });
+        return NextResponse.json({ error: "DRAFT_GET_FAILED", reason }, { status: res.status >= 400 ? res.status : 502 });
+      }
+      const d = (await res.json()) as { id?: string; message?: GmailMessage & { labelIds?: string[]; internalDate?: string; snippet?: string } };
+      const m = d.message;
+      // 純正から送られた直後は、同じ ID で送ったメール（DRAFT ラベルなし）が返る。もう下書きではない
+      if (!m?.id || !(m.labelIds || []).includes("DRAFT")) return NextResponse.json({ error: "DRAFT_GONE" }, { status: 404 });
+      const h = m.payload?.headers || [];
+      const head = {
+        draftId: draftParam, messageId: m.id, threadId: m.threadId, internalDate: Number(m.internalDate || 0),
+        to: decodeMimeHeader(getHeader(h, "To")), cc: decodeMimeHeader(getHeader(h, "Cc")), bcc: decodeMimeHeader(getHeader(h, "Bcc")),
+        subject: decodeMimeHeader(getHeader(h, "Subject")), snippet: m.snippet || "",
+      };
+      if (meta) return NextResponse.json(head);
+      const html = getHtmlBody(m.payload).trim();
+      const text = m.payload ? getTextBody(m.payload) : "";
+      const inlineImages = html
+        ? extractContentIdParts(m.payload)
+            .filter(p => p.mimeType.toLowerCase().startsWith("image/") && referencesContentId(html, p.contentId))
+            .slice(0, INLINE_IMAGE_LIMIT)
+            .map(p => ({ contentId: p.contentId, attachmentId: p.attachmentId, mimeType: p.mimeType, size: p.size, filename: p.filename }))
+        : [];
+      const inlineIds = new Set(inlineImages.map(i => i.attachmentId));
+      const attachments = extractAttachments(m.payload, html).filter(a => !inlineIds.has(a.attachmentId)).slice(0, 50)
+        .map(a => ({ filename: a.filename, mimeType: a.mimeType, size: a.size }));
+      return NextResponse.json({
+        ...head, from: decodeMimeHeader(getHeader(h, "From")),
+        inReplyTo: getHeader(h, "In-Reply-To") || undefined, references: getHeader(h, "References") || undefined,
+        html: html || null, text: text || null, inlineImages, attachments,
+      });
+    } catch (e) {
+      logError("drafts.get", {}, e);
+      return NextResponse.json({ error: "DRAFT_GET_FAILED" }, { status: 502 });
+    }
+  }
+
   const messageId = searchParams.get("messageId");
 
   // 添付ファイルデータの取得
@@ -527,7 +661,11 @@ export async function GET(request: Request) {
       // 変化が多すぎて最後まで取れなかったときは、取り直してもらう（取りこぼしを残さない）
       if (pageToken) return NextResponse.json({ reset: true });
       const summary = summarizeHistory(records);
-      const toFetch = summary.added.slice(0, 100);
+      // 下書き（DRAFT ラベル）のメールは一覧に出さないので詳細を取らない。変わったことだけを返し、画面が下書きの一覧を取り直す
+      const drafts = draftHistory(records);
+      const draftIds = new Set(drafts.addedDraftIds);
+      const addedMail = summary.added.filter(id => !draftIds.has(id));
+      const toFetch = addedMail.slice(0, 100);
       const messages: ReturnType<typeof parseMessageDetail>[] = [];
       const missingAdded: string[] = [];
       // 新しく届いたメールだけ詳細を取る。一度に投げる数は10件まで（レート制限に触れないように）
@@ -540,12 +678,13 @@ export async function GET(request: Request) {
         }));
       }
       // 詳細を取れなかった新着があるときは、次回もう一度その位置から取り直せるよう historyId を進めない
-      const fetchedAll = messages.length + missingAdded.length === toFetch.length && summary.added.length <= 100;
+      const fetchedAll = messages.length + missingAdded.length === toFetch.length && addedMail.length <= 100;
       return NextResponse.json({
         historyId: fetchedAll ? latestHistoryId : startHistoryId,
         messages,
         labelUpdates: Object.entries(summary.labels).map(([id, labelIds]) => ({ id, labelIds })),
         deleted: [...summary.deleted, ...missingAdded],
+        draftChanged: drafts.changed,
       });
     } catch (e) {
       logError("sync", {}, e);

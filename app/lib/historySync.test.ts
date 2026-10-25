@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { summarizeHistory, matchesBoxFlags, applySyncResult, idsToFetchForLabelChanges, type BoxFlags } from "./historySync";
+import { summarizeHistory, matchesBoxFlags, applySyncResult, idsToFetchForLabelChanges, type BoxFlags, draftHistory, shouldRefreshDrafts } from "./historySync";
 import type { Email } from "../types/email";
 
 const mail = (id: string, labelIds: string[], extra: Partial<Email> = {}): Email => ({ id, threadId: id, subject: "s", from: "a@example.com", to: "b@example.com", date: "", body: "", snippet: "", labelIds, ...extra });
@@ -84,5 +84,22 @@ describe("idsToFetchForLabelChanges", () => {
       { id: "stillTrash", labelIds: ["TRASH"] },
     ], flags);
     expect(ids).toEqual(["restored"]);
+  });
+});
+
+describe("draftHistory / shouldRefreshDrafts（Gmail の下書きとの同期）", () => {
+  it("DRAFT ラベルのメールの追加・削除・ラベルの付け外しがあれば変わったとする。下書きのメールは詳細を取らない", () => {
+    const r = draftHistory([
+      { messagesAdded: [{ message: { id: "d1", labelIds: ["DRAFT"] } }, { message: { id: "m1", labelIds: ["INBOX"] } }] },
+    ]);
+    expect(r).toEqual({ changed: true, addedDraftIds: ["d1"] });
+    expect(draftHistory([{ messagesDeleted: [{ message: { id: "d0", labelIds: ["DRAFT"] } }] }]).changed).toBe(true);
+    expect(draftHistory([{ labelsRemoved: [{ message: { id: "x" }, labelIds: ["DRAFT"] }] }]).changed).toBe(true);
+    expect(draftHistory([{ messagesAdded: [{ message: { id: "m1", labelIds: ["INBOX"] } }] }])).toEqual({ changed: false, addedDraftIds: [] });
+  });
+  it("知っている下書きのメッセージ ID が消えたときも読み直す", () => {
+    expect(shouldRefreshDrafts(false, ["m9"], new Set(["m9"]))).toBe(true);
+    expect(shouldRefreshDrafts(false, ["m1"], new Set(["m9"]))).toBe(false);
+    expect(shouldRefreshDrafts(true, [], new Set())).toBe(true);
   });
 });

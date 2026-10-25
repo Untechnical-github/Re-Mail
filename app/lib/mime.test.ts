@@ -270,3 +270,15 @@ describe("インライン画像（multipart/related）", () => {
     expect(t).not.toMatch(/^Bcc:/m);
   });
 });
+
+describe("buildDraftUploadBody", () => {
+  const text = (b: { body: Uint8Array }) => new TextDecoder().decode(b.body);
+  it("下書きのメタデータは Draft の形（id と message.threadId）", () => {
+    expect(text(buildDraftUploadBody(["Subject: s\r\n\r\nbody"], "r-1", "t1"))).toContain('{"id":"r-1","message":{"threadId":"t1"}}');
+  });
+  it("新しく作るとき（ID なし）・スレッドなしでも、メール本体は2つ目のパートに入る", () => {
+    const t = text(buildDraftUploadBody(["Subject: s\r\n\r\nbody"]));
+    expect(t).toContain('{"message":{}}');
+    expect(t).toContain("Content-Type: message/rfc822\r\n\r\nSubject: s");
+  });
+});

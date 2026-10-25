@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { draftFingerprint, planDraftSave, fitsKeepalive, KEEPALIVE_MAX_BYTES, judgeDraftSend, readGmailLink, isRetryableSaveStatus, EMPTY_LINK, type DraftContent } from "./gmailDrafts";
+import { draftFingerprint, planDraftSave, fitsKeepalive, KEEPALIVE_MAX_BYTES, judgeDraftSend, readGmailLink, isRetryableSaveStatus, EMPTY_LINK, draftTargetAddress, draftRecipients, recipientsOrDefault, planDraftReconcile, newestDraft, normalizeDraftCids, type DraftContent } from "./gmailDrafts";
 
 const content: DraftContent = { subject: "", html: "<div>本文</div>", images: [], attachments: [], replyToMessage: null, recipients: null };
 
@@ -102,5 +102,59 @@ describe("readGmailLink / isRetryableSaveStatus", () => {
     // Gmail はレート制限を 403 でも返す（理由コードで見分ける）
     expect(isRetryableSaveStatus(403, "rateLimitExceeded")).toBe(true);
     expect(isRetryableSaveStatus(403, "insufficientPermissions")).toBe(false);
+  });
+});
+
+describe("段階B：Gmail の下書きの出し先・合わせ方", () => {
+  const meta = (o: Partial<{ to: string; cc: string; bcc: string }>) => ({ to: "", cc: "", bcc: "", ...o });
+
+  it("出し先は To の最初、無ければ Cc、無ければ Bcc の最初の人。宛先が無ければ null", () => {
+    expect(draftTargetAddress(meta({ to: "A <a@example.com>, b@example.com", cc: "c@example.com" }))).toBe("a@example.com");
+    expect(draftTargetAddress(meta({ cc: "c@example.com", bcc: "d@example.com" }))).toBe("c@example.com");
+    expect(draftTargetAddress(meta({ bcc: "D@Example.com" }))).toBe("d@example.com");
+    expect(draftTargetAddress(meta({}))).toBeNull();
+    expect(draftTargetAddress(meta({ to: "壊れた宛先" }))).toBeNull();
+  });
+
+  it("送信先は To / Cc / Bcc をそのまま。チャットの相手を To に1人だけなら既定（null）にする", () => {
+    const list = draftRecipients(meta({ to: "a@example.com", cc: "c@example.com" }));
+    expect(list.map(r => `${r.role}:${r.address}`)).toEqual(["to:a@example.com", "cc:c@example.com"]);
+    expect(recipientsOrDefault(list, "a@example.com")).toEqual(list);
+    const only = draftRecipients(meta({ to: "A <a@example.com>" }));
+    expect(recipientsOrDefault(only, "A@example.com")).toBeNull();
+    expect(recipientsOrDefault(only, "b@example.com")).toEqual(only);
+  });
+
+  it("一覧と端末の下書きを比べて、消えた・書き換えられた・知らないものに分ける", () => {
+    const local = [
+      { room: "r1", draftId: "d1", messageId: "m1", dirty: false },
+      { room: "r2", draftId: "d2", messageId: "m2", dirty: true },
+      { room: "r3", draftId: "gone", messageId: "m9", dirty: false },
+      { room: "r4", draftId: null, messageId: null, dirty: true },
+    ];
+    const plan = planDraftReconcile([{ draftId: "d1", messageId: "m1" }, { draftId: "d2", messageId: "m2b" }, { draftId: "new", messageId: "m5" }], local);
+    expect(plan.vanished.map(v => v.room)).toEqual(["r3"]);
+    expect(plan.changed.map(c => [c.local.room, c.messageId])).toEqual([["r2", "m2b"]]);
+    expect(plan.unchanged).toEqual(["d1"]);
+    expect(plan.unknown.map(u => u.draftId)).toEqual(["new"]);
+  });
+
+  it("1つのチャットに複数あるときは一番新しいもの", () => {
+    expect(newestDraft([{ id: 1, internalDate: 10 }, { id: 2, internalDate: 30 }, { id: 3, internalDate: 20 }])?.id).toBe(2);
+    expect(newestDraft([])).toBeNull();
+  });
+
+  it("本文中の画像の ID を ii_ の形にそろえ、HTML の参照も直す（ii_ の形はそのまま）", () => {
+    const r = normalizeDraftCids('<img src="cid:ii_abc1"><img src="cid:image001.png@01D9">', ["ii_abc1", "image001.png@01D9"], () => "zz9");
+    expect(r.map).toEqual({ ii_abc1: "ii_abc1", "image001.png@01D9": "ii_zz9" });
+    expect(r.html).toBe('<img src="cid:ii_abc1"><img src="cid:ii_zz9">');
+  });
+
+  it("スレッドの情報（threadRef）と印を端末から読み戻す（壊れた値は捨てる）", () => {
+    const l = readGmailLink({ draftId: "r1", threadRef: { threadId: "18abcdef", inReplyTo: "<a@b>", references: "<x@y> <a@b>" }, fromGmail: true, keepSignature: true });
+    expect(l?.threadRef).toEqual({ threadId: "18abcdef", inReplyTo: "<a@b>", references: "<x@y> <a@b>" });
+    expect(l?.fromGmail).toBe(true);
+    expect(l?.keepSignature).toBe(true);
+    expect(readGmailLink({ threadRef: { inReplyTo: "a\r\nBcc: x", threadId: "zz" } })?.threadRef).toBeUndefined();
   });
 });

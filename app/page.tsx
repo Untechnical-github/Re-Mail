@@ -119,6 +119,39 @@ export default function Home() {
               <button onClick={() => { close(); d.onConfirm(); }} className="px-4 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">{d.confirmLabel}</button>
             </div>
           </>
+        ) : d.kind === "draftConflict" ? (
+          <>
+            <h2 className="text-base font-bold text-white mb-2">この下書きは別の場所でも変更されました。どちらを残しますか？</h2>
+            {([["Gmail の下書き", d.gmail], ["この画面の入力", d.local]] as const).map(([label, v]) => (
+              <div key={label} className="bg-[#2B2D31] rounded p-3 mb-2">
+                <div className="text-xs font-bold text-gray-300 mb-1">{label}<span className="ml-2 font-normal text-gray-500">{new Date(v.date).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" })}</span></div>
+                <div className="text-xs text-gray-400 break-words">{v.preview || "（本文なし）"}</div>
+              </div>
+            ))}
+            <p className="text-[11px] text-gray-500 mb-3">「Gmail のほうを使う」にしても、今の入力は1度だけ「元に戻す」で戻せます</p>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button onClick={() => { close(); d.onUseLocal(); }} className="px-3 py-2 bg-[#4E5058] text-white rounded text-sm font-bold hover:bg-[#6D6F78]">この画面のほうを使う</button>
+              <button onClick={() => { close(); d.onUseGmail(); }} className="px-3 py-2 bg-[#5865F2] text-white rounded text-sm font-bold hover:bg-[#4752C4]">Gmail のほうを使う</button>
+            </div>
+          </>
+        ) : d.kind === "draftPicker" ? (
+          <>
+            <h2 className="text-lg font-bold text-white mb-1">下書きを選ぶ</h2>
+            <p className="text-xs text-gray-400 mb-3">選んだ下書きを入力欄に出します。今の入力は Gmail の下書きとして残ります</p>
+            {d.items.map(it => (
+              <button key={it.key} disabled={it.current} onClick={() => { close(); d.onPick(it.key); }} className={`w-full text-left rounded p-3 mb-2 transition ${it.current ? "bg-[#2B2D31] opacity-70 cursor-default" : "bg-[#2B2D31] hover:bg-[#35373C]"}`}>
+                <div className="flex justify-between gap-2 text-[11px] text-gray-500 mb-0.5">
+                  <span className="truncate">{it.current ? "今の入力" : it.to ? `To ${it.to}` : "宛先なし"}</span>
+                  <span className="flex-shrink-0">{new Date(it.date).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                </div>
+                <div className="text-sm font-bold text-white truncate">{it.subject || "(件名なし)"}</div>
+                <div className="text-xs text-gray-400 truncate">{it.preview}</div>
+              </button>
+            ))}
+            <div className="flex justify-end">
+              <button onClick={close} className="px-4 py-2 hover:underline text-gray-300 text-sm">閉じる</button>
+            </div>
+          </>
         ) : (
           <>
             <h2 className="text-lg font-bold text-white mb-1">返信のしかた</h2>

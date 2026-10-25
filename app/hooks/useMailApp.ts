@@ -18,6 +18,7 @@ import { useSendAs } from "./useSendAs";
 import { useConfigs } from "./useConfigs";
 import { useDrafts, useDraftChatCleanup } from "./useDrafts";
 import { useGmailDraftSync, type DraftLinkRef, type GmailDraftSyncApi } from "./useGmailDraftSync";
+import { useGmailDraftInbound, type DraftChoice } from "./useGmailDraftInbound";
 import type { OutgoingContent, PreparedOutgoing } from "./useSend";
 import { useMailboxActions } from "./useMailboxActions";
 import { useCompose } from "./useCompose";
@@ -36,7 +37,11 @@ import { getSavedBoxSettings, getSavedAccountSettings } from "../lib/mailAppHelp
 // 入力欄の確認画面（送信先を外す・チャットを移る・送信先を置き換える・返信／全員に返信・引用の注意）
 export type ComposeDialog =
   | { kind: "confirm"; message: string; confirmLabel: string; cancelLabel?: string; onConfirm: () => void; onCancel?: () => void }
-  | { kind: "replyChoice"; reply: ComposeRecipient[]; replyAll: ComposeRecipient[]; onPick: (list: ComposeRecipient[]) => void };
+  | { kind: "replyChoice"; reply: ComposeRecipient[]; replyAll: ComposeRecipient[]; onPick: (list: ComposeRecipient[]) => void }
+  // Gmail の下書きとこの画面の入力の両方が書き換えられた：どちらを残すか（閉じたら決めずに残す）
+  | { kind: "draftConflict"; gmail: { preview: string; date: number }; local: { preview: string; date: number }; onUseGmail: () => void; onUseLocal: () => void }
+  // 「ほかに下書きが○件」から選ぶ
+  | { kind: "draftPicker"; items: DraftChoice[]; onPick: (key: string) => void };
 
 export function useMailApp() {
   const { data: session, status, update: updateSession } = useSession();
@@ -275,6 +280,10 @@ export function useMailApp() {
   // 開いているチャットの Gmail の下書きとの同期の状態と、そのためのつなぎ（useGmailDraftSync.ts。下の useSend の後で入れる）
   const draftLinkRef: DraftLinkRef = useRef(null);
   const onCarriedRef = useRef<GmailDraftSyncApi["onCarried"] | null>(null);
+  // 差分同期で下書きが変わったとき（useMailSync.ts → useGmailDraftInbound.ts）
+  const draftSyncResultRef = useRef<((account: string, draftChanged: boolean, deleted: string[]) => void) | null>(null);
+  // Gmail から読み込んだ下書きの署名は入れ替えない（useCompose.ts の署名の決まりで1度だけ見る）
+  const keepSignatureRef = useRef<((room: string) => boolean) | null>(null);
   const prepareOutgoingRef = useRef<((c: OutgoingContent, opts?: { noFetch?: boolean }) => Promise<PreparedOutgoing>) | null>(null);
   const { draftChats, draftChatsRef, addDraftChat, removeDraftChat, draftReadyRoom, carryDraftRef } = useDrafts({
     selectedSender, showErrorToast, setReplySubject, insertedSignatureRef, loadCompose, setReplyToMessage, setReplyAttachments, setRecipients, setRecipientsBase, setAttachError, replySubject, composeHtml, composeImages, replyToMessage, replyAttachments, recipients, recipientsBase,
@@ -594,7 +603,7 @@ export function useMailApp() {
   const { searchServerSide, hasLoadedOnceRef, fetchChatCrossbox, fetchCrossboxForRoom, fetchGroupLoadMore, isRetryingUnloaded, retryUnloaded } = useMailSync({
     session, emailsRef, setEmails, setIsLoading, selectedSender, showErrorToast, signingOutRef, unloadedIds, setUnloadedIds,
     syncConfigs, chatConfigsRef, messageConfigsRef, applySyncedPersisted, loadD1Configs, applySyncedSettings, savedSyncedKeyRef, setSyncedSettingsReady, saveGlobalSettings,
-    linkedAccountsRef, setLinkedAccounts, setReauthNeededAccounts, setLinkedAccountProfiles,
+    linkedAccountsRef, setLinkedAccounts, setReauthNeededAccounts, setLinkedAccountProfiles, draftSyncResultRef,
     checkInbox, checkArchive, checkSpam, checkTrash, checkSent, filterKeyRef, isInitialFilterRun, emailsFilterKeyRef, filterCacheRef, activeChatTab,
     setCurrentNextPageTokens, currentNextPageTokensRef, groupMemberTokensRef, setChatNextPageToken, chatNextPageTokenRef, setChatStatusMessage,
     setSelectionMode, setSelectedIds, setModal, setRenameInput, openEmailModal, openAttachmentModal, setRevealedCrossPrompts, activeLoadRef, searchTimeoutRef,
@@ -665,7 +674,7 @@ export function useMailApp() {
     session, selectedSender, selectedSenderRef, chatConfigs, groupedEmails, getRoomPartner, roomAccountEmail, resolveDirectRoom, openChat,
     replyAttachments, setReplyAttachments, setAttachError, replyToMessage, setReplyToMessage, replyToMessageRef, recipients, setRecipients, recipientsBase, setRecipientsBase,
     replySubject, setReplySubject, setComposeDialog, currentCompose, loadCompose, insertedSignatureRef, editorLoad, carryDraftRef, addDraftChat, draftReadyRoom,
-    sendAsByAccount, setSendAsByAccount, getSendAs, showInfoToast, showErrorToast,
+    sendAsByAccount, setSendAsByAccount, getSendAs, showInfoToast, showErrorToast, keepSignatureRef,
   });
 
   // Gmail の下書きとの同期（書きかけを Gmail の下書きに保存する）は useGmailDraftSync.ts。アカウント設定で切れる（既定はオン）
@@ -676,7 +685,16 @@ export function useMailApp() {
     settingsReady: accountSettingsLoaded,
     accounts: sendAsAccountsKey ? sendAsAccountsKey.split(",") : [],
   });
-  useEffect(() => { onCarriedRef.current = gmailDrafts.onCarried; });
+  useEffect(() => {
+    onCarriedRef.current = gmailDrafts.onCarried;
+    // Gmail から読み込んだ下書きなら、署名を入れ替えずにそのまま残す（印は1度見たら外す）
+    keepSignatureRef.current = (room: string) => {
+      const link = gmailDrafts.core.linkOf(room);
+      if (!link.keepSignature) return false;
+      gmailDrafts.core.setLink(room, { ...link, keepSignature: undefined });
+      return true;
+    };
+  });
 
   // 送る（送信 API・送る前の確認・返信・転送）は useSend.ts
   const { handleSend, forwardMessageTo, prepareOutgoing } = useSend({
@@ -686,6 +704,14 @@ export function useMailApp() {
     setComposeDialog, setIsSending, setSendConfirm, myAddressesFor, getSendAs, draftChatsRef, removeDraftChat, showInfoToast, setInfoToast, showErrorToast, gmailDrafts,
   });
   useEffect(() => { prepareOutgoingRef.current = prepareOutgoing; });
+
+  // Gmail → Re:Mail（純正の下書きを入力欄に出す・両方で書き換えたら聞く・純正で送られたら戻す）は useGmailDraftInbound.ts
+  const gmailInbound = useGmailDraftInbound({
+    gmailDrafts, settingsReady: accountSettingsLoaded, selectedSender, draftReadyRoom, emailsRef, resolveDirectRoom, addDraftChat, partnerRecipient,
+    setReplySubject, setReplyToMessage, setReplyAttachments, setRecipients, setRecipientsBase, setAttachError, loadCompose, insertedSignatureRef,
+    setComposeDialog, showInfoToast, showErrorToast,
+  });
+  useEffect(() => { draftSyncResultRef.current = gmailInbound.onSyncResult; });
 
   // 選択したチャット・メールへの操作と、継続フィルターの自動適用・開いたら既読にする は useMailboxActions.ts
   const {
@@ -727,7 +753,7 @@ export function useMailApp() {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
       isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, useIconLabels, accountSettings,
       currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts, linkedAccountProfiles,
-      replySubject, composeHtml, composeBodyEmpty, editorLoad, isSending, replyToMessage, replyAttachments, attachError, gmailDraftNotice: gmailDrafts.notice,
+      replySubject, composeHtml, composeBodyEmpty, editorLoad, isSending, replyToMessage, replyAttachments, attachError, gmailDraftNotice: gmailDrafts.notice, gmailDraftOthers: gmailInbound.othersCount, gmailDraftOrphans: gmailInbound.orphans,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
       revealedCrossPrompts, boxColors,
       chatCacheLimit,
@@ -744,7 +770,7 @@ export function useMailApp() {
       handleMenuBarClick, handleBackgroundClick, toggleSelection,
       jumpToSearchResult, updateFindBarKeyword, goToNextFindMatch, goToPrevFindMatch, closeFindBar, openFindBar,
       setFindBarSearchSubject, setFindBarSearchBody, setFindBarBox,
-      handleSend, addReplyAttachments, removeReplyAttachment, searchServerSide, executePin, executeConfirmedAction, executeResetSelection, applyPinToIds, applyDeleteToIds, applyMoveToIds, applyHideToIds,
+      handleSend, openGmailDraftOthers: gmailInbound.openOthers, addReplyAttachments, removeReplyAttachment, searchServerSide, executePin, executeConfirmedAction, executeResetSelection, applyPinToIds, applyDeleteToIds, applyMoveToIds, applyHideToIds,
       openChat, handleLoadMoreChats, handleLoadMoreMessage, safeBack, exitAfterAction, enterSelectionMode, executeBatchMove,
       setChatCacheLimit,
       openEmailModal, closeEmailModal, toggleMsgExpand, applyReadToIds, getActionableEmails,

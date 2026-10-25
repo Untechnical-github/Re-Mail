@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { finalizeOutgoing, headersOf, fromHeaderOf, type FinalizeInput } from "./outgoingMail";
 import { withSignature, withQuote, buildQuoteHtml } from "./composeHtml";
+import fixtures from "./__fixtures__/gmailCompose.json";
 
 const base: FinalizeInput = {
   accountEmail: "me@example.com",
@@ -68,5 +69,43 @@ describe("headersOf / fromHeaderOf", () => {
     expect(fromHeaderOf({ sendAsEmail: "me@example.com", isPrimary: true })).toBeUndefined();
     expect(fromHeaderOf({ sendAsEmail: "alias@example.com", displayName: "別名" })).toBe("別名 <alias@example.com>");
     expect(fromHeaderOf(null)).toBeUndefined();
+  });
+});
+
+describe("Gmail の下書き（段階B）", () => {
+  it("純正の下書きの HTML を何も変えずに保存し直すと、書式・引用・署名が変わらない", () => {
+    const F = fixtures as Record<string, { html: string }>;
+    const reply = { subject: "相談", threadId: "t1", messageIdHeader: "<m1@example.com>" };
+    for (const key of ["image", "reply"] as const) {
+      const r = finalizeOutgoing({ ...base, html: F[key].html, replyToMessage: key === "reply" ? reply : null });
+      expect(r.ok && r.payload.bodyHtml).toBe(F[key].html.trim());
+    }
+    // 書式の見本は、一度整えたもの（Re:Mail が保存した下書き）が何度保存し直しても変わらない
+    // （純正の下書きを何も変えずに送るときは中身を付けずに drafts.send するので、整え直さない）
+    const once = finalizeOutgoing({ ...base, html: F.format.html });
+    const html1 = once.ok ? once.payload.bodyHtml || "" : "";
+    const twice = finalizeOutgoing({ ...base, html: html1 });
+    expect(twice.ok && twice.payload.bodyHtml).toBe(html1);
+    expect(html1).toContain("gmail_signature");
+    expect(html1).toContain("gmail_quote");
+  });
+
+  it("下書きから読み込んだ添付は中身を送らず、名前と大きさだけを渡す（サーバーが下書きから取り直す）", () => {
+    const r = finalizeOutgoing({ ...base, attachments: [
+      { filename: "手元.pdf", mimeType: "application/pdf", size: 3, data: "QUJD" },
+      { filename: "下書き.xlsx", mimeType: "application/vnd.ms-excel", size: 1000, data: "", fromDraft: true },
+    ] });
+    expect(r.ok && r.payload.attachments).toEqual([{ filename: "手元.pdf", mimeType: "application/pdf", data: "QUJD" }]);
+    expect(r.ok && r.payload.draftAttachments).toEqual([{ filename: "下書き.xlsx", size: 1000 }]);
+    // 大きさの上限には下書きの添付も入る
+    expect(finalizeOutgoing({ ...base, maxTotalBytes: 500, attachments: [{ filename: "a", mimeType: "x/y", size: 1000, data: "", fromDraft: true }] }).ok).toBe(false);
+  });
+
+  it("返信元が見つからない下書きは、スレッドの情報と件名をそのまま残す", () => {
+    const r = finalizeOutgoing({ ...base, subject: "Re: 手で変えた件名", threadRef: { threadId: "t9", inReplyTo: "<a@b>", references: "<x@y> <a@b>" } });
+    expect(r.ok && r.payload).toMatchObject({ subject: "Re: 手で変えた件名", threadId: "t9", inReplyTo: "<a@b>", references: "<x@y> <a@b>" });
+    // 返信元があればそちらを使う
+    const r2 = finalizeOutgoing({ ...base, threadRef: { threadId: "t9" }, replyToMessage: { subject: "元", threadId: "t1", messageIdHeader: "<m1@example.com>" } });
+    expect(r2.ok && r2.payload.threadId).toBe("t1");
   });
 });

@@ -1,8 +1,8 @@
 // Gmail の下書きとの同期で使う純粋関数（保存するか・消すか・送った結果をどう扱うか）。
 // 端末に置くのは Gmail の下書き ID・メッセージ ID・同期の状態だけ（中身は今までどおりの端末の下書き。drafts.ts）
 import type { Email } from "../types/email";
-import type { ComposeRecipient } from "./composeRecipients";
-import { isComposeBodyEmpty } from "./composeHtml";
+import { normalizeRecipients, recipientsFromHeader, pickMoveTarget, type ComposeRecipient } from "./composeRecipients";
+import { isComposeBodyEmpty, mapImageSources } from "./composeHtml";
 import { isRateLimitReason } from "./sendVerify";
 
 // 端末の下書きに足す、Gmail の下書きとの同期の状態
@@ -16,11 +16,27 @@ export type GmailDraftLink = {
   messageIdHeader: string | null;
   // 最後に Gmail に保存した中身の指紋。今の中身の指紋と違えば「まだ保存していない変更がある（dirty）」
   syncedFingerprint: string | null;
+  // Gmail から読み込んだ下書きで、返信元のメールが見つからなかったときに保存し直しても残すスレッドの情報
+  threadRef?: { threadId?: string; inReplyTo?: string; references?: string };
+  // Gmail から読み込んだばかり（入力欄が整えたあとの中身を「保存済み」とみなす）
+  fromGmail?: boolean;
+  // Gmail から読み込んだ下書きの署名は入れ替えない（純正で手直しした署名をそのまま残す。開いたときの署名の決まりで1度だけ見る）
+  keepSignature?: boolean;
   // 新しく作ろうとして結果を受け取れなかった（タブを閉じたときの保存など）。次は同じ中身の下書きを探してから作る
   createAttempted?: boolean;
 };
 
 export const EMPTY_LINK: GmailDraftLink = { draftId: null, messageId: null, messageIdHeader: null, syncedFingerprint: null };
+
+function readThreadRef(v: unknown): GmailDraftLink["threadRef"] {
+  if (!v || typeof v !== "object") return undefined;
+  const o = v as Record<string, unknown>;
+  const id = (x: unknown) => (typeof x === "string" && /^<[^<>\s]{1,250}>$/.test(x) ? x : undefined);
+  const threadId = typeof o.threadId === "string" && /^[0-9a-f]{6,32}$/i.test(o.threadId) ? o.threadId : undefined;
+  const references = typeof o.references === "string" && o.references.length <= 4000 && /^(<[^<>\s]{1,250}>\s*)+$/.test(o.references.trim()) ? o.references.trim() : undefined;
+  const r = { threadId, inReplyTo: id(o.inReplyTo), references };
+  return r.threadId || r.inReplyTo || r.references ? r : undefined;
+}
 
 // 壊れた値は捨てる（端末に残っていた値を読み戻すとき）
 export function readGmailLink(v: unknown): GmailDraftLink | undefined {
@@ -33,6 +49,9 @@ export function readGmailLink(v: unknown): GmailDraftLink | undefined {
     messageIdHeader: str(o.messageIdHeader, /^<[A-Za-z0-9._+=-]{1,190}@[A-Za-z0-9.-]{1,100}>$/),
     syncedFingerprint: str(o.syncedFingerprint, /^[0-9a-z]{1,40}$/),
     createAttempted: o.createAttempted === true || undefined,
+    threadRef: readThreadRef(o.threadRef),
+    fromGmail: o.fromGmail === true || undefined,
+    keepSignature: o.keepSignature === true || undefined,
   };
 }
 
@@ -133,4 +152,86 @@ export function judgeDraftSend(res: { status: number | null; error?: string; rea
   if (res.error === "SEND_UNCONFIRMED") return { kind: "askResend" };
   if (res.error === "SEND_UNVERIFIED") return { kind: "unverified" };
   return { kind: "failed", status: res.status, code: res.error, reason: res.reason };
+}
+
+// ---- Gmail → Re:Mail（段階B） ----
+
+// Gmail の下書きの一覧の1件と、出し先を決めるための宛先など（中身は入れない）
+export type GmailDraftMeta = {
+  draftId: string;
+  messageId: string;
+  threadId?: string;
+  internalDate: number;
+  to: string;
+  cc: string;
+  bcc: string;
+  subject: string;
+  snippet: string;
+};
+
+// 下書きの宛先（To / Cc / Bcc のヘッダー）から送信先の一覧を作る（壊れた・上限を超えた分は捨てる）
+export function draftRecipients(m: Pick<GmailDraftMeta, "to" | "cc" | "bcc">): ComposeRecipient[] {
+  return normalizeRecipients([...recipientsFromHeader(m.to, "to"), ...recipientsFromHeader(m.cc, "cc"), ...recipientsFromHeader(m.bcc, "bcc")]).recipients;
+}
+
+// どのチャットに出すか：To の最初、無ければ Cc、無ければ Bcc の最初の人（pickMoveTarget）。宛先が無ければ null
+export function draftTargetAddress(m: Pick<GmailDraftMeta, "to" | "cc" | "bcc">): string | null {
+  return pickMoveTarget(draftRecipients(m))?.address.toLowerCase() || null;
+}
+
+// 送信先が「チャットの相手を To に1人」だけなら、既定（null）として扱う（本文を消したときに下書きを消せるように）
+export function recipientsOrDefault(list: ComposeRecipient[], partnerAddress: string): ComposeRecipient[] | null {
+  if (list.length === 1 && list[0].role === "to" && list[0].address.toLowerCase() === partnerAddress.toLowerCase()) return null;
+  return list;
+}
+
+export type LocalDraftState = { room: string; draftId: string | null; messageId: string | null; dirty: boolean };
+
+// Gmail の下書きの一覧と、端末の下書き（Gmail の下書きとつながっているもの）を比べる。
+// - vanished: 端末ではつながっているのに、一覧から消えた（ほかで送信・削除された）
+// - changed: Gmail 側で書き換えられた（メッセージ ID が違う）
+// - unknown: 端末のどれともつながっていない下書き
+export function planDraftReconcile(gmail: { draftId: string; messageId: string }[], local: LocalDraftState[]): {
+  vanished: LocalDraftState[];
+  changed: { local: LocalDraftState; draftId: string; messageId: string }[];
+  unchanged: string[];
+  unknown: { draftId: string; messageId: string }[];
+} {
+  const byId = new Map(gmail.map(g => [g.draftId, g]));
+  const linked = new Map(local.filter(l => l.draftId).map(l => [l.draftId as string, l]));
+  const vanished = local.filter(l => l.draftId && !byId.has(l.draftId));
+  const changed: { local: LocalDraftState; draftId: string; messageId: string }[] = [];
+  const unchanged: string[] = [];
+  const unknown: { draftId: string; messageId: string }[] = [];
+  for (const g of gmail) {
+    const l = linked.get(g.draftId);
+    if (!l) unknown.push(g);
+    else if (l.messageId !== g.messageId) changed.push({ local: l, draftId: g.draftId, messageId: g.messageId });
+    else unchanged.push(g.draftId);
+  }
+  return { vanished, changed, unchanged, unknown };
+}
+
+// 1つのチャットに複数あるときは、一番新しいものを入力欄に出す
+export function newestDraft<T extends { internalDate: number }>(list: T[]): T | null {
+  return list.reduce<T | null>((a, b) => (!a || b.internalDate > a.internalDate ? b : a), null);
+}
+
+// 入力欄が扱う本文中の画像の ID は ii_ で始まる形だけ（drafts.ts・inlineImages.ts）。Gmail の下書きのほかの形の ID は付け替え、
+// HTML の参照も合わせて直す。付け替えた対応（元の ID → 新しい ID）を返す
+export function normalizeDraftCids(html: string, cids: string[], random: () => string): { html: string; map: Record<string, string> } {
+  const map: Record<string, string> = {};
+  const byLower = new Map<string, string>();
+  for (const cid of cids) {
+    const next = /^ii_[0-9a-z]{1,24}$/.test(cid) ? cid : `ii_${random().replace(/[^0-9a-z]/g, "").slice(0, 16) || "x"}`;
+    map[cid] = next;
+    byLower.set(cid.toLowerCase(), next);
+  }
+  // 画像の src だけを書き換える（正規表現で HTML 全体を置き換えない）
+  const out = mapImageSources(html, (src) => {
+    if (!/^cid:/i.test(src)) return src;
+    const hit = byLower.get(src.slice(4).toLowerCase());
+    return hit ? `cid:${hit}` : src;
+  });
+  return { html: out, map };
 }

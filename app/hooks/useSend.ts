@@ -36,6 +36,8 @@ export type OutgoingContent = {
   attachments: Attachment[];
   // 送信先（既定のときは開いているチャットの相手を To に1人）
   recipients: ComposeRecipient[];
+  // Gmail から読み込んだ下書きで、返信元のメールが見つからなかったときに残すスレッドの情報
+  threadRef?: { threadId?: string; inReplyTo?: string; references?: string };
 };
 export type PreparedOutgoing =
   | { ok: true; payload: SendApiPayload; bodyText: string; subject: string; threadId?: string; to: string; cc: string; bcc: string }
@@ -195,7 +197,7 @@ export function useSend({
     }
     const r = finalizeOutgoing({
       accountEmail, html, images: c.images, attachments: c.attachments, to, cc, bcc, subject: c.subject,
-      replyToMessage: c.replyToMessage, alias, maxTotalBytes: MAX_TOTAL_ATTACHMENT_BYTES,
+      replyToMessage: c.replyToMessage, alias, maxTotalBytes: MAX_TOTAL_ATTACHMENT_BYTES, threadRef: c.threadRef,
     });
     if (!r.ok) return { ok: false, kind: r.error };
     return { ok: true, payload: r.payload, bodyText: r.bodyText, subject: r.subject, threadId: r.threadId, to, cc, bcc };
@@ -206,6 +208,7 @@ export function useSend({
     showErrorToast(
       isRateLimitReason(r.gmailReason) || r.status === 429 ? `Gmail の利用上限に一時的に達したため${label}できませんでした。1分ほど待ってからもう一度お試しください。`
       : r.code === "FORWARD_ATTACHMENTS_FAILED" ? "元のメールの添付ファイルを取得できなかったため、転送しませんでした。時間をおいてもう一度お試しください。"
+      : r.code === "DRAFT_ATTACHMENTS_FAILED" ? "下書きの添付ファイルを取得できなかったため、送信しませんでした。時間をおいてもう一度お試しください。本文は入力欄に残っています。"
       : r.status === 401 ? `ログインの有効期限が切れたため${label}できませんでした。再読み込みしてからもう一度お試しください。`
       : r.status === 413 ? `添付ファイルが大きすぎるため${label}できませんでした（合計25MBまで）。`
       : r.code === "NO_RECIPIENTS" ? `送信先がないため${label}できませんでした。送信先を足してからもう一度お試しください。`
@@ -220,7 +223,7 @@ export function useSend({
   const postDraftSendApi = async (payload: SendApiPayload, draftId: string, withContent: boolean, messageId: string): Promise<DraftSendVerdict> => {
     const sentAfterMs = Date.now();
     // 中身を付けないときは、照合に使う宛先・件名・本文の文字だけを渡す（添付・画像は送らない）
-    const body = withContent ? payload : { ...payload, bodyHtml: undefined, attachments: undefined, inlineImages: undefined };
+    const body = withContent ? payload : { ...payload, bodyHtml: undefined, attachments: undefined, inlineImages: undefined, draftAttachments: undefined };
     const verify = async () => {
       try {
         const v = await fetch("/api/emails", {
@@ -326,7 +329,7 @@ export function useSend({
       // stripHtmlQuote）で引用は折りたたまれ、代わりに「どのメッセージへの返信か」のチップで見せる
       const content: OutgoingContent = {
         room: selectedSender, subject: replySubject, html: compose.html, images: compose.images, insertedSignature: insertedSignatureRef.current,
-        replyToMessage, attachments: replyAttachments, recipients: sendRecipients,
+        replyToMessage, attachments: replyAttachments, recipients: sendRecipients, threadRef: gmailDrafts.threadRefFor(selectedSender),
       };
       const prep = await prepareOutgoing(content, opts);
       if (!prep.ok) {
@@ -393,6 +396,8 @@ export function useSend({
         // アタッチメントキャッシュへ先回りで書き込んでおく（再取得後の実IDでもキーが一致するように、
         // TalkView.tsx側のattachmentCacheKeyと同じ組み立て方＝messageId+添付順+ファイル名+サイズを使う）
         sentAttachmentsData.forEach((a, idx) => {
+          // Gmail の下書きから取り直した添付は中身を持っていないので、先回りのキャッシュには入れない
+          if (a.fromDraft) return;
           setCachedAttachment(attachmentCacheKey(sendAccountEmail, sentId, idx, a.filename, a.size), a.data);
         });
         setEmails(prev => [sentFake, ...prev]);

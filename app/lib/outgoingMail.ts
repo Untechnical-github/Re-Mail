@@ -25,10 +25,13 @@ export type SendApiPayload = {
   attachments?: { filename: string; mimeType: string; data: string }[];
   // 本文中の画像（multipart/related のインライン画像。HTML から cid: で参照する）
   inlineImages?: { contentId: string; filename: string; mimeType: string; data: string }[];
+  // Gmail から読み込んだ下書きの添付（中身は持たない）。サーバーが今の下書き（draftId）から取り直して付ける
+  draftAttachments?: { filename: string; size: number }[];
 };
 
 export type OutgoingImage = { cid: string; filename: string; mimeType: string; size: number; data: string };
-export type OutgoingAttachment = { filename: string; mimeType: string; size: number; data: string };
+// fromDraft は Gmail から読み込んだ下書きの添付（data は空。保存・送信のときにサーバーが下書きから取り直す）
+export type OutgoingAttachment = { filename: string; mimeType: string; size: number; data: string; fromDraft?: boolean };
 
 export type FinalizeInput = {
   accountEmail: string;
@@ -44,6 +47,8 @@ export type FinalizeInput = {
   replyToMessage: Pick<Email, "subject" | "threadId" | "messageIdHeader" | "references"> | null;
   alias: Pick<SendAsInfo, "sendAsEmail" | "displayName" | "isPrimary" | "replyToAddress"> | null;
   maxTotalBytes: number;
+  // 返信元のメールが見つからない Gmail の下書きで、そのまま残すスレッドの情報（返信元があればそちらを使う）
+  threadRef?: { threadId?: string; inReplyTo?: string; references?: string };
 };
 
 export type FinalizeResult =
@@ -66,7 +71,8 @@ export function finalizeOutgoing(input: FinalizeInput): FinalizeResult {
   const reply = input.replyToMessage;
   // 返信は純正 Gmail と同じ形にする（threadId・In-Reply-To・References を付け、件名は「Re: 元の件名」に揃える）
   const subject = reply ? replySubjectFor(reply.subject) : input.subject;
-  const threadId = reply?.threadId || undefined;
+  const ref = reply ? null : input.threadRef || null;
+  const threadId = reply?.threadId || ref?.threadId || undefined;
   const finalHtml = normalizeComposeHtml(input.html, reply ? "reply" : "new");
   if (finalHtml.length > COMPOSE_LIMITS.maxHtmlChars) return { ok: false, error: "tooLong" };
   const usedCids = imageCids(finalHtml);
@@ -77,11 +83,15 @@ export function finalizeOutgoing(input: FinalizeInput): FinalizeResult {
   const payload: SendApiPayload = {
     to: input.to, cc: input.cc || undefined, bcc: input.bcc || undefined,
     subject, body: composeHtmlToText(finalHtml), bodyHtml: finalHtml,
-    threadId, inReplyTo: reply?.messageIdHeader, references: reply ? buildReferences(reply.references, reply.messageIdHeader) || undefined : undefined,
+    threadId,
+    inReplyTo: reply ? reply.messageIdHeader : ref?.inReplyTo,
+    references: reply ? buildReferences(reply.references, reply.messageIdHeader) || undefined : ref?.references,
     from: fromHeaderOf(input.alias), replyTo: input.alias?.replyToAddress || undefined,
     accountEmail: input.accountEmail,
-    attachments: input.attachments.map(a => ({ filename: a.filename, mimeType: a.mimeType, data: a.data })),
+    attachments: input.attachments.filter(a => !a.fromDraft).map(a => ({ filename: a.filename, mimeType: a.mimeType, data: a.data })),
     inlineImages: inlineImages.length ? inlineImages : undefined,
   };
+  const fromDraft = input.attachments.filter(a => a.fromDraft);
+  if (fromDraft.length) payload.draftAttachments = fromDraft.map(a => ({ filename: a.filename, size: a.size }));
   return { ok: true, payload, bodyText: composeBodyText(finalHtml), subject, threadId };
 }

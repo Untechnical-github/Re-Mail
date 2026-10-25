@@ -19,7 +19,7 @@ export type ComposeDraft = {
   // 最後に入れた署名（手で書き換えたかを見分けるため）
   insertedSignature?: string | null;
   replyToMessage: Email | null;
-  attachments: { filename: string; mimeType: string; size: number; data: string }[];
+  attachments: { filename: string; mimeType: string; size: number; data: string; fromDraft?: boolean }[];
   // 入力中の送信先。null は「既定（開いているチャットの相手を To に1人）」のまま。
   // recipientsBase は返信元を選んで置き換えたときの内容（自分で変えたかどうかの判定に使う。null は既定）
   recipients?: ComposeRecipient[] | null;
@@ -73,7 +73,14 @@ function readRecipients(v: unknown): ComposeRecipient[] | null {
   return Array.isArray(v) ? normalizeRecipients(v).recipients : null;
 }
 
+// 読み出しは、そのチャットへの書き込みの途中なら終わるのを待つ（保存した直後の値を読むため）
 export async function loadDraft(room: string): Promise<ComposeDraft | null> {
+  const pending = roomLocks.get(room);
+  if (pending) await pending;
+  return readDraft(room);
+}
+
+async function readDraft(room: string): Promise<ComposeDraft | null> {
   try {
     const d = await store.getItem<ComposeDraft & { body?: unknown }>(room);
     if (!d || typeof d !== "object") return null;
@@ -122,7 +129,7 @@ export function saveDraft(room: string, given: ComposeDraft): Promise<boolean> {
 export function updateDraftLink(room: string, link: GmailDraftLink): Promise<void> {
   return inRoomOrder(room, async () => {
   try {
-    const d = await loadDraft(room);
+    const d = await readDraft(room);
     if (!d) return;
     const next = { ...d, gmail: link };
     if (isEmptyDraft(next) && !link.draftId) await store.removeItem(room);

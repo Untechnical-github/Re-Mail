@@ -174,9 +174,18 @@ export function Composer({ app, composeRef, selectedRoom, recipientsOpen, setRec
                   {state.attachError && (
                     <div className="text-xs text-red-400 mb-2">{state.attachError}</div>
                   )}
-                  {/* Gmail の下書きに保存できていないときだけ、小さく出す（トーストは出さない。入力は端末に残っている） */}
+                  {/* Gmail の下書きとの同期の知らせ（保存できていない・ほかで変更された など）。トーストは出さない。入力は端末に残っている */}
                   {state.gmailDraftNotice && (
-                    <div className="text-[11px] text-gray-400 mb-1">{state.gmailDraftNotice}</div>
+                    <div className="text-[11px] text-gray-400 mb-1">
+                      {state.gmailDraftNotice.text}
+                      {state.gmailDraftNotice.actionLabel && state.gmailDraftNotice.onAction && (
+                        <button onClick={(e) => { e.stopPropagation(); state.gmailDraftNotice?.onAction?.(); }} className="ml-2 text-[#5865F2] hover:underline font-bold">{state.gmailDraftNotice.actionLabel}</button>
+                      )}
+                    </div>
+                  )}
+                  {/* 同じ相手への Gmail の下書きがほかにもあるとき（押すと一覧から選べる） */}
+                  {state.gmailDraftOthers > 0 && (
+                    <button onClick={(e) => { e.stopPropagation(); actions.openGmailDraftOthers(); }} className="text-[11px] text-gray-400 hover:text-gray-200 hover:underline mb-1 block">ほかに下書きが{state.gmailDraftOthers}件</button>
                   )}
                   <div className="flex items-end gap-2">
                     <label

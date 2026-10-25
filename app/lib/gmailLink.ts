@@ -6,3 +6,9 @@ export function gmailOpenUrl(accountEmail?: string | null, threadId?: string | n
   const hash = threadId && /^[0-9a-f]{6,32}$/i.test(threadId) ? `#all/${threadId}` : "#inbox";
   return `https://mail.google.com/mail/${params}${hash}`;
 }
+
+// 純正 Gmail の「下書き」を開くリンク（Re:Mail のチャットに出せない下書き：宛先がない・100件を超えた分）
+export function gmailDraftsUrl(accountEmail?: string | null): string {
+  const params = accountEmail ? `?authuser=${encodeURIComponent(accountEmail)}` : "";
+  return `https://mail.google.com/mail/${params}#drafts`;
+}

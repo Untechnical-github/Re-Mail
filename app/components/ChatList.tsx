@@ -4,7 +4,7 @@ import type { MutableRefObject } from "react";
 import type { MailAppHook } from "../hooks/useMailApp";
 import { ActionBar, PinIcon, WarningIcon, InboxIcon, ArchiveIcon, SendIcon, SpamIcon, TrashIcon } from "./ui";
 import { chatConfigTab } from "../lib/filterMatch";
-import { gmailOpenUrl } from "../lib/gmailLink";
+import { gmailOpenUrl, gmailDraftsUrl } from "../lib/gmailLink";
 
 // チャット一覧（左の列。スマホではチャットを開いていないときの全画面）。page.tsx から分けたもの（動きは同じ）
 export function ChatList({ app, lastChatIdxRef }: { app: MailAppHook; lastChatIdxRef: MutableRefObject<number> }) {
@@ -96,6 +96,17 @@ export function ChatList({ app, lastChatIdxRef }: { app: MailAppHook; lastChatId
               <a href={gmailOpenUrl(auth.session?.user?.email)} target="_blank" rel="noopener noreferrer" className="flex-shrink-0 font-bold text-[#5865F2] hover:text-white">Gmail で開く</a>
             </div>
           )}
+
+          {/* Gmail の下書きのうち、チャットに出せないもの（宛先がない・100件を超えた分）。押すと Gmail の下書きを開く */}
+          {Object.entries(state.gmailDraftOrphans).flatMap(([account, o]) => [
+            o.noRecipient > 0 ? { key: `${account}-none`, account, text: `宛先のない下書きが${o.noRecipient}件あります` } : null,
+            o.more > 0 ? { key: `${account}-more`, account, text: `Re:Mail で扱えない下書きが${o.more}件あります` } : null,
+          ]).filter((x): x is { key: string; account: string; text: string } => !!x).map(x => (
+            <a key={x.key} href={gmailDraftsUrl(x.account)} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-gray-400 hover:text-gray-200 bg-[#232428] border-b border-[#1E1F22]">
+              <span className="flex-1 min-w-0 truncate">{x.text}{Object.keys(state.gmailDraftOrphans).length > 1 ? `（${x.account}）` : ""}</span>
+              <span className="flex-shrink-0 font-bold text-[#5865F2]">Gmail で開く</span>
+            </a>
+          ))}
 
           <div
             className="flex-1 overflow-y-auto p-2 space-y-0.5 min-h-0 cursor-default"

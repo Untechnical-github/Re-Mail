@@ -22,7 +22,7 @@ export function useCompose({
   session, selectedSender, selectedSenderRef, chatConfigs, groupedEmails, getRoomPartner, roomAccountEmail, resolveDirectRoom, openChat,
   replyAttachments, setReplyAttachments, setAttachError, replyToMessage, setReplyToMessage, replyToMessageRef, recipients, setRecipients, recipientsBase, setRecipientsBase,
   replySubject, setReplySubject, setComposeDialog, currentCompose, loadCompose, insertedSignatureRef, editorLoad, carryDraftRef, addDraftChat, draftReadyRoom,
-  sendAsByAccount, setSendAsByAccount, getSendAs, showInfoToast, showErrorToast,
+  sendAsByAccount, setSendAsByAccount, getSendAs, showInfoToast, showErrorToast, keepSignatureRef,
 }: {
   session: Session | null;
   selectedSender: RoomKeyStr | null;
@@ -58,6 +58,8 @@ export function useCompose({
   getSendAs: SendAsApi["getSendAs"];
   showInfoToast: (message: string | null, durationMs?: number) => void;
   showErrorToast: (message: string) => void;
+  // Gmail から読み込んだ下書きなら true（署名を入れ替えない。useGmailDraftInbound.ts）
+  keepSignatureRef: MutableRefObject<((room: string) => boolean) | null>;
 }) {
   // 送信APIの上限（app/api/emails/route.tsのMAX_TOTAL_ATTACHMENT_BYTES）と揃えておく
   const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -311,6 +313,8 @@ export function useCompose({
   useEffect(() => {
     const room = selectedSender;
     if (!room || draftReadyRoom !== room || desiredSignature === undefined) return;
+    // Gmail から読み込んだ下書きは、純正で手直しした署名（消した署名も）をそのまま残す
+    if (keepSignatureRef.current?.(room)) { insertedSignatureRef.current = desiredSignature; return; }
     const now = currentCompose();
     const current = signatureOf(now.html);
     if (sameSignature(current, desiredSignature)) { insertedSignatureRef.current = desiredSignature; return; }

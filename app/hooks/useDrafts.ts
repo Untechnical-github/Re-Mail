@@ -10,7 +10,8 @@ import { EMPTY_LINK, type GmailDraftLink } from "../lib/gmailDrafts";
 import type { DraftLinkRef } from "./useGmailDraftSync";
 import { isComposeBodyEmpty } from "../lib/composeHtml";
 
-export type Attachment = { filename: string; mimeType: string; size: number; data: string };
+// fromDraft は Gmail から読み込んだ下書きの添付（data は空。保存・送信のときにサーバーが下書きから取り直す）
+export type Attachment = { filename: string; mimeType: string; size: number; data: string; fromDraft?: boolean };
 // 送信元の切り替え・送信先の変更でほかのチャットへ移るときに持っていく入力中の内容
 export type CarriedDraft = {
   room: string;

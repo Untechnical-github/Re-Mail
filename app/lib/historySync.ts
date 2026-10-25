@@ -86,3 +86,27 @@ export function applySyncResult(emails: Email[], result: SyncResult, flags: BoxF
 export function idsToFetchForLabelChanges(knownIds: Set<string>, labelUpdates: { id: string; labelIds: string[] }[], flags: BoxFlags): string[] {
   return labelUpdates.filter((u) => !knownIds.has(u.id) && matchesBoxFlags(u.labelIds, flags)).map((u) => u.id);
 }
+
+// 下書きの変化（Gmail の下書きとの同期で使う）。下書きが作られた・書き換えられた（DRAFT ラベルのメールの追加）か、
+// DRAFT ラベルの付け外し・下書きのメールの削除があったか。addedDraftIds は詳細を取りにいかなくてよいメール（一覧には出さないため）
+export function draftHistory(records: GmailHistoryRecord[]): { changed: boolean; addedDraftIds: string[] } {
+  const added = new Set<string>();
+  let changed = false;
+  for (const r of records) {
+    for (const a of r.messagesAdded || []) {
+      if (a.message?.id && (a.message.labelIds || []).includes("DRAFT")) { added.add(a.message.id); changed = true; }
+    }
+    for (const d of r.messagesDeleted || []) {
+      if ((d.message?.labelIds || []).includes("DRAFT")) changed = true;
+    }
+    for (const l of [...(r.labelsAdded || []), ...(r.labelsRemoved || [])]) {
+      if ((l.labelIds || []).includes("DRAFT")) changed = true;
+    }
+  }
+  return { changed, addedDraftIds: Array.from(added) };
+}
+
+// 差分同期の結果から、Gmail の下書きを取り直すべきか（下書きが変わった・知っている下書きのメッセージ ID が消えた）
+export function shouldRefreshDrafts(draftChanged: boolean, deleted: string[], knownDraftMessageIds: Set<string>): boolean {
+  return draftChanged || deleted.some(id => knownDraftMessageIds.has(id));
+}

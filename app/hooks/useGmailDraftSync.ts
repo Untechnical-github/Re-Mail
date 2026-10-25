@@ -16,6 +16,8 @@ import type { Attachment, CarriedDraft } from "./useDrafts";
 import type { OutgoingContent, PreparedOutgoing } from "./useSend";
 
 export type DraftLinkRef = MutableRefObject<{ room: string; link: GmailDraftLink } | null>;
+// 入力欄の近くに小さく出す知らせ。押せる文字（actionLabel）を付けられる
+export type DraftNotice = { text: string; actionLabel?: string; onAction?: () => void };
 type PrepareFn = (c: OutgoingContent, opts?: { noFetch?: boolean }) => Promise<PreparedOutgoing>;
 
 // 入力欄の近くに小さく出す知らせ（トーストは出さない）
@@ -27,6 +29,7 @@ const NOTICE = {
   tooLong: "本文が長すぎるため、Gmail の下書きには保存していません（この端末には残っています）",
   conflict: "この下書きは別の場所でも変更されたため、Gmail に上書きしていません（この端末には残っています）",
   gone: "この下書きは Gmail で送信または削除されました。入力中の内容は残っています",
+  attachments: "下書きの添付ファイルを取得できなかったため、Gmail に保存しませんでした（この端末には残っています）",
 } as const;
 
 // 1分止まったら保存する
@@ -36,7 +39,7 @@ const KEEPALIVE_PREP_MS = 2_000;
 // 起動したときに残っていた分は、1件ずつ間をあけて保存する
 const STARTUP_GAP_MS = 2_000;
 
-type RoomContent = { content: DraftContent & { insertedSignature: string | null; images: InlineImage[]; attachments: Attachment[]; replyToMessage: Email | null; recipients: ComposeRecipient[] | null; recipientsBase: ComposeRecipient[] | null }; link: GmailDraftLink };
+export type RoomContent = { content: DraftContent & { insertedSignature: string | null; images: InlineImage[]; attachments: Attachment[]; replyToMessage: Email | null; recipients: ComposeRecipient[] | null; recipientsBase: ComposeRecipient[] | null }; link: GmailDraftLink };
 
 export function useGmailDraftSync({
   selectedSender, draftReadyRoom, replySubject, composeHtml, composeImages, replyToMessage, replyAttachments, recipients, recipientsBase,
@@ -65,13 +68,19 @@ export function useGmailDraftSync({
   // ログインしているアカウント（起動時に残っていた分を保存する対象）
   accounts: string[];
 }) {
-  const [notices, setNotices] = useState<Record<string, string>>({});
-  const setNotice = (room: string, text: string | null) => setNotices(prev => {
-    if ((prev[room] ?? null) === text) return prev;
+  const [notices, setNotices] = useState<Record<string, DraftNotice>>({});
+  const setNotice = (room: string, notice: string | DraftNotice | null) => setNotices(prev => {
+    const n = typeof notice === "string" ? { text: notice } : notice;
+    if (!n && !prev[room]) return prev;
+    if (n && prev[room] && prev[room].text === n.text && !n.onAction && !prev[room].onAction) return prev;
     const next = { ...prev };
-    if (text) next[room] = text; else delete next[room];
+    if (n) next[room] = n; else delete next[room];
     return next;
   });
+  // ほかで書き換えられて、どちらを残すか聞いているチャット（答えるまで Gmail に上書きしない）
+  const conflictRoomsRef = useRef(new Set<string>());
+  // 保存が 409（ほかで書き換えられた）になったとき（useGmailDraftInbound.ts が下書きを読み直して聞く）
+  const onConflictRef = useRef<((room: string) => void) | null>(null);
 
   // 送っている間は保存しない（送信と保存が入れ違って、送ったあとに下書きが残る・二重にできるのを防ぐ）
   const sendingRoomsRef = useRef(new Set<string>());
@@ -91,7 +100,8 @@ export function useGmailDraftSync({
   useEffect(() => { settingsRef.current = { isEnabled, settingsReady }; });
 
   const accountOf = (room: string) => { try { return decodeRoomKey(room).accountEmail; } catch { return ""; } };
-  const enabledFor = (room: string) => settingsRef.current.settingsReady && !!accountOf(room) && settingsRef.current.isEnabled(accountOf(room));
+  const enabledForAccount = (account: string) => settingsRef.current.settingsReady && !!account && settingsRef.current.isEnabled(account);
+  const enabledFor = (room: string) => enabledForAccount(accountOf(room));
   const isOpen = (room: string) => liveRef.current.ready && liveRef.current.room === room;
 
   const linkOf = (room: string): GmailDraftLink => (linkRef.current?.room === room ? linkRef.current.link : EMPTY_LINK);
@@ -118,9 +128,10 @@ export function useGmailDraftSync({
     const p = partnerRef.current(room as RoomKeyStr);
     return p ? [p] : [];
   };
-  const toOutgoing = (room: string, c: RoomContent["content"]): OutgoingContent => ({
+  const toOutgoing = (room: string, c: RoomContent["content"], link?: GmailDraftLink): OutgoingContent => ({
     room: room as RoomKeyStr, subject: c.subject, html: c.html, images: c.images, insertedSignature: c.insertedSignature,
     replyToMessage: c.replyToMessage, attachments: c.attachments, recipients: effectiveRecipientsOf(room, c.recipients),
+    threadRef: link?.threadRef,
   });
 
   const scheduleRetry = (room: string) => {
@@ -156,7 +167,8 @@ export function useGmailDraftSync({
       setNotice(room, NOTICE.gone);
       return;
     }
-    if (error === "DRAFT_CONFLICT") { setNotice(room, NOTICE.conflict); return; }
+    if (error === "DRAFT_CONFLICT") { setNotice(room, NOTICE.conflict); onConflictRef.current?.(room); return; }
+    if (error === "DRAFT_ATTACHMENTS_FAILED") { setNotice(room, NOTICE.attachments); if (isRetryableSaveStatus(status, reason)) scheduleRetry(room); return; }
     logWarn("draft.save.failed", { status: status ?? undefined, reason: reason || error });
     setNotice(room, NOTICE.failed);
     if (isRetryableSaveStatus(status, reason)) scheduleRetry(room);
@@ -168,7 +180,7 @@ export function useGmailDraftSync({
   const sentKey = (c: DraftContent) => draftFingerprint({ ...c, recipients: null });
 
   const saveRoom = async (room: string, given?: RoomContent) => {
-    if (sendingRoomsRef.current.has(room) || !enabledFor(room)) return;
+    if (sendingRoomsRef.current.has(room) || conflictRoomsRef.current.has(room) || !enabledFor(room)) return;
     if (chatConfigsRef.current[room as RoomKeyStr]?.isGroup) return;
     let c: RoomContent["content"];
     let link: GmailDraftLink;
@@ -198,7 +210,7 @@ export function useGmailDraftSync({
     }
     const prepare = prepareRef.current;
     if (!prepare) return;
-    const prep = await prepare(toOutgoing(room, c));
+    const prep = await prepare(toOutgoing(room, c, link));
     if (!prep.ok) {
       // 完成形にできないときは保存しない（署名・引用の欠けた下書きを Gmail に置かない）
       setNotice(room, prep.kind === "noSendAs" ? NOTICE.noSendAs : prep.kind === "tooLarge" ? NOTICE.tooLarge : prep.kind === "tooLong" ? NOTICE.tooLong : NOTICE.failed);
@@ -217,10 +229,18 @@ export function useGmailDraftSync({
       resetRetry(room);
       setNotice(room, null);
       clearPendingCreate(room);
-      setLink(room, { draftId: r.data.draftId, messageId: r.data.gmailMessageId || null, messageIdHeader: header, syncedFingerprint: fp });
+      setLink(room, { draftId: r.data.draftId, messageId: r.data.gmailMessageId || null, messageIdHeader: header, syncedFingerprint: fp, threadRef: link.threadRef });
       return;
     }
     handleFailure(room, r.status, r.data.error, r.data.reason);
+  };
+
+  // 保存と同じ列で順に行う処理（Gmail の下書きの読み直し。保存と入れ違って、自分で作った下書きを「知らない下書き」と見ないため）
+  const enqueueTask = (fn: () => Promise<void>): Promise<void> => {
+    queueRef.current = queueRef.current.then(async () => {
+      try { await fn(); } catch (e) { logWarn("draft.sync.task", {}, e); }
+    });
+    return queueRef.current;
   };
 
   // 今 Gmail に保存しているチャット（タブを閉じるときの保存と重ねて、二重に作らないため）
@@ -271,7 +291,7 @@ export function useGmailDraftSync({
         const list = effectiveRecipientsOf(room, c.recipients);
         if (planDraftSave({ enabled: true, isGroup: false, content: c, link, recipientCount: list.length }) !== "save") return;
         const prepare = prepareRef.current;
-        const p = prepare ? await prepare(toOutgoing(room, c), { noFetch: true }) : null;
+        const p = prepare ? await prepare(toOutgoing(room, c, link), { noFetch: true }) : null;
         if (!p?.ok) return;
         if (!link.messageIdHeader) { link = { ...link, messageIdHeader: makeMessageId(crypto.getRandomValues(new Uint8Array(40))) }; setLink(room, link); }
         const body = JSON.stringify({ action: "draftSave", ...p.payload, messageId: link.messageIdHeader, draftId: link.draftId, expectMessageId: link.messageId, mayExist: !link.draftId && !!link.createAttempted });
@@ -325,6 +345,7 @@ export function useGmailDraftSync({
   // 4. 起動したとき：端末にまだ保存していない下書きが残っていれば、送信元の設定を読み終えてから1件ずつ保存する
   // アカウントは後から読み込まれる（連携しているアカウント）ので、まだ見ていないアカウントの分だけを見る
   const flushedAccountsRef = useRef(new Set<string>());
+  const onStartupFlushedRef = useRef<((account: string) => void) | null>(null);
   const accountsKey = accounts.join(",");
   useEffect(() => {
     if (!settingsReady || !accountsKey) return;
@@ -349,6 +370,8 @@ export function useGmailDraftSync({
         await enqueue(room);
         await new Promise(r => setTimeout(r, STARTUP_GAP_MS));
       }
+      // 残っていた分を保存し終えたら、Gmail の下書きを読みにいく（useGmailDraftInbound.ts）
+      fresh.forEach(a => onStartupFlushedRef.current?.(a));
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 設定を読み終えたとき・アカウントが増えたときだけ
   }, [settingsReady, accountsKey]);
@@ -384,8 +407,19 @@ export function useGmailDraftSync({
       }
       void post({ action: "draftDelete", accountEmail: accountOf(fromRoom), draftId: fromLink.draftId, expectMessageId: fromLink.messageId });
     },
+    // Gmail から読み込んだ下書きで、返信元が見つからなかったときに残すスレッドの情報
+    threadRefFor: (room: string) => linkOf(room).threadRef,
     // 開いているチャットの知らせ
     notice: selectedSender ? notices[selectedSender] ?? null : null,
+    // Gmail → Re:Mail（useGmailDraftInbound.ts）から使うもの
+    core: {
+      enqueue, enqueueTask, setLink, linkOf, isOpen, liveContent, fromDraft, setNotice, enabledFor, enabledForAccount, accountOf, sendingRoomsRef,
+      conflictRoomsRef, sentRef, sentKey,
+      setInboundHandlers: (h: { onStartupFlushed: (account: string) => void; onConflict: (room: string) => void }) => {
+        onStartupFlushedRef.current = h.onStartupFlushed;
+        onConflictRef.current = h.onConflict;
+      },
+    },
   };
   return api;
 }

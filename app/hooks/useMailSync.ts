@@ -24,7 +24,7 @@ type EmailModalsApi = ReturnType<typeof useEmailModals>;
 export function useMailSync({
   session, emailsRef, setEmails, setIsLoading, selectedSender, showErrorToast, signingOutRef, unloadedIds, setUnloadedIds,
   syncConfigs, chatConfigsRef, messageConfigsRef, applySyncedPersisted, loadD1Configs, applySyncedSettings, savedSyncedKeyRef, setSyncedSettingsReady, saveGlobalSettings,
-  linkedAccountsRef, setLinkedAccounts, setReauthNeededAccounts, setLinkedAccountProfiles,
+  linkedAccountsRef, setLinkedAccounts, setReauthNeededAccounts, setLinkedAccountProfiles, draftSyncResultRef,
   checkInbox, checkArchive, checkSpam, checkTrash, checkSent, filterKeyRef, isInitialFilterRun, emailsFilterKeyRef, filterCacheRef, activeChatTab,
   setCurrentNextPageTokens, currentNextPageTokensRef, groupMemberTokensRef, setChatNextPageToken, chatNextPageTokenRef, setChatStatusMessage,
   setSelectionMode, setSelectedIds, setModal, setRenameInput, openEmailModal, openAttachmentModal, setRevealedCrossPrompts, activeLoadRef, searchTimeoutRef,
@@ -51,6 +51,8 @@ export function useMailSync({
   setLinkedAccounts: SetState<string[]>;
   setReauthNeededAccounts: SetState<string[]>;
   setLinkedAccountProfiles: SetState<Record<string, { name?: string; picture?: string }>>;
+  // 差分同期で下書きが変わったとき（Gmail の下書きとの同期。useGmailDraftInbound.ts）
+  draftSyncResultRef: MutableRefObject<((account: string, draftChanged: boolean, deleted: string[]) => void) | null>;
   checkInbox: boolean;
   checkArchive: boolean;
   checkSpam: boolean;
@@ -637,9 +639,11 @@ export function useMailSync({
           if (account !== myEmail) params.append("accountEmail", account);
           const res = await fetch(`/api/emails?${params.toString()}`, { cache: "no-store" });
           if (!res.ok) { logWarn("sync.client", { status: res.status }); return; }
-          const data = (await res.json()) as { reset?: boolean; historyId?: string; messages?: Email[]; labelUpdates?: { id: string; labelIds: string[] }[]; deleted?: string[] };
+          const data = (await res.json()) as { reset?: boolean; historyId?: string; messages?: Email[]; labelUpdates?: { id: string; labelIds: string[] }[]; deleted?: string[]; draftChanged?: boolean };
           if (data.reset) { delete historyIdsRef.current[account]; needRefetch = true; return; }
           if (data.historyId) historyIdsRef.current[account] = data.historyId;
+          // 下書きが変わった・知っている下書きが消えたら、Gmail の下書きを読み直す（useGmailDraftInbound.ts）
+          draftSyncResultRef.current?.(account, !!data.draftChanged, data.deleted || []);
           results.push({ account, result: { messages: (data.messages || []).map(m => ({ ...m, accountId: account })), labelUpdates: data.labelUpdates || [], deleted: data.deleted || [] } });
         } catch (e) {
           // 1つのアカウントの失敗で、ほかのアカウントの更新は止めない
