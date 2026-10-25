@@ -236,30 +236,25 @@ async function getDraftState(accessToken: string, draftId: string): Promise<Draf
 
 // 新しく作ろうとして結果を受け取れなかったとき（タブを閉じたときの保存など）に、同じ中身の下書きがもうできていないかを探す
 // （二重に作らないため）。Gmail は下書きの Message-ID を保存のときに付け替えるので、Message-ID では探せない。
-// 新しい順に10件まで、宛先・件名・HTML が同じものを探す。見つからなければ null
+// 新しい順に10件まで、宛先・件名・HTML が同じものを探す。一覧を読めなかった（開いた直後のレート制限など）ときは
+// 「見つからない」と区別して返す（読めないまま作ると二重にできていた：2026-10-25 に実機で確認）
 const SAME_DRAFT_SCAN = 10;
-async function findSameDraft(accessToken: string, exp: SentExpectation, html: string): Promise<string | null> {
+async function findSameDraft(accessToken: string, exp: SentExpectation, html: string): Promise<{ id: string | null } | { error: number; reason?: string }> {
   try {
+    // fields=drafts(id) で絞ると応答を読めず0件になっていた（2026-10-25 に実機で確認）ので、絞らずに取る
     const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}?maxResults=${SAME_DRAFT_SCAN}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    sameDraftDebug.push({ listStatus: res.status });
-    if (!res.ok) return null;
-    const raw = await res.text();
-    sameDraftDebug.push({ listLen: raw.length });
-    let parsed: { drafts?: { id?: string }[] } = {};
-    try { parsed = JSON.parse(raw); } catch { sameDraftDebug.push({ listParse: false }); }
-    const ids = (parsed.drafts || []).map(d => d.id).filter(isValidDraftId);
-    sameDraftDebug.push({ ids: ids.length });
-    for (const id of ids) if (await draftEquals(accessToken, id, exp, html)) return id;
+    if (!res.ok) return { error: res.status, reason: gmailErrorReason(await res.json().catch(() => null)) };
+    const ids = (((await res.json().catch(() => ({}))) as { drafts?: { id?: string }[] }).drafts || []).map(d => d.id).filter(isValidDraftId);
+    for (const id of ids) if (await draftEquals(accessToken, id, exp, html)) return { id };
     logInfo("draft.findSame", { count: ids.length });
-    return null;
+    return { id: null };
   } catch {
-    return null;
+    return { error: 502 };
   }
 }
 
 
 // 下書きの宛先・件名・HTML が、これから保存するものと同じか（中身は比べるだけで、ログにも返り値にも出さない）
-const sameDraftDebug: Record<string, unknown>[] = [];
 async function draftEquals(accessToken: string, draftId: string, exp: SentExpectation, html: string): Promise<boolean> {
   if (!html) return false;
   try {
@@ -270,10 +265,6 @@ async function draftEquals(accessToken: string, draftId: string, exp: SentExpect
     const norm = (s: string) => s.replace(/\r\n/g, "\n").trim();
     const h = payload.headers || [];
     const sameAddr = (a: string, b: string | undefined) => [...addressSet(decodeMimeHeader(a))].sort().join(",") === [...addressSet(b || "")].sort().join(",");
-    // 一時的な調べ：どの欄が合わなかったか（真偽と長さ・最初に違う位置だけ。中身は出さない）
-    const a = norm(getHtmlBody(payload)); const b = norm(html);
-    let i = 0; while (i < a.length && a[i] === b[i]) i++;
-    sameDraftDebug.push({ subject: norm(decodeMimeHeader(getHeader(h, "Subject"))) === norm(exp.subject), to: sameAddr(getHeader(h, "To"), exp.to), cc: sameAddr(getHeader(h, "Cc"), exp.cc), bcc: sameAddr(getHeader(h, "Bcc"), exp.bcc), htmlLen: [a.length, b.length], diffAt: i });
     return norm(decodeMimeHeader(getHeader(h, "Subject"))) === norm(exp.subject)
       && sameAddr(getHeader(h, "To"), exp.to) && sameAddr(getHeader(h, "Cc"), exp.cc) && sameAddr(getHeader(h, "Bcc"), exp.bcc)
       && norm(getHtmlBody(payload)) === norm(html);
@@ -805,9 +796,13 @@ export async function POST(request: Request) {
         }
       } else if (bodyData.mayExist === true) {
         // 前に作ろうとして結果を受け取れなかった（タブを閉じたときの保存など）。同じ中身の下書きがあれば、
-        // それを上書きする（二重に作らない）
-        sameDraftDebug.length = 0;
-        targetId = await findSameDraft(accessToken, prep.exp, html);
+        // それを上書きする（二重に作らない）。探せなかったときは作らずに失敗で返す（画面が少しあとで送り直す）
+        const found = await findSameDraft(accessToken, prep.exp, html);
+        if ("error" in found) {
+          logWarn("draft.findSame.failed", { status: found.error, reason: found.reason });
+          return NextResponse.json({ error: "DRAFT_SAVE_FAILED", reason: found.reason }, { status: found.error >= 400 ? found.error : 502 });
+        }
+        targetId = found.id;
       }
       const upload = buildDraftUploadBody(segments, targetId || undefined, threadId);
       let res: Response | undefined;
@@ -829,7 +824,8 @@ export async function POST(request: Request) {
         logWarn("draft.save.failed", { status: res?.status, reason });
         // 新しく作ろうとして結果が分からないときは、できていたかを中身で探す
         if (!targetId && (!res || res.status >= 500)) {
-          const made = await findSameDraft(accessToken, prep.exp, html);
+          const found = await findSameDraft(accessToken, prep.exp, html);
+          const made = "id" in found ? found.id : null;
           const st = made ? await getDraftState(accessToken, made) : null;
           if (made && st?.state === "ok") return NextResponse.json({ success: true, draftId: made, gmailMessageId: st.messageId, threadId: st.threadId });
         }
@@ -837,7 +833,7 @@ export async function POST(request: Request) {
       }
       const d = (await res.json().catch(() => ({}))) as GmailDraftResponse;
       logInfo("draft.saved", { messageId: d.message?.id });
-      return NextResponse.json({ success: true, draftId: d.id, gmailMessageId: d.message?.id, threadId: d.message?.threadId, mayExist: bodyData.mayExist === true, hadDraftId: !!rawId, ...(bodyData.mayExist === true ? { adopted: !!targetId, debug: sameDraftDebug.slice(0, 10) } : {}) });
+      return NextResponse.json({ success: true, draftId: d.id, gmailMessageId: d.message?.id, threadId: d.message?.threadId });
     }
 
     // ③ Gmail の下書きを送る（drafts.send）。下書きがある入力は必ずこれで送り、失敗しても messages.send に切り替えない。
