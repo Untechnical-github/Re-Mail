@@ -279,11 +279,18 @@ export function useGmailDraftSync({
 
   // 2. タブ・アプリを離れたとき  3. タブを閉じる・再読み込みするとき（fetch の keepalive）
   useEffect(() => {
+    // タブを閉じるとき、ブラウザは pagehide のあとに visibilitychange（hidden）を出す（2026-10-25 に実機で確認）。
+    // 閉じる途中なら通常の保存は出さない（keepalive の保存と両方で、下書きが2つできていたため）
+    let unloading = false;
     const onHidden = () => {
       const room = liveRef.current.room;
+      if (unloading) return;
       if (document.visibilityState === "hidden" && room && liveRef.current.ready) void enqueue(room);
     };
+    // 戻る・進むのキャッシュから戻ってきたときは、閉じる途中ではなくなる
+    const onPageShow = () => { unloading = false; };
     const onPageHide = () => {
+      unloading = true;
       const k = keepaliveRef.current;
       const room = liveRef.current.room;
       // 保存の途中・待ちがあれば送らない（先に離れたとき〔visibilitychange〕の保存と重ねて二重に作らない。届かなければ次の起動で拾う）
@@ -300,9 +307,11 @@ export function useGmailDraftSync({
     };
     document.addEventListener("visibilitychange", onHidden);
     window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
     return () => {
       document.removeEventListener("visibilitychange", onHidden);
       window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 中で使う値は ref から読む
   }, []);
