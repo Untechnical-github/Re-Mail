@@ -204,7 +204,8 @@ export function useGmailDraftSync({
     // （結果を受け取れなかったら、次は同じ中身の下書きを探してから作る。二重にしないため）
     const header = link.messageIdHeader || makeMessageId(crypto.getRandomValues(new Uint8Array(40)));
     const mayExist = !link.draftId && !!link.createAttempted;
-    if (!link.draftId) { link = { ...link, messageIdHeader: header, createAttempted: true }; setLink(room, link); }
+    // 印は localStorage にもすぐ書く（タブを閉じる途中で保存が切れても、次の起動で探せるように）
+    if (!link.draftId) { markPendingCreate(room); link = { ...link, messageIdHeader: header, createAttempted: true }; setLink(room, link); }
     const r = await post({ action: "draftSave", ...prep.payload, messageId: header, draftId: link.draftId, expectMessageId: link.messageId, mayExist });
     if (r.status === 200 && r.data.draftId) {
       resetRetry(room);
