@@ -213,7 +213,7 @@ type DraftState =
 // 下書きが今どうなっているか（drafts.get の minimal。中身は読まない）。404 は「ほかで送信・削除された」
 async function getDraftState(accessToken: string, draftId: string): Promise<DraftState> {
   try {
-    const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}/${encodeURIComponent(draftId)}?format=minimal&fields=id,message(id,threadId)`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}/${encodeURIComponent(draftId)}?format=minimal&fields=id,message(id,threadId,labelIds)`, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (res.status === 404) return { state: "gone" };
     if (res.status === 401) return { state: "unauthorized" };
     if (!res.ok) {
@@ -221,8 +221,11 @@ async function getDraftState(accessToken: string, draftId: string): Promise<Draf
       logWarn("draft.get.failed", { status: res.status, reason });
       return { state: "error", status: res.status >= 400 ? res.status : 502, reason };
     }
-    const d = (await res.json()) as GmailDraftResponse;
-    return d.message?.id ? { state: "ok", messageId: d.message.id, threadId: d.message.threadId } : { state: "gone" };
+    const d = (await res.json()) as GmailDraftResponse & { message?: { labelIds?: string[] } };
+    // 純正から送られた下書きは、しばらく同じ ID で送ったメール（DRAFT ラベルなし）が返る（2026-10-25 に実機で確認）。
+    // DRAFT ラベルが無ければ、もう下書きではない（ほかで送信された）として扱う
+    if (!d.message?.id || !(d.message.labelIds || []).includes("DRAFT")) return { state: "gone" };
+    return { state: "ok", messageId: d.message.id, threadId: d.message.threadId };
   } catch (e) {
     logWarn("draft.get.noResponse", {}, e);
     return { state: "error", status: 502 };
