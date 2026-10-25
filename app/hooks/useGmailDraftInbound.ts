@@ -58,7 +58,7 @@ const shortPreview = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 60);
 export function useGmailDraftInbound({
   gmailDrafts, settingsReady, selectedSender, draftReadyRoom, emailsRef, resolveDirectRoom, addDraftChat, partnerRecipient,
   setReplySubject, setReplyToMessage, setReplyAttachments, setRecipients, setRecipientsBase, setAttachError, loadCompose, insertedSignatureRef,
-  setComposeDialog, showInfoToast, showErrorToast,
+  setComposeDialog, showInfoToast, showErrorToast, isMailReady,
 }: {
   gmailDrafts: GmailDraftSyncApi;
   settingsReady: boolean;
@@ -79,6 +79,8 @@ export function useGmailDraftInbound({
   setComposeDialog: SetState<ComposeDialog | null>;
   showInfoToast: (message: string | null, durationMs?: number) => void;
   showErrorToast: (message: string) => void;
+  // 最初のメールの一覧を読み終えたか（読み終える前は、出し先の既存のチャットが分からない）
+  isMailReady: () => boolean;
 }) {
   const core = gmailDrafts.core;
   // チャットごとの「ほかの下書き」（入力欄に出していない Gmail の下書き）
@@ -321,6 +323,10 @@ export function useGmailDraftInbound({
   };
   const refreshAccountNow = async (account: string) => {
     if (!core.enabledForAccount(account)) return;
+    // 最初のメールの一覧を読み終えるまで待つ（読む前に出し先を決めると、既存のチャットが見つからず
+    // 同じ相手の下書きチャットを別に作ってしまっていた：2026-10-25 に実機で確認）
+    for (let i = 0; i < 120 && !isMailReady(); i++) await new Promise(r => setTimeout(r, 1000));
+    if (!isMailReady()) { setTimeout(() => refreshAccount(account), LIST_RETRY_MS[0]); return; }
     const list = await getJson<{ drafts: { id: string; messageId: string; threadId?: string }[]; more: number }>({ drafts: "1", accountEmail: account });
     if (!list.data) {
       logWarn("draft.inbound.list", { status: list.status ?? undefined });
