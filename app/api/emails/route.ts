@@ -253,6 +253,7 @@ async function findSameDraft(accessToken: string, exp: SentExpectation, html: st
 
 
 // 下書きの宛先・件名・HTML が、これから保存するものと同じか（中身は比べるだけで、ログにも返り値にも出さない）
+const sameDraftDebug: Record<string, unknown>[] = [];
 async function draftEquals(accessToken: string, draftId: string, exp: SentExpectation, html: string): Promise<boolean> {
   if (!html) return false;
   try {
@@ -263,6 +264,10 @@ async function draftEquals(accessToken: string, draftId: string, exp: SentExpect
     const norm = (s: string) => s.replace(/\r\n/g, "\n").trim();
     const h = payload.headers || [];
     const sameAddr = (a: string, b: string | undefined) => [...addressSet(decodeMimeHeader(a))].sort().join(",") === [...addressSet(b || "")].sort().join(",");
+    // 一時的な調べ：どの欄が合わなかったか（真偽と長さ・最初に違う位置だけ。中身は出さない）
+    const a = norm(getHtmlBody(payload)); const b = norm(html);
+    let i = 0; while (i < a.length && a[i] === b[i]) i++;
+    sameDraftDebug.push({ subject: norm(decodeMimeHeader(getHeader(h, "Subject"))) === norm(exp.subject), to: sameAddr(getHeader(h, "To"), exp.to), cc: sameAddr(getHeader(h, "Cc"), exp.cc), bcc: sameAddr(getHeader(h, "Bcc"), exp.bcc), htmlLen: [a.length, b.length], diffAt: i });
     return norm(decodeMimeHeader(getHeader(h, "Subject"))) === norm(exp.subject)
       && sameAddr(getHeader(h, "To"), exp.to) && sameAddr(getHeader(h, "Cc"), exp.cc) && sameAddr(getHeader(h, "Bcc"), exp.bcc)
       && norm(getHtmlBody(payload)) === norm(html);
@@ -795,6 +800,7 @@ export async function POST(request: Request) {
       } else if (bodyData.mayExist === true) {
         // 前に作ろうとして結果を受け取れなかった（タブを閉じたときの保存など）。同じ中身の下書きがあれば、
         // それを上書きする（二重に作らない）
+        sameDraftDebug.length = 0;
         targetId = await findSameDraft(accessToken, prep.exp, html);
       }
       const upload = buildDraftUploadBody(segments, targetId || undefined, threadId);
@@ -825,7 +831,7 @@ export async function POST(request: Request) {
       }
       const d = (await res.json().catch(() => ({}))) as GmailDraftResponse;
       logInfo("draft.saved", { messageId: d.message?.id });
-      return NextResponse.json({ success: true, draftId: d.id, gmailMessageId: d.message?.id, threadId: d.message?.threadId });
+      return NextResponse.json({ success: true, draftId: d.id, gmailMessageId: d.message?.id, threadId: d.message?.threadId, ...(bodyData.mayExist === true ? { adopted: !!targetId, debug: sameDraftDebug.slice(0, 10) } : {}) });
     }
 
     // ③ Gmail の下書きを送る（drafts.send）。下書きがある入力は必ずこれで送り、失敗しても messages.send に切り替えない。
