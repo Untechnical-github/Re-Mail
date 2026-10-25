@@ -309,11 +309,19 @@ export function useGmailDraftSync({
     fresh.forEach(a => flushedAccountsRef.current.add(a));
     void (async () => {
       const rooms = (await draftRooms()).filter(r => fresh.has(accountOf(r).toLowerCase()));
+      const todo: { room: string; attempted: boolean }[] = [];
       for (const room of rooms) {
-        if (isOpen(room)) continue;
         const d = await loadDraft(room);
         if (!d || !enabledFor(room)) continue;
         if (draftFingerprint(fromDraft(d)) === d.gmail?.syncedFingerprint) continue;
+        const attempted = !d.gmail?.draftId && !!d.gmail?.createAttempted;
+        // 開いているチャットは1分止まったときに保存するので飛ばす。ただし前に作ろうとして結果を受け取れなかった
+        // （タブを閉じたときの保存など）ものは、書き換えられる前に先に照合する（中身が変わると同じ下書きを探せず、二重にできる・消せなくなる）
+        if (isOpen(room) && !attempted) continue;
+        todo.push({ room, attempted });
+      }
+      todo.sort((a, b) => Number(b.attempted) - Number(a.attempted));
+      for (const { room } of todo) {
         await enqueue(room);
         await new Promise(r => setTimeout(r, STARTUP_GAP_MS));
       }
