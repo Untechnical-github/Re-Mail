@@ -111,3 +111,13 @@ export function matchSentMessage(c: SentCandidate, e: SentExpectation): "message
   }
   return "fields";
 }
+
+// 一時的な調べ：どの欄で外れたか（欄の名前だけを返す）
+export function whySentMismatch(c: SentCandidate, e: SentExpectation): string {
+  if (c.internalDateMs < e.sentAfterMs - 60_000) return "time";
+  if (normalizeSubject(c.subject) !== normalizeSubject(e.subject)) return "subject";
+  if (!sameSet(addressSet(c.to), addressSet(e.to))) return "to";
+  if (!sameSet(addressSet(c.cc), addressSet(e.cc || ""))) return "cc";
+  if (!sameSet(addressSet(c.bcc || ""), addressSet(e.bcc || ""))) return "bcc";
+  return "body";
+}
