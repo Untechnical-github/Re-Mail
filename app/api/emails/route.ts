@@ -842,7 +842,10 @@ export async function POST(request: Request) {
         logInfo("draft.sent", { messageId: sent.id });
         return NextResponse.json({ success: true, id: sent.id, threadId: sent.threadId, messageId });
       }
-      if (outcome === "failed" && res?.status === 404) {
+      // ほかで送信・削除された下書きは 404 のほか、送ったあとの下書きでは 400 invalidArgument が返る（2026-10-25 に実機で確認）。
+      // どちらのときも下書きが残っているかを見て、無くなっていれば「ほかで送信・削除された」として扱う
+      const gone = outcome === "failed" && (res?.status === 404 || (res?.status === 400 && (await getDraftState(accessToken, draftId)).state === "gone"));
+      if (gone) {
         // ほかで送信・削除された。送信済みに同じメールがあれば「送信済み」、無ければ利用者に確かめる（ここでは送らない）。
         // 純正から送られたのは少し前のことがあるので、照合する時刻の幅を広げる
         const found = await findSentMessage(accessToken, { ...exp, sentAfterMs: exp.sentAfterMs - 24 * 3600_000 });
