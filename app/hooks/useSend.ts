@@ -411,8 +411,11 @@ export function useSend({
       try {
         await gmailDrafts.waitIdle();
         const link = gmailDrafts.linkForSend(sentRoom);
-        if (link?.draftId && link.messageIdHeader) {
-          await sendDraftWithConfirm(payload, { room: sentRoom, draftId: link.draftId, withContent: gmailDrafts.isDirtyNow(sentRoom), messageId: link.messageIdHeader }, onSent, clearSentCompose);
+        // Gmail から読み込んだ下書きは、こちらで付けた Message-ID を持たない（照合に使うだけなので、無ければここで決める）。
+        // これが無いと messages.send に回っていた（Gmail の下書きが残り、下書きの添付も付けられずに止まっていた）
+        if (link?.draftId) {
+          const messageId = link.messageIdHeader || makeMessageId(crypto.getRandomValues(new Uint8Array(40)));
+          await sendDraftWithConfirm(payload, { room: sentRoom, draftId: link.draftId, withContent: gmailDrafts.isDirtyNow(sentRoom), messageId }, onSent, clearSentCompose);
           return;
         }
         await sendWithConfirm(payload, "送信", onSent);
