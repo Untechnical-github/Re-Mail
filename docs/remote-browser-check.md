@@ -74,7 +74,7 @@ node script/browser/get-refresh-token.mjs --account=2  # 2つ目（名前に _2 
 2. Claude に頼む。例：
    - 「ログインして、トップ画面を PC とスマホで確認して」
    - 「〇〇を直したので、ログインして△△の画面で動くか確かめて」
-3. Claude は `script/browser/dev.sh` で起動し、`check.mjs --login` などで確かめる。確認が通ったら `main` に push して本番に反映し、結果を報告する（確認が通らなければ push しない）。
+3. Claude は `script/browser/dev.sh` で起動し、`check.mjs --login` などで確かめる。push の前には、本番と同じ Workers の形（`dev.sh --preview`）でも確かめる。確認が通ったら `main` に push して本番に反映し、結果を報告する（確認が通らなければ push しない）。
 4. 送受信の確認の頼み方の例：
    - 「1つ目から2つ目に、Cc 付き・添付付きで送って、2つ目に届いた中身を確かめて」
    - 「2つ目のメールに1つ目から返信して、同じスレッドにつながるか確かめて」

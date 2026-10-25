@@ -4,7 +4,9 @@ Playwright と Chromium はリモート環境に入っている（`require("play
 ユーザー向けの手順（トークンの取り方など）は `docs/remote-browser-check.md`。
 
 ## 使い方
-1. `script/browser/dev.sh` … ローカル D1 に migrations を当てて `next dev` を裏で起動する。止めるのは `script/browser/dev.sh stop`。
+1. `script/browser/dev.sh` … ローカル D1 に migrations を当てて `next dev`（http://localhost:3000）を裏で起動する。止めるのは `script/browser/dev.sh stop`。
+   - `script/browser/dev.sh --preview` … 本番と同じ Workers の形（OpenNext でビルドして `wrangler dev`、http://localhost:8787）。CSP・セキュリティヘッダー・`worker.ts` が本番と同じになる。ビルドに30秒ほどかかり、コードを変えたら起動し直す。
+   - 普段は `next dev` で作り、**push の前の最後の確認は `--preview` で行う**（CSP 違反はコンソールのエラーとして `check.mjs` に出る）。
 2. `node script/browser/check.mjs [URL] [--mobile] [--login[=2]] [--wait=ミリ秒]` … `.playwright/` にスクリーンショット、標準出力にログインの成否・コンソールのエラー・止めた外部通信を出す。
 3. 操作を伴う確認は、その場でスクリプトを書く（scratchpad に置く）。ページは必ず `session.mjs` の `openTestPage(browser, url, { account: 1 | 2, mobile })` で作る
    （ログインの Cookie・外部通信の遮断・**テスト用アカウント以外への送信の遮断**が付く）。`page.route` を自分で足すときは `route.fallback()` で後ろに回す。
