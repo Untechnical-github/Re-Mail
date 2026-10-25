@@ -160,13 +160,16 @@ async function findSentMessage(accessToken: string, exp: SentExpectation): Promi
     try {
       const byIdRes = await fetchWithRetry(`${base}?maxResults=1&fields=messages(id,threadId)&q=${encodeURIComponent(`rfc822msgid:${exp.messageId.slice(1, -1)}`)}`, auth);
       if (byIdRes.ok) {
+        sentMissDebug.push("byId:ok");
         const hit = ((await byIdRes.json()) as GmailListResponse).messages?.[0];
+        sentMissDebug.push("byId:parsed");
         if (hit) return hit;
       }
       const afterSec = Math.floor((exp.sentAfterMs - 60_000) / 1000);
       const recentRes = await fetchWithRetry(`${base}?maxResults=10&fields=messages(id)&q=${encodeURIComponent(`in:sent after:${afterSec}`)}`, auth);
       if (!recentRes.ok) { sentMissDebug.push(`list:${recentRes.status}`); continue; }
       const recent = ((await recentRes.json()) as GmailListResponse).messages || [];
+      sentMissDebug.push(`list:${recent.length}`);
       for (const m of recent) {
         const metaRes = await fetchWithRetry(
           `${base}/${encodeURIComponent(m.id)}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=Subject&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Bcc&fields=id,threadId,internalDate,snippet,payload/headers`,
