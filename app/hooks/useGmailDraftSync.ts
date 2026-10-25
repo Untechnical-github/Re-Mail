@@ -9,7 +9,7 @@ import type { InlineImage } from "../lib/composeEditor";
 import type { ComposeRecipient } from "../lib/composeRecipients";
 import { type RoomKeyStr, decodeRoomKey } from "../lib/roomKey";
 import { loadDraft, saveDraft, updateDraftLink, draftRooms, markPendingCreate, hasPendingCreate, clearPendingCreate, type ComposeDraft } from "../lib/drafts";
-import { EMPTY_LINK, draftFingerprint, planDraftSave, isDefaultContent, fitsKeepalive, isRetryableSaveStatus, SAVE_RETRY_DELAYS_MS, type DraftContent, type GmailDraftLink } from "../lib/gmailDrafts";
+import { EMPTY_LINK, draftFingerprint, normalizedFingerprint, planDraftSave, isDefaultContent, fitsKeepalive, isRetryableSaveStatus, SAVE_RETRY_DELAYS_MS, type DraftContent, type GmailDraftLink } from "../lib/gmailDrafts";
 import { makeMessageId } from "../lib/sendVerify";
 import { logWarn } from "../lib/safeLog";
 import type { Attachment, CarriedDraft } from "./useDrafts";
@@ -195,6 +195,8 @@ export function useGmailDraftSync({
     // タブを閉じるときに作ろうとした印（localStorage）があれば、作ったかもしれないものとして扱う
     if (!link.draftId && !link.createAttempted && hasPendingCreate(room)) link = { ...link, createAttempted: true };
     if (sentRef.current.get(room) === sentKey(c)) return;
+    // Gmail から読み込んだばかりで、入力欄が整えただけ（書き換えていない）なら保存しない
+    if (link.fromGmail && link.baseNormFp && normalizedFingerprint(c) === link.baseNormFp) return;
     const list = effectiveRecipientsOf(room, c.recipients);
     // 既定の送信先（チャットの相手）がまだ分からない（メールの読み込み前）ときは、飛ばさずに少しあとで試し直す
     if (list.length === 0 && c.recipients === null && !isDefaultContent(c)) { scheduleRetry(room); return; }
@@ -388,7 +390,14 @@ export function useGmailDraftSync({
       return link.draftId ? link : null;
     },
     // 最後に Gmail に保存してから、入力を変えたか
-    isDirtyNow: (room: string): boolean => isOpen(room) && draftFingerprint(liveContent()) !== linkOf(room).syncedFingerprint,
+    isDirtyNow: (room: string): boolean => {
+      if (!isOpen(room)) return false;
+      const link = linkOf(room);
+      const c = liveContent();
+      if (draftFingerprint(c) === link.syncedFingerprint) return false;
+      // Gmail から読み込んだばかりで、入力欄が整えただけなら書き換えていない（中身を付けずに送り、純正のままの形で送る）
+      return !(link.fromGmail && link.baseNormFp && normalizedFingerprint(c) === link.baseNormFp);
+    },
     // 送った・ほかで送信済みだった・下書きが無くなっていた：Gmail の下書きとのつながりを外す
     // 送れた・ほかで送信済みだった中身を覚える（同じ中身では保存しない）
     markSent: (room: string, c: DraftContent) => {

@@ -710,7 +710,7 @@ export function useMailApp() {
   const gmailInbound = useGmailDraftInbound({
     gmailDrafts, settingsReady: accountSettingsLoaded, selectedSender, draftReadyRoom, emailsRef, resolveDirectRoom, addDraftChat, partnerRecipient,
     setReplySubject, setReplyToMessage, setReplyAttachments, setRecipients, setRecipientsBase, setAttachError, loadCompose, insertedSignatureRef,
-    setComposeDialog, showInfoToast, showErrorToast, isMailReady: () => hasLoadedOnceRef.current,
+    setComposeDialog, showInfoToast, showErrorToast, isMailReady: () => hasLoadedOnceRef.current, isEditorReady: () => !!editorApiRef.current,
   });
   useEffect(() => { draftSyncResultRef.current = gmailInbound.onSyncResult; });
 

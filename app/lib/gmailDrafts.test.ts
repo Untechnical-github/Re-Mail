@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { draftFingerprint, planDraftSave, fitsKeepalive, KEEPALIVE_MAX_BYTES, judgeDraftSend, readGmailLink, isRetryableSaveStatus, EMPTY_LINK, draftTargetAddress, draftRecipients, recipientsOrDefault, planDraftReconcile, newestDraft, normalizeDraftCids, type DraftContent } from "./gmailDrafts";
+import { draftFingerprint, planDraftSave, fitsKeepalive, KEEPALIVE_MAX_BYTES, judgeDraftSend, readGmailLink, isRetryableSaveStatus, EMPTY_LINK, draftTargetAddress, draftRecipients, recipientsOrDefault, planDraftReconcile, newestDraft, normalizeDraftCids, normalizedFingerprint, type DraftContent } from "./gmailDrafts";
 
 const content: DraftContent = { subject: "", html: "<div>本文</div>", images: [], attachments: [], replyToMessage: null, recipients: null };
 
@@ -156,5 +156,14 @@ describe("段階B：Gmail の下書きの出し先・合わせ方", () => {
     expect(l?.fromGmail).toBe(true);
     expect(l?.keepSignature).toBe(true);
     expect(readGmailLink({ threadRef: { inReplyTo: "a\r\nBcc: x", threadId: "zz" } })?.threadRef).toBeUndefined();
+  });
+});
+
+describe("normalizedFingerprint", () => {
+  it("入力欄が整えただけ（HTML の書き方の違い）なら同じ、文字を足せば違う", () => {
+    const a = { ...content, html: "一<div>二</div>" };
+    const b = { ...content, html: '<div dir="ltr"><div>一</div><div>二</div></div>' };
+    expect(normalizedFingerprint(a)).toBe(normalizedFingerprint(b));
+    expect(normalizedFingerprint({ ...b, html: '<div dir="ltr"><div>一</div><div>二三</div></div>' })).not.toBe(normalizedFingerprint(a));
   });
 });

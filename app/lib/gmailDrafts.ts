@@ -2,7 +2,7 @@
 // 端末に置くのは Gmail の下書き ID・メッセージ ID・同期の状態だけ（中身は今までどおりの端末の下書き。drafts.ts）
 import type { Email } from "../types/email";
 import { normalizeRecipients, recipientsFromHeader, pickMoveTarget, type ComposeRecipient } from "./composeRecipients";
-import { isComposeBodyEmpty, mapImageSources } from "./composeHtml";
+import { isComposeBodyEmpty, mapImageSources, normalizeComposeHtml } from "./composeHtml";
 import { isRateLimitReason } from "./sendVerify";
 
 // 端末の下書きに足す、Gmail の下書きとの同期の状態
@@ -20,6 +20,8 @@ export type GmailDraftLink = {
   threadRef?: { threadId?: string; inReplyTo?: string; references?: string };
   // Gmail から読み込んだばかり（入力欄が整えたあとの中身を「保存済み」とみなす）
   fromGmail?: boolean;
+  // Gmail から読み込んだ中身の、HTML を整えたうえでの指紋（入力欄が整えただけで「書き換えた」としないため）
+  baseNormFp?: string;
   // Gmail から読み込んだ下書きの署名は入れ替えない（純正で手直しした署名をそのまま残す。開いたときの署名の決まりで1度だけ見る）
   keepSignature?: boolean;
   // 新しく作ろうとして結果を受け取れなかった（タブを閉じたときの保存など）。次は同じ中身の下書きを探してから作る
@@ -51,6 +53,7 @@ export function readGmailLink(v: unknown): GmailDraftLink | undefined {
     createAttempted: o.createAttempted === true || undefined,
     threadRef: readThreadRef(o.threadRef),
     fromGmail: o.fromGmail === true || undefined,
+    baseNormFp: typeof o.baseNormFp === "string" && /^[0-9a-z]{1,40}$/.test(o.baseNormFp) ? o.baseNormFp : undefined,
     keepSignature: o.keepSignature === true || undefined,
   };
 }
@@ -90,6 +93,12 @@ export function draftFingerprint(d: DraftContent): string {
 // 入力が既定のまま（件名・本文・添付が無く、送信先と返信元も既定）。drafts.ts の isEmptyDraft と同じ決まり
 export function isDefaultContent(d: DraftContent): boolean {
   return !d.subject.trim() && (!d.html || isComposeBodyEmpty(d.html)) && !d.replyToMessage && d.attachments.length === 0 && !d.recipients;
+}
+
+// HTML を送るときと同じ形に整えてからの指紋。入力欄に入れると HTML の書き方（空白・属性の並びなど）が変わることがあるので、
+// Gmail から読み込んだ下書きを「書き換えていない」と見分けるのに使う
+export function normalizedFingerprint(d: DraftContent): string {
+  return draftFingerprint({ ...d, html: d.html ? normalizeComposeHtml(d.html) : "" });
 }
 
 export type SavePlan = "skip" | "save" | "delete" | "forget";

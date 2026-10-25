@@ -15,7 +15,7 @@ import { textToComposeHtml, signatureOf, composeBodyText, composeHtmlToText, nor
 import { replySubjectFor } from "../lib/replyCompose";
 import { headersOf } from "../lib/outgoingMail";
 import {
-  EMPTY_LINK, draftFingerprint, isDefaultContent, planDraftReconcile, draftTargetAddress, draftRecipients, recipientsOrDefault, newestDraft, normalizeDraftCids,
+  EMPTY_LINK, draftFingerprint, normalizedFingerprint, isDefaultContent, planDraftReconcile, draftTargetAddress, draftRecipients, recipientsOrDefault, newestDraft, normalizeDraftCids,
   type GmailDraftMeta, type GmailDraftLink, type LocalDraftState,
 } from "../lib/gmailDrafts";
 import { logWarn } from "../lib/safeLog";
@@ -58,7 +58,7 @@ const shortPreview = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 60);
 export function useGmailDraftInbound({
   gmailDrafts, settingsReady, selectedSender, draftReadyRoom, emailsRef, resolveDirectRoom, addDraftChat, partnerRecipient,
   setReplySubject, setReplyToMessage, setReplyAttachments, setRecipients, setRecipientsBase, setAttachError, loadCompose, insertedSignatureRef,
-  setComposeDialog, showInfoToast, showErrorToast, isMailReady,
+  setComposeDialog, showInfoToast, showErrorToast, isMailReady, isEditorReady,
 }: {
   gmailDrafts: GmailDraftSyncApi;
   settingsReady: boolean;
@@ -81,6 +81,8 @@ export function useGmailDraftInbound({
   showErrorToast: (message: string) => void;
   // 最初のメールの一覧を読み終えたか（読み終える前は、出し先の既存のチャットが分からない）
   isMailReady: () => boolean;
+  // 入力欄の部品が出たか（出るまでは入力欄が整えたあとの中身を読めない）
+  isEditorReady: () => boolean;
 }) {
   const core = gmailDrafts.core;
   // チャットごとの「ほかの下書き」（入力欄に出していない Gmail の下書き）
@@ -170,7 +172,7 @@ export function useGmailDraftInbound({
     };
     const link: GmailDraftLink = {
       draftId: full.draftId, messageId: full.messageId, messageIdHeader: null, syncedFingerprint: draftFingerprint(content),
-      threadRef, fromGmail: true, keepSignature: true,
+      threadRef, fromGmail: true, keepSignature: true, baseNormFp: normalizedFingerprint(content),
     };
     if (opts.newChat) latest.current.addDraftChat(room);
     if (core.isOpen(room)) {
@@ -192,17 +194,27 @@ export function useGmailDraftInbound({
     return true;
   };
 
-  // 入力欄が整えたあと（読み込みの直後と少しあと）の中身を「保存済み」とみなす（読み込んだだけで書き換えたことにしない）
-  const rebaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // 入力欄が整えたあとの中身を「保存済み」とみなす。入力欄の部品が出るのを待ち（出るまでは画面の値しか読めない）、
+  // 整えたうえでの指紋が読み込んだときと同じあいだだけ合わせる（自分で書いたものは合わせない）。15秒で終える
+  const rebaseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const rebaseSoon = (room: string) => {
-    rebaseTimersRef.current.forEach(clearTimeout);
-    const rebase = (last: boolean) => {
-      if (!core.isOpen(room)) return;
+    if (rebaseTimerRef.current) clearInterval(rebaseTimerRef.current);
+    const startedAt = nowMs();
+    rebaseTimerRef.current = setInterval(() => {
       const link = core.linkOf(room);
-      if (!link.fromGmail) return;
-      core.setLink(room, { ...link, syncedFingerprint: draftFingerprint(core.liveContent()), fromGmail: last ? undefined : true });
-    };
-    rebaseTimersRef.current = [setTimeout(() => rebase(false), 500), setTimeout(() => rebase(true), 1800)];
+      const done = !core.isOpen(room) || !link.fromGmail || nowMs() - startedAt > 15_000;
+      if (!done && isEditorReady()) {
+        const live = core.liveContent();
+        if (link.baseNormFp && normalizedFingerprint(live) === link.baseNormFp) {
+          const fp = draftFingerprint(live);
+          if (fp !== link.syncedFingerprint) core.setLink(room, { ...link, syncedFingerprint: fp });
+        }
+        return;
+      }
+      if (rebaseTimerRef.current) clearInterval(rebaseTimerRef.current);
+      rebaseTimerRef.current = null;
+      if (core.isOpen(room) && link.fromGmail) core.setLink(room, { ...link, fromGmail: undefined });
+    }, 700);
   };
   // Gmail から読み込んだ下書きのチャットを開いたときも同じ
   useEffect(() => {
@@ -287,9 +299,9 @@ export function useGmailDraftInbound({
     core.conflictRoomsRef.current.delete(room);
     core.setNotice(room, null);
     if (!meta) return;
-    // 今の Gmail の下書きを土台にして、この画面の入力で上書きする
+    // この画面の入力で Gmail の下書きを上書きする（本人が選んだので、そのあと Gmail 側がまた変わっていても確かめずに上書きする）
     const link = core.linkOf(room).draftId ? core.linkOf(room) : (await loadDraft(room))?.gmail ?? EMPTY_LINK;
-    core.setLink(room, { ...link, draftId: meta.draftId, messageId: meta.messageId, syncedFingerprint: null });
+    core.setLink(room, { ...link, draftId: meta.draftId, messageId: null, syncedFingerprint: null, fromGmail: undefined });
     void core.enqueue(room);
   };
   const undo = async (room: string) => {
@@ -347,7 +359,9 @@ export function useGmailDraftInbound({
       if (core.sendingRoomsRef.current.has(room)) continue;
       const l = await localOf(room);
       if (!l) continue;
-      const dirty = draftFingerprint(l.content) !== l.link.syncedFingerprint;
+      // Gmail から読み込んだばかりで入力欄が整えただけのものは、書き換えたことにしない
+      const dirty = draftFingerprint(l.content) !== l.link.syncedFingerprint
+        && !(l.link.fromGmail && l.link.baseNormFp && normalizedFingerprint(l.content) === l.link.baseNormFp);
       locals.push({ room, draftId: l.link.draftId, messageId: l.link.messageId, dirty, hasInput: !isDefaultContent(l.content) });
     }
     // 開いているチャットに端末の下書きがまだ無い（何も書いていない）ときも、出し先の候補に入れる
