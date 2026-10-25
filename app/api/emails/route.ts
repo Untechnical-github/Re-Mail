@@ -240,9 +240,15 @@ async function getDraftState(accessToken: string, draftId: string): Promise<Draf
 const SAME_DRAFT_SCAN = 10;
 async function findSameDraft(accessToken: string, exp: SentExpectation, html: string): Promise<string | null> {
   try {
-    const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}?maxResults=${SAME_DRAFT_SCAN}&fields=drafts(id)`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}?maxResults=${SAME_DRAFT_SCAN}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    sameDraftDebug.push({ listStatus: res.status });
     if (!res.ok) return null;
-    const ids = (((await res.json().catch(() => ({}))) as { drafts?: { id?: string }[] }).drafts || []).map(d => d.id).filter(isValidDraftId);
+    const raw = await res.text();
+    sameDraftDebug.push({ listLen: raw.length });
+    let parsed: { drafts?: { id?: string }[] } = {};
+    try { parsed = JSON.parse(raw); } catch { sameDraftDebug.push({ listParse: false }); }
+    const ids = (parsed.drafts || []).map(d => d.id).filter(isValidDraftId);
+    sameDraftDebug.push({ ids: ids.length });
     for (const id of ids) if (await draftEquals(accessToken, id, exp, html)) return id;
     logInfo("draft.findSame", { count: ids.length });
     return null;
