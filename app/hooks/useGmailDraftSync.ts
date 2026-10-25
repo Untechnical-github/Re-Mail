@@ -30,6 +30,7 @@ const NOTICE = {
   conflict: "この下書きは別の場所でも変更されたため、Gmail に上書きしていません（この端末には残っています）",
   gone: "この下書きは Gmail で送信または削除されました。入力中の内容は残っています",
   attachments: "下書きの添付ファイルを取得できなかったため、Gmail に保存しませんでした（この端末には残っています）",
+  attachmentsGone: "Gmail の下書きにあった添付ファイルを取り出せないため、Gmail に保存できません。その添付を × で外して、必要なら付け直してください（この端末には残っています）",
 } as const;
 
 // 1分止まったら保存する
@@ -168,7 +169,12 @@ export function useGmailDraftSync({
       return;
     }
     if (error === "DRAFT_CONFLICT") { setNotice(room, NOTICE.conflict); onConflictRef.current?.(room); return; }
-    if (error === "DRAFT_ATTACHMENTS_FAILED") { setNotice(room, NOTICE.attachments); if (isRetryableSaveStatus(status, reason)) scheduleRetry(room); return; }
+    if (error === "DRAFT_ATTACHMENTS_FAILED") {
+      // 409 は、添付を取り出す Gmail の下書きがもう無い（取り直せない）。外して付け直してもらう
+      setNotice(room, status === 409 ? NOTICE.attachmentsGone : NOTICE.attachments);
+      if (status !== 409) scheduleRetry(room);
+      return;
+    }
     logWarn("draft.save.failed", { status: status ?? undefined, reason: reason || error });
     setNotice(room, NOTICE.failed);
     if (isRetryableSaveStatus(status, reason)) scheduleRetry(room);

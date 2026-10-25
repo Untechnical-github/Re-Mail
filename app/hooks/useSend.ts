@@ -208,6 +208,7 @@ export function useSend({
     showErrorToast(
       isRateLimitReason(r.gmailReason) || r.status === 429 ? `Gmail の利用上限に一時的に達したため${label}できませんでした。1分ほど待ってからもう一度お試しください。`
       : r.code === "FORWARD_ATTACHMENTS_FAILED" ? "元のメールの添付ファイルを取得できなかったため、転送しませんでした。時間をおいてもう一度お試しください。"
+      : r.code === "DRAFT_ATTACHMENTS_FAILED" && r.status === 409 ? "Gmail の下書きにあった添付ファイルを取り出せないため、送信しませんでした。その添付を × で外して、必要なら付け直してから送ってください。本文は入力欄に残っています。"
       : r.code === "DRAFT_ATTACHMENTS_FAILED" ? "下書きの添付ファイルを取得できなかったため、送信しませんでした。時間をおいてもう一度お試しください。本文は入力欄に残っています。"
       : r.status === 401 ? `ログインの有効期限が切れたため${label}できませんでした。再読み込みしてからもう一度お試しください。`
       : r.status === 413 ? `添付ファイルが大きすぎるため${label}できませんでした（合計25MBまで）。`

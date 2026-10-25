@@ -231,6 +231,16 @@ export function useGmailDraftInbound({
     if (v.dirty) {
       // 入力中の内容は消さず、下書きとのつながりだけ外す（次の保存では新しい下書きになる）
       core.setLink(v.room, { ...EMPTY_LINK });
+      // Gmail の下書きにしか無かった添付は、もう取り出せない。黙って落とさず、外したことと名前を伝える
+      const atts: Attachment[] = local.content.attachments;
+      const lost = atts.filter(a => a.fromDraft);
+      if (lost.length) {
+        const kept = atts.filter(a => !a.fromDraft);
+        if (core.isOpen(v.room)) setReplyAttachments(kept);
+        await saveDraft(v.room, { ...local.content, attachments: kept, updatedAt: nowMs(), gmail: { ...EMPTY_LINK } });
+        core.setNotice(v.room, `この下書きは Gmail で送信または削除されました。入力中の内容は残っていますが、Gmail の下書きにあった添付ファイル（${lost.map(a => a.filename).join("、")}）は取り出せないため外しました。必要なら付け直してください`);
+        return;
+      }
       core.setNotice(v.room, "この下書きは Gmail で送信または削除されました。入力中の内容は残っています");
       return;
     }
