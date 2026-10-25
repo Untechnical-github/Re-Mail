@@ -8,6 +8,7 @@ Gmail をチャット風（相手ごとのトークルーム）で読み書き�
 - 同じ範囲を読み直さない。編集の後に確かめるための読み直しもしない。
 - コマンドの出力は絞る：`npm test 2>&1 | tail -40`、`npx tsc --noEmit 2>&1 | head -40`、`npm run lint 2>&1 | tail -40`。CI は `gh run watch --exit-status > /dev/null && echo OK || gh run view --log-failed | tail -80`。
 - スクリーンショット・画像は、失敗の原因を見るときだけ開く。
+- 画面の確認（リモート環境）：`script/browser/dev.sh` で開発サーバーを起動し、`node script/browser/check.mjs [URL] [--mobile]` で `.playwright/` にスクリーンショットとコンソールのエラーを出す。終わったら `script/browser/dev.sh stop`。ログインはできない（ダミーの値で起動する）。
 - 詳しい決まりは `docs/claude/` にある。**下の表の作業をするときだけ**、その1つを読む。
 
 | 作業 | 読む |

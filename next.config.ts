@@ -3,6 +3,8 @@ import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
 import { SECURITY_HEADERS } from "./app/lib/securityHeaders";
 
 const nextConfig: NextConfig = {
+  // next dev が CLAUDE.md に Next.js 向けの文を書き足すのを止める（CLAUDE.md は手で管理する）
+  agentRules: false,
   // 型チェックは CI で npx tsc --noEmit として別に行うので、ビルドでは止めない
   // （Next.js 16 で eslint の設定はなくなった。Lint も CI で npm run lint として別に行う）
   typescript: {
