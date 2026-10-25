@@ -47,6 +47,8 @@ export async function clearAccountDeviceData(account: string): Promise<void> {
     }
     const drafts = JSON.parse(localStorage.getItem("remail_draft_chats") || "null") as unknown[] | null;
     if (Array.isArray(drafts)) localStorage.setItem("remail_draft_chats", JSON.stringify(drafts.filter(k => !isTargetRoom(k))));
+    const pending = JSON.parse(localStorage.getItem("remail_draft_pending_creates") || "null") as unknown[] | null;
+    if (Array.isArray(pending)) localStorage.setItem("remail_draft_pending_creates", JSON.stringify(pending.filter(k => !isTargetRoom(k))));
     if (isTargetRoom(localStorage.getItem("remail_selected_sender"))) {
       localStorage.removeItem("remail_selected_sender");
       localStorage.removeItem("remail_scroll_main");

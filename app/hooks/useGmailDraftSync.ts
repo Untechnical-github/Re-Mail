@@ -8,8 +8,8 @@ import type { ChatConfig } from "../types/mail";
 import type { InlineImage } from "../lib/composeEditor";
 import type { ComposeRecipient } from "../lib/composeRecipients";
 import { type RoomKeyStr, decodeRoomKey } from "../lib/roomKey";
-import { loadDraft, saveDraft, updateDraftLink, draftRooms, type ComposeDraft } from "../lib/drafts";
-import { EMPTY_LINK, draftFingerprint, planDraftSave, fitsKeepalive, isRetryableSaveStatus, SAVE_RETRY_DELAYS_MS, type DraftContent, type GmailDraftLink } from "../lib/gmailDrafts";
+import { loadDraft, saveDraft, updateDraftLink, draftRooms, markPendingCreate, hasPendingCreate, clearPendingCreate, type ComposeDraft } from "../lib/drafts";
+import { EMPTY_LINK, draftFingerprint, planDraftSave, isDefaultContent, fitsKeepalive, isRetryableSaveStatus, SAVE_RETRY_DELAYS_MS, type DraftContent, type GmailDraftLink } from "../lib/gmailDrafts";
 import { makeMessageId } from "../lib/sendVerify";
 import { logWarn } from "../lib/safeLog";
 import type { Attachment, CarriedDraft } from "./useDrafts";
@@ -84,6 +84,9 @@ export function useGmailDraftSync({
   const live = { room: selectedSender, ready: !!selectedSender && draftReadyRoom === selectedSender, replySubject, replyToMessage, replyAttachments, recipients, recipientsBase };
   const liveRef = useRef(live);
 
+  // 相手のアドレスは、メールを読み込むと分かる（名前で作られたチャットなど）。タイマーから呼ばれても古いものを使わないよう ref で持つ
+  const partnerRef = useRef(partnerRecipient);
+  useEffect(() => { partnerRef.current = partnerRecipient; });
   const settingsRef = useRef({ isEnabled, settingsReady });
   useEffect(() => { settingsRef.current = { isEnabled, settingsReady }; });
 
@@ -112,7 +115,7 @@ export function useGmailDraftSync({
   });
   const effectiveRecipientsOf = (room: string, list: ComposeRecipient[] | null): ComposeRecipient[] => {
     if (list) return list;
-    const p = partnerRecipient(room as RoomKeyStr);
+    const p = partnerRef.current(room as RoomKeyStr);
     return p ? [p] : [];
   };
   const toOutgoing = (room: string, c: RoomContent["content"]): OutgoingContent => ({
@@ -172,14 +175,18 @@ export function useGmailDraftSync({
       c = fromDraft(d);
       link = d.gmail ?? EMPTY_LINK;
     }
+    // タブを閉じるときに作ろうとした印（localStorage）があれば、作ったかもしれないものとして扱う
+    if (!link.draftId && !link.createAttempted && hasPendingCreate(room)) link = { ...link, createAttempted: true };
     const list = effectiveRecipientsOf(room, c.recipients);
+    // 既定の送信先（チャットの相手）がまだ分からない（メールの読み込み前）ときは、飛ばさずに少しあとで試し直す
+    if (list.length === 0 && c.recipients === null && !isDefaultContent(c)) { scheduleRetry(room); return; }
     const plan = planDraftSave({ enabled: true, isGroup: false, content: c, link, recipientCount: list.length });
     if (plan === "skip") return;
     const fp = draftFingerprint(c);
     if (plan === "forget") { setLink(room, { ...link, syncedFingerprint: fp }); setNotice(room, null); return; }
     if (plan === "delete") {
       const r = await post({ action: "draftDelete", accountEmail: accountOf(room), draftId: link.draftId, expectMessageId: link.messageId });
-      if (r.status === 200) { resetRetry(room); setNotice(room, null); setLink(room, { ...EMPTY_LINK, syncedFingerprint: fp }); return; }
+      if (r.status === 200) { resetRetry(room); setNotice(room, null); clearPendingCreate(room); setLink(room, { ...EMPTY_LINK, syncedFingerprint: fp }); return; }
       handleFailure(room, r.status, r.data.error, r.data.reason);
       return;
     }
@@ -202,6 +209,7 @@ export function useGmailDraftSync({
     if (r.status === 200 && r.data.draftId) {
       resetRetry(room);
       setNotice(room, null);
+      clearPendingCreate(room);
       setLink(room, { draftId: r.data.draftId, messageId: r.data.gmailMessageId || null, messageIdHeader: header, syncedFingerprint: fp });
       return;
     }
@@ -287,7 +295,7 @@ export function useGmailDraftSync({
         void fetch("/api/emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: k.body, keepalive: true }).catch(() => {});
       } catch { /* 送れなくても、端末の下書きから次に起動したときに保存する */ }
       // 結果は受け取れないので、新しく作ったかもしれないことだけ残す（次は同じ中身の下書きを探してから作る）
-      if (!link.draftId) setLink(room, { ...link, createAttempted: true });
+      if (!link.draftId) { markPendingCreate(room); setLink(room, { ...link, createAttempted: true }); }
     };
     document.addEventListener("visibilitychange", onHidden);
     window.addEventListener("pagehide", onPageHide);
@@ -314,7 +322,7 @@ export function useGmailDraftSync({
         const d = await loadDraft(room);
         if (!d || !enabledFor(room)) continue;
         if (draftFingerprint(fromDraft(d)) === d.gmail?.syncedFingerprint) continue;
-        const attempted = !d.gmail?.draftId && !!d.gmail?.createAttempted;
+        const attempted = !d.gmail?.draftId && (!!d.gmail?.createAttempted || hasPendingCreate(room));
         // 開いているチャットは1分止まったときに保存するので飛ばす。ただし前に作ろうとして結果を受け取れなかった
         // （タブを閉じたときの保存など）ものは、書き換えられる前に先に照合する（中身が変わると同じ下書きを探せず、二重にできる・消せなくなる）
         if (isOpen(room) && !attempted) continue;
@@ -343,7 +351,7 @@ export function useGmailDraftSync({
     // 最後に Gmail に保存してから、入力を変えたか
     isDirtyNow: (room: string): boolean => isOpen(room) && draftFingerprint(liveContent()) !== linkOf(room).syncedFingerprint,
     // 送った・ほかで送信済みだった・下書きが無くなっていた：Gmail の下書きとのつながりを外す
-    forgetLink: (room: string) => { resetRetry(room); setNotice(room, null); setLink(room, { ...EMPTY_LINK }); },
+    forgetLink: (room: string) => { resetRetry(room); setNotice(room, null); clearPendingCreate(room); setLink(room, { ...EMPTY_LINK }); },
     // 入力中の内容を持ってほかのチャットへ移ったとき：同じアカウントなら Gmail の下書きもそのまま持っていく。
     // 送信元のアカウントを変えたときは、元のアカウントの下書きを消す（同じ内容が2つのアカウントに残らないように）
     onCarried: (fromRoom: string, toRoom: string, fromLink: GmailDraftLink | undefined) => {

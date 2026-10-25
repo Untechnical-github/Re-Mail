@@ -131,6 +131,28 @@ export function updateDraftLink(room: string, link: GmailDraftLink): Promise<voi
   });
 }
 
+// タブを閉じるときの保存（keepalive）で、Gmail に新しい下書きを作ろうとしたチャット。結果は受け取れないので、
+// 次に起動したときに同じ中身の下書きを探してから作る（二重にしない・消せなくならないため）。閉じる瞬間の IndexedDB への書き込みは
+// 間に合わないことがあるので、すぐ書ける localStorage に置く（チャットの複合キーだけ。ログアウト・連携解除で消す：deviceData.ts）
+export const PENDING_CREATES_KEY = "remail_draft_pending_creates";
+function readPendingCreates(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(PENDING_CREATES_KEY) || "[]");
+    return Array.isArray(v) ? v.filter((k): k is string => typeof k === "string").slice(-50) : [];
+  } catch { return []; }
+}
+export function markPendingCreate(room: string): void {
+  try { localStorage.setItem(PENDING_CREATES_KEY, JSON.stringify([...readPendingCreates().filter(k => k !== room), room].slice(-50))); } catch { /* 書けなくても次の起動で中身から探す */ }
+}
+export function hasPendingCreate(room: string): boolean {
+  return readPendingCreates().includes(room);
+}
+export function clearPendingCreate(room: string): void {
+  const list = readPendingCreates();
+  if (!list.includes(room)) return;
+  try { localStorage.setItem(PENDING_CREATES_KEY, JSON.stringify(list.filter(k => k !== room))); } catch { /* 同上 */ }
+}
+
 // 端末にある下書きのチャット（複合キー）の一覧
 export async function draftRooms(): Promise<string[]> {
   try { return await store.keys(); } catch { return []; }
