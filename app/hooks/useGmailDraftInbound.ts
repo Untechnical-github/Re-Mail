@@ -38,6 +38,8 @@ type DraftFull = GmailDraftMeta & {
 export type DraftChoice = { key: string; to: string; subject: string; preview: string; date: number; current: boolean };
 
 const IMAGE_TYPES = /^image\/(png|jpeg|gif|webp|bmp)$/;
+// 下書きの一覧を読めなかったときに読み直すまでの時間（ミリ秒）
+const LIST_RETRY_MS = [30_000, 120_000, 300_000];
 // 下書きの中身を取りにいく数（同時）
 const META_CONCURRENCY = 3;
 
@@ -308,6 +310,7 @@ export function useGmailDraftInbound({
 
   // アカウントの Gmail の下書きを読み、チャットの入力欄と合わせる（保存と同じ列で順に行う）
   const refreshingRef = useRef(new Set<string>());
+  const listRetryRef = useRef(new Map<string, number>());
   const refreshAccount = (account: string) => {
     const key = account.toLowerCase();
     if (!account || refreshingRef.current.has(key)) return;
@@ -319,7 +322,17 @@ export function useGmailDraftInbound({
   const refreshAccountNow = async (account: string) => {
     if (!core.enabledForAccount(account)) return;
     const list = await getJson<{ drafts: { id: string; messageId: string; threadId?: string }[]; more: number }>({ drafts: "1", accountEmail: account });
-    if (!list.data) { logWarn("draft.inbound.list", { status: list.status ?? undefined }); return; }
+    if (!list.data) {
+      logWarn("draft.inbound.list", { status: list.status ?? undefined });
+      // 開いた直後のレート制限・通信断などは、少しあとで読み直す（3回まで）
+      const n = listRetryRef.current.get(account.toLowerCase()) || 0;
+      if (list.status !== 401 && n < LIST_RETRY_MS.length) {
+        listRetryRef.current.set(account.toLowerCase(), n + 1);
+        setTimeout(() => refreshAccount(account), LIST_RETRY_MS[n]);
+      }
+      return;
+    }
+    listRetryRef.current.delete(account.toLowerCase());
     const gmail = list.data.drafts.map(d => ({ draftId: d.id, messageId: d.messageId }));
     // 端末の下書き（このアカウントの分）
     const rooms = (await draftRooms()).filter(r => core.accountOf(r).toLowerCase() === account.toLowerCase());
