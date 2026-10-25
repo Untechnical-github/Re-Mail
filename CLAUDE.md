@@ -1,9 +1,9 @@
 # Re:Mail（Claude Code 向け）
 
-Gmail をチャット風（相手ごとのトークルーム）で読み書きする Web アプリ。Next.js（App Router）を OpenNext で Cloudflare Workers に載せ、設定は D1。仕様の正は `README.md`。中核は `app/hooks/useMailApp.ts`、純粋関数は `app/lib/`。
+Gmail をチャット風（相手ごとのトークルーム）で読み書きする Web アプリ。Next.js（App Router）を OpenNext で Cloudflare Workers に載せ、設定は D1。仕様の正は `README.md`。中核は `app/hooks/useMailApp.ts`（役割ごとのフック `app/hooks/use*.ts` を組み合わせる。どれに何があるかは README §5・§13）、純粋関数は `app/lib/`。
 
 ## 読み方（トークンを節約する。必ず守る）
-- **大きいファイルは全体を読まない。** `README.md`・`useMailApp.ts`・`Modals.tsx`・`page.tsx`・`api/emails/route.ts`・`composeHtml.ts`・`composeEditor.ts` などは、`grep -n` で場所を探し、Read の offset / limit で要る範囲（目安200行まで）だけ読む。README は `grep -n "^##" README.md` で節を探し、その節だけ読む。
+- **大きいファイルは全体を読まない。** `README.md`・`composeHtml.ts`・`modals/FilterToolModal.tsx`・`useMailApp.ts`・`useMailSync.ts`・`api/emails/route.ts`・`composeEditor.ts` などは、`grep -n` で場所を探し、Read の offset / limit で要る範囲（目安200行まで）だけ読む。README は `grep -n "^##" README.md` で節を探し、その節だけ読む。
 - サブエージェントは原則使わない（同じファイルを読み直すことになり、かえって増えて遅くなる）。使うのは、何十ものファイルをまたいで探し、結果の一覧が長くなりそうなときの Explore だけ。
 - 同じ範囲を読み直さない。編集の後に確かめるための読み直しもしない。
 - コマンドの出力は絞る：`npm test 2>&1 | tail -40`、`npx tsc --noEmit 2>&1 | head -40`、`npm run lint 2>&1 | tail -40`。CI は `gh run watch --exit-status > /dev/null && echo OK || gh run view --log-failed | tail -80`。
