@@ -165,5 +165,9 @@ describe("normalizedFingerprint", () => {
     const b = { ...content, html: '<div dir="ltr"><div>一</div><div>二</div></div>' };
     expect(normalizedFingerprint(a)).toBe(normalizedFingerprint(b));
     expect(normalizedFingerprint({ ...b, html: '<div dir="ltr"><div>一</div><div>二三</div></div>' })).not.toBe(normalizedFingerprint(a));
+    // Gmail の下書きの HTML の CRLF は、入力欄に入れると LF になる（引用の中など）
+    const crlf = { ...content, html: '<div dir="ltr">本文</div><blockquote class="gmail_quote"><div>引用</div>\r\n</blockquote>' };
+    const lf = { ...content, html: '<div dir="ltr">本文</div><blockquote class="gmail_quote"><div>引用</div>\n</blockquote>' };
+    expect(normalizedFingerprint(crlf)).toBe(normalizedFingerprint(lf));
   });
 });

@@ -97,8 +97,9 @@ export function isDefaultContent(d: DraftContent): boolean {
 
 // HTML を送るときと同じ形に整えてからの指紋。入力欄に入れると HTML の書き方（空白・属性の並びなど）が変わることがあるので、
 // Gmail から読み込んだ下書きを「書き換えていない」と見分けるのに使う
+// 改行は LF にそろえる（Gmail の下書きの HTML は CRLF を含むが、入力欄に入れると LF になる。2026-10-26 に実機の下書きで確認）
 export function normalizedFingerprint(d: DraftContent): string {
-  return draftFingerprint({ ...d, html: d.html ? normalizeComposeHtml(d.html) : "" });
+  return draftFingerprint({ ...d, html: d.html ? normalizeComposeHtml(d.html.replace(/\r\n?/g, "\n")) : "" });
 }
 
 export type SavePlan = "skip" | "save" | "delete" | "forget";
