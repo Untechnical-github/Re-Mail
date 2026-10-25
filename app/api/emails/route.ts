@@ -9,7 +9,7 @@ import { buildMimeSegments, buildGmailUploadBody, buildDraftUploadBody, decodeMi
 import { type GmailHeader, type GmailMessage, getHeader, getHtmlBody, getTextBody, extractAttachments, extractContentIdParts, referencesContentId, stripHtmlQuote, looksLikeForward, parseMessageDetail, parseInternalDate, topReceivedTime } from "../../lib/messageParse";
 import type { MimeInlinePart } from "../../lib/mime";
 import { summarizeHistory, type GmailHistoryRecord } from "../../lib/historySync";
-import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, whySentMismatch, addressSet, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
+import { classifySendStatus, isRateLimitReason, gmailErrorReason, makeMessageId, isValidMessageId, matchSentMessage, addressSet, type SendOutcome, type SentExpectation } from "../../lib/sendVerify";
 import { logError, logWarn, logInfo } from "../../lib/safeLog";
 import { labelChangeFor, readLabelChange, sanitizeMessageIds, chunkIds } from "../../lib/mailboxOps";
 import { validateSendHeaders } from "../../lib/composeRecipients";
@@ -150,32 +150,29 @@ type GmailMetadataMessage = { id: string; threadId: string; internalDate?: strin
 // 結果が分からなかった送信が、実際には送れていたかを送信済みフォルダで確かめる。
 // まず Message-ID で探し、Gmail が Message-ID を付け替えていた場合に備えて、
 // 直近の送信済みを宛先・件名・時刻で照合する。Gmail の検索に反映されるまで少しかかるので2回見る
-const sentMissDebug: string[] = [];
 async function findSentMessage(accessToken: string, exp: SentExpectation): Promise<{ id: string; threadId: string } | null> {
-  sentMissDebug.length = 0;
   const auth = { headers: { Authorization: `Bearer ${accessToken}` } };
   const base = "https://gmail.googleapis.com/gmail/v1/users/me/messages";
   for (const delay of [1500, 4000]) {
     await sleep(delay);
     try {
       const byIdRes = await fetchWithRetry(`${base}?maxResults=1&fields=messages(id,threadId)&q=${encodeURIComponent(`rfc822msgid:${exp.messageId.slice(1, -1)}`)}`, auth);
+      // 見つからないとき、Gmail は fields で絞った一覧を JSON でない空の本文で返すことがある（2026-10-25 に実機で確認）。
+      // そのまま json() すると例外になり、下の宛先・件名での照合まで進まなかったので、読めなければ「無し」とする
       if (byIdRes.ok) {
-        sentMissDebug.push("byId:ok");
-        const hit = ((await byIdRes.json()) as GmailListResponse).messages?.[0];
-        sentMissDebug.push("byId:parsed");
+        const hit = ((await byIdRes.json().catch(() => ({}))) as GmailListResponse).messages?.[0];
         if (hit) return hit;
       }
       const afterSec = Math.floor((exp.sentAfterMs - 60_000) / 1000);
       const recentRes = await fetchWithRetry(`${base}?maxResults=10&fields=messages(id)&q=${encodeURIComponent(`in:sent after:${afterSec}`)}`, auth);
-      if (!recentRes.ok) { sentMissDebug.push(`list:${recentRes.status}`); continue; }
-      const recent = ((await recentRes.json()) as GmailListResponse).messages || [];
-      sentMissDebug.push(`list:${recent.length}`);
+      if (!recentRes.ok) continue;
+      const recent = ((await recentRes.json().catch(() => ({}))) as GmailListResponse).messages || [];
       for (const m of recent) {
         const metaRes = await fetchWithRetry(
           `${base}/${encodeURIComponent(m.id)}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=Subject&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Bcc&fields=id,threadId,internalDate,snippet,payload/headers`,
           auth
         );
-        if (!metaRes.ok) { sentMissDebug.push(`meta:${metaRes.status}`); continue; }
+        if (!metaRes.ok) continue;
         const meta = (await metaRes.json()) as GmailMetadataMessage;
         const h = meta.payload?.headers || [];
         const matched = matchSentMessage({
@@ -189,15 +186,8 @@ async function findSentMessage(accessToken: string, exp: SentExpectation): Promi
           internalDateMs: Number(meta.internalDate || 0),
         }, exp);
         if (matched) return { id: meta.id, threadId: meta.threadId };
-        // 一時的な調べ：どの欄で外れたか（欄の名前だけ。中身は出さない）
-        const why = whySentMismatch({
-          messageIdHeader: getHeader(h, "Message-ID"), snippet: meta.snippet || "", subject: decodeMimeHeader(getHeader(h, "Subject")),
-          to: decodeMimeHeader(getHeader(h, "To")), cc: decodeMimeHeader(getHeader(h, "Cc")), bcc: decodeMimeHeader(getHeader(h, "Bcc")), internalDateMs: Number(meta.internalDate || 0),
-        }, exp);
-        sentMissDebug.push(why);
       }
-    } catch (e) {
-      sentMissDebug.push(`exception:${e instanceof Error ? e.name : "?"}`);
+    } catch {
       // 照合中の通信エラーは「見つからなかった」と同じ扱いにし、次の回か利用者の確認に回す
     }
   }
@@ -252,7 +242,7 @@ async function findSameDraft(accessToken: string, exp: SentExpectation, html: st
   try {
     const res = await fetchWithRetry(`${GMAIL_DRAFTS_URL}?maxResults=${SAME_DRAFT_SCAN}&fields=drafts(id)`, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!res.ok) return null;
-    const ids = (((await res.json()) as { drafts?: { id?: string }[] }).drafts || []).map(d => d.id).filter(isValidDraftId);
+    const ids = (((await res.json().catch(() => ({}))) as { drafts?: { id?: string }[] }).drafts || []).map(d => d.id).filter(isValidDraftId);
     for (const id of ids) if (await draftEquals(accessToken, id, exp, html)) return id;
     logInfo("draft.findSame", { count: ids.length });
     return null;
@@ -920,7 +910,7 @@ export async function POST(request: Request) {
         return NextResponse.json(verdict.found ? { found: true, id: verdict.found.id, threadId: verdict.found.threadId } : { found: false, draftExists: verdict.draftExists });
       }
       const found = await findSentMessage(accessToken, exp);
-      return NextResponse.json(found ? { found: true, id: found.id, threadId: found.threadId } : { found: false, debug: sentMissDebug.slice(0, 30) });
+      return NextResponse.json(found ? { found: true, id: found.id, threadId: found.threadId } : { found: false });
     }
 
     // メールの移動・削除（ゴミ箱へ）。どちらもラベルの付け外しで、純正 Gmail の「移動」「削除」と同じ。
