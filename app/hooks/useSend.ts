@@ -353,6 +353,7 @@ export function useSend({
 
       // 送れた・ほかで送信済みだったときに、入力欄と端末の下書きを空に戻す。送信中に別のチャットへ移っていたら、そちらの入力欄は消さない
       const clearSentCompose = () => {
+        gmailDrafts.markSent(sentRoom, { subject: content.subject, html: content.html, images: content.images, attachments: content.attachments, replyToMessage: content.replyToMessage });
         gmailDrafts.forgetLink(sentRoom);
         void removeDraft(sentRoom);
         if (selectedSenderRef.current === sentRoom) {

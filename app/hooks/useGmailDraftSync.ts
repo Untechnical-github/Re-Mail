@@ -162,6 +162,11 @@ export function useGmailDraftSync({
     if (isRetryableSaveStatus(status, reason)) scheduleRetry(room);
   };
 
+  // 送ったばかりの中身（送信先を除いた指紋）。送ったあと画面が空に戻るまでのあいだや、移るときの保存が割り込んでも、
+  // 同じ中身で Gmail に下書きを作り直さない（送ったのに純正に下書きが残っていた：2026-10-25 に実機で確認）
+  const sentRef = useRef(new Map<string, string>());
+  const sentKey = (c: DraftContent) => draftFingerprint({ ...c, recipients: null });
+
   const saveRoom = async (room: string, given?: RoomContent) => {
     if (sendingRoomsRef.current.has(room) || !enabledFor(room)) return;
     if (chatConfigsRef.current[room as RoomKeyStr]?.isGroup) return;
@@ -177,6 +182,7 @@ export function useGmailDraftSync({
     }
     // タブを閉じるときに作ろうとした印（localStorage）があれば、作ったかもしれないものとして扱う
     if (!link.draftId && !link.createAttempted && hasPendingCreate(room)) link = { ...link, createAttempted: true };
+    if (sentRef.current.get(room) === sentKey(c)) return;
     const list = effectiveRecipientsOf(room, c.recipients);
     // 既定の送信先（チャットの相手）がまだ分からない（メールの読み込み前）ときは、飛ばさずに少しあとで試し直す
     if (list.length === 0 && c.recipients === null && !isDefaultContent(c)) { scheduleRetry(room); return; }
@@ -361,6 +367,11 @@ export function useGmailDraftSync({
     // 最後に Gmail に保存してから、入力を変えたか
     isDirtyNow: (room: string): boolean => isOpen(room) && draftFingerprint(liveContent()) !== linkOf(room).syncedFingerprint,
     // 送った・ほかで送信済みだった・下書きが無くなっていた：Gmail の下書きとのつながりを外す
+    // 送れた・ほかで送信済みだった中身を覚える（同じ中身では保存しない）
+    markSent: (room: string, c: DraftContent) => {
+      sentRef.current.set(room, sentKey(c));
+      if (sentRef.current.size > 20) sentRef.current.delete(sentRef.current.keys().next().value as string);
+    },
     forgetLink: (room: string) => { resetRetry(room); setNotice(room, null); clearPendingCreate(room); setLink(room, { ...EMPTY_LINK }); },
     // 入力中の内容を持ってほかのチャットへ移ったとき：同じアカウントなら Gmail の下書きもそのまま持っていく。
     // 送信元のアカウントを変えたときは、元のアカウントの下書きを消す（同じ内容が2つのアカウントに残らないように）
