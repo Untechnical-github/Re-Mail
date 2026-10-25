@@ -434,7 +434,8 @@ export function useMailApp() {
     const map = new Map();
     persistedEmails.forEach(e => map.set(e.id, e));
     emails.forEach(e => map.set(e.id, e));
-    return Array.from(map.values());
+    // 下書き（DRAFT）は吹き出しに出さない（端末のキャッシュに前の一覧の下書きが残っていても出さない。下書きは入力欄に出す）
+    return Array.from(map.values()).filter(e => !(e.labelIds || []).includes("DRAFT"));
   }, [emails, persistedEmails]);
 
   // ピン留めの中身を埋める。まず端末キャッシュから出し、無い分だけ Gmail から ID で取る。

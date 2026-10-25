@@ -801,7 +801,9 @@ export async function GET(request: Request) {
 
   try {
     let apiUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}`;
-    if (q) apiUrl += `&q=${encodeURIComponent(q)}`;
+    // 下書き（DRAFT）は一覧に出さない（送ったメールの吹き出しのように見えてしまうため。下書きは drafts=1 で別に読み、入力欄に出す）
+    const listQuery = q ? `${q} -in:drafts` : "-in:drafts";
+    apiUrl += `&q=${encodeURIComponent(listQuery)}`;
     if (includeTrash) apiUrl += `&includeSpamTrash=true`;
     if (pageToken) apiUrl += `&pageToken=${pageToken}`;
 
@@ -848,7 +850,8 @@ export async function GET(request: Request) {
       detailedMessages.push(...chunkResults.filter((m): m is GmailMessage => !!m));
     }
 
-    const parsedMessages = detailedMessages.map(parseMessageDetail);
+    // 念のため、検索から漏れた下書きも外す
+    const parsedMessages = detailedMessages.filter(m => !(m.labelIds || []).includes("DRAFT")).map(parseMessageDetail);
 
     return NextResponse.json({ messages: parsedMessages, topIds, nextPageToken, failedIds });
   } catch (e) {
