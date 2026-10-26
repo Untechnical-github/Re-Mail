@@ -15,7 +15,7 @@ const REPLY_SEARCH_RESULT_LIMIT = 100;
 export function ReplyTargetModal({ app }: { app: MailAppHook }) {
   const { selectedSender, chatConfigs, checkInbox, checkArchive, checkSpam, checkTrash, checkSent } = app.state;
   const { safeBack, openEmailModal, chooseReplyTarget, roomAccountEmail, roomLocalKey } = app.actions;
-  const { allUniqueEmails, groupedEmails, contactDirectory, emailRoomMap, groupReplyPools } = app.computed;
+  const { allUniqueEmails, groupedEmails, contactDirectory, roomOfEmail, groupReplyPools } = app.computed;
   const account = selectedSender ? roomAccountEmail(selectedSender) : "";
 
   const [keyword, setKeyword] = useState("");
@@ -37,7 +37,7 @@ export function ReplyTargetModal({ app }: { app: MailAppHook }) {
   const roomAddress = (room: RoomKeyStr | undefined) => (room ? contactOf.get(room)?.address || "" : "");
 
   const matchField = (e: Email, field: Exclude<ReplySearchTab, "all">): boolean => {
-    const room = emailRoomMap.get(e.id);
+    const room = roomOfEmail(e);
     if (field === "subject") return (e.subject || "").toLowerCase().includes(kw);
     if (field === "body") return (e.body || "").toLowerCase().includes(kw);
     if (field === "recipient") return roomLabel(room).toLowerCase().includes(kw) || (e.from || "").split("<")[0].toLowerCase().includes(kw);
@@ -50,7 +50,7 @@ export function ReplyTargetModal({ app }: { app: MailAppHook }) {
     list.sort((a, b) => sortOrder === "oldest" ? new Date(a.date).getTime() - new Date(b.date).getTime() : new Date(b.date).getTime() - new Date(a.date).getTime());
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- matchField は描画ごとに作り直されるが、中で使う値は依存に入れてある
-  }, [kw, tab, sortOrder, boxFilter, accountEmails, emailRoomMap, contactOf]);
+  }, [kw, tab, sortOrder, boxFilter, accountEmails, roomOfEmail, contactOf]);
 
   // 読み込み済みのメールで0件のとき（2文字以上）だけ、送信元のアカウントの Gmail を件名・本文で検索する。同じ語では二度撃たない
   const subjectCount = useMemo(() => (kw ? accountEmails.filter(e => (e.subject || "").toLowerCase().includes(kw)).length : 0), [kw, accountEmails]);
@@ -88,7 +88,7 @@ export function ReplyTargetModal({ app }: { app: MailAppHook }) {
   const renderRow = (m: Email, showRoom: boolean) => {
     // 送信直後でまだ Gmail の ID が無いメール・読み込めていないメールは返信元にできない（スレッドと引用が作れないため）
     const selectable = !m.id.startsWith("fake-") && !m.isMissing;
-    const room = emailRoomMap.get(m.id);
+    const room = roomOfEmail(m);
     return (
       <div key={m.id} className="flex items-center gap-2 p-2 hover:bg-[#2B2D31] rounded">
         <div className="flex-1 min-w-0 text-sm">

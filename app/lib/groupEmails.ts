@@ -79,13 +79,12 @@ function sentRecipients(email: Pick<Email, "to" | "cc" | "bcc">): { addresses: S
 // （どちらも同じなら今までと同じ名前のまま。アドレスだけのルーム名は表示名があればそちらに負ける）
 export function canonicalRoomNames(
   emails: Email[],
-  myAddress: string,
   myAddresses: string[],
   chatConfigs: Record<LocalKey, ChatConfig>,
 ): Map<string, string> {
   const names = new Map<string, { name: string; time: number }[]>();
   for (const email of emails) {
-    if (email.senderRoom || isMineEmail(email, myAddress || "")) continue;
+    if (email.senderRoom || isMineEmail(email, myAddresses)) continue;
     const partner = mailPartnerOf(email, myAddresses);
     if (!partner.address) continue;
     const list = names.get(partner.address) || [];
@@ -124,10 +123,10 @@ export function groupEmailsByRoom(
   const roomPartner: Record<string, string> = {};
   // 同じ相手（アドレス）なのに表示名がメールごとに違う（「高澤悠樹」と「髙澤家」など）と、チャットが表示名ごとに分かれてしまう。
   // 相手のアドレスごとにルーム名を1つに決める：設定（ピン留め・名前の変更など）があるルーム名を優先し、無ければいちばん新しいメールの表示名
-  const canonicalRoom = canonicalRoomNames(emails, myAddress, myAddresses, chatConfigs);
+  const canonicalRoom = canonicalRoomNames(emails, myAddresses, chatConfigs);
   emails.forEach((email) => {
     if (email.senderRoom) { if (!groups[email.senderRoom]) groups[email.senderRoom] = []; groups[email.senderRoom].push(email); return; }
-    const isMe = isMineEmail(email, myAddress || "");
+    const isMe = isMineEmail(email, myAddresses);
     if (!isMe) {
       const partner = mailPartnerOf(email, myAddresses);
       const roomName = (partner.address && canonicalRoom.get(partner.address)) || partner.roomName;
@@ -174,7 +173,7 @@ export function groupEmailsByRoom(
   const resolveRoomPartnerAddr = (room: string): string => {
     const msgs = groups[room];
     if (!msgs || msgs.length === 0) return "";
-    const partner = msgs.find((e: Email) => !isMineEmail(e, myAddress || ""));
+    const partner = msgs.find((e: Email) => !isMineEmail(e, myAddresses));
     if (partner) return mailPartnerOf(partner, myAddresses).address;
     const raw = (msgs.find((e: Email) => e.to)?.to || "").split(",")[0];
     const match = (raw || "").match(/<([^>]+)>/);
@@ -210,7 +209,7 @@ export function groupEmailsByRoom(
     const memberAddresses = groupMemberAddresses(cfg);
 
     // このグループから送信されたメール = 宛先セットがメンバー全員と完全一致する送信済みメール
-    const sentViaGroup = emails.filter((e: Email) => isMineEmail(e, myAddress) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
+    const sentViaGroup = emails.filter((e: Email) => isMineEmail(e, myAddresses) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
 
     // 一斉送信したメールを各メンバーの個別チャットにも反映する
     sentViaGroup.forEach((sentMsg: Email) => {
@@ -226,7 +225,7 @@ export function groupEmailsByRoom(
     }
 
     const received = emails.filter((e: Email) => {
-      if (isMineEmail(e, myAddress)) return false;
+      if (isMineEmail(e, myAddresses)) return false;
       const addrMatch = (e.from || "").match(/<([^>]+)>/);
       const addr = (addrMatch ? addrMatch[1] : e.from || "").trim().toLowerCase();
       return memberAddresses.has(addr);
@@ -323,7 +322,7 @@ export function applyFilterGroups(
 // ルームの相手（表示名とアドレス）。相手から届いたメールがあれば mailPartnerOf（Reply-To 優先）、
 // 送ったメールしか無ければ、その宛先（To / Cc / Bcc）のうちルーム名（表示名かアドレス）に合うもの、無ければ最初の宛先
 export function roomPartner(msgs: Email[], localKey: string, myAddress: string, myAliases: string[] = []): { name: string; address: string } {
-  const partner = msgs.find(e => !isMineEmail(e, myAddress || ""));
+  const partner = msgs.find(e => !isMineEmail(e, [myAddress, ...myAliases]));
   if (partner) {
     const p = mailPartnerOf(partner, [myAddress, ...myAliases]);
     return { name: p.name, address: p.address };

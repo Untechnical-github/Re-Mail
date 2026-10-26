@@ -641,7 +641,7 @@ export function useMailApp() {
 
   // ルームの計算（チャットへの分け方・メッセージのルームとアカウント・相手・宛先の候補）は useRooms.ts
   const {
-    groupedEmails, groupedEmailsRef, emailRoomMap, resolveMessageAccountEmail, messageConfigKey, getRoomPartner, getRoomRecipient, getRoomAddress, contactDirectory, groupReplyPools,
+    groupedEmails, groupedEmailsRef, emailRoomMap, roomOfEmail, resolveMessageAccountEmail, messageConfigKey, getRoomPartner, getRoomRecipient, getRoomAddress, contactDirectory, groupReplyPools,
   } = useRooms({ session, chatConfigs, allUniqueEmails, sendAsByAccount, linkedAccounts, messageConfigsRef });
 
   // 下書きチャットから離れたとき、何も書いていなければ一覧から消す（useDrafts.ts）
@@ -784,7 +784,7 @@ export function useMailApp() {
       addComposeRecipients, removeComposeRecipient, chooseReplyTarget, setComposeDialog, setComposeActive, myAddressesFor, partnerRecipient, showErrorToast,
       recipientForRoom: (room: RoomKeyStr): ComposeRecipient | null => partnerRecipient(room),
     },
-    computed: { sendFrom: getSendFrom(selectedSender), allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
+    computed: { sendFrom: getSendFrom(selectedSender), allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap, roomOfEmail },
     refs: { touchTimer, hasPushedSelectRef, activeLoadRef, searchTimeoutRef, editorApiRef }
   };
 }

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { HighlightText } from "../ui";
 import { shouldTriggerServerSearch, markServerSearched } from "../../lib/searchFallback";
 import { encodeRoomKey, decodeRoomKey, keysOf, type RoomKeyStr } from "../../lib/roomKey";
+import { mailIdentity } from "../../lib/historySync";
 import type { MailAppHook } from "../../hooks/useMailApp";
 import type { Email } from "../../types/email";
 import { type BoxKey, SEARCH_BOX_LABELS, getSearchBoxInfo } from "./shared";
@@ -108,11 +109,12 @@ export function SearchModal({ app }: { app: MailAppHook }) {
 
   const roomInfoMap = useMemo(() => new Map(roomInfos.map(r => [r.room, r])), [roomInfos]);
 
+  // アカウント＋ID で引く（連携アカウントどうしのメールは同じ ID で両方のアカウントに入ることがあるため）
   const emailRoomMap = useMemo(() => {
     const map = new Map<string, RoomKeyStr>();
-    keysOf(groupedEmails).forEach(room => (groupedEmails[room] || []).forEach((e) => map.set(e.id, room)));
+    keysOf(groupedEmails).forEach(room => (groupedEmails[room] || []).forEach((e) => map.set(mailIdentity(e, mainEmail), room)));
     return map;
-  }, [groupedEmails]);
+  }, [groupedEmails, mainEmail]);
 
   // 非表示にしたチャット・メッセージは検索結果にも出さない（useMailApp.ts の senderList と同じ判定基準）
   const isEmailHiddenFromSearch = (e: Email): boolean => {
@@ -122,7 +124,7 @@ export function SearchModal({ app }: { app: MailAppHook }) {
     const isSent = e.labelIds?.includes("SENT") || e.isMe;
     const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
     if (!(isInbox || isArchive || isSent)) return false;
-    const room = emailRoomMap.get(e.id);
+    const room = emailRoomMap.get(mailIdentity(e, mainEmail));
     if (room && chatConfigs[room]?.isHidden) return true;
     return !!messageConfigs[messageConfigKey(e.id, e.accountId)]?.isHidden;
   };
@@ -267,7 +269,7 @@ export function SearchModal({ app }: { app: MailAppHook }) {
   );
 
   const renderEmailRow = (email: Email, field: "subject" | "body") => {
-    const room = emailRoomMap.get(email.id);
+    const room = emailRoomMap.get(mailIdentity(email, mainEmail));
     const info = room ? roomInfoMap.get(room) : undefined;
     const boxName = getSearchBoxInfo(email).name;
     const dateStr = new Date(email.date).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });

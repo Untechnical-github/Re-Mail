@@ -42,6 +42,17 @@ describe("groupEmailsByRoom", () => {
     expect(Object.keys(groups)).toEqual(["高澤悠樹"]);
   });
 
+  it("エイリアス（別のアドレスから送信）で送ったメールは、自分が送ったメールとして相手のチャットに入る", () => {
+    const ALIAS = "alias@example.com";
+    const emails = [
+      mkEmail({ id: "1", from: "田中太郎 <tanaka@example.com>", to: ALIAS }),
+      mkEmail({ id: "2", from: `自分 <${ALIAS}>`, to: "田中太郎 <tanaka@example.com>", labelIds: ["SENT"] }),
+    ];
+    const groups = groupEmailsByRoom(emails, ME, {} as Record<LocalKey, ChatConfig>, [ALIAS]);
+    expect(Object.keys(groups)).toEqual(["田中太郎"]);
+    expect(groups[asLocalKey("田中太郎")].find(e => e.id === "2")!.isMe).toBe(true);
+  });
+
   it("同じ表示名でもアドレスが1つだけなら、名前はそのまま", () => {
     const emails = [mkEmail({ id: "1", from: "Google <no-reply@example.com>" }), mkEmail({ id: "2", from: "Google <alerts@example.com>" })];
     const groups = groupEmailsByRoom(emails, ME, {} as Record<LocalKey, ChatConfig>);

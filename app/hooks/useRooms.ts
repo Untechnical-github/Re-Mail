@@ -1,6 +1,6 @@
 // ルームの計算：メールを相手ごと・グループごとのチャットに分ける・メッセージからルームとアカウントを引く・相手の名前とアドレス・
 // 宛先の候補・グループの返信元の候補。useMailApp.ts から分けた（動きは変えない。分け方そのものは app/lib/groupEmails.ts）
-import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import type { Session } from "next-auth";
 import type { ChatConfig, MessageConfig } from "../types/mail";
 import type { Email } from "../types/email";
@@ -8,6 +8,7 @@ import { isMineEmail } from "../lib/filterMatch";
 import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, groupMemberAddresses, roomPartner } from "../lib/groupEmails";
 import { type LocalKey, type RoomKeyStr, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { parseAddressSet, sameAddressSet } from "../lib/mailAppHelpers";
+import { mailIdentity } from "../lib/historySync";
 import type { useSendAs } from "./useSendAs";
 
 export function useRooms({
@@ -50,6 +51,17 @@ export function useRooms({
     // 別途集約する（criteria.accountEmailで対象アカウントを絞り込める）
     return applyFilterGroups(merged, chatConfigs, allUniqueEmails, myEmail);
   }, [allUniqueEmails, session, chatConfigs, linkedAccounts, sendAsByAccount]);
+
+  // メール（アカウント＋ID）→ ルーム。連携アカウントどうしのメールは同じ ID で両方のアカウントに入ることがあるため、
+  // 画面に出ているメールそのもののルームを引くときはこちらを使う
+  const roomByIdentity = useMemo(() => {
+    const myEmail = session?.user?.email || "";
+    const map = new Map<string, RoomKeyStr>();
+    keysOf(groupedEmails).forEach(room => (groupedEmails[room] || []).forEach((e) => map.set(mailIdentity(e, myEmail), room)));
+    return map;
+  }, [groupedEmails, session]);
+  const sessionEmail = session?.user?.email || "";
+  const roomOfEmail = useCallback((e: Email): RoomKeyStr | undefined => roomByIdentity.get(mailIdentity(e, sessionEmail)), [roomByIdentity, sessionEmail]);
 
   const groupedEmailsRef = useRef(groupedEmails);
   useEffect(() => { groupedEmailsRef.current = groupedEmails; }, [groupedEmails]);
@@ -147,9 +159,13 @@ export function useRooms({
       // アカウント（連携アカウントの場合はそちら）で判定する（メインアカウント固定だと、
       // 連携アカウントのグループで送受信の判定が逆転してしまう）
       const memberAddresses = groupMemberAddresses(cfg);
-      const sentViaGroup = allUniqueEmails.filter((e) => isMineEmail(e, accountEmail) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
-      const received = allUniqueEmails.filter((e) => {
-        if (isMineEmail(e, accountEmail)) return false;
+      // このグループのアカウントのメールだけを候補にする（ほかのアカウントのメールを混ぜない）。自分はエイリアスも含む
+      const myEmail = session?.user?.email || "";
+      const mine = [accountEmail, ...(sendAsByAccount[accountEmail] || []).map(a => a.sendAsEmail)];
+      const accountEmails = allUniqueEmails.filter(e => (e.accountId || myEmail) === accountEmail);
+      const sentViaGroup = accountEmails.filter((e) => isMineEmail(e, mine) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
+      const received = accountEmails.filter((e) => {
+        if (isMineEmail(e, mine)) return false;
         const addrMatch = (e.from || "").match(/<([^>]+)>/);
         const addr = (addrMatch ? addrMatch[1] : e.from || "").trim().toLowerCase();
         return memberAddresses.has(addr);
@@ -158,7 +174,7 @@ export function useRooms({
     });
     return pools;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allUniqueEmails, chatConfigs, groupedEmails, session]);
+  }, [allUniqueEmails, chatConfigs, groupedEmails, session, sendAsByAccount]);
 
-  return { groupedEmails, groupedEmailsRef, emailRoomMap, resolveMessageAccountEmail, messageConfigKey, getRoomPartner, getRoomRecipient, getRoomAddress, contactDirectory, groupReplyPools };
+  return { groupedEmails, groupedEmailsRef, emailRoomMap, roomOfEmail, resolveMessageAccountEmail, messageConfigKey, getRoomPartner, getRoomRecipient, getRoomAddress, contactDirectory, groupReplyPools };
 }
