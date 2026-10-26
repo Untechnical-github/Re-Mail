@@ -273,7 +273,6 @@ Re-Mail/
 │   └── page.tsx                          # メイン画面（ログイン・通知・ChatList / TalkView / Composer の組み立て）
 ├── migrations/                           # D1 のスキーマ（連番。適用済みのファイルは書き換えない）
 ├── script/ci/                            # retry.sh / health-check.sh
-├── script/browser/                       # PC の Playwright での確認：dev.sh / check.mjs / session.mjs / gmail-inspect.mjs / get-refresh-token.mjs
 ├── .github/workflows/deploy-worker.yml
 ├── types/next-auth.d.ts
 ├── auth.ts / worker.ts / env.d.ts
@@ -1196,7 +1195,7 @@ frame-ancestors 'none'
   - 同じ相手に下書きが2つ → 「ほかに下書きが1件」から選べる。宛先のない下書き → 一覧の上に出る
 
 ### 17.3 自動の結合テスト（まだ作っていない）
-PC の Claude Code では、`script/browser/`（Playwright）と `gmail-inspect.mjs` で、テスト用アカウント2つの間の送受信とヘッダーを確かめられる（`docs/claude/browser.md`）。Muse では、本番の画面で2つの開発用アカウント間の送受信を確かめられる。ただし自動の結合テストはまだ無い。作るなら、Re:Mail の送信処理で A から B に送り、B 側で `format=raw` を取ってヘッダー・スレッド・Cc・添付・文字コードを自動で調べられる。純正 Gmail から一度送ったソースを「正解」として保存しておけば、比べるところまで自動にできる。
+PC では `~/remail-e2e`（リポジトリの外）で、本番の Re:Mail と純正 Gmail を画面で操作して確かめる（`docs/claude/browser.md`）。Muse では、本番の画面で2つの開発用アカウント間の送受信を確かめられる。ただし自動の結合テストはまだ無い。作るなら、Re:Mail の送信処理で A から B に送り、B 側で `format=raw` を取ってヘッダー・スレッド・Cc・添付・文字コードを自動で調べられる。純正 Gmail から一度送ったソースを「正解」として保存しておけば、比べるところまで自動にできる。
 
 ---
 
@@ -1308,8 +1307,8 @@ WebKit の記録には、スクリプトを許していない iframe でイベ�
 
 ## 21. claude.ai・Claude Code（PC）・Muse の役割分担
 - **claude.ai（Re:Mail プロジェクト）**：設計の壁打ち、原因の仮説出し、指示文づくり。**指示文には、関係する §0 のルールを必ず書き添える。** 指示文は宛先（Claude Code か Muse か）を分けて書く。Muse 宛ての確認手順は、本番サイトとブラウザの操作だけで済む形にする。
-- **Claude Code（PC の VSCode）**：PC での開発。実装・テスト・ローカルの Playwright での確認（`docs/claude/browser.md`）・push。作業ルールは `CLAUDE.md` に従う（冒頭に §0 とサブテーマ、§17.1 のチェックリストがある）。README・大きなファイルは全体を読まず、`grep -n` で節や場所を探して要る範囲だけ読む。README は変えた節だけ直す。
-- **Muse**（Meta の AI エージェント）：スマホからの指示の実行（実装・push・本番の確認・報告）。仮想マシンに Claude Code とブラウザがあり、開発用アカウント2つで本番にログイン済み。Playwright・`script/browser/` は使わず、commit・push は GitHub 連携で行う。
+- **Claude Code（PC の VSCode）**：PC での開発。実装・テスト・`~/remail-e2e` での本番の確認（`docs/claude/browser.md`）・push。作業ルールは `CLAUDE.md` に従う（冒頭に §0 とサブテーマ、§17.1 のチェックリストがある）。README・大きなファイルは全体を読まず、`grep -n` で節や場所を探して要る範囲だけ読む。README は変えた節だけ直す。
+- **Muse**（Meta の AI エージェント）：スマホからの指示の実行（実装・push・本番の確認・報告）。仮想マシンに Claude Code とブラウザがあり、開発用アカウント2つで本番にログイン済み。Playwright・`~/remail-e2e` は使わず、commit・push は GitHub 連携で行う。
 - **この README を正とする。** 大きな変更をしたら、同じコミットで README の該当箇所も直す。claude.ai のプロジェクトは GitHub と同期しているが、Claude Code の変更は自動では反映されないので、大きな変更のあとは同期をやり直す。
 
 ---

@@ -48,4 +48,3 @@ next-env.d.ts
 # Claude Code
 .claude/handoff.md
 .claude/settings.local.json
-/.playwright/
