@@ -182,6 +182,8 @@ export function TalkView({ app, lastMsgIdxRef, collapseCompose, selectedGroupCon
                     // （メインアカウントのメールアドレスで判定すると、連携アカウント側の受信メールが
                     // 差出人＝メインアカウントの場合に誤って「自分が送った」扱いになってしまう）
                     const isMe = isMineEmail(email, actions.roomAccountEmail(state.selectedSender!));
+                    // このメールのアカウント（宛先の表示などのアカウント設定を引くのに使う）
+                    const mailAccount = email.accountId || actions.roomAccountEmail(state.selectedSender!);
                     const isSelected = state.selectedIds.includes(email.id);
                     
                     // ★修正: 送信済みチェックを「絶対優先」に書き換え
@@ -313,13 +315,13 @@ export function TalkView({ app, lastMsgIdxRef, collapseCompose, selectedGroupCon
                            <div className="flex items-center gap-2 mb-1.5 mx-1 text-[11px] text-gray-400 select-none">
                               {!isMe && <span className="font-bold text-gray-300">{email.from.split("<")[0].replace(/"/g, "").trim() || "Unknown"}</span>}
                               <span>{new Date(email.date).toLocaleString("ja-JP", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
-                              {/* 宛先の表示設定（共通設定・既定オフ）。送ったメールは人数、受け取ったメールは自分がどの欄で受け取ったか */}
-                              {isMe && state.showSentRecipients && (() => {
+                              {/* 宛先の表示設定（アカウント設定・既定オフ）。送ったメールは人数、受け取ったメールは自分がどの欄で受け取ったか */}
+                              {isMe && state.accountSettings[mailAccount]?.showSentRecipients && (() => {
                                 const counts = sentRecipientCounts(email);
                                 return counts ? <span className="px-1.5 rounded bg-black/20 text-gray-300">{counts}</span> : null;
                               })()}
-                              {!isMe && state.showReceivedRecipients && (
-                                <span className="px-1.5 rounded bg-black/20 text-gray-300">{receivedRole(email, actions.myAddressesFor(email.accountId || actions.roomAccountEmail(state.selectedSender!)))}</span>
+                              {!isMe && state.accountSettings[mailAccount]?.showReceivedRecipients && (
+                                <span className="px-1.5 rounded bg-black/20 text-gray-300">{receivedRole(email, actions.myAddressesFor(mailAccount))}</span>
                               )}
                            </div>
                            <div

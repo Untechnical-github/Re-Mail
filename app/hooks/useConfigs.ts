@@ -5,7 +5,7 @@ import type { useSession } from "next-auth/react";
 import type { ChatConfig, MessageConfig } from "../types/mail";
 import type { Email } from "../types/email";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
-import { sanitizeSyncedSettings, sanitizeAccountSettings, syncedSettingsKey, type SyncedSettings, type AccountSettings } from "../lib/syncedSettings";
+import { sanitizeSyncedSettings, sanitizeAccountSettings, legacyAccountSettingsToCopy, syncedSettingsKey, type SyncedSettings, type AccountSettings } from "../lib/syncedSettings";
 import { readPinnedIds, capPinnedIds, mergePinnedIds } from "../lib/pinnedIds";
 import { logError, logWarn } from "../lib/safeLog";
 import { createSaveQueue, type SaveQueue } from "../lib/configSaveQueue";
@@ -43,13 +43,13 @@ export type UseConfigsParams = {
   setAccountSettings: SetState<Record<string, AccountSettings>>;
   setAccountSettingsLoaded: SetState<boolean>;
   checkInbox: boolean; checkArchive: boolean; checkSpam: boolean; checkTrash: boolean; checkSent: boolean;
-  useIconLabels: boolean; showSentRecipients: boolean; showReceivedRecipients: boolean; checkAccounts: Record<string, boolean>;
+  useIconLabels: boolean; checkAccounts: Record<string, boolean>;
   setCheckInbox: SetState<boolean>; setCheckArchive: SetState<boolean>; setCheckSpam: SetState<boolean>; setCheckTrash: SetState<boolean>; setCheckSent: SetState<boolean>;
-  setUseIconLabels: SetState<boolean>; setShowSentRecipients: SetState<boolean>; setShowReceivedRecipients: SetState<boolean>; setCheckAccounts: SetState<Record<string, boolean>>;
+  setUseIconLabels: SetState<boolean>; setCheckAccounts: SetState<Record<string, boolean>>;
 };
 
 export function useConfigs({
-  session, showErrorToast, showInfoToast, selectedSender, setSelectedSender, setChatConfigs, setMessageConfigs, chatConfigsRef, messageConfigsRef, setPersistedEmails, hydratePinnedEmails, accountSettings, setAccountSettings, setAccountSettingsLoaded, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, showSentRecipients, showReceivedRecipients, checkAccounts, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setUseIconLabels, setShowSentRecipients, setShowReceivedRecipients, setCheckAccounts,
+  session, showErrorToast, showInfoToast, selectedSender, setSelectedSender, setChatConfigs, setMessageConfigs, chatConfigsRef, messageConfigsRef, setPersistedEmails, hydratePinnedEmails, accountSettings, setAccountSettings, setAccountSettingsLoaded, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, checkAccounts, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setUseIconLabels, setCheckAccounts,
 }: UseConfigsParams) {
   // 設定の保存は、失敗したら自動で送り直す（中身は app/lib/configSaveQueue.ts）。同じ行への保存は新しい値だけを送る。
   // 送り直してもだめなら、画面の表示はもう変わっているので、保存されていないこと（再読み込みで元に戻ること）を伝える（絶対ルール3）
@@ -172,7 +172,15 @@ export function useConfigs({
       logError("config.load", {}, e);
       showErrorToast("ピン留め・名前変更などの設定を読み込めませんでした。通信状況を確認して再読み込みしてください。");
     }
-    if (loadedAccountSettings) setAccountSettings(loadedAccountSettings);
+    // 宛先の表示は以前は共通設定だった。まだ決めていないアカウントには、その値を写して保存する
+    if (loadedAccountSettings) {
+      const copies = legacyAccountSettingsToCopy(globalSettings, loadedAccountSettings);
+      for (const [acc, add] of Object.entries(copies)) {
+        loadedAccountSettings[acc] = { ...loadedAccountSettings[acc], ...add };
+        saveAccountSettingRow(acc, add);
+      }
+      setAccountSettings(loadedAccountSettings);
+    }
     // 読めたときだけ「読み終えた」にする（読めなかったら、オフにしているかもしれないので Gmail の下書きとの同期を始めない）
     if (loadedAccountSettings) setAccountSettingsLoaded(true);
     return { globalSettings, formatted };
@@ -182,8 +190,8 @@ export function useConfigs({
   // 新しい共通設定を足すときは、ここと下の applySyncedSettings にも足す。アカウントごとの設定は accountSettings に持つ
   const syncedSettings: SyncedSettings = useMemo(() => ({
     inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent,
-    iconLabels: useIconLabels, showSentRecipients, showReceivedRecipients, accounts: checkAccounts,
-  }), [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, showSentRecipients, showReceivedRecipients, checkAccounts]);
+    iconLabels: useIconLabels, accounts: checkAccounts,
+  }), [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, checkAccounts]);
   // D1 から読んだ設定を画面に反映する（D1 に無い設定は、この端末の今の値のまま）
   const applySyncedSettings = (s: SyncedSettings) => {
     if (s.inbox !== undefined) setCheckInbox(s.inbox);
@@ -192,8 +200,6 @@ export function useConfigs({
     if (s.trash !== undefined) setCheckTrash(s.trash);
     if (s.sent !== undefined) setCheckSent(s.sent);
     if (s.iconLabels !== undefined) setUseIconLabels(s.iconLabels);
-    if (s.showSentRecipients !== undefined) setShowSentRecipients(s.showSentRecipients);
-    if (s.showReceivedRecipients !== undefined) setShowReceivedRecipients(s.showReceivedRecipients);
     if (s.accounts !== undefined) setCheckAccounts(s.accounts);
   };
   // D1 から読み終えるまでは保存しない（読む前のこの端末の値で、ほかの端末で変えた設定を上書きしないため）
@@ -218,13 +224,17 @@ export function useConfigs({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- getSaveQueue は ref から同じキューを返すだけで、描画ごとに作り直されるため入れると毎回保存が走る
   }, [syncedSettings, syncedSettingsReady]);
 
+  // アカウント設定の変えた分を、そのアカウントの置き場所に保存する（失敗したら自動で送り直す）
+  function saveAccountSettingRow(account: string, updates: AccountSettings) {
+    const body = JSON.stringify({ account_settings: updates, account_email: account });
+    void getSaveQueue().save(`${ACCOUNT_SETTINGS_KEY_PREFIX}${account}`, () =>
+      sendConfigRequest("config.saveAccount", "/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body }));
+  }
   // アカウント設定を1つ変えて、そのアカウントの置き場所に保存する（失敗したら自動で送り直す）
   const setAccountSetting = (account: string, updates: AccountSettings) => {
     if (!account) return;
     setAccountSettings(prev => ({ ...prev, [account]: { ...prev[account], ...updates } }));
-    const body = JSON.stringify({ account_settings: updates, account_email: account });
-    void getSaveQueue().save(`${ACCOUNT_SETTINGS_KEY_PREFIX}${account}`, () =>
-      sendConfigRequest("config.saveAccount", "/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body }));
+    saveAccountSettingRow(account, updates);
   };
   // そのアカウントのメールで、外部の画像を押さずに読み込むか
   const alwaysLoadImagesFor = (account: string | undefined): boolean =>

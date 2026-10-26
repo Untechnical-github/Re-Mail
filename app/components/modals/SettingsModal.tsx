@@ -37,21 +37,6 @@ export function SettingsModal({ app, settingsTab, setSettingsTab }: { app: MailA
             <button onClick={() => app.actions.setUseIconLabels(true)} className={toggleClass(app.state.useIconLabels)}>アイコン</button>
           </div>
         </div>
-        {/* 宛先の表示（既定はオフ）。メールの詳細には、設定に関係なく To / Cc（送ったメールなら Bcc も）を出す */}
-        {([
-          ["送ったメールに宛先の人数を表示する", "送ったメールの時間の横に「To 1・Cc 2・Bcc 1」のように出します", app.state.showSentRecipients, app.actions.setShowSentRecipients],
-          ["受け取ったメールに、自分がどの欄で受け取ったかを表示する", "受け取ったメールの時間の横に「To」か「Cc」を出します。どちらにも自分がいないときは「宛先に自分なし」と出します（Bcc・メーリングリスト・自動転送のどれかは分かりません）", app.state.showReceivedRecipients, app.actions.setShowReceivedRecipients],
-        ] as const).map(([title, desc, on, set]) => (
-          <div key={title} className="bg-[#2B2D31] rounded p-3 mt-3">
-            <div className="text-sm font-bold text-gray-200 mb-1">{title}</div>
-            <div className="text-xs text-gray-500 mb-1">{desc}</div>
-            <div className="text-[11px] text-gray-500 mb-3">To：宛先 ／ Cc：ほかの人にも見せる（{ROLE_HINTS.cc}）／ Bcc：こっそり送る（{ROLE_HINTS.bcc}）</div>
-            <div className="flex gap-2">
-              <button onClick={() => set(false)} className={toggleClass(!on)}>オフ</button>
-              <button onClick={() => set(true)} className={toggleClass(on)}>オン</button>
-            </div>
-          </div>
-        ))}
       </>
     )}
 
@@ -107,6 +92,24 @@ export function SettingsModal({ app, settingsTab, setSettingsTab }: { app: MailA
               <div key={key} className="bg-[#2B2D31] rounded p-3 mt-3">
                 <div className="text-sm font-bold text-gray-200 mb-1">{title}</div>
                 <div className="text-xs text-gray-500 mb-3">{desc}</div>
+                <div className="flex gap-2">
+                  <button onClick={() => app.actions.setAccountSetting(a, { [key]: false })} className={toggleClass(!on)}>オフ</button>
+                  <button onClick={() => app.actions.setAccountSetting(a, { [key]: true })} className={toggleClass(on)}>オン</button>
+                </div>
+              </div>
+            );
+          })}
+          {/* 宛先の表示（既定はオフ）。メールの詳細には、設定に関係なく To / Cc（送ったメールなら Bcc も）を出す */}
+          {([
+            ["showSentRecipients", "送ったメールに宛先の人数を表示する", "このアカウントで送ったメールの時間の横に「To 1・Cc 2・Bcc 1」のように出します"],
+            ["showReceivedRecipients", "受け取ったメールに、自分がどの欄で受け取ったかを表示する", "このアカウントで受け取ったメールの時間の横に「To」か「Cc」を出します。どちらにも自分がいないときは「宛先に自分なし」と出します（Bcc・メーリングリスト・自動転送のどれかは分かりません）"],
+          ] as const).map(([key, title, desc]) => {
+            const on = !!app.state.accountSettings[a]?.[key];
+            return (
+              <div key={key} className="bg-[#2B2D31] rounded p-3 mt-3">
+                <div className="text-sm font-bold text-gray-200 mb-1">{title}</div>
+                <div className="text-xs text-gray-500 mb-1">{desc}</div>
+                <div className="text-[11px] text-gray-500 mb-3">To：宛先 ／ Cc：ほかの人にも見せる（{ROLE_HINTS.cc}）／ Bcc：こっそり送る（{ROLE_HINTS.bcc}）</div>
                 <div className="flex gap-2">
                   <button onClick={() => app.actions.setAccountSetting(a, { [key]: false })} className={toggleClass(!on)}>オフ</button>
                   <button onClick={() => app.actions.setAccountSetting(a, { [key]: true })} className={toggleClass(on)}>オン</button>

@@ -97,8 +97,6 @@ export function useMailApp() {
   // アカウント設定を読み終えたか（Gmail の下書きとの同期は、読み終えるまで始めない。オフにしている人の分を保存しないため）
   const [accountSettingsLoaded, setAccountSettingsLoaded] = useState(false);
   // 宛先の表示設定（共通設定・既定はオフ）。送ったメールに「To 1・Cc 2・Bcc 1」、受け取ったメールに自分の立場（To / Cc）を出す
-  const [showSentRecipients, setShowSentRecipients] = useState(false);
-  const [showReceivedRecipients, setShowReceivedRecipients] = useState(false);
   const [checkInbox, setCheckInbox] = useState<boolean>(() => getSavedBoxSettings()?.inbox ?? true);
   const [checkArchive, setCheckArchive] = useState<boolean>(() => getSavedBoxSettings()?.archive ?? true);
   const [checkSpam, setCheckSpam] = useState<boolean>(() => getSavedBoxSettings()?.spam ?? false);
@@ -539,7 +537,7 @@ export function useMailApp() {
   const {
     loadD1Configs, applySyncedSettings, setSyncedSettingsReady, savedSyncedKeyRef, setAccountSetting, alwaysLoadImagesFor, saveGlobalSettings, updateChatConfig, updateMessageConfig, deleteChatConfig, updateChatConfigByRoomKey, deleteChatConfigByRoomKey, syncConfigs,
   } = useConfigs({
-    session, showErrorToast, showInfoToast, selectedSender, setSelectedSender, setChatConfigs, setMessageConfigs, chatConfigsRef, messageConfigsRef, setPersistedEmails, hydratePinnedEmails, accountSettings, setAccountSettings, setAccountSettingsLoaded, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, showSentRecipients, showReceivedRecipients, checkAccounts, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setUseIconLabels, setShowSentRecipients, setShowReceivedRecipients, setCheckAccounts,
+    session, showErrorToast, showInfoToast, selectedSender, setSelectedSender, setChatConfigs, setMessageConfigs, chatConfigsRef, messageConfigsRef, setPersistedEmails, hydratePinnedEmails, accountSettings, setAccountSettings, setAccountSettingsLoaded, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, checkAccounts, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setUseIconLabels, setCheckAccounts,
   });
 
   useEffect(() => {
@@ -760,7 +758,7 @@ export function useMailApp() {
       chatCacheLimit,
       collapseLinesCount, expandedMsgIds, emailModal, attachmentModal,
       replyNotFoundToast, errorToast, infoToast, sendConfirm, unloadedCount, isRetryingUnloaded, draftChats, activeChatTab,
-      recipients: effectiveRecipients, recipientsCustomized, composeDialog, composeActive, showSentRecipients, showReceivedRecipients, sendAsByAccount,
+      recipients: effectiveRecipients, recipientsCustomized, composeDialog, composeActive, sendAsByAccount,
       isDraftReady: draftReadyRoom === selectedSender,
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
@@ -781,7 +779,6 @@ export function useMailApp() {
       unlinkAccount, isAccountVisible, setSendConfirm, retryUnloaded,
       addComposeRecipients, removeComposeRecipient, chooseReplyTarget, setComposeDialog, setComposeActive, myAddressesFor, partnerRecipient, showErrorToast,
       recipientForRoom: (room: RoomKeyStr): ComposeRecipient | null => partnerRecipient(room),
-      setShowSentRecipients, setShowReceivedRecipients,
     },
     computed: { sendFrom: getSendFrom(selectedSender), allUniqueEmails, groupedEmails, senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats, pinnedMsgsInChat, contactDirectory, groupReplyPools, findBarMatches, emailRoomMap },
     refs: { touchTimer, hasPushedSelectRef, activeLoadRef, searchTimeoutRef, editorApiRef }

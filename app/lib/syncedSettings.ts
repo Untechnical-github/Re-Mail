@@ -13,9 +13,8 @@ export const SYNCED_SETTING_TYPES = {
   sent: "boolean",
   // 送信ボタン・アクションバー・場所の表示を、文字にするかアイコンにするか
   iconLabels: "boolean",
-  // 送ったメールの時間の横に「To 1・Cc 2・Bcc 1」を出すか（既定はオフ）
+  // 以前は共通設定だった宛先の表示（今はアカウント設定）。読むだけで、アカウント設定に写すのに使う（新しくは保存しない）
   showSentRecipients: "boolean",
-  // 受け取ったメールの時間の横に、自分がどの欄（To / Cc）で受け取ったかを出すか（既定はオフ）
   showReceivedRecipients: "boolean",
   // アカウントごとの表示チェックボックス（キーはアカウントのアドレス。行ごと暗号化するので D1 に平文では残らない）
   accounts: "accountMap",
@@ -24,7 +23,7 @@ export const SYNCED_SETTING_TYPES = {
 } as const;
 
 // 画面が持って保存する共通設定の名前（updatedAt は含めない）
-export const COMMON_SETTING_KEYS = ["inbox", "archive", "spam", "trash", "sent", "iconLabels", "showSentRecipients", "showReceivedRecipients", "accounts"] as const;
+export const COMMON_SETTING_KEYS = ["inbox", "archive", "spam", "trash", "sent", "iconLabels", "accounts"] as const;
 
 // アカウント設定の一覧（アカウントごとに保存する）
 export const ACCOUNT_SETTING_TYPES = {
@@ -36,6 +35,10 @@ export const ACCOUNT_SETTING_TYPES = {
   autoReadOnOpenMail: "boolean",
   // Re:Mail の書きかけを Gmail の下書きに保存し、Gmail の下書きをチャットの入力欄に出すか（既定はオン。保存していない＝オン）
   gmailDraftSync: "boolean",
+  // 送ったメールの時間の横に「To 1・Cc 2・Bcc 1」を出すか（既定はオフ）
+  showSentRecipients: "boolean",
+  // 受け取ったメールの時間の横に、自分がどの欄（To / Cc）で受け取ったかを出すか（既定はオフ）
+  showReceivedRecipients: "boolean",
 } as const;
 export type AccountSettings = { -readonly [K in keyof typeof ACCOUNT_SETTING_TYPES]?: boolean };
 
@@ -101,4 +104,19 @@ export function newestCommonSettings(copies: { settings: SyncedSettings; preferr
     if (!best || at > best.at || (at === best.at && c.preferred && !best.preferred)) best = { settings: c.settings, at, preferred: c.preferred };
   }
   return best ? best.settings : {};
+}
+
+// 以前の共通設定にあった宛先の表示を、まだ決めていないアカウントのアカウント設定に写す分を返す（写すものが無いアカウントは含めない）
+export const LEGACY_COMMON_ACCOUNT_KEYS = ["showSentRecipients", "showReceivedRecipients"] as const;
+export function legacyAccountSettingsToCopy(common: SyncedSettings | null, accounts: Record<string, AccountSettings>): Record<string, AccountSettings> {
+  const out: Record<string, AccountSettings> = {};
+  if (!common) return out;
+  for (const [account, current] of Object.entries(accounts)) {
+    const add: AccountSettings = {};
+    for (const k of LEGACY_COMMON_ACCOUNT_KEYS) {
+      if (common[k] !== undefined && current[k] === undefined) add[k] = common[k];
+    }
+    if (Object.keys(add).length > 0) out[account] = add;
+  }
+  return out;
 }

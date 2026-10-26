@@ -19,7 +19,7 @@ describe("sanitizeSyncedSettings", () => {
     expect(sanitizeSyncedSettings({ accounts: ["a@example.com"] })).toEqual({});
   });
 
-  it("宛先の表示設定（送った・受け取ったメール）は真偽値だけを残す", () => {
+  it("以前の共通設定にあった宛先の表示設定（送った・受け取ったメール）は、写すために真偽値だけを読む", () => {
     expect(sanitizeSyncedSettings({ showSentRecipients: true, showReceivedRecipients: false })).toEqual({ showSentRecipients: true, showReceivedRecipients: false });
     expect(sanitizeSyncedSettings({ showSentRecipients: "true", showReceivedRecipients: 1 })).toEqual({});
   });
@@ -44,8 +44,9 @@ describe("共通設定とアカウント設定", () => {
 
   it("画面が持つ共通設定だけを取り出す（updatedAt は外す）", async () => {
     const { pickCommonSettings } = await import("./syncedSettings");
-    expect(pickCommonSettings({ inbox: true, iconLabels: false, showSentRecipients: true, updatedAt: 9, accounts: { "a@example.com": true } }))
-      .toEqual({ inbox: true, iconLabels: false, showSentRecipients: true, accounts: { "a@example.com": true } });
+    // 宛先の表示は今はアカウント設定なので、共通設定としては保存しない
+    expect(pickCommonSettings({ inbox: true, iconLabels: false, showSentRecipients: true, showReceivedRecipients: false, updatedAt: 9, accounts: { "a@example.com": true } }))
+      .toEqual({ inbox: true, iconLabels: false, accounts: { "a@example.com": true } });
   });
 
   it("アカウント設定は決まった名前の真偽値だけを残す", async () => {
@@ -53,6 +54,21 @@ describe("共通設定とアカウント設定", () => {
     expect(sanitizeAccountSettings({ alwaysLoadImages: true, inbox: true, note: "x" })).toEqual({ alwaysLoadImages: true });
     expect(sanitizeAccountSettings({ alwaysLoadImages: "yes" })).toEqual({});
     expect(sanitizeAccountSettings(null)).toEqual({});
+    expect(sanitizeAccountSettings({ showSentRecipients: true, showReceivedRecipients: false })).toEqual({ showSentRecipients: true, showReceivedRecipients: false });
+    expect(sanitizeAccountSettings({ showSentRecipients: "true", showReceivedRecipients: 1 })).toEqual({});
+  });
+
+  it("以前の共通設定の宛先の表示を、まだ決めていないアカウントにだけ写す", async () => {
+    const { legacyAccountSettingsToCopy } = await import("./syncedSettings");
+    const accounts = { "a@example.com": {}, "b@example.com": { showSentRecipients: false }, "c@example.com": { showSentRecipients: true, showReceivedRecipients: false } };
+    expect(legacyAccountSettingsToCopy({ showSentRecipients: true, showReceivedRecipients: true }, accounts)).toEqual({
+      "a@example.com": { showSentRecipients: true, showReceivedRecipients: true },
+      "b@example.com": { showReceivedRecipients: true },
+    });
+    // 共通設定に無い・読めなかったときは何も写さない
+    expect(legacyAccountSettingsToCopy({ inbox: true }, accounts)).toEqual({});
+    expect(legacyAccountSettingsToCopy(null, accounts)).toEqual({});
+    expect(legacyAccountSettingsToCopy({ showSentRecipients: false }, {})).toEqual({});
   });
 
   it("写しのうち一番新しいものを選び、同じ時刻ならログインのセッションを持つアカウントの分を選ぶ", async () => {
