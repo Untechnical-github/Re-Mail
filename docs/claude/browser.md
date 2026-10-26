@@ -1,6 +1,8 @@
-# ブラウザでの確認（Claude Code のリモート環境・Playwright。画面の確認・送受信の確認をするときだけ読む）
+# ブラウザでの確認（PC の Claude Code・ローカルの Playwright。画面の確認・送受信の確認をするときだけ読む）
 
-Playwright と Chromium はリモート環境に入っている（`require("playwright")` で使える。依存には足さない）。
+**Muse の環境で動いているときは、この文書の手順（Playwright・`script/browser/`・リフレッシュトークン・`gmail-inspect.mjs`）は使えない。ブラウザでの確認はせず、本番で Muse のブラウザで確かめる手順を報告に書く。**
+
+PC に入っている Playwright を使う（`require("playwright")`。依存には足さない）。
 トークンの取り方などユーザー向けの手順書は無い（2026-10-26 に消した）。必要ならユーザーに聞く。
 
 ## 使い方
@@ -13,10 +15,10 @@ Playwright と Chromium はリモート環境に入っている（`require("play
 4. `node script/browser/gmail-inspect.mjs --account=2 --q='subject:"[re-mail-test]" newer_than:1h' [--body]` … Gmail を API で直接読み、ヘッダー・スレッド・MIME の各部分を出す（読むだけ）。
 
 ## ログイン
-- 環境変数（ユーザーが入れる。Claude は値を見ない・出力しない・会話で聞かない）：
+- 環境変数（ユーザーが PC の環境に入れる。Claude は値を見ない・出力しない・会話で聞かない）：
   `GOOGLE_CLIENT_ID` `GOOGLE_CLIENT_SECRET`（本番・ローカル開発と共通） `RE_MAIL_TEST_EMAIL` `RE_MAIL_TEST_REFRESH_TOKEN`、2つ目は末尾に `_2`。
 - `AUTH_SECRET` と `TOKEN_ENCRYPTION_KEY` は要らない（`dev.sh` がこの環境の中だけの鍵を作る）。
-- `login: 失敗` が出たら、ユーザーにリフレッシュトークンを取り直して環境の設定に入れ直してもらう（値をチャットで受け取らない）。
+- `login: 失敗` が出たら、ユーザーにリフレッシュトークンを取り直して PC の環境変数に入れ直してもらう（値をチャットで受け取らない）。
 
 ## 送受信の確認
 - 送ってよいのは、テスト用アカウントの1つ目と2つ目のあいだだけ。件名の先頭に `[re-mail-test]` を付ける。
@@ -27,3 +29,4 @@ Playwright と Chromium はリモート環境に入っている（`require("play
 
 ## 確認の後
 - 画面・送受信に関わる変更は、ここで確認が通ってから `main` に push する（ユーザーの了承済み）。確かめられなかったことは報告に書く。
+- Muse では、push してデプロイされたあとに本番で確かめる。

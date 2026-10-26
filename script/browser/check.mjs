@@ -1,23 +1,23 @@
 #!/usr/bin/env node
-// Playwright でページを開き、スクリーンショットとコンソールのエラーを出す（Claude Code のリモート環境での確認用）。
+// Playwright でページを開き、スクリーンショットとコンソールのエラーを出す（PC での確認用）。
 // 使い方: node script/browser/check.mjs [URL] [--mobile] [--login[=2]] [--wait=ミリ秒] [--out=ディレクトリ]
 //   既定の URL は http://localhost:3000/ 、出力先は .playwright/（git 管理外）。
 //   --login：テスト用アカウント（1つ目）でログインした状態で開く。--login=2 で2つ目（docs/claude/browser.md）。
 //   --wait：読み込みの後、スクリーンショットまで待つ時間（メールの一覧を待つときなど。既定 0、上限 120 秒）。
-// 依存は足さない。Playwright はリモート環境に入っているもの（/opt/node-tools）を使う。
+// 依存は足さない。Playwright は PC に入っているもの（NODE_PATH で見つける）を使う。
 // 外部への通信は読まずに止め、一覧だけ出す（このアプリは外部に通信しない決まりなので、出たら違反の手がかり）。
 import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import { openTestPage } from "./session.mjs";
 
-// createRequire の解決は NODE_PATH を見るので、リモート環境の全体に入った playwright が見つかる
+// createRequire の解決は NODE_PATH を見るので、PC の全体に入った playwright が見つかる
 const require = createRequire(import.meta.url);
 let chromium;
 try {
   ({ chromium } = require("playwright"));
 } catch {
-  process.stderr.write("playwright が見つかりません。Claude Code のリモート環境で実行してください。\n");
+  process.stderr.write("playwright が見つかりません。PC に入っている Playwright を NODE_PATH で指定して実行してください。\n");
   process.exit(1);
 }
 

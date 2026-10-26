@@ -16,7 +16,11 @@ Gmail をチャット風（相手ごとのトークルーム）で読み書き�
 | 複数アカウント・roomKey・設定の種類・送受信まわりのコード | `docs/claude/code.md` |
 | 入力欄・`composeHtml.ts`・CSP・`securityHeaders.ts`・iframe | `docs/claude/editor-security.md` |
 | シークレット・環境変数・デプロイの失敗・本番の確認 | `docs/claude/secrets-deploy.md` |
-| ブラウザでの画面の確認（Playwright・テスト用アカウントでのログイン） | `docs/claude/browser.md` |
+| ブラウザでの画面の確認（Playwright・テスト用アカウントでのログイン） | `docs/claude/browser.md`（PC のときだけ） |
+
+## 実行環境
+- **PC の VSCode**：ブラウザでの確認はローカルの Playwright（`docs/claude/browser.md`）。push は自分で行う（「Git とデプロイ」のとおり）。
+- **Muse の環境**：Playwright・`script/browser/`・リフレッシュトークンは無い。ブラウザでの確認はせず、本番で Muse のブラウザで確かめる手順（2つの開発用アカウント間だけ・件名は `[re-mail-test]` から）を報告に書く。commit・push は Muse が GitHub 連携で行う。
 
 ## 大きな指示文の進め方（コンテキストを溜めない）
 - 指示文を、単独でテスト・コミットできる段階に分けて TaskCreate で並べ、1つずつ終わらせて commit・push する。

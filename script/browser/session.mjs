@@ -1,4 +1,4 @@
-// テスト用の Google アカウントでログインした状態の Playwright のページを作る（リモート環境での確認用）。
+// テスト用の Google アカウントでログインした状態の Playwright のページを作る（PC での確認用）。
 // Google のログイン画面は自動では通れないので、環境変数のリフレッシュトークンから NextAuth の Cookie を作る。
 //   1つ目: RE_MAIL_TEST_EMAIL   / RE_MAIL_TEST_REFRESH_TOKEN
 //   2つ目: RE_MAIL_TEST_EMAIL_2 / RE_MAIL_TEST_REFRESH_TOKEN_2（送受信の確認の相手）

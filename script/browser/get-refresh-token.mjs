@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// 【手元の PC で、本人が実行する】リモート環境の確認用に、テスト用 Google アカウントのリフレッシュトークンを取る。
+// 【手元の PC で、本人が実行する】PC での確認用に、テスト用 Google アカウントのリフレッシュトークンを取る。
 // 使い方: node script/browser/get-refresh-token.mjs [--account=2]   （ローカルの next dev は止めておく。ポート 3000 を使う）
 //   --account=2：2つ目のテスト用アカウントの分として、環境変数の名前に _2 を付けて出す
 // - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET は環境変数か .dev.vars から読む（ローカル開発と同じ OAuth クライアント）。
 // - 戻り先はローカル開発と同じ http://localhost:3000/api/auth/callback/google なので、Google Cloud の設定は変えなくてよい。
 // - スコープはアプリと同じ（app/lib/googleScopes.ts）。増やさない。
-// - 結果は画面に出すだけで、ファイルには書かない。Claude に貼らず、リモート環境の設定（環境変数）に入れる。
+// - 結果は画面に出すだけで、ファイルには書かない。Claude に貼らず、PC の環境変数に入れる。
 import http from "node:http";
 import fs from "node:fs";
 import crypto from "node:crypto";
@@ -75,7 +75,7 @@ const server = http.createServer(async (req, res) => {
     process.stdout.write(
       [
         "",
-        "取得できました。リモート環境の設定（環境変数）に次の2つを入れてください。Claude との会話には貼らないでください。",
+        "取得できました。PC の環境変数に次の2つを入れてください。Claude との会話には貼らないでください。",
         `RE_MAIL_TEST_EMAIL${SUFFIX}=${profile.emailAddress || "(取得できず。ログインしたアドレスを入れる)"}`,
         `RE_MAIL_TEST_REFRESH_TOKEN${SUFFIX}=${tokens.refresh_token}`,
         "",
