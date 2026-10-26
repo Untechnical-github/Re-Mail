@@ -260,32 +260,40 @@ export function useSend({
     return verdict;
   };
 
-  // 下書きを送って、結果に応じて伝える・確かめる。onGone は「ほかで送信済み」のとき（入力欄を空に戻す）
+  // 下書きを送って、結果に応じて伝える・確かめる。onAlreadySent は「ほかで送信済み」のとき（入力欄を空に戻す）。
+  // 送信中の印（sendingRoomsRef）は呼ぶ側が付け外しする。競合のときは true を返すので、呼ぶ側は印を外した「後で」
+  // reportConflict を呼ぶ（印が付いたままだと読み直しがこのチャットを飛ばし、古い messageId が残って 409 が繰り返される）
   const sendDraftWithConfirm = async (
     payload: SendApiPayload, draft: { room: RoomKeyStr; draftId: string; withContent: boolean; messageId: string; expectMessageId: string | null },
     onSent: (sent: { id?: string; threadId?: string }) => void, onAlreadySent: () => void,
-  ): Promise<void> => {
-    gmailDrafts.sendingRoomsRef.current.add(draft.room);
-    let v: DraftSendVerdict;
-    try { v = await postDraftSendApi(payload, draft.draftId, draft.withContent, draft.messageId, draft.expectMessageId); } finally { gmailDrafts.sendingRoomsRef.current.delete(draft.room); }
-    if (v.kind === "sent") { onSent(v); return; }
+  ): Promise<boolean> => {
+    const v = await postDraftSendApi(payload, draft.draftId, draft.withContent, draft.messageId, draft.expectMessageId);
+    if (v.kind === "sent") { onSent(v); return false; }
     if (v.kind === "conflict") {
-      showErrorToast("この下書きは Gmail で書き換えられていたため、送信しませんでした。最新の下書きを読み込みますので、内容を確かめてからもう一度送ってください。");
-      gmailDrafts.reportConflict(draft.room);
-      return;
+      // 読み直しで、書き換えていない入力は最新の中身に入れ替わり、書き換えている入力には「どちらを残すか」を聞く
+      showErrorToast(draft.withContent
+        ? "この下書きは Gmail でも書き換えられていたため、送信しませんでした。どちらを残すか選んでから、もう一度送ってください。本文は入力欄に残っています。"
+        : "この下書きは Gmail で書き換えられていたため、送信しませんでした。最新の下書きを読み込みますので、内容を確かめてからもう一度送ってください。");
+      return true;
     }
-    if (v.kind === "alreadySent") { showInfoToast("このメールは別の場所から送信済みです", 4000); onAlreadySent(); return; }
-    if (v.kind === "failed") { showSendFailure({ status: v.status, code: v.code, gmailReason: v.reason }, "送信"); return; }
+    if (v.kind === "alreadySent") { showInfoToast("このメールは別の場所から送信済みです", 4000); onAlreadySent(); return false; }
+    if (v.kind === "failed") { showSendFailure({ status: v.status, code: v.code, gmailReason: v.reason }, "送信"); return false; }
     if (v.kind === "askResend") {
       setSendConfirm({
         message: "送信されていません。再送しますか？",
         resend: async () => {
           setSendConfirm(null);
           setIsSending(true);
-          try { await sendDraftWithConfirm(payload, draft, onSent, onAlreadySent); } finally { setIsSending(false); }
+          gmailDrafts.sendingRoomsRef.current.add(draft.room);
+          let conflict = false;
+          try { conflict = await sendDraftWithConfirm(payload, draft, onSent, onAlreadySent); } finally {
+            gmailDrafts.sendingRoomsRef.current.delete(draft.room);
+            setIsSending(false);
+          }
+          if (conflict) gmailDrafts.reportConflict(draft.room);
         },
       });
-      return;
+      return false;
     }
     // 下書きが無くなっていた（ほかで削除・送信された）。送信済みに見つからなければ、新しいメールとして送るかを聞く。
     // 送れたか確かめられなかったときも、Gmail の送信済みを見てから決めてもらう。どちらも「送る」のときだけ messages.send
@@ -302,6 +310,7 @@ export function useSend({
         try { await sendWithConfirm(payload, "送信", onSent, v.kind === "askNew" ? undefined : draft.messageId); } finally { setIsSending(false); }
       },
     });
+    return false;
   };
 
   const handleSend = async (opts: { allowNoSendAs?: boolean; allowQuoteToOutsiders?: boolean; allowFallbackQuote?: boolean } = {}) => {
@@ -421,6 +430,7 @@ export function useSend({
       // Gmail の下書きがある入力は drafts.send で送る（純正の下書きと二重に残らない・二重に送られないように）。
       // 保存の途中なら終わるのを待ち、送っている間は保存しない
       gmailDrafts.sendingRoomsRef.current.add(sentRoom);
+      let conflict = false;
       try {
         await gmailDrafts.waitIdle();
         const link = gmailDrafts.linkForSend(sentRoom);
@@ -428,13 +438,15 @@ export function useSend({
         // これが無いと messages.send に回っていた（Gmail の下書きが残り、下書きの添付も付けられずに止まっていた）
         if (link?.draftId) {
           const messageId = link.messageIdHeader || makeMessageId(crypto.getRandomValues(new Uint8Array(40)));
-          await sendDraftWithConfirm(payload, { room: sentRoom, draftId: link.draftId, withContent: gmailDrafts.isDirtyNow(sentRoom), messageId, expectMessageId: link.messageId }, onSent, clearSentCompose);
-          return;
+          conflict = await sendDraftWithConfirm(payload, { room: sentRoom, draftId: link.draftId, withContent: gmailDrafts.isDirtyNow(sentRoom), messageId, expectMessageId: link.messageId }, onSent, clearSentCompose);
+        } else {
+          await sendWithConfirm(payload, "送信", onSent);
         }
-        await sendWithConfirm(payload, "送信", onSent);
       } finally {
         gmailDrafts.sendingRoomsRef.current.delete(sentRoom);
       }
+      // 送信中の印を外した後で読み直す（印があると refreshAccountNow がこのチャットを飛ばす）
+      if (conflict) gmailDrafts.reportConflict(sentRoom);
     } catch (error) { logError("send.reply", {}, error); showErrorToast("メールの送信に失敗しました。通信状況を確認してください。"); } finally { setIsSending(false); }
   };
 

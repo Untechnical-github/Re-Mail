@@ -988,10 +988,12 @@ export async function POST(request: Request) {
       const prep = await prepareSendMime(bodyData, accessToken);
       if (!prep.ok) return prep.response;
       const { segments, messageId, threadId, exp } = prep;
-      // 中身を付けずに送るときは、画面が最後に読んだ・保存した下書きと同じかを先に確かめる。純正で書き換えられていたら送らない
-      // （画面に無い中身を送らない。絶対ルール2）。消えていたら、下の drafts.send の 404 と同じ扱いにする
+      // 画面が最後に読んだ・保存した下書きと同じかを、中身を付けるかにかかわらず先に確かめる。純正で書き換えられていたら送らない
+      // （中身なし：画面に無い中身を送らない／中身あり：純正側の変更を黙って上書きしない。絶対ルール2）。
+      // draftSave と違い、中身が同じでも競合にする（送信は取り消せないので、違えば必ず止めて利用者に選ばせる）。
+      // expectMessageId が無い（「この画面のほうを使う」を選んだ後）は確かめない。消えていたら、下の drafts.send の 404 と同じ扱いにする
       const expect = isValidGmailId(bodyData.expectMessageId) ? bodyData.expectMessageId : null;
-      if (!withContent && expect) {
+      if (expect) {
         const cur = await getDraftState(accessToken, draftId);
         if (cur.state === "unauthorized") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         if (cur.state === "error") return NextResponse.json({ error: "Failed to send email", reason: cur.reason, messageId }, { status: cur.status });
