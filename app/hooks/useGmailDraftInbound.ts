@@ -42,6 +42,8 @@ const IMAGE_TYPES = /^image\/(png|jpeg|gif|webp|bmp)$/;
 const LIST_RETRY_MS = [30_000, 120_000, 300_000];
 // 下書きの中身を取りにいく数（同時）
 const META_CONCURRENCY = 3;
+// Gmail 側だけの変更を黙って入れ直したときの知らせ（入力欄の近くに小さく。入力を Gmail に保存できた・送った・つながりを外したときに消える）
+const NOTICE_UPDATED_FROM_GMAIL = "Gmail で変更された内容に更新しました";
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
@@ -417,7 +419,10 @@ export function useGmailDraftInbound({
       const meta = metas.get(c.draftId);
       if (!meta || core.conflictRoomsRef.current.has(c.local.room)) continue;
       if (c.local.dirty) { raiseConflict(c.local.room, meta); continue; }
-      if ((await applyDraft(c.local.room, meta, { expectNfp: nfpOf(c.local.room) })) === "stale") raiseConflict(c.local.room, meta);
+      const res = await applyDraft(c.local.room, meta, { expectNfp: nfpOf(c.local.room) });
+      if (res === "stale") raiseConflict(c.local.room, meta);
+      // 見ている最中に中身が変わるので、気づけるように知らせる（開いていないチャットにも付けておき、開いたときに見える）
+      else if (res === "ok") core.setNotice(c.local.room, NOTICE_UPDATED_FROM_GMAIL);
     }
     // 知らない下書き：出し先のチャットを決める
     const byRoom = new Map<string, { metas: GmailDraftMeta[]; existing: boolean }>();
