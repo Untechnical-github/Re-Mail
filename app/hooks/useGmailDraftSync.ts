@@ -9,7 +9,7 @@ import type { InlineImage } from "../lib/composeEditor";
 import type { ComposeRecipient } from "../lib/composeRecipients";
 import { type RoomKeyStr, decodeRoomKey } from "../lib/roomKey";
 import { loadDraft, saveDraft, updateDraftLink, draftRooms, markPendingCreate, hasPendingCreate, clearPendingCreate, type ComposeDraft } from "../lib/drafts";
-import { EMPTY_LINK, draftFingerprint, normalizedFingerprint, hasUnsavedChanges, planDraftSave, isDefaultContent, fitsKeepalive, isRetryableSaveStatus, SAVE_RETRY_DELAYS_MS, type DraftContent, type GmailDraftLink } from "../lib/gmailDrafts";
+import { EMPTY_LINK, draftFingerprint, normalizedFingerprint, hasUnsavedChanges, planDraftSave, planCarriedLink, isDefaultContent, fitsKeepalive, isRetryableSaveStatus, SAVE_RETRY_DELAYS_MS, type DraftContent, type GmailDraftLink } from "../lib/gmailDrafts";
 import { makeMessageId } from "../lib/sendVerify";
 import { logWarn } from "../lib/safeLog";
 import type { Attachment, CarriedDraft } from "./useDrafts";
@@ -407,18 +407,37 @@ export function useGmailDraftSync({
       if (sentRef.current.size > 20) sentRef.current.delete(sentRef.current.keys().next().value as string);
     },
     forgetLink: (room: string) => { resetRetry(room); setNotice(room, null); clearPendingCreate(room); setLink(room, { ...EMPTY_LINK }); },
-    // 入力中の内容を持ってほかのチャットへ移ったとき：同じアカウントなら Gmail の下書きもそのまま持っていく。
+    // 入力中の内容を持ってほかのチャットへ移ったとき：同じアカウントなら Gmail の下書きもそのまま持っていく
+    // （移り先が既に下書きとつながっていても差し替え、移り先のもとの下書きは消す。添付を持ってきた下書きから取り出せるように・2つ残らないように）。
     // 送信元のアカウントを変えたときは、元のアカウントの下書きを消す（同じ内容が2つのアカウントに残らないように）
     // 元の下書きにしか無い添付（fromDraft）を持っていくときは、元の下書きを消さない（消すと添付を取り出せなくなる）
     onCarried: (fromRoom: string, toRoom: string, fromLink: GmailDraftLink | undefined, hasDraftAttachments: boolean) => {
       if (!fromLink?.draftId) return;
-      const sameAccount = accountOf(fromRoom).toLowerCase() === accountOf(toRoom).toLowerCase();
-      if (sameAccount && linkRef.current?.room === toRoom && !linkRef.current.link.draftId) {
-        setLink(toRoom, { ...fromLink, syncedFingerprint: null });
-        return;
-      }
-      if (hasDraftAttachments) return;
-      void post({ action: "draftDelete", accountEmail: accountOf(fromRoom), draftId: fromLink.draftId, expectMessageId: fromLink.messageId });
+      const deleteFrom = () => {
+        if (hasDraftAttachments) return;
+        void post({ action: "draftDelete", accountEmail: accountOf(fromRoom), draftId: fromLink.draftId, expectMessageId: fromLink.messageId });
+      };
+      if (accountOf(fromRoom).toLowerCase() !== accountOf(toRoom).toLowerCase()) { deleteFrom(); return; }
+      void (async () => {
+        let toLink: GmailDraftLink | undefined;
+        if (linkRef.current?.room === toRoom) toLink = linkRef.current.link;
+        else {
+          // 移り先のチャットをもう離れていた：端末の下書きのつながりを書き換える。端末の下書きがまだ無ければ書き込めないので、これまでどおり
+          const d = await loadDraft(toRoom);
+          if (!d) { deleteFrom(); return; }
+          toLink = d.gmail;
+        }
+        const plan = planCarriedLink(fromLink, toLink);
+        setLink(toRoom, plan.link);
+        const stale = plan.staleDraft;
+        if (!stale) return;
+        // 移り先のもとの下書きは、保存と同じ列で消す（並行に動くと競合になる）。移り先の入力は既定だったので、消しても入力は失われない。
+        // 純正で書き換えられていた（409）・消せなかったときは残す（次の読み直しで「ほかに下書きが○件」に出る）
+        void enqueueTask(async () => {
+          const r = await post({ action: "draftDelete", accountEmail: accountOf(toRoom), draftId: stale.draftId, expectMessageId: stale.messageId });
+          if (r.status !== 200 && r.status !== 409) logWarn("draft.carry.delete", { status: r.status ?? undefined, reason: r.data.reason || r.data.error });
+        });
+      })();
     },
     // Gmail から読み込んだ下書きで、返信元が見つからなかったときに残すスレッドの情報
     threadRefFor: (room: string) => linkOf(room).threadRef,

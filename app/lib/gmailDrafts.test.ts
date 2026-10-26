@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { draftFingerprint, planDraftSave, fitsKeepalive, KEEPALIVE_MAX_BYTES, judgeDraftSend, readGmailLink, isRetryableSaveStatus, EMPTY_LINK, draftTargetAddress, draftRecipients, recipientsOrDefault, planDraftReconcile, newestDraft, normalizeDraftCids, normalizedFingerprint, hasUnsavedChanges, type DraftContent } from "./gmailDrafts";
+import { draftFingerprint, planDraftSave, fitsKeepalive, KEEPALIVE_MAX_BYTES, judgeDraftSend, readGmailLink, isRetryableSaveStatus, EMPTY_LINK, draftTargetAddress, draftRecipients, recipientsOrDefault, planDraftReconcile, newestDraft, normalizeDraftCids, normalizedFingerprint, hasUnsavedChanges, planCarriedLink, type DraftContent, type GmailDraftLink } from "./gmailDrafts";
 
 const content: DraftContent = { subject: "", html: "<div>本文</div>", images: [], attachments: [], replyToMessage: null, recipients: null };
 
@@ -195,5 +195,26 @@ describe("hasUnsavedChanges", () => {
     expect(hasUnsavedChanges(tidy, { ...link, fromGmail: true })).toBe(false);
     expect(hasUnsavedChanges(tidy, link)).toBe(true);
     expect(hasUnsavedChanges({ ...tidy, html: '<div dir="ltr"><div>一</div><div>二三</div></div>' }, { ...link, fromGmail: true })).toBe(true);
+  });
+});
+
+describe("planCarriedLink", () => {
+  const from: GmailDraftLink = { draftId: "r-from", messageId: "m-from", messageIdHeader: "<a@example.com>", syncedFingerprint: "fp", threadRef: { threadId: "t1", inReplyTo: "<x@example.com>" }, fromAddress: "alias@example.com" };
+  it("移り先が下書きとつながっていなければ、持ってきた下書きにつなぐだけ（消すものは無い）", () => {
+    expect(planCarriedLink(from, undefined)).toEqual({ link: { ...from, syncedFingerprint: null }, staleDraft: null });
+    expect(planCarriedLink(from, { ...EMPTY_LINK }).staleDraft).toBeNull();
+  });
+  it("移り先が別の下書きとつながっていれば差し替え、もとの下書きを messageId 付きで消す対象にする（スレッド・差出人も移る）", () => {
+    const r = planCarriedLink(from, { draftId: "r-to", messageId: "m-to", messageIdHeader: null, syncedFingerprint: "x", fromAddress: "other@example.com" });
+    expect(r.link).toEqual({ ...from, syncedFingerprint: null });
+    expect(r.link.threadRef).toEqual(from.threadRef);
+    expect(r.link.fromAddress).toBe("alias@example.com");
+    expect(r.staleDraft).toEqual({ draftId: "r-to", messageId: "m-to" });
+  });
+  it("同じ下書きなら消さない", () => {
+    expect(planCarriedLink(from, { ...from }).staleDraft).toBeNull();
+  });
+  it("純正で書き換えられたかを確かめられない（messageId が無い）ものは消さない", () => {
+    expect(planCarriedLink(from, { ...EMPTY_LINK, draftId: "r-to" }).staleDraft).toBeNull();
   });
 });

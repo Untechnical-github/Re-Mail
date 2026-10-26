@@ -106,6 +106,18 @@ export function normalizedFingerprint(d: DraftContent): string {
 }
 
 // 最後に Gmail に保存してから書き換えたか。Gmail から読み込んだばかりで入力欄が整えただけのものは、書き換えたことにしない
+// 入力を持って同じアカウントのほかのチャットへ移ったときの、移り先のつながり。移り先が既に下書きとつながっていても
+// （本文を消しただけで削除が保留・失敗している、純正で作った本文が空の下書きなど）、持ってきた下書きに差し替える
+// （添付を持ってきた下書きから取り出せるように。スレッド・差出人も一緒に移る）。移り先がもとつながっていた別の下書きは消す対象として返す。
+// 純正で書き換えられていないかを確かめられない（messageId が分からない）ものは消さない（「ほかに下書きが○件」に出す）
+export function planCarriedLink(fromLink: GmailDraftLink, toLink: GmailDraftLink | undefined): {
+  link: GmailDraftLink;
+  staleDraft: { draftId: string; messageId: string } | null;
+} {
+  const stale = toLink?.draftId && toLink.messageId && toLink.draftId !== fromLink.draftId ? { draftId: toLink.draftId, messageId: toLink.messageId } : null;
+  return { link: { ...fromLink, syncedFingerprint: null }, staleDraft: stale };
+}
+
 export function hasUnsavedChanges(content: DraftContent, link: GmailDraftLink): boolean {
   if (draftFingerprint(content) === link.syncedFingerprint) return false;
   return !(link.fromGmail && link.baseNormFp && normalizedFingerprint(content) === link.baseNormFp);
