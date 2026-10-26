@@ -98,7 +98,7 @@ export function ChatList({ app, lastChatIdxRef }: { app: MailAppHook; lastChatId
           )}
 
           {/* Gmail の下書きのうち、チャットに出せないもの（宛先がない・100件を超えた分）。押すと Gmail の下書きを開く */}
-          {Object.entries(state.gmailDraftOrphans).flatMap(([account, o]) => [
+          {Object.entries(state.gmailDraftOrphans).filter(([account]) => actions.isAccountVisible(account)).flatMap(([account, o]) => [
             o.noRecipient > 0 ? { key: `${account}-none`, account, text: `宛先のない下書きが${o.noRecipient}件あります` } : null,
             o.more > 0 ? { key: `${account}-more`, account, text: `Re:Mail で扱えない下書きが${o.more}件あります` } : null,
           ]).filter((x): x is { key: string; account: string; text: string } => !!x).map(x => (
@@ -129,7 +129,7 @@ export function ChatList({ app, lastChatIdxRef }: { app: MailAppHook; lastChatId
                  const isSent = e.labelIds?.includes("SENT") || e.isMe; 
                  const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
                  
-                 if ((isInbox || isArchive || isSent) && (config?.isHidden || state.messageConfigs[actions.messageConfigKey(e.id)]?.isHidden)) return false;
+                 if ((isInbox || isArchive || isSent) && (config?.isHidden || state.messageConfigs[actions.messageConfigKey(e.id, e.accountId)]?.isHidden)) return false;
                  if (!actions.isAccountVisible(e.accountId)) return false;
 
                  // ★修正: 送信済みチェックを「絶対優先」に書き換え

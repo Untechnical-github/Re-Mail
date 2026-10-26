@@ -21,6 +21,33 @@ function mkEmail(overrides: Partial<Email> & { id: string }): Email {
 }
 
 describe("groupEmailsByRoom", () => {
+  it("同じアドレスで表示名が違うメールは、いちばん新しい表示名の1つのチャットにまとめる", () => {
+    const emails = [
+      mkEmail({ id: "1", from: "髙澤家 <family@example.com>", date: "2026-02-01T00:00:00.000Z" }),
+      mkEmail({ id: "2", from: "高澤悠樹 <family@example.com>", date: "2026-01-01T00:00:00.000Z" }),
+      mkEmail({ id: "3", from: ME, to: "高澤悠樹 <family@example.com>", labelIds: ["SENT"], date: "2026-01-02T00:00:00.000Z" }),
+    ];
+    const groups = groupEmailsByRoom(emails, ME, {} as Record<LocalKey, ChatConfig>);
+    expect(Object.keys(groups)).toEqual(["髙澤家"]);
+    expect(groups[asLocalKey("髙澤家")].map(e => e.id).sort()).toEqual(["1", "2", "3"]);
+  });
+
+  it("表示名が違うとき、設定（ピン留めなど）のある名前のチャットを優先する", () => {
+    const emails = [
+      mkEmail({ id: "1", from: "髙澤家 <family@example.com>", date: "2026-02-01T00:00:00.000Z" }),
+      mkEmail({ id: "2", from: "高澤悠樹 <family@example.com>", date: "2026-01-01T00:00:00.000Z" }),
+    ];
+    const configs = { [asLocalKey("高澤悠樹")]: { isPinned: true } } as unknown as Record<LocalKey, ChatConfig>;
+    const groups = groupEmailsByRoom(emails, ME, configs);
+    expect(Object.keys(groups)).toEqual(["高澤悠樹"]);
+  });
+
+  it("同じ表示名でもアドレスが1つだけなら、名前はそのまま", () => {
+    const emails = [mkEmail({ id: "1", from: "Google <no-reply@example.com>" }), mkEmail({ id: "2", from: "Google <alerts@example.com>" })];
+    const groups = groupEmailsByRoom(emails, ME, {} as Record<LocalKey, ChatConfig>);
+    expect(Object.keys(groups)).toEqual(["Google"]);
+  });
+
   it("単一相手の基本グルーピング", () => {
     const emails = [mkEmail({ id: "1", from: "田中太郎 <tanaka@example.com>", to: ME })];
     const groups = groupEmailsByRoom(emails, ME, {} as Record<LocalKey, ChatConfig>);

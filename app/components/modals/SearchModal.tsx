@@ -124,7 +124,7 @@ export function SearchModal({ app }: { app: MailAppHook }) {
     if (!(isInbox || isArchive || isSent)) return false;
     const room = emailRoomMap.get(e.id);
     if (room && chatConfigs[room]?.isHidden) return true;
-    return !!messageConfigs[messageConfigKey(e.id)]?.isHidden;
+    return !!messageConfigs[messageConfigKey(e.id, e.accountId)]?.isHidden;
   };
 
   const recipientMatches = useMemo(() => {

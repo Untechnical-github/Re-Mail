@@ -16,7 +16,7 @@ export function useChatList({
   allUniqueEmails: Email[];
   chatConfigs: Record<RoomKeyStr, ChatConfig>;
   messageConfigs: Record<RoomKeyStr, MessageConfig>;
-  messageConfigKey: (messageId: string) => RoomKeyStr;
+  messageConfigKey: (messageId: string, accountHint?: string) => RoomKeyStr;
   isAccountVisible: (accountId?: string) => boolean;
   checkAccounts: Record<string, boolean>;
   checkInbox: boolean;
@@ -44,7 +44,7 @@ export function useChatList({
         const isSent = e.labelIds?.includes("SENT") || e.isMe;
         const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
 
-        if ((isInbox || isArchive || isSent) && (config?.isHidden || messageConfigs[messageConfigKey(e.id)]?.isHidden)) return false;
+        if ((isInbox || isArchive || isSent) && (config?.isHidden || messageConfigs[messageConfigKey(e.id, e.accountId)]?.isHidden)) return false;
         if (!isAccountVisible(e.accountId)) return false;
 
         // ★修正: 送信済みの「絶対権限（他のラベルを無視）」を適用
@@ -66,6 +66,10 @@ export function useChatList({
     return allRoomKeys.filter((sender: RoomKeyStr) => {
       const config = chatConfigs[sender];
       if (config?.isHidden) return false;
+      // 表示しないアカウントのチャットは、下書きだけのチャット・ピン留めしたチャットも出さない
+      let roomAccount: string | undefined;
+      try { roomAccount = decodeRoomKey(sender).accountEmail; } catch { roomAccount = undefined; }
+      if (!isAccountVisible(roomAccount)) return false;
 
       // 「作成」で作った未送信の下書きチャットは、送信するまで無条件で一覧に表示する
       if (draftChats.includes(sender) && (!groupedEmails[sender] || groupedEmails[sender].length === 0)) return true;
@@ -77,7 +81,7 @@ export function useChatList({
         const isSent = e.labelIds?.includes("SENT") || e.isMe;
         const isArchive = !isTrash && !isSpam && !isInbox && !isSent;
 
-        if ((isInbox || isArchive || isSent) && (config?.isHidden || messageConfigs[messageConfigKey(e.id)]?.isHidden)) return false;
+        if ((isInbox || isArchive || isSent) && (config?.isHidden || messageConfigs[messageConfigKey(e.id, e.accountId)]?.isHidden)) return false;
         if (!isAccountVisible(e.accountId)) return false;
 
         if (revealedCrossPrompts.includes(e.id)) return true;

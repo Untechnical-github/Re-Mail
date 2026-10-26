@@ -9,7 +9,7 @@ import { clearDeviceData } from "../lib/deviceData";
 import type { ChatListTab } from "../lib/filterMatch";
 import { type LocalKey, type RoomKeyStr, asLocalKey, decodeRoomKey } from "../lib/roomKey";
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
-import { applySyncResult, idsToFetchForLabelChanges, type BoxFlags, type SyncResult } from "../lib/historySync";
+import { applySyncResult, idsToFetchForLabelChanges, mergeEmails, type BoxFlags, type SyncResult } from "../lib/historySync";
 import { syncedSettingsKey, pickCommonSettings, type SyncedSettings } from "../lib/syncedSettings";
 import { logError, logWarn } from "../lib/safeLog";
 import { mapWithConcurrency, reconcileFakeSentEmails } from "../lib/mailAppHelpers";
@@ -216,15 +216,22 @@ export function useMailSync({
         if (res?.ok && baselines[accountEmail]) historyIdsRef.current[accountEmail] = baselines[accountEmail];
       }
 
-      const map = new Map(currentEmailsState.map((e) => [e.id, e]));
-      newMessages.forEach((m) => map.set(m.id, m));
-      const updatedEmails = reconcileFakeSentEmails(Array.from(map.values())).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      const updatedEmails = reconcileFakeSentEmails(mergeEmails(currentEmailsState, newMessages, myEmail)).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
       const nextPMsgs = syncConfigs(updatedEmails, chatConfigsRef.current, messageConfigsRef.current);
       applySyncedPersisted(nextPMsgs);
       setEmails(updatedEmails);
 
       if (!isSilent || updatedEmails.length <= targetLimit) setCurrentNextPageTokens(nextTokens);
+      // 裏での取り直しでは、追加読み込みで進めた続きの位置を1ページ目に戻さない。ただし続きの位置をまだ知らない
+      // アカウントの分だけは入れる（入れないと「続きが無い」と見なされ、「すべてのメールを読み込みました」と出て追加読み込みが止まる）
+      else setCurrentNextPageTokens(prev => {
+        const missing = Object.keys(nextTokens).filter(a => !(a in prev));
+        if (missing.length === 0) return prev;
+        const next = { ...prev };
+        missing.forEach(a => { next[a] = nextTokens[a]; });
+        return next;
+      });
       return { success: true, emails: updatedEmails };
     } catch {
       return { success: false, emails: currentEmailsState };
@@ -261,11 +268,7 @@ export function useMailSync({
 
     const merged = results.flat();
     if (merged.length > 0) {
-      setEmails(prev => {
-        const map = new Map(prev.map((e) => [e.id, e]));
-        merged.forEach((m) => map.set(m.id, m));
-        return reconcileFakeSentEmails(Array.from(map.values()));
-      });
+      setEmails(prev => reconcileFakeSentEmails(mergeEmails(prev, merged, myEmail)));
     }
     return merged;
   };
@@ -441,11 +444,7 @@ export function useMailSync({
         if (!skipToken) { setChatNextPageToken(nextToken); chatNextPageTokenRef.current = nextToken; }
 
         if (fetchedMessages.length > 0) {
-          setEmails(prev => {
-            const map = new Map(prev.map(e => [e.id, e]));
-            fetchedMessages.forEach((m) => map.set(m.id, m));
-            return reconcileFakeSentEmails(Array.from(map.values()));
-          });
+          setEmails(prev => reconcileFakeSentEmails(mergeEmails(prev, fetchedMessages, myEmail)));
         }
 
         return { found: validMessages.length > 0, nextToken, messages: validMessages };
@@ -606,7 +605,7 @@ export function useMailSync({
         }
       }
       if (fetched.length > 0) {
-        let updated = applySyncResult(emailsRef.current, { messages: fetched, labelUpdates: [], deleted: [] }, flags);
+        let updated = applySyncResult(emailsRef.current, { messages: fetched, labelUpdates: [], deleted: [] }, flags, undefined, myEmail);
         updated = reconcileFakeSentEmails(updated).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
         applySyncedPersisted(syncConfigs(updated, chatConfigsRef.current, messageConfigsRef.current));
         setEmails(updated);
@@ -651,8 +650,9 @@ export function useMailSync({
         }
       });
       // ゴミ箱から戻した・受信箱に戻したなど、まだ画面に無いメールが今の場所に入るようになったら、その詳細を取って足す
-      const knownIds = new Set(emailsRef.current.map(e => e.id));
       await Promise.all(results.map(async ({ account, result }) => {
+        // 知っているかどうかはアカウントごとに見る（ほかのアカウントに同じ ID のメールがあっても、このアカウントには無いことがある）
+        const knownIds = new Set(emailsRef.current.filter(e => (e.accountId || myEmail) === account).map(e => e.id));
         const ids = idsToFetchForLabelChanges(knownIds, result.labelUpdates, flags).slice(0, 50);
         if (ids.length === 0) return;
         try {
@@ -669,7 +669,7 @@ export function useMailSync({
       const changed = results.some(r => r.result.messages.length || r.result.labelUpdates.length || r.result.deleted.length);
       if (changed) {
         let updated = emailsRef.current;
-        for (const { result } of results) updated = applySyncResult(updated, result, flags);
+        for (const { account, result } of results) updated = applySyncResult(updated, result, flags, account, myEmail);
         updated = reconcileFakeSentEmails(updated).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
         const nextPMsgs = syncConfigs(updated, chatConfigsRef.current, messageConfigsRef.current);
         applySyncedPersisted(nextPMsgs);

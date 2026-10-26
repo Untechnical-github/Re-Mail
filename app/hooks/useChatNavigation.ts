@@ -9,6 +9,7 @@ import type { InlineImage } from "../lib/composeEditor";
 import type { ComposeRecipient } from "../lib/composeRecipients";
 import type { FilterCriteria, ChatListTab } from "../lib/filterMatch";
 import { type RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
+import { mergeEmails } from "../lib/historySync";
 import type { useMailSync } from "./useMailSync";
 import type { useDrafts, CarriedDraft, Attachment } from "./useDrafts";
 import type { SetState, ConfigsApi } from "./mailAppTypes";
@@ -130,11 +131,7 @@ export function useChatNavigation({
     const cached = chatCacheRef.current.get(sender);
     if (cached) {
       cached.lruTime = Date.now();
-      setEmails(prev => {
-        const map = new Map(prev.map((e) => [e.id, e]));
-        cached.emails.forEach((e) => map.set(e.id, e));
-        return Array.from(map.values());
-      });
+      setEmails(prev => mergeEmails(prev, cached.emails, session?.user?.email || ""));
       groupMemberTokensRef.current = cached.groupMemberTokens ? { ...cached.groupMemberTokens } : {};
       setChatNextPageToken(cached.chatNextPageToken || "FIRST_PAGE");
       chatNextPageTokenRef.current = cached.chatNextPageToken || "FIRST_PAGE";

@@ -63,20 +63,40 @@ export function matchesBoxFlags(labelIds: string[] | undefined, flags: BoxFlags)
 
 export type SyncResult = { messages: Email[]; labelUpdates: { id: string; labelIds: string[] }[]; deleted: string[] };
 
+// メールを見分けるキー（アカウント＋Gmail のメッセージ ID）。連携したアカウントどうしでやり取りしたメールは、
+// 送った側と受け取った側で同じ ID になることがあるため、ID だけで1通にまとめると片方のアカウントのメールが消え、
+// ラベル（送信済みなど）も混ざる。accountId が無い古いデータは defaultAccount（ログインしているアカウント）のものとみなす
+export function mailIdentity(e: Pick<Email, "id" | "accountId">, defaultAccount: string): string {
+  return `${(e.accountId || defaultAccount).trim().toLowerCase()}|${e.id}`;
+}
+
+// 一覧に取ってきたメールを重ねる（同じアカウントの同じ ID は新しいほうで置き換える。ほかのアカウントのものは残す）
+export function mergeEmails(base: Email[], incoming: Email[], defaultAccount: string): Email[] {
+  const map = new Map<string, Email>();
+  for (const e of base) map.set(mailIdentity(e, defaultAccount), e);
+  for (const e of incoming) map.set(mailIdentity(e, defaultAccount), e);
+  return Array.from(map.values());
+}
+
 // 差分を画面のメール一覧に当てる。新しいメールは今の場所の条件に合うものだけ足し、
-// 既にあるメールはラベルを差し替え、削除されたものは取り除く
-export function applySyncResult(emails: Email[], result: SyncResult, flags: BoxFlags): Email[] {
+// 既にあるメールはラベルを差し替え、削除されたものは取り除く。
+// account を渡したときは、ラベルの変化と削除をそのアカウントのメールにだけ当てる（ほかのアカウントの同じ ID のメールは触らない）
+export function applySyncResult(emails: Email[], result: SyncResult, flags: BoxFlags, account?: string, defaultAccount = ""): Email[] {
   const deleted = new Set(result.deleted);
   const labelMap = new Map(result.labelUpdates.map((u) => [u.id, u.labelIds]));
+  const target = account?.trim().toLowerCase();
   const map = new Map<string, Email>();
   for (const e of emails) {
-    if (deleted.has(e.id)) continue;
-    const labels = labelMap.get(e.id);
-    map.set(e.id, labels ? { ...e, labelIds: labels } : e);
+    const key = mailIdentity(e, defaultAccount);
+    const mine = !target || (e.accountId || defaultAccount).trim().toLowerCase() === target;
+    if (mine && deleted.has(e.id)) continue;
+    const labels = mine ? labelMap.get(e.id) : undefined;
+    map.set(key, labels ? { ...e, labelIds: labels } : e);
   }
   for (const m of result.messages) {
     if (deleted.has(m.id)) continue;
-    if (map.has(m.id) || matchesBoxFlags(m.labelIds, flags)) map.set(m.id, m);
+    const key = mailIdentity(m, defaultAccount);
+    if (map.has(key) || matchesBoxFlags(m.labelIds, flags)) map.set(key, m);
   }
   return Array.from(map.values());
 }

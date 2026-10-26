@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { summarizeHistory, matchesBoxFlags, applySyncResult, idsToFetchForLabelChanges, type BoxFlags, draftHistory, shouldRefreshDrafts } from "./historySync";
+import { summarizeHistory, matchesBoxFlags, applySyncResult, idsToFetchForLabelChanges, mergeEmails, mailIdentity, type BoxFlags, draftHistory, shouldRefreshDrafts } from "./historySync";
 import type { Email } from "../types/email";
 
 const mail = (id: string, labelIds: string[], extra: Partial<Email> = {}): Email => ({ id, threadId: id, subject: "s", from: "a@example.com", to: "b@example.com", date: "", body: "", snippet: "", labelIds, ...extra });
@@ -72,6 +72,41 @@ describe("applySyncResult", () => {
     const before = [mail("a", ["INBOX"])];
     applySyncResult(before, { messages: [], labelUpdates: [{ id: "a", labelIds: [] }], deleted: [] }, flags);
     expect(before[0].labelIds).toEqual(["INBOX"]);
+  });
+});
+
+describe("アカウントをまたいで同じ ID のメール（連携アカウントどうしのやり取り）", () => {
+  const flags: BoxFlags = { inbox: true, archive: false, spam: false, trash: false, sent: true };
+  const A = "a@example.com", B = "b@example.com";
+
+  it("mailIdentity はアカウント（大文字小文字を無視）と ID で決まり、accountId が無ければ既定のアカウント", () => {
+    expect(mailIdentity(mail("x", [], { accountId: "A@Example.com" }), B)).toBe(mailIdentity(mail("x", [], { accountId: A }), B));
+    expect(mailIdentity(mail("x", []), A)).toBe(mailIdentity(mail("x", [], { accountId: A }), B));
+    expect(mailIdentity(mail("x", [], { accountId: A }), A)).not.toBe(mailIdentity(mail("x", [], { accountId: B }), A));
+  });
+
+  it("mergeEmails は同じ ID でもアカウントが違えば両方残し、同じアカウントなら新しいほうで置き換える", () => {
+    const base = [mail("x", ["SENT"], { accountId: A }), mail("y", ["INBOX"], { accountId: A })];
+    const merged = mergeEmails(base, [mail("x", ["INBOX"], { accountId: B }), mail("y", ["INBOX", "UNREAD"], { accountId: A })], A);
+    expect(merged).toHaveLength(3);
+    expect(merged.find(e => e.id === "x" && e.accountId === A)!.labelIds).toEqual(["SENT"]);
+    expect(merged.find(e => e.id === "x" && e.accountId === B)!.labelIds).toEqual(["INBOX"]);
+    expect(merged.find(e => e.id === "y")!.labelIds).toEqual(["INBOX", "UNREAD"]);
+  });
+
+  it("applySyncResult は account を渡すと、そのアカウントのメールにだけラベルの変化と削除を当てる", () => {
+    const before = [mail("x", ["SENT"], { accountId: A }), mail("x", ["INBOX"], { accountId: B }), mail("z", ["INBOX"], { accountId: B })];
+    const after = applySyncResult(before, { messages: [], labelUpdates: [{ id: "x", labelIds: ["SENT", "STARRED"] }], deleted: ["z"] }, flags, A, A);
+    expect(after.find(e => e.id === "x" && e.accountId === B)!.labelIds).toEqual(["INBOX"]);
+    expect(after.find(e => e.id === "x" && e.accountId === A)!.labelIds).toEqual(["SENT", "STARRED"]);
+    // z は B のメールなので、A の削除では消さない
+    expect(after.some(e => e.id === "z")).toBe(true);
+  });
+
+  it("applySyncResult で新しく届いたメールは、ほかのアカウントの同じ ID のメールを上書きしない", () => {
+    const before = [mail("x", ["SENT"], { accountId: A })];
+    const after = applySyncResult(before, { messages: [mail("x", ["INBOX"], { accountId: B })], labelUpdates: [], deleted: [] }, flags, B, A);
+    expect(after).toHaveLength(2);
   });
 });
 

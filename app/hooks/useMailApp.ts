@@ -12,6 +12,7 @@ import { type AccountSettings } from "../lib/syncedSettings";
 
 import { type ComposeRecipient } from "../lib/composeRecipients";
 import { missingPinnedEmail } from "../lib/pinnedIds";
+import { mailIdentity } from "../lib/historySync";
 import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
 import { logError, logWarn } from "../lib/safeLog";
 import { useSendAs } from "./useSendAs";
@@ -429,12 +430,14 @@ export function useMailApp() {
   }, [selectedSender, selectionMode, selectedIds, modal, renameInput, replySubject, composeHtml, replyToMessage, emailModal, attachmentModal, activeChatTab]);
 
   const allUniqueEmails = useMemo(() => {
-    const map = new Map();
-    persistedEmails.forEach(e => map.set(e.id, e));
-    emails.forEach(e => map.set(e.id, e));
+    // アカウント＋ID で重ねる（連携アカウントどうしのメールは同じ ID のことがあり、ID だけだと片方が消える）
+    const myEmail = session?.user?.email || "";
+    const map = new Map<string, Email>();
+    persistedEmails.forEach(e => map.set(mailIdentity(e, myEmail), e));
+    emails.forEach(e => map.set(mailIdentity(e, myEmail), e));
     // 下書き（DRAFT）は吹き出しに出さない（端末のキャッシュに前の一覧の下書きが残っていても出さない。下書きは入力欄に出す）
     return Array.from(map.values()).filter(e => !(e.labelIds || []).includes("DRAFT"));
-  }, [emails, persistedEmails]);
+  }, [emails, persistedEmails, session]);
 
   // ピン留めの中身を埋める。まず端末キャッシュから出し、無い分だけ Gmail から ID で取る。
   // Gmail で見つからなかったメッセージ単位のピン留めは、黙って消さず「このメールは存在しません」として出す
@@ -511,8 +514,9 @@ export function useMailApp() {
       });
     };
     setPersistedEmails(prev => {
-      const next = new Map(nextPMsgs.map(e => [e.id, e]));
-      prev.forEach(e => { if (!next.has(e.id) && isStillPinned(e)) next.set(e.id, e); });
+      const myEmail = session?.user?.email || "";
+      const next = new Map(nextPMsgs.map(e => [mailIdentity(e, myEmail), e]));
+      prev.forEach(e => { const key = mailIdentity(e, myEmail); if (!next.has(key) && isStillPinned(e)) next.set(key, e); });
       return Array.from(next.values());
     });
   };
@@ -738,13 +742,13 @@ export function useMailApp() {
 
   // さらに読み込む（チャット一覧・メッセージ。スクロールバーが出るまで自動で続ける）は useLoadMore.ts
   const { handleLoadMoreChats, handleLoadMoreMessage } = useLoadMore({
-    session, setEmails, isLoading, selectedSender, groupedEmails, senderList, chatConfigsRef,
+    session, linkedAccounts, setEmails, isLoading, selectedSender, groupedEmails, senderList, chatConfigsRef,
     checkInbox, checkArchive, checkSpam, checkTrash, checkSent,
     currentNextPageTokens, setCurrentNextPageTokens, currentNextPageTokensRef, loadingMoreChatsRef, setIsLoadingMoreChats, chatStatusMessage, setChatStatusMessage,
     loadingMoreMsgRef, setIsLoadingMore, chatNextPageToken, msgStatusMessage, setMsgStatusMessage, fetchChatCrossbox, fetchGroupLoadMore,
   });
 
-  const pinnedMsgsInChat = (checkInbox || checkArchive || checkSent) ? (groupedEmails[selectedSender!] || []).filter(e => messageConfigs[messageConfigKey(e.id)]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && isAccountVisible(e.accountId)) : [];
+  const pinnedMsgsInChat = (checkInbox || checkArchive || checkSent) ? (groupedEmails[selectedSender!] || []).filter(e => messageConfigs[messageConfigKey(e.id, e.accountId)]?.isPinned && !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SPAM") && isAccountVisible(e.accountId)) : [];
 
   return {
     auth: { session, status },

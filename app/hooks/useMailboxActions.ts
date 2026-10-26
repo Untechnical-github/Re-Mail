@@ -9,6 +9,7 @@ import { type LocalKey, type RoomKeyStr, asLocalKey, decodeRoomKey, keysOf } fro
 import { capPinnedIds } from "../lib/pinnedIds";
 import { logError, logWarn } from "../lib/safeLog";
 import { groupIdsByAccount, type MoveDestination } from "../lib/mailboxOps";
+import { mailIdentity } from "../lib/historySync";
 import type { AccountSettings } from "../lib/syncedSettings";
 import type { SetState, ConfigsApi, EmailModalState } from "./mailAppTypes";
 import type { useMailSync } from "./useMailSync";
@@ -66,8 +67,17 @@ export function useMailboxActions({
   // メッセージのルーム。開いているチャットに入っていればそのチャット（複数のチャットに出るメールで、操作した場所を優先する）
   const roomOfMessage = (id: string): RoomKeyStr | undefined =>
     selectedSender && (groupedEmails[selectedSender] || []).some(e => e.id === id) ? selectedSender : emailRoomMap.get(id);
+  // メッセージのアカウント。開いているチャットに入っていればそのチャットのアカウント（連携アカウントどうしのメールは
+  // 両方のアカウントに同じ ID で入ることがあるため、ID だけで引くと別のアカウントのメールを操作してしまう）
+  const accountOfMessage = (id: string): string => {
+    const room = roomOfMessage(id);
+    if (room) { try { return decodeRoomKey(room).accountEmail; } catch { /* 複合キーでない古いデータは下で引く */ } }
+    return resolveMessageAccountEmail(id);
+  };
+  // そのメールが、操作しようとしているアカウントのものか（同じ ID のほかのアカウントのメールは変えない）
+  const isTargetCopy = (e: Email): boolean => (e.accountId || session?.user?.email || "") === accountOfMessage(e.id);
   const applyHideToIds = (ids: string[]) => {
-    ids.forEach(id => updateMessageConfig(asLocalKey(id), { isHidden: true, hiddenAtDate: new Date().toISOString(), roomId: roomOfMessage(id) }, resolveMessageAccountEmail(id)));
+    ids.forEach(id => updateMessageConfig(asLocalKey(id), { isHidden: true, hiddenAtDate: new Date().toISOString(), roomId: roomOfMessage(id) }, accountOfMessage(id)));
   };
 
   // メッセージ単位のピン留めのコア処理。modal状態に依存しないため、確認モーダル経由の実行と
@@ -79,14 +89,14 @@ export function useMailboxActions({
     const capped = ids.slice(0, Math.max(0, 100 - existingPinnedMsgCount));
     const pMsgs: Email[] = [];
     capped.forEach((targetId: string) => {
-      const found = allUniqueEmails.find((e) => e.id === targetId);
+      const found = allUniqueEmails.find((e) => e.id === targetId && isTargetCopy(e));
       if (found && !found.labelIds?.includes("TRASH") && !found.labelIds?.includes("SPAM")) {
         // フィルターツール等、複数ルームにまたがるメッセージを対象にする場合があるため、
         // 常に selectedSender を使うのではなく、そのメッセージ自身の本来のルームを優先する
         const room = roomOfMessage(targetId) || selectedSender || undefined;
         const pData = { ...found, senderRoom: room ? decodeRoomKey(room).localKey : undefined };
         pMsgs.push(pData);
-        updateMessageConfig(asLocalKey(targetId), { isPinned: true, forceFetch: true, roomId: room }, resolveMessageAccountEmail(targetId));
+        updateMessageConfig(asLocalKey(targetId), { isPinned: true, forceFetch: true, roomId: room }, accountOfMessage(targetId));
       }
     });
     if (pMsgs.length > 0) setPersistedEmails(prev => [...prev, ...pMsgs]);
@@ -189,11 +199,8 @@ export function useMailboxActions({
   // 画面はもう移した表示になっているので、失敗したら再読み込みで元に戻ることと次の行動を伝える（絶対ルール3）
   const postMailboxChange = (kind: "move" | "delete" | "read" | "unread", ids: string[], destination?: MoveDestination) => {
     const myEmail = session?.user?.email || "";
-    const owner = new Map<string, string>();
-    persistedEmails.forEach(e => { if (e.accountId) owner.set(e.id, e.accountId); });
-    emails.forEach(e => { if (e.accountId) owner.set(e.id, e.accountId); });
-    // 送信直後の仮 ID は Gmail に無いので送らない
-    const groups = groupIdsByAccount(ids.filter(id => !id.startsWith("fake-")), id => owner.get(id), myEmail);
+    // 送信直後の仮 ID は Gmail に無いので送らない。アカウントは操作した場所（開いているチャット）のものを優先する
+    const groups = groupIdsByAccount(ids.filter(id => !id.startsWith("fake-")), id => accountOfMessage(id), myEmail);
     const label = kind === "delete" ? "削除" : kind === "move" ? "移動" : kind === "read" ? "既読" : "未読";
     groups.forEach((accountIds, accountEmail) => {
       const payload = kind === "delete"
@@ -228,12 +235,12 @@ export function useMailboxActions({
   const applyReadToIds = (ids: string[], read: boolean) => {
     const wanted = new Set(ids);
     const changed = allUniqueEmails
-      .filter(e => wanted.has(e.id) && !e.id.startsWith("fake-") && !!e.labelIds?.includes("UNREAD") === read)
+      .filter(e => wanted.has(e.id) && isTargetCopy(e) && !e.id.startsWith("fake-") && !!e.labelIds?.includes("UNREAD") === read)
       .map(e => e.id);
     if (changed.length === 0) return;
     const changedSet = new Set(changed);
     const update = (e: Email): Email => {
-      if (!changedSet.has(e.id)) return e;
+      if (!changedSet.has(e.id) || !isTargetCopy(e)) return e;
       const labels = (e.labelIds || []).filter(l => l !== "UNREAD");
       return { ...e, labelIds: read ? labels : [...labels, "UNREAD"] };
     };
@@ -249,12 +256,12 @@ export function useMailboxActions({
   // 削除のコア処理（TRASH・SENT以外の「移動可能なメール」のみをゴミ箱へ移動）。modal状態に依存しないため、
   // 確認モーダル経由の実行と継続フィルターの自動適用エンジンの両方から呼べる
   const applyDeleteToIds = (ids: string[]) => {
-    const deleteEmails = allUniqueEmails.filter((e) => ids.includes(e.id));
+    const deleteEmails = allUniqueEmails.filter((e) => ids.includes(e.id) && isTargetCopy(e));
     const trashIds = deleteEmails.filter(e => !e.labelIds?.includes("TRASH") && !e.labelIds?.includes("SENT") && !e.isMe).map(e => e.id);
     if (trashIds.length === 0) return;
     try {
       const applyTrashLabels = (e: Email): Email => {
-        if (trashIds.includes(e.id)) {
+        if (trashIds.includes(e.id) && isTargetCopy(e)) {
           const newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "SPAM");
           if (!newLabels.includes("TRASH")) newLabels.push("TRASH");
           return { ...e, labelIds: newLabels };
@@ -265,9 +272,9 @@ export function useMailboxActions({
       const nextEmails = emails.map(applyTrashLabels);
       const nextPersisted = persistedEmails.map(applyTrashLabels);
 
-      const combined = new Map();
-      nextPersisted.forEach(e => combined.set(e.id, e));
-      nextEmails.forEach(e => combined.set(e.id, e));
+      const combined = new Map<string, Email>();
+      nextPersisted.forEach(e => combined.set(mailIdentity(e, session?.user?.email || ""), e));
+      nextEmails.forEach(e => combined.set(mailIdentity(e, session?.user?.email || ""), e));
 
       const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current, messageConfigsRef.current);
 
@@ -303,7 +310,7 @@ export function useMailboxActions({
         const localTargets = chatTargets.map(t => decodeRoomKey(t).localKey);
         setPersistedEmails(prev => prev.filter(e => !(e.senderRoom && localTargets.includes(e.senderRoom as LocalKey))));
       } else {
-        (targets as string[]).forEach(targetId => updateMessageConfig(asLocalKey(targetId), { isPinned: false, forceFetch: false }, resolveMessageAccountEmail(targetId)));
+        (targets as string[]).forEach(targetId => updateMessageConfig(asLocalKey(targetId), { isPinned: false, forceFetch: false }, accountOfMessage(targetId)));
         setPersistedEmails(prev => prev.filter(e => !targets.includes(e.id)));
       }
     }
@@ -322,7 +329,7 @@ export function useMailboxActions({
 
     const applyNewLabels = (e: Email): Email => {
       const dest = getDestForId(e.id);
-      if (!dest) return e;
+      if (!dest || !isTargetCopy(e)) return e;
       const newLabels = (e.labelIds || []).filter((l: string) => l !== "INBOX" && l !== "TRASH" && l !== "SPAM");
       if (dest !== "ARCHIVE") newLabels.push(dest);
       return { ...e, labelIds: newLabels };
@@ -330,9 +337,9 @@ export function useMailboxActions({
 
     const nextEmails = emails.map(applyNewLabels);
     const nextPersisted = persistedEmails.map(applyNewLabels);
-    const combined = new Map();
-    nextPersisted.forEach((e) => combined.set(e.id, e));
-    nextEmails.forEach((e) => combined.set(e.id, e));
+    const combined = new Map<string, Email>();
+    nextPersisted.forEach((e) => combined.set(mailIdentity(e, session?.user?.email || ""), e));
+    nextEmails.forEach((e) => combined.set(mailIdentity(e, session?.user?.email || ""), e));
     const nextPMsgs = syncConfigs(Array.from(combined.values()), chatConfigsRef.current, messageConfigsRef.current);
 
     setEmails(nextEmails);

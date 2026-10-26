@@ -164,7 +164,7 @@ export function TalkView({ app, lastMsgIdxRef, collapseCompose, selectedGroupCon
                     const isSent = email.labelIds?.includes("SENT") || email.isMe; 
                     const isArchive = !isTrash && !isSpam && !isInbox && !isSent; 
 
-                    if ((isInbox || isArchive || isSent) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.messageConfigs[actions.messageConfigKey(email.id)]?.isHidden)) return null;
+                    if ((isInbox || isArchive || isSent) && (state.chatConfigs[state.selectedSender!]?.isHidden || state.messageConfigs[actions.messageConfigKey(email.id, email.accountId)]?.isHidden)) return null;
                     if (!actions.isAccountVisible(email.accountId)) return null;
                     // ピン留めしていたが Gmail 側で削除されたメール。黙って消さず、存在しないことを示す
                     if (email.isMissing) {
@@ -368,7 +368,7 @@ export function TalkView({ app, lastMsgIdxRef, collapseCompose, selectedGroupCon
                                 if (refs.touchTimer.current) { clearTimeout(refs.touchTimer.current); refs.touchTimer.current = null; }
                               }}
                            >
-                              {state.messageConfigs[actions.messageConfigKey(email.id)]?.isPinned && <PinIcon className="w-3.5 h-3.5 text-[#FEE75C] mr-2 flex-shrink-0 inline-block align-text-bottom" />}
+                              {state.messageConfigs[actions.messageConfigKey(email.id, email.accountId)]?.isPinned && <PinIcon className="w-3.5 h-3.5 text-[#FEE75C] mr-2 flex-shrink-0 inline-block align-text-bottom" />}
                               {hasVisibleSubject && (
                                 <div className="font-bold text-sm mb-1.5 pb-1.5 border-b border-black/10"><HighlightText text={displaySubject} highlight={subjectFindHighlight} field="subject" activeField={activeFindField} activeIndex={activeFindIndex} /></div>
                               )}

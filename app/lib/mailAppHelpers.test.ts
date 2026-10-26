@@ -44,6 +44,12 @@ describe("reconcileFakeSentEmails", () => {
     const notMine = { ...real, isMe: false };
     expect(reconcileFakeSentEmails([far, otherTo, notMine]).map(e => e.id)).toEqual(["fake-2", "fake-3", real.id]);
   });
+
+  it("Gmail から取り直した実メール（isMe が無く SENT ラベルだけ）でも仮 ID を除く", () => {
+    const fake = mail({ id: "fake-4", isMe: true, accountId: "user@example.com", to: "b@example.com", subject: "s", date: "2026-01-01T00:01:00Z" });
+    const fetched = mail({ id: "18c2f0a1b2c3d4e6", accountId: "user@example.com", to: "b@example.com", subject: "s", labelIds: ["SENT"], date: "2026-01-01T00:01:00Z" });
+    expect(reconcileFakeSentEmails([fake, fetched]).map(e => e.id)).toEqual([fetched.id]);
+  });
 });
 
 describe("parseAddressSet / sameAddressSet", () => {

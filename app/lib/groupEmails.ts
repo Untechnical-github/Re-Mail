@@ -74,6 +74,39 @@ function sentRecipients(email: Pick<Email, "to" | "cc" | "bcc">): { addresses: S
   return { addresses, names, first };
 }
 
+// 受け取ったメールの相手のアドレス → ルーム名。同じアドレスで表示名が複数あるときだけ入れる。
+// 設定のあるルーム名（chatConfigs にある名前）を優先し、無ければいちばん新しいメールの表示名にする
+// （どちらも同じなら今までと同じ名前のまま。アドレスだけのルーム名は表示名があればそちらに負ける）
+export function canonicalRoomNames(
+  emails: Email[],
+  myAddress: string,
+  myAddresses: string[],
+  chatConfigs: Record<LocalKey, ChatConfig>,
+): Map<string, string> {
+  const names = new Map<string, { name: string; time: number }[]>();
+  for (const email of emails) {
+    if (email.senderRoom || isMineEmail(email, myAddress || "")) continue;
+    const partner = mailPartnerOf(email, myAddresses);
+    if (!partner.address) continue;
+    const list = names.get(partner.address) || [];
+    const time = new Date(email.date).getTime() || 0;
+    const found = list.find(n => n.name === partner.roomName);
+    if (found) found.time = Math.max(found.time, time);
+    else list.push({ name: partner.roomName, time });
+    names.set(partner.address, list);
+  }
+  const isAddressName = (n: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(n.trim());
+  const out = new Map<string, string>();
+  names.forEach((list, address) => {
+    if (list.length < 2) return;
+    const withConfig = list.filter(n => !!chatConfigs[n.name as LocalKey] && !chatConfigs[n.name as LocalKey]?.isGroup);
+    const pool = withConfig.length > 0 ? withConfig : (list.some(n => !isAddressName(n.name)) ? list.filter(n => !isAddressName(n.name)) : list);
+    const best = pool.reduce((a, b) => (b.time > a.time ? b : a));
+    out.set(address, best.name);
+  });
+  return out;
+}
+
 // 1アカウント分のメールを、ローカルなroomキーでグルーピングする。
 // 返り値のキーはローカルキー（例: "田中太郎", "group:xxxx"）で、
 // アカウントをまたいだ複合キー化は行わない（それは mergeAccountGroups の責務）。
@@ -89,12 +122,15 @@ export function groupEmailsByRoom(
   const myAddresses = [myAddress, ...myAliases];
   // ルームの相手のアドレス（Reply-To を優先）。最初に見つかった受信メールで決める
   const roomPartner: Record<string, string> = {};
+  // 同じ相手（アドレス）なのに表示名がメールごとに違う（「高澤悠樹」と「髙澤家」など）と、チャットが表示名ごとに分かれてしまう。
+  // 相手のアドレスごとにルーム名を1つに決める：設定（ピン留め・名前の変更など）があるルーム名を優先し、無ければいちばん新しいメールの表示名
+  const canonicalRoom = canonicalRoomNames(emails, myAddress, myAddresses, chatConfigs);
   emails.forEach((email) => {
     if (email.senderRoom) { if (!groups[email.senderRoom]) groups[email.senderRoom] = []; groups[email.senderRoom].push(email); return; }
     const isMe = isMineEmail(email, myAddress || "");
     if (!isMe) {
       const partner = mailPartnerOf(email, myAddresses);
-      const roomName = partner.roomName;
+      const roomName = (partner.address && canonicalRoom.get(partner.address)) || partner.roomName;
       if (!groups[roomName]) groups[roomName] = []; groups[roomName].push(email);
       if (!roomPartner[roomName] && partner.address) roomPartner[roomName] = partner.address;
     } else { tempSentEmails.push(email); }

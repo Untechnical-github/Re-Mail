@@ -33,7 +33,7 @@ export function reconcileFakeSentEmails(list: Email[]): Email[] {
     const fakeTime = new Date(fake.date).getTime();
     const match = reals.find(real =>
       (real.accountId || "") === (fake.accountId || "") &&
-      !!real.isMe === true &&
+      (!!real.isMe || !!real.labelIds?.includes("SENT")) && // Gmail から取り直したメールには isMe が無いため、送信済みラベルでも見る
       (real.to || "") === (fake.to || "") &&
       (real.subject || "") === (fake.subject || "") &&
       Math.abs(new Date(real.date).getTime() - fakeTime) < 5 * 60 * 1000

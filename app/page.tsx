@@ -63,7 +63,9 @@ export default function Home() {
   // 本文に何か書いてあるか、返信欄にキャレットがあるときだけ、送信元・送信先・返信元・件名を出す（PC・スマホ共通）
   // 送信先の欄を開いている間・入力欄から開いた確認画面や選ぶ画面を出している間も、たたまない（選んでいる途中で消えないように）
   const composeModalOpen = !!state.composeDialog || ["select_recipients", "select_reply_target", "select_send_account"].includes(state.modal?.type || "");
-  const showComposeExtras = !state.composeBodyEmpty || state.composeActive || composeModalOpen;
+  // 本文が空でも、添付・件名・返信元がある下書き（Gmail で作った添付だけの下書きなど）はたたまない（中身があるのに隠れて見えなくなるため）
+  const hasDraftExtras = state.replyAttachments.length > 0 || !!state.replySubject.trim() || !!state.replyToMessage;
+  const showComposeExtras = !state.composeBodyEmpty || hasDraftExtras || state.composeActive || composeModalOpen;
   const isGroupChat = !!selectedGroupConfig?.isGroup;
   const noRecipients = !isGroupChat && state.recipients.length === 0;
   const subjectFindHighlight = state.findBarOpen && state.findBarSearchSubject ? state.findBarKeyword : "";

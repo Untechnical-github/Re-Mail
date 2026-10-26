@@ -70,7 +70,10 @@ export function useRooms({
   // 2) groupedEmailsのroomキー（既に正しいアカウントで複合化済み）
   // 3) メール自身のaccountId
   // 4) どれも無ければメインアカウントにフォールバック
-  const resolveMessageAccountEmail = (messageId: string): string => {
+  // accountHint（そのメールの accountId）を渡したときはそれを使う（連携アカウントどうしのメールは同じ ID で
+  // 両方のアカウントに入ることがあり、ID だけで引くとほかのアカウントの設定を見てしまうため）
+  const resolveMessageAccountEmail = (messageId: string, accountHint?: string): string => {
+    if (accountHint) return accountHint;
     const existingKey = keysOf(messageConfigsRef.current).find(k => decodeRoomKey(k).localKey === (messageId as LocalKey));
     if (existingKey) {
       try { return decodeRoomKey(existingKey).accountEmail; } catch { /* 複合キーでない古いデータは無視 */ }
@@ -86,7 +89,7 @@ export function useRooms({
   // メッセージ単位の設定（messageConfigs）を引くための複合キーを作る。そのメッセージが
   // 実際に属するアカウントで複合化するため、連携アカウントをまたいでメッセージIDが
   // 衝突しても互いの非表示/ピン留め状態が混ざらない
-  const messageConfigKey = (messageId: string): RoomKeyStr => encodeRoomKey(resolveMessageAccountEmail(messageId), messageId as LocalKey);
+  const messageConfigKey = (messageId: string, accountHint?: string): RoomKeyStr => encodeRoomKey(resolveMessageAccountEmail(messageId, accountHint), messageId as LocalKey);
 
   // ルーム内の相手メールアドレスを推定する（「作成」機能での重複チャット判定・検索に使用）。
   // 連携アカウントのルームでは「自分」がメインアカウントとは限らないため、そのルーム自身が

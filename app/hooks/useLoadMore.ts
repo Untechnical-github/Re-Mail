@@ -6,18 +6,22 @@ import type { ChatConfig } from "../types/mail";
 import type { Email } from "../types/email";
 import { type RoomKeyStr, decodeRoomKey } from "../lib/roomKey";
 import { reconcileFakeSentEmails } from "../lib/mailAppHelpers";
+import { mergeEmails } from "../lib/historySync";
 import type { useMailSync } from "./useMailSync";
 import type { SetState } from "./mailAppTypes";
 
 type MailSyncApi = ReturnType<typeof useMailSync>;
 
+const ALL_LOADED = "すべてのメールを読み込みました";
+
 export function useLoadMore({
-  session, setEmails, isLoading, selectedSender, groupedEmails, senderList, chatConfigsRef,
+  session, linkedAccounts, setEmails, isLoading, selectedSender, groupedEmails, senderList, chatConfigsRef,
   checkInbox, checkArchive, checkSpam, checkTrash, checkSent,
   currentNextPageTokens, setCurrentNextPageTokens, currentNextPageTokensRef, loadingMoreChatsRef, setIsLoadingMoreChats, chatStatusMessage, setChatStatusMessage,
   loadingMoreMsgRef, setIsLoadingMore, chatNextPageToken, msgStatusMessage, setMsgStatusMessage, fetchChatCrossbox, fetchGroupLoadMore,
 }: {
   session: Session | null;
+  linkedAccounts: string[];
   setEmails: SetState<Email[]>;
   isLoading: boolean;
   selectedSender: RoomKeyStr | null;
@@ -48,8 +52,11 @@ export function useLoadMore({
     const liveTokens = currentNextPageTokensRef.current;
     const myEmail = session?.user?.email || "";
     const accountsToLoad = Object.keys(liveTokens).filter(a => liveTokens[a]);
-    if (loadingMoreChatsRef.current || accountsToLoad.length === 0) {
-        if (accountsToLoad.length === 0 && !chatStatusMessage) setChatStatusMessage("すべてのメールを読み込みました");
+    // 最初の読み込みが終わる前・まだ続きの位置を知らないアカウントがあるうちは、「すべて読み込んだ」とは言わない
+    // （以前は読み込み中から「すべてのメールを読み込みました」と出し、そのあと追加読み込みも止まっていた）
+    const allAccountsKnown = [myEmail, ...linkedAccounts].filter(Boolean).every(a => a in liveTokens);
+    if (isLoading || loadingMoreChatsRef.current || accountsToLoad.length === 0) {
+        if (!isLoading && accountsToLoad.length === 0 && allAccountsKnown && !chatStatusMessage) setChatStatusMessage(ALL_LOADED);
         return;
     }
     loadingMoreChatsRef.current = true;
@@ -100,16 +107,12 @@ export function useLoadMore({
       }
 
       if (rawMessages.length > 0) {
-        setEmails(prev => {
-          const map = new Map(prev.map((e) => [e.id, e]));
-          rawMessages.forEach((m) => map.set(m.id, m));
-          return reconcileFakeSentEmails(Array.from(map.values()));
-        });
+        setEmails(prev => reconcileFakeSentEmails(mergeEmails(prev, rawMessages, myEmail)));
       }
 
       // tokenを更新→currentNextPageTokens変化→useEffectが次ページを判断
       setCurrentNextPageTokens(nextTokens);
-      if (!Object.values(nextTokens).some(t => t)) setChatStatusMessage("すべてのメールを読み込みました");
+      if (!Object.values(nextTokens).some(t => t) && [myEmail, ...linkedAccounts].filter(Boolean).every(a => a in nextTokens)) setChatStatusMessage(ALL_LOADED);
 
     } catch {
       setChatStatusMessage("エラーが発生しました。");
@@ -150,7 +153,8 @@ export function useLoadMore({
   // → スクロールバーが出るまで（または全件読み込みまで）自動でチャットを追加読み込みする
   const hasMoreChatsToLoad = Object.values(currentNextPageTokens).some(t => t);
   useEffect(() => {
-    if (isLoading || loadingMoreChatsRef.current || chatStatusMessage) return;
+    // 「すべて読み込んだ」と出したあとでも、続きが見つかったら（アカウントを足した・裏で取り直した など）また読み込む
+    if (isLoading || loadingMoreChatsRef.current || (chatStatusMessage && !(hasMoreChatsToLoad && chatStatusMessage === ALL_LOADED))) return;
     if (!hasMoreChatsToLoad && senderList.length === 0) return;
     const asideEl = document.querySelector("aside > div.flex-1.overflow-y-auto");
     if (!asideEl) return;
