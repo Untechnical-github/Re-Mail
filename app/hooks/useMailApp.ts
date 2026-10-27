@@ -13,6 +13,7 @@ import { type AccountSettings } from "../lib/syncedSettings";
 import { type ComposeRecipient } from "../lib/composeRecipients";
 import { missingPinnedEmail } from "../lib/pinnedIds";
 import { mailIdentity } from "../lib/historySync";
+import { normalizeAliasReceived } from "../lib/groupEmails";
 import { loadPinnedCache, savePinnedCache } from "../lib/pinnedCache";
 import { logError, logWarn } from "../lib/safeLog";
 import { useSendAs } from "./useSendAs";
@@ -436,8 +437,14 @@ export function useMailApp() {
     persistedEmails.forEach(e => map.set(mailIdentity(e, myEmail), e));
     emails.forEach(e => map.set(mailIdentity(e, myEmail), e));
     // 下書き（DRAFT）は吹き出しに出さない（端末のキャッシュに前の一覧の下書きが残っていても出さない。下書きは入力欄に出す）
-    return Array.from(map.values()).filter(e => !(e.labelIds || []).includes("DRAFT"));
-  }, [emails, persistedEmails, session]);
+    // エイリアス（別のアカウントのアドレス）から届いたメールに Gmail が付けた「送信済み」は、検索・削除などでも外して扱う（groupEmails.ts）
+    return Array.from(map.values())
+      .filter(e => !(e.labelIds || []).includes("DRAFT"))
+      .map(e => {
+        const account = e.accountId || myEmail;
+        return normalizeAliasReceived(e, account, (sendAsByAccount[account] || []).map(a => a.sendAsEmail));
+      });
+  }, [emails, persistedEmails, session, sendAsByAccount]);
 
   // ピン留めの中身を埋める。まず端末キャッシュから出し、無い分だけ Gmail から ID で取る。
   // Gmail で見つからなかったメッセージ単位のピン留めは、黙って消さず「このメールは存在しません」として出す

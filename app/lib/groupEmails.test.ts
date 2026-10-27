@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, mailPartnerOf, roomPartner } from "./groupEmails";
+import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, mailPartnerOf, roomPartner, normalizeAliasReceived } from "./groupEmails";
 import { Email } from "../types/email";
 import { ChatConfig } from "../types/mail";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey } from "./roomKey";
@@ -398,5 +398,22 @@ describe("roomPartner", () => {
     expect(roomPartner([sent], "z@example.com", ME)).toEqual({ name: "", address: "z@example.com" });
     expect(roomPartner([sent], "別の人", ME)).toEqual({ name: "", address: "x@example.com" });
     expect(roomPartner([], "a@example.com", ME)).toEqual({ name: "", address: "" });
+  });
+});
+
+describe("normalizeAliasReceived（検索・削除などで使う一覧の整え方）", () => {
+  const FAMILY = "family@example.com";
+  it("エイリアスから届いたメールは「送信済み」を外す（元のメールは変えない）", () => {
+    const e = mkEmail({ id: "1", from: `家族 <${FAMILY}>`, to: ME, labelIds: ["UNREAD", "SENT", "INBOX"] });
+    expect(normalizeAliasReceived(e, ME, [ME, FAMILY]).labelIds).toEqual(["UNREAD", "INBOX"]);
+    expect(e.labelIds).toEqual(["UNREAD", "SENT", "INBOX"]);
+  });
+  it("エイリアスで誰かに送ったメール・自分から自分へのメール・エイリアスが分からないときはそのまま", () => {
+    const sent = mkEmail({ id: "2", from: `家族 <${FAMILY}>`, to: "tanaka@example.com", labelIds: ["SENT"] });
+    expect(normalizeAliasReceived(sent, ME, [ME, FAMILY])).toBe(sent);
+    const self = mkEmail({ id: "3", from: ME, to: ME, labelIds: ["SENT", "INBOX"] });
+    expect(normalizeAliasReceived(self, ME, [ME, FAMILY])).toBe(self);
+    const unknown = mkEmail({ id: "4", from: `家族 <${FAMILY}>`, to: ME, labelIds: ["SENT", "INBOX"] });
+    expect(normalizeAliasReceived(unknown, ME, [])).toBe(unknown);
   });
 });

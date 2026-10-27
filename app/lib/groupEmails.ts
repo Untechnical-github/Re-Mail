@@ -56,6 +56,16 @@ function asReceived(email: Email): Email {
   return email.labelIds?.includes("SENT") ? { ...email, labelIds: email.labelIds.filter(l => l !== "SENT") } : email;
 }
 
+// 画面全体（検索・削除・場所の判定など）で使うメール一覧のための整え方。差出人がエイリアス（別のアカウントのアドレス）で、
+// このアカウントに届いたメール（isOwnMail が false）は、Gmail が付けた「送信済み」を外す。
+// エイリアスがまだ分からない（読み込み前）・差出人がアカウント自身のときは何もしない（自分あての自分のメールは送信済みのまま）
+export function normalizeAliasReceived(email: Email, account: string, aliases: string[]): Email {
+  if (!email.labelIds?.includes("SENT")) return email;
+  const others = aliases.filter(a => a && a.trim().toLowerCase() !== account.trim().toLowerCase());
+  if (others.length === 0 || !isMineEmail(email, others)) return email;
+  return isOwnMail(email, [account, ...others]) ? email : asReceived(email);
+}
+
 // 受け取ったメールの「相手」。Reply-To に自分（エイリアスを含む）以外のアドレスがあれば、その最初のものを相手にする
 // （問い合わせフォームのように From が共通で Reply-To が人ごとに違うメールを、返信先の人のチャットにまとめるため）。
 // Reply-To が無ければ From。roomName は Reply-To の表示名、無ければ Reply-To のアドレス（From の表示名は使わない）
