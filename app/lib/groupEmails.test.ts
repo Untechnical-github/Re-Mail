@@ -53,6 +53,25 @@ describe("groupEmailsByRoom", () => {
     expect(groups[asLocalKey("田中太郎")].find(e => e.id === "2")!.isMe).toBe(true);
   });
 
+  it("エイリアスが別のアカウントのとき、そこから届いたメール（受信箱にある）は受け取ったメールとし、Gmail の「送信済み」を画面では外す", () => {
+    const FAMILY = "family@example.com";
+    const emails = [
+      mkEmail({ id: "1", from: `家族 <${FAMILY}>`, to: ME, labelIds: ["UNREAD", "SENT", "INBOX"] }),
+      // アーカイブ済み（INBOX なし）でも、To / Cc に自分がいれば受け取ったメール
+      mkEmail({ id: "2", from: `家族 <${FAMILY}>`, to: `${FAMILY}`, cc: ME, labelIds: ["SENT"] }),
+      // エイリアスで自分が誰かに送ったメールは、自分のメール
+      mkEmail({ id: "3", from: `家族 <${FAMILY}>`, to: "田中太郎 <tanaka@example.com>", labelIds: ["SENT"] }),
+    ];
+    const groups = groupEmailsByRoom(emails, ME, {} as Record<LocalKey, ChatConfig>, [ME, FAMILY]);
+    const family = groups[asLocalKey("家族")];
+    expect(family.map(e => e.id).sort()).toEqual(["1", "2"]);
+    expect(family.every(e => !e.isMe && !(e.labelIds || []).includes("SENT"))).toBe(true);
+    expect(family.find(e => e.id === "1")!.labelIds).toEqual(["UNREAD", "INBOX"]);
+    expect(groups[asLocalKey("田中太郎")].map(e => e.id)).toEqual(["3"]);
+    // 元のメールのラベルは変えない
+    expect(emails[0].labelIds).toEqual(["UNREAD", "SENT", "INBOX"]);
+  });
+
   it("同じ表示名でもアドレスが1つだけなら、名前はそのまま", () => {
     const emails = [mkEmail({ id: "1", from: "Google <no-reply@example.com>" }), mkEmail({ id: "2", from: "Google <alerts@example.com>" })];
     const groups = groupEmailsByRoom(emails, ME, {} as Record<LocalKey, ChatConfig>);

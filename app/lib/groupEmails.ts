@@ -36,6 +36,26 @@ export function groupMemberAddresses(cfg: ChatConfig): Set<string> {
   return new Set(addresses.filter((a): a is string => typeof a === "string").map(a => a.trim().toLowerCase()).filter(Boolean));
 }
 
+// 自分が送ったメールか。myAddresses の先頭がそのアカウントのアドレス、残りがエイリアス（Gmail の「別のアドレスから送信」）。
+// エイリアスが別のアカウント（連携しているほかのアカウントなど）のアドレスのとき、そこから届いたメールにも Gmail は「送信済み」を付ける。
+// エイリアスからのメールでも、このアカウントに届いたもの（受信箱にある・To / Cc にこのアカウントのアドレスがある）は受け取ったメールとする
+export function isOwnMail(email: Pick<Email, "from" | "to" | "cc" | "labelIds" | "isMe">, myAddresses: string[]): boolean {
+  if (email.isMe) return true;
+  const [primary = "", ...rest] = myAddresses;
+  if (isMineEmail(email, primary)) return true;
+  const aliases = rest.filter(a => a && a.trim().toLowerCase() !== primary.trim().toLowerCase());
+  if (aliases.length === 0 || !isMineEmail(email, aliases)) return false;
+  if ((email.labelIds || []).includes("INBOX")) return false;
+  const me = primary.trim().toLowerCase();
+  const toMe = [email.to, email.cc].some(h => splitAddressList((h || "").slice(0, 200_000)).some(e => parseAddress(e).address.trim().toLowerCase() === me));
+  return !toMe;
+}
+
+// 受け取ったメールとして画面に出すときのコピー（エイリアスから届いたメールに Gmail が付けた「送信済み」を外す）
+function asReceived(email: Email): Email {
+  return email.labelIds?.includes("SENT") ? { ...email, labelIds: email.labelIds.filter(l => l !== "SENT") } : email;
+}
+
 // 受け取ったメールの「相手」。Reply-To に自分（エイリアスを含む）以外のアドレスがあれば、その最初のものを相手にする
 // （問い合わせフォームのように From が共通で Reply-To が人ごとに違うメールを、返信先の人のチャットにまとめるため）。
 // Reply-To が無ければ From。roomName は Reply-To の表示名、無ければ Reply-To のアドレス（From の表示名は使わない）
@@ -84,7 +104,7 @@ export function canonicalRoomNames(
 ): Map<string, string> {
   const names = new Map<string, { name: string; time: number }[]>();
   for (const email of emails) {
-    if (email.senderRoom || isMineEmail(email, myAddresses)) continue;
+    if (email.senderRoom || isOwnMail(email, myAddresses)) continue;
     const partner = mailPartnerOf(email, myAddresses);
     if (!partner.address) continue;
     const list = names.get(partner.address) || [];
@@ -126,11 +146,14 @@ export function groupEmailsByRoom(
   const canonicalRoom = canonicalRoomNames(emails, myAddresses, chatConfigs);
   emails.forEach((email) => {
     if (email.senderRoom) { if (!groups[email.senderRoom]) groups[email.senderRoom] = []; groups[email.senderRoom].push(email); return; }
-    const isMe = isMineEmail(email, myAddresses);
+    const isMe = isOwnMail(email, myAddresses);
     if (!isMe) {
       const partner = mailPartnerOf(email, myAddresses);
       const roomName = (partner.address && canonicalRoom.get(partner.address)) || partner.roomName;
-      if (!groups[roomName]) groups[roomName] = []; groups[roomName].push(email);
+      if (!groups[roomName]) groups[roomName] = [];
+      // エイリアスから届いたメールに Gmail が付けた「送信済み」は、画面では外す（受け取ったメールとして受信箱などに出す）。
+      // Gmail のラベルそのものは変えない（一覧の元のデータ allUniqueEmails には残る）
+      groups[roomName].push(asReceived(email));
       if (!roomPartner[roomName] && partner.address) roomPartner[roomName] = partner.address;
     } else { tempSentEmails.push(email); }
   });
@@ -173,7 +196,7 @@ export function groupEmailsByRoom(
   const resolveRoomPartnerAddr = (room: string): string => {
     const msgs = groups[room];
     if (!msgs || msgs.length === 0) return "";
-    const partner = msgs.find((e: Email) => !isMineEmail(e, myAddresses));
+    const partner = msgs.find((e: Email) => !isOwnMail(e, myAddresses));
     if (partner) return mailPartnerOf(partner, myAddresses).address;
     const raw = (msgs.find((e: Email) => e.to)?.to || "").split(",")[0];
     const match = (raw || "").match(/<([^>]+)>/);
@@ -209,7 +232,7 @@ export function groupEmailsByRoom(
     const memberAddresses = groupMemberAddresses(cfg);
 
     // このグループから送信されたメール = 宛先セットがメンバー全員と完全一致する送信済みメール
-    const sentViaGroup = emails.filter((e: Email) => isMineEmail(e, myAddresses) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
+    const sentViaGroup = emails.filter((e: Email) => isOwnMail(e, myAddresses) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
 
     // 一斉送信したメールを各メンバーの個別チャットにも反映する
     sentViaGroup.forEach((sentMsg: Email) => {
@@ -225,11 +248,11 @@ export function groupEmailsByRoom(
     }
 
     const received = emails.filter((e: Email) => {
-      if (isMineEmail(e, myAddresses)) return false;
+      if (isOwnMail(e, myAddresses)) return false;
       const addrMatch = (e.from || "").match(/<([^>]+)>/);
       const addr = (addrMatch ? addrMatch[1] : e.from || "").trim().toLowerCase();
       return memberAddresses.has(addr);
-    });
+    }).map(asReceived);
 
     if (mode === "inbound_only") {
       groups[room] = received;
@@ -322,7 +345,7 @@ export function applyFilterGroups(
 // ルームの相手（表示名とアドレス）。相手から届いたメールがあれば mailPartnerOf（Reply-To 優先）、
 // 送ったメールしか無ければ、その宛先（To / Cc / Bcc）のうちルーム名（表示名かアドレス）に合うもの、無ければ最初の宛先
 export function roomPartner(msgs: Email[], localKey: string, myAddress: string, myAliases: string[] = []): { name: string; address: string } {
-  const partner = msgs.find(e => !isMineEmail(e, [myAddress, ...myAliases]));
+  const partner = msgs.find(e => !isOwnMail(e, [myAddress, ...myAliases]));
   if (partner) {
     const p = mailPartnerOf(partner, [myAddress, ...myAliases]);
     return { name: p.name, address: p.address };

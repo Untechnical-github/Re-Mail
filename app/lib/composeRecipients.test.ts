@@ -209,4 +209,8 @@ describe("sentRecipientCounts / receivedRole", () => {
     expect(receivedRole({ to: "a@example.com", cc: `Me <${ALIAS.toUpperCase()}>` }, [ME, ALIAS])).toBe("Cc");
     expect(receivedRole({ to: "list@example.com" }, [ME])).toBe("宛先に自分なし");
   });
+  it("差出人がエイリアス（別のアカウント）のとき、差出人自身は自分に数えない", () => {
+    expect(receivedRole({ from: `家族 <${ALIAS}>`, to: ALIAS, cc: ME }, [ME, ALIAS])).toBe("Cc");
+    expect(receivedRole({ from: `家族 <${ALIAS}>`, to: ME }, [ME, ALIAS])).toBe("To");
+  });
 });

@@ -222,9 +222,12 @@ export function sentRecipientCounts(email: { to?: string; cc?: string; bcc?: str
 }
 
 // 受け取ったメールで、自分（エイリアスを含む）がどの欄にいたか。To にも Cc にもいなければ「宛先に自分なし」
-// （Bcc・メーリングリスト・自動転送のどれか分からないため、「Bcc」とは書かない）
-export function receivedRole(email: { to?: string; cc?: string }, myAddresses: string[]): "To" | "Cc" | "宛先に自分なし" {
+// （Bcc・メーリングリスト・自動転送のどれか分からないため、「Bcc」とは書かない）。
+// 差出人のアドレスは「自分」に数えない（エイリアスが別のアカウントのアドレスのとき、そのアカウントが自分を To に入れて送ったメールを「To」と誤って出さないため）
+export function receivedRole(email: { from?: string; to?: string; cc?: string }, myAddresses: string[]): "To" | "Cc" | "宛先に自分なし" {
   const me = lowerSet(myAddresses);
+  const sender = parseAddress(email.from || "").address.trim().toLowerCase();
+  if (sender) me.delete(sender);
   const has = (h?: string) => splitAddressList((h || "").slice(0, 200_000)).some(e => me.has(parseAddress(e).address.trim().toLowerCase()));
   if (has(email.to)) return "To";
   if (has(email.cc)) return "Cc";

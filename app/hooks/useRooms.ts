@@ -4,8 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, type MutableRefObject } from "
 import type { Session } from "next-auth";
 import type { ChatConfig, MessageConfig } from "../types/mail";
 import type { Email } from "../types/email";
-import { isMineEmail } from "../lib/filterMatch";
-import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, groupMemberAddresses, roomPartner } from "../lib/groupEmails";
+import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, groupMemberAddresses, roomPartner, isOwnMail } from "../lib/groupEmails";
 import { type LocalKey, type RoomKeyStr, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { parseAddressSet, sameAddressSet } from "../lib/mailAppHelpers";
 import { mailIdentity } from "../lib/historySync";
@@ -163,9 +162,9 @@ export function useRooms({
       const myEmail = session?.user?.email || "";
       const mine = [accountEmail, ...(sendAsByAccount[accountEmail] || []).map(a => a.sendAsEmail)];
       const accountEmails = allUniqueEmails.filter(e => (e.accountId || myEmail) === accountEmail);
-      const sentViaGroup = accountEmails.filter((e) => isMineEmail(e, mine) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
+      const sentViaGroup = accountEmails.filter((e) => isOwnMail(e, mine) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
       const received = accountEmails.filter((e) => {
-        if (isMineEmail(e, mine)) return false;
+        if (isOwnMail(e, mine)) return false;
         const addrMatch = (e.from || "").match(/<([^>]+)>/);
         const addr = (addrMatch ? addrMatch[1] : e.from || "").trim().toLowerCase();
         return memberAddresses.has(addr);
