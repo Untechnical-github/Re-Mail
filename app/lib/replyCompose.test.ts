@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { replySubjectFor, buildReferences, pickSendAs, signatureToText, formatQuoteHeader, quoteTimeOf, type QuoteTimeSource, composeReplyBodies, escapeHtml, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, displayAddressList } from "./replyCompose";
+import { replySubjectFor, buildReferences, pickSendAs, chatSendAs, signatureToText, formatQuoteHeader, quoteTimeOf, type QuoteTimeSource, composeReplyBodies, escapeHtml, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies, displayAddressList } from "./replyCompose";
 
 describe("replySubjectFor", () => {
   it("Re: を1回だけ付ける", () => {
@@ -215,5 +215,24 @@ describe("composeForwardBodies の元の HTML", () => {
     const r = composeForwardBodies({ original: { from: "a@example.com", date: new Date(2026, 0, 1), subject: "s", to: "b@example.com", text: "t", html: '<div dir="ltr">元</div>' } });
     expect(r.html).toContain('<br><br><div dir="ltr">元</div>\n');
     expect(r.html).not.toContain('<div><div dir="ltr">元</div></div>');
+  });
+});
+
+describe("chatSendAs（チャットの差出人）", () => {
+  const list = [
+    { sendAsEmail: "me@example.com", displayName: "Me", isPrimary: true },
+    { sendAsEmail: "Sales@example.com", displayName: "営業", isDefault: true },
+  ];
+  it("チャットの自分のアドレスが送れる sendAs ならそれ（大文字小文字は問わない）", () => {
+    expect(chatSendAs(list, "sales@example.com", "me@example.com")?.sendAsEmail).toBe("Sales@example.com");
+  });
+  it("主アドレスのチャットは既定（isDefault）ではなく主アドレス", () => {
+    expect(chatSendAs(list, "me@example.com", "me@example.com")?.sendAsEmail).toBe("me@example.com");
+  });
+  it("受信専用・確認待ちのアドレスは主アドレスから", () => {
+    expect(chatSendAs(list, "info@example.org", "me@example.com")?.sendAsEmail).toBe("me@example.com");
+  });
+  it("空の一覧は null", () => {
+    expect(chatSendAs([], "me@example.com", "me@example.com")).toBeNull();
   });
 });

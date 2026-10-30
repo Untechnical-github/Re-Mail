@@ -54,6 +54,18 @@ export function getSavedBoxSettings(): { inbox?: boolean; archive?: boolean; spa
 }
 
 // アカウント別の表示チェックボックス（受信箱/アーカイブ...とは別枠）。未設定のアカウントはデフォルトで表示扱いにする
+// 自分のアドレスごとの表示チェックボックス（キーは「アカウント 自分のアドレス」。共通設定 ownAddresses と同じもの）
+export function getSavedOwnAddressChecks(): Record<string, boolean> | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const saved = localStorage.getItem("remail_own_address_settings");
+    const v: unknown = saved ? JSON.parse(saved) : null;
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, boolean>) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getSavedAccountSettings(): Record<string, boolean> | null {
   if (typeof window === "undefined") return null;
   try {

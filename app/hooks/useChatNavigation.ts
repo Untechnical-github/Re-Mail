@@ -88,9 +88,10 @@ export function useChatNavigation({
     // 現在のチャットを LRU キャッシュに保存
     const prevSender = selectedSender;
     if (prevSender && prevSender !== sender && chatCacheLimitRef.current > 0) {
-      const { localKey: prevLocal } = decodeRoomKey(prevSender);
+      // senderRoom はローカルキー（自分のアドレス入り）、From / To と比べるのは相手の部分
+      const { localKey: prevKey, partnerKey: prevLocal } = decodeRoomKey(prevSender);
       const senderEmails = emailsRef.current.filter((e) => {
-        if (e.senderRoom === prevLocal) return true;
+        if (e.senderRoom === prevKey) return true;
         const room = e.from?.split("<")[0].replace(/"/g, "").trim() || "Unknown";
         return room === prevLocal || e.from?.includes(prevLocal) || e.to?.includes(prevLocal);
       });
@@ -149,11 +150,13 @@ export function useChatNavigation({
   // 未指定時はメインアカウント）。既存の宛先（contactDirectory由来の複合キー）を選んだ場合は
   // そのままそのアカウントで開くため、accountEmailは無視される
   // 宛先とアカウントから、開くチャット（既存ならそのチャット、無ければ新しいチャットのキー）を決める
-  const resolveDirectRoom = (identifier: string, accountEmail?: string): { room: RoomKeyStr; existing: boolean } | null => {
+  // ownAddress はチャットの自分のアドレス（新しいチャットの差出人。未指定は主アドレス）。同じ相手でも自分のアドレスが違えば別のチャット
+  const resolveDirectRoom = (identifier: string, accountEmail?: string, ownAddress?: string): { room: RoomKeyStr; existing: boolean } | null => {
     const trimmed = identifier.trim();
     if (!trimmed) return null;
     const myEmail = session?.user?.email || "";
     const targetAccountEmail = accountEmail || myEmail;
+    const targetOwn = (ownAddress || targetAccountEmail).trim().toLowerCase();
     // contactDirectory の候補選択は既に複合キー（room）そのものが渡ってくる。
     // 新規入力のメールアドレス/表示名は区切り文字を含まないので、選択されたアカウント名義で複合化する
     let directKey: RoomKeyStr;
@@ -161,7 +164,7 @@ export function useChatNavigation({
       decodeRoomKey(trimmed);
       directKey = trimmed as RoomKeyStr;
     } catch {
-      directKey = encodeRoomKey(targetAccountEmail, asLocalKey(trimmed));
+      directKey = encodeRoomKey(targetAccountEmail, asLocalKey(trimmed), targetOwn);
     }
 
     let existingRoom: RoomKeyStr | null = null;
@@ -175,6 +178,7 @@ export function useChatNavigation({
       existingRoom = keysOf(groupedEmails).find(room =>
         !chatConfigs[room]?.isGroup &&
         decodeRoomKey(room).accountEmail === targetAccountEmail &&
+        decodeRoomKey(room).ownAddress === targetOwn &&
         getRoomAddress(room) === idLower
       ) || null;
     }
@@ -182,8 +186,8 @@ export function useChatNavigation({
     return existingRoom ? { room: existingRoom, existing: true } : { room: directKey, existing: false };
   };
 
-  const createOrOpenChat = async (identifier: string, accountEmail?: string, opts?: { replaceHistory?: boolean }): Promise<RoomKeyStr | null> => {
-    const target = resolveDirectRoom(identifier, accountEmail);
+  const createOrOpenChat = async (identifier: string, accountEmail?: string, opts?: { replaceHistory?: boolean }, ownAddress?: string): Promise<RoomKeyStr | null> => {
+    const target = resolveDirectRoom(identifier, accountEmail, ownAddress);
     if (!target) return null;
     if (!target.existing) addDraftChat(target.room);
     await openChat(target.room, opts);
@@ -199,9 +203,10 @@ export function useChatNavigation({
     const cameFromModal = typeof window !== "undefined" && window.history.state?.action === "modal";
     const closeModalEntry = () => { if (cameFromModal) window.history.replaceState(isMobile && room ? { chat: room } : {}, "", window.location.href); };
     if (!room) { closeModalEntry(); return; }
-    const { accountEmail: current, localKey } = decodeRoomKey(room);
+    const { accountEmail: current, partnerKey } = decodeRoomKey(room);
     if (current.toLowerCase() === target.toLowerCase()) { closeModalEntry(); return; }
-    const address = getRoomAddress(room) || localKey;
+    // 切り替え先では主アドレスのチャット（自分のアドレスはアカウントごとなので持っていかない）
+    const address = getRoomAddress(room) || partnerKey;
     const now = currentCompose();
     const hasInput = !!(!isComposeBodyEmpty(now.html) || replyAttachments.length || (!replyToMessage && replySubject) || recipients);
     const dest = resolveDirectRoom(address, target);
@@ -225,15 +230,19 @@ export function useChatNavigation({
   // members/hideMemberIndividualChats は contactDirectory 由来の複合キーと、新規入力の生アドレスが混在する。
   // accountEmail はこのグループ自身をどのアカウント名義で作るか（「作成」モーダルのアカウント選択UIから
   // 渡される。未指定時はメインアカウント）
-  const createGroupChat = async (name: string, members: string[], memberAddresses: string[], mode: GroupMode, hideMemberIndividualChats: string[], accountEmail?: string) => {
+  // ownAddress はグループの自分のアドレス（差出人）。未指定なら、既存のチャットから選んだメンバーがみな同じ自分のアドレスならそれ、違えば主アドレス
+  const createGroupChat = async (name: string, members: string[], memberAddresses: string[], mode: GroupMode, hideMemberIndividualChats: string[], accountEmail?: string, ownAddress?: string) => {
     const myEmail = accountEmail || session?.user?.email || "";
-    const groupRoomLocal = asLocalKey(`group:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
-    const groupRoom = encodeRoomKey(myEmail, groupRoomLocal);
+    const memberOwns = new Set(members.map(m => { try { return decodeRoomKey(m).ownAddress; } catch { return ""; } }).filter(Boolean));
+    const groupOwn = (ownAddress || (memberOwns.size === 1 ? [...memberOwns][0] : myEmail)).trim().toLowerCase();
+    // グループの設定はローカルキー（自分のアドレス入り）で保存する。メンバーは同じ自分のアドレスの中の相手（partnerKey）
+    const groupRoom = encodeRoomKey(myEmail, asLocalKey(`group:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`), groupOwn);
+    const groupRoomLocal = decodeRoomKey(groupRoom).localKey;
 
     const toMemberKey = (m: string): RoomKeyStr => {
-      try { decodeRoomKey(m); return m as RoomKeyStr; } catch { return encodeRoomKey(myEmail, asLocalKey(m)); }
+      try { decodeRoomKey(m); return m as RoomKeyStr; } catch { return encodeRoomKey(myEmail, asLocalKey(m), groupOwn); }
     };
-    const localMembers = members.map(m => decodeRoomKey(toMemberKey(m)).localKey);
+    const localMembers = members.map(m => decodeRoomKey(toMemberKey(m)).partnerKey);
 
     // グループ作成によって新たに非表示にするメンバーだけを記録する（既に非表示だったものは対象外。
     // グループ削除時にこの一覧の分だけ非表示を解除するため）

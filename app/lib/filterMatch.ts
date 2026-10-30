@@ -92,7 +92,29 @@ export type FilterCriteria = {
   // 対象アカウント（そのフィルターを持つアカウントのアドレス）。フィルターはアカウントごとで、そのアカウントのメールにだけ効く。
   // 無いフィルターは壊れた設定として、どのメールにも一致させない
   accountEmail?: string;
+  // 受け取ったアドレス（そのアカウントの自分のアドレス・小文字）。指定なし（空・未指定）＝そのアカウントの全アドレス。
+  // メールの自分のアドレス（ownAddresses.ts の resolveOwnAddress）がこのどれかのときだけ一致する。
+  // Gmail 側で消えた・受信専用から外れたアドレスは、どのメールの自分のアドレスにもならないので効かない（エラーにはしない）
+  ownAddresses?: string[];
 };
+
+// メールの「自分」の判定に使う情報。mine はそのアカウントの自分のアドレスすべて（主アドレス・sendAs・受信専用アドレス）、
+// ownAddress はそのメールの自分のアドレス（小文字）。渡さないときは主アドレス（アカウントのアドレス）だけで判定する
+export type OwnMatchContext = { mine?: string[]; ownAddress?: string };
+
+// 受け取ったアドレスの条件に合うか（指定なしは常に合う）
+export function matchesOwnAddressCondition(criteria: Pick<FilterCriteria, "ownAddresses">, ownAddress: string): boolean {
+  const list = Array.isArray(criteria.ownAddresses) ? criteria.ownAddresses.filter((a): a is string => typeof a === "string") : [];
+  if (list.length === 0) return true;
+  const own = (ownAddress || "").trim().toLowerCase();
+  return list.some(a => a.trim().toLowerCase() === own);
+}
+
+// 受け取ったアドレスの条件のうち、今のアカウントの自分のアドレスに無いもの（画面に「見つからないアドレス」と出す）
+export function missingOwnAddresses(criteria: Pick<FilterCriteria, "ownAddresses">, known: string[]): string[] {
+  const set = new Set(known.map(a => a.trim().toLowerCase()));
+  return (Array.isArray(criteria.ownAddresses) ? criteria.ownAddresses : []).filter(a => typeof a === "string" && !set.has(a.trim().toLowerCase()));
+}
 
 // FilterCriteria から、OR評価する条件セットの配列を取り出す（壊れて配列でなければ空）
 export function getConditionSets(criteria: FilterCriteria): ConditionSet[] {
@@ -101,7 +123,7 @@ export function getConditionSets(criteria: FilterCriteria): ConditionSet[] {
 
 // メッセージの「相手」（自分が送信したなら宛先、受信したなら差出人）の生ヘッダー文字列を返す。
 // 条件セットの方向（direction）が「問わない」のときに使う
-function getPartnerRaw(email: MatchableEmail, myEmail: string): string {
+function getPartnerRaw(email: MatchableEmail, myEmail: string | string[]): string {
   return isMineEmail(email, myEmail) ? (email.to || "") : (email.from || "");
 }
 
@@ -128,7 +150,7 @@ function parseLocalDayEnd(dateStr: string): Date {
   return new Date(y, (m || 1) - 1, d || 1, 23, 59, 59, 999);
 }
 
-function matchesTextRule(email: MatchableEmail, rule: TextRule, myEmail: string, direction: DateDirection | undefined): boolean {
+function matchesTextRule(email: MatchableEmail, rule: TextRule, myEmail: string | string[], direction: DateDirection | undefined): boolean {
   let target = "";
   if (rule.field === "recipientName" || rule.field === "recipientAddress") {
     const raw = direction ? (direction === "sent" ? (email.to || "") : (email.from || "")) : getPartnerRaw(email, myEmail);
@@ -142,7 +164,7 @@ function matchesTextRule(email: MatchableEmail, rule: TextRule, myEmail: string,
   return rule.mode === "not_contains" ? !contains : contains;
 }
 
-function matchesConditionSet(email: MatchableEmail, set: ConditionSet, myEmail: string): boolean {
+function matchesConditionSet(email: MatchableEmail, set: ConditionSet, myEmail: string | string[]): boolean {
   if (set.direction) {
     const isSent = isMineEmail(email, myEmail);
     if (set.direction === "received" && isSent) return false;
@@ -189,16 +211,16 @@ function matchesConditionSet(email: MatchableEmail, set: ConditionSet, myEmail: 
   return true;
 }
 
-export function messageMatchesFilter(email: MatchableEmail, criteria: FilterCriteria, myEmail: string): boolean {
+export function messageMatchesFilter(email: MatchableEmail, criteria: FilterCriteria, myEmail: string, own?: OwnMatchContext): boolean {
   // 保存データが壊れたフィルターが1つあっても、ほかのメールやチャット一覧の表示は止めない（絶対ルール3）
   try {
-    return messageMatchesFilterUnsafe(email, criteria, myEmail);
+    return messageMatchesFilterUnsafe(email, criteria, myEmail, own);
   } catch {
     return false;
   }
 }
 
-function messageMatchesFilterUnsafe(email: MatchableEmail, criteria: FilterCriteria, myEmail: string): boolean {
+function messageMatchesFilterUnsafe(email: MatchableEmail, criteria: FilterCriteria, myEmail: string, own?: OwnMatchContext): boolean {
   // アカウントの決まっていないフィルターは壊れた設定なので、どのメールにも一致させない（ほかのアカウントのメールに効かせない）
   if (!criteria.accountEmail) return false;
   // email.accountId が無い（送信直後のローカルfake等）場合は myEmail 名義として扱う。
@@ -212,9 +234,13 @@ function messageMatchesFilterUnsafe(email: MatchableEmail, criteria: FilterCrite
     if (!criteria.boxes.includes(getBoxKey(email))) return false;
   }
 
+  if (!matchesOwnAddressCondition(criteria, own?.ownAddress || emailAccount)) return false;
+
+  // 自分（送ったメールか）の判定は、そのアカウントの自分のアドレスすべてで行う
+  const mine = own?.mine && own.mine.length > 0 ? [emailAccount, ...own.mine] : emailAccount;
   const sets = getConditionSets(criteria);
   if (sets.length > 0) {
-    if (!sets.some(set => matchesConditionSet(email, set, emailAccount))) return false;
+    if (!sets.some(set => matchesConditionSet(email, set, mine))) return false;
   }
 
   return true;

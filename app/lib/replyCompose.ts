@@ -39,6 +39,18 @@ export function pickSendAs(list: SendAsInfo[], originalRecipients: string, accou
   return list.find(s => s.isDefault) || list.find(s => s.isPrimary) || list.find(s => s.sendAsEmail.toLowerCase() === accountEmail.toLowerCase()) || null;
 }
 
+// チャットの差出人（README §7.7）。チャットの自分のアドレスが差出人に使える sendAs（list は確認済みのものだけ）ならそれで固定する。
+// 使えない（受信専用アドレス・確認待ち）ときは主アドレスから送る（入力欄にその旨を出す）。署名はこの sendAs の署名
+export function chatSendAs(list: SendAsInfo[], ownAddress: string, accountEmail: string): SendAsInfo | null {
+  if (list.length === 0) return null;
+  const norm = (a: string) => (a || "").trim().toLowerCase();
+  const own = norm(ownAddress || accountEmail);
+  return list.find(s => norm(s.sendAsEmail) === own)
+    || list.find(s => s.isPrimary)
+    || list.find(s => norm(s.sendAsEmail) === norm(accountEmail))
+    || null;
+}
+
 export function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }

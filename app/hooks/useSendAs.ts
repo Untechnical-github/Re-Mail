@@ -1,18 +1,41 @@
 // 送信元の設定（自分のアドレスとエイリアス・署名）。useMailApp.ts から分けた（動きは変えない）。
 // アカウントごとの sendAs を取りにいき、読めた分を sendAsByAccount に持つ
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import type { SendAsInfo } from "../lib/replyCompose";
 import { logWarn } from "../lib/safeLog";
+import type { AccountSettings } from "../lib/syncedSettings";
+import { type OwnAddressBook, buildOwnAddressBook, ownAddressList } from "../lib/ownAddresses";
 
 // sessionEmail: ログインのセッションを持つアカウント / openRoomAccount: 開いているチャットのアカウント（無ければ ""）/
 // sendAsAccountsKey: ログイン中のすべてのアカウント（カンマ区切り）
-export function useSendAs({ sessionEmail, openRoomAccount, sendAsAccountsKey }: { sessionEmail: string; openRoomAccount: string; sendAsAccountsKey: string }) {
+// accountSettings: アカウント設定（受信専用アドレスを自分のアドレスに足すのに使う）
+export function useSendAs({ sessionEmail, openRoomAccount, sendAsAccountsKey, accountSettings }: { sessionEmail: string; openRoomAccount: string; sendAsAccountsKey: string; accountSettings: Record<string, AccountSettings> }) {
   // アカウントごとの送信元（自分のアドレスとエイリアス）。開いたチャットのアカウントの分だけ取りにいく（下の getSendAs）
   const [sendAsByAccount, setSendAsByAccount] = useState<Record<string, SendAsInfo[]>>({});
   const sendAsByAccountRef = useRef(sendAsByAccount);
   useEffect(() => { sendAsByAccountRef.current = sendAsByAccount; }, [sendAsByAccount]);
   // 自分のアドレスとエイリアス（読み込めている分）。返信の宛先・Reply-To・受け取った立場の判定で「自分」を除くのに使う
+  // 返信の宛先から除くのは純正 Gmail と同じく sendAs だけ（受信専用アドレスは Gmail が知らないので、全員に返信の宛先から除かない）
   const myAddressesFor = (account: string): string[] => [account, ...(sendAsByAccount[account] || []).map(s => s.sendAsEmail)].filter(Boolean);
+  // 確認待ちも含めた sendAs のすべてのアドレス（受け取ったメールがどの自分のアドレスのものかの判定にだけ使う）。メモリにだけ持つ
+  const [receiveAddressesByAccount, setReceiveAddressesByAccount] = useState<Record<string, string[]>>({});
+  // アカウントごとの自分のアドレス（README §7.7）。sendAs が読めていないアカウントは主アドレスと受信専用アドレスだけで動かす
+  const ownBooks = useMemo(() => {
+    const out: Record<string, OwnAddressBook> = {};
+    const accounts = sendAsAccountsKey ? sendAsAccountsKey.split(",") : [];
+    for (const account of accounts) {
+      const sendable = sendAsByAccount[account];
+      const all = receiveAddressesByAccount[account] || [];
+      const list = sendable
+        ? [...sendable.map(s => ({ sendAsEmail: s.sendAsEmail, canSend: true })), ...all.map(a => ({ sendAsEmail: a, canSend: false }))]
+        : null;
+      out[account] = buildOwnAddressBook(account, list, accountSettings[account]?.receiveOnlyAddresses || []);
+    }
+    return out;
+  }, [sendAsAccountsKey, sendAsByAccount, receiveAddressesByAccount, accountSettings]);
+  const ownBookFor = (account: string): OwnAddressBook => ownBooks[account] || buildOwnAddressBook(account, null, accountSettings[account]?.receiveOnlyAddresses || []);
+  // 自分のメールか（isMineEmail）の判定に使う、そのアカウントの自分のアドレスすべて（主アドレス・sendAs・受信専用アドレス）
+  const ownAddressesFor = (account: string): string[] => ownAddressList(ownBookFor(account));
 
   // 送信元（自分のアドレスとエイリアス）と署名の設定。アカウントごとに一度だけ取りにいく（送信のたびに API を呼ばない）。
   // 読めなかったときは null を返し、次の送信で取り直す
@@ -28,7 +51,11 @@ export function useSendAs({ sessionEmail, openRoomAccount, sendAsAccountsKey }: 
       try {
         const res = await fetch(`/api/emails?${params.toString()}`);
         if (!res.ok) { logWarn("sendAs.load", { status: res.status }); return null; }
-        const data = (await res.json()) as { sendAs?: SendAsInfo[] };
+        const data = (await res.json()) as { sendAs?: SendAsInfo[]; receiveAddresses?: string[] };
+        if (Array.isArray(data.receiveAddresses)) {
+          const list = data.receiveAddresses.filter((a): a is string => typeof a === "string");
+          setReceiveAddressesByAccount(prev => ({ ...prev, [account]: list }));
+        }
         return data.sendAs || [];
       } catch (e) {
         logWarn("sendAs.load", {}, e);
@@ -79,5 +106,5 @@ export function useSendAs({ sessionEmail, openRoomAccount, sendAsAccountsKey }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps -- アカウントの顔ぶれ・開いているチャットのアカウントが変わったときだけ取りにいく（関数は描画ごとに作り直されるため入れない）
   }, [openRoomAccount, sendAsAccountsKey]);
 
-  return { sendAsByAccount, setSendAsByAccount, myAddressesFor, getSendAs };
+  return { sendAsByAccount, setSendAsByAccount, myAddressesFor, getSendAs, ownBooks, ownBookFor, ownAddressesFor };
 }

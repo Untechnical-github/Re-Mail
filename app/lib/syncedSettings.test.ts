@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeSyncedSettings, syncedSettingsKey } from "./syncedSettings";
+import { sanitizeSyncedSettings, syncedSettingsKey, sanitizeAccountSettings } from "./syncedSettings";
+import { MAX_RECEIVE_ONLY_ADDRESSES } from "./ownAddresses";
 
 describe("sanitizeSyncedSettings", () => {
   it("決まった名前・型の値だけを残す（知らない名前・違う型・自由な文字列は捨てる）", () => {
@@ -76,5 +77,20 @@ describe("共通設定とアカウント設定", () => {
     expect(newestCommonSettings([{ settings: { inbox: true, updatedAt: 10 }, preferred: true }, { settings: { inbox: false, updatedAt: 20 }, preferred: false }])).toEqual({ inbox: false, updatedAt: 20 });
     expect(newestCommonSettings([{ settings: { inbox: false }, preferred: false }, { settings: { inbox: true }, preferred: true }])).toEqual({ inbox: true });
     expect(newestCommonSettings([])).toEqual({});
+  });
+});
+
+describe("自分のアドレスの設定", () => {
+  it("ownAddresses（チェックボックス）は「アカウント 自分のアドレス」の形のキーだけ残す", () => {
+    const s = sanitizeSyncedSettings({ ownAddresses: { "me@example.com sales@example.com": false, "broken": false, "me@example.com x y@example.com": true, "me@example.com info@example.org": "no" } });
+    expect(s.ownAddresses).toEqual({ "me@example.com sales@example.com": false });
+  });
+  it("receiveOnlyAddresses は形の正しいアドレスだけ・小文字・重なりなし・上限まで", () => {
+    const many = Array.from({ length: MAX_RECEIVE_ONLY_ADDRESSES + 3 }, (_, i) => `a${i}@example.org`);
+    const s = sanitizeAccountSettings({ receiveOnlyAddresses: ["Info@Example.org", "info@example.org", "bad", 1, ...many] });
+    expect(s.receiveOnlyAddresses?.[0]).toBe("info@example.org");
+    expect(s.receiveOnlyAddresses?.length).toBe(MAX_RECEIVE_ONLY_ADDRESSES);
+    expect(s.receiveOnlyAddresses).not.toContain("bad");
+    expect(sanitizeAccountSettings({ receiveOnlyAddresses: "info@example.org" }).receiveOnlyAddresses).toBeUndefined();
   });
 });

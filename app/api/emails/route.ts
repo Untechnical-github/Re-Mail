@@ -542,7 +542,7 @@ export async function GET(request: Request) {
     const meta = searchParams.get("meta") === "1";
     try {
       const url = meta
-        ? `${GMAIL_DRAFTS_URL}/${encodeURIComponent(draftParam)}?format=metadata&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Bcc&metadataHeaders=Subject&fields=id,message(id,threadId,labelIds,internalDate,snippet,payload/headers)`
+        ? `${GMAIL_DRAFTS_URL}/${encodeURIComponent(draftParam)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Bcc&metadataHeaders=Subject&fields=id,message(id,threadId,labelIds,internalDate,snippet,payload/headers)`
         : `${GMAIL_DRAFTS_URL}/${encodeURIComponent(draftParam)}?format=full&fields=id,message(id,threadId,labelIds,internalDate,snippet,payload)`;
       const res = await fetchWithRetry(url, { headers: { Authorization: `Bearer ${accessToken}` } });
       if (res.status === 404) return NextResponse.json({ error: "DRAFT_GONE" }, { status: 404 });
@@ -561,6 +561,8 @@ export async function GET(request: Request) {
         draftId: draftParam, messageId: m.id, threadId: m.threadId, internalDate: Number(m.internalDate || 0),
         to: decodeMimeHeader(getHeader(h, "To")), cc: decodeMimeHeader(getHeader(h, "Cc")), bcc: decodeMimeHeader(getHeader(h, "Bcc")),
         subject: decodeMimeHeader(getHeader(h, "Subject")), snippet: m.snippet || "",
+        // 下書きを From でどの自分のアドレスのチャットに出すか決める（README §7.7）
+        from: decodeMimeHeader(getHeader(h, "From")),
       };
       if (meta) return NextResponse.json(head);
       const html = getHtmlBody(m.payload).trim();
@@ -575,7 +577,7 @@ export async function GET(request: Request) {
       const attachments = extractAttachments(m.payload, html).filter(a => !inlineIds.has(a.attachmentId)).slice(0, 50)
         .map(a => ({ filename: a.filename, mimeType: a.mimeType, size: a.size }));
       return NextResponse.json({
-        ...head, from: decodeMimeHeader(getHeader(h, "From")),
+        ...head,
         inReplyTo: getHeader(h, "In-Reply-To") || undefined, references: getHeader(h, "References") || undefined,
         html: html || null, text: text || null, inlineImages, attachments,
       });
@@ -621,7 +623,9 @@ export async function GET(request: Request) {
       const sendAs = (data.sendAs || [])
         .filter(s => s.isPrimary || s.verificationStatus === "accepted")
         .map(s => ({ sendAsEmail: s.sendAsEmail, displayName: s.displayName, replyToAddress: s.replyToAddress, signature: s.signature, isPrimary: !!s.isPrimary, isDefault: !!s.isDefault }));
-      return NextResponse.json({ sendAs });
+      // 確認待ちも含めた sendAs のすべてのアドレス。受け取ったメールがどの自分のアドレスのものかの判定にだけ使う（差出人には使わない）
+      const receiveAddresses = (data.sendAs || []).map(s => s.sendAsEmail).filter((a): a is string => typeof a === "string" && !!a).slice(0, 200);
+      return NextResponse.json({ sendAs, receiveAddresses });
     } catch (e) {
       logError("sendAs.list", {}, e);
       return NextResponse.json({ error: "Failed to load sendAs" }, { status: 500 });

@@ -201,6 +201,8 @@ export type GmailDraftMeta = {
   bcc: string;
   subject: string;
   snippet: string;
+  // 差出人（どの自分のアドレスのチャットに出すかを決める）。古い応答には無い
+  from?: string;
 };
 
 // 下書きの宛先（To / Cc / Bcc のヘッダー）から送信先の一覧を作る（壊れた・上限を超えた分は捨てる）

@@ -36,13 +36,13 @@ export function SelectSendAccountModal({ app }: { app: MailAppHook }) {
           );
         })}
       </div>
-      {/* エイリアスは選ぶものではなく、純正 Gmail と同じく元のメールの宛先に合わせて自動で決まる（pickSendAs） */}
+      {/* 差出人のアドレスは選ぶものではなく、チャットの自分のアドレスで決まる（自分のアドレスごとにチャットが分かれている。README §7.7） */}
       {(() => {
         const aliases = ((app.state.sendAsByAccount as Record<string, { sendAsEmail: string }[]>)[current] || []).filter(a => a.sendAsEmail.toLowerCase() !== current.toLowerCase());
         if (aliases.length === 0) return null;
         return (
           <div className="text-[11px] text-gray-500 mb-4">
-            {current} のエイリアス：{aliases.map(a => a.sendAsEmail).join("、")}。どのアドレスから送るかは、純正 Gmail と同じく返信元のメールの宛先に合わせて自動で決まります（返信元が無いときは Gmail の既定の送信元）
+            {current} のエイリアス：{aliases.map(a => a.sendAsEmail).join("、")}。差出人のアドレスはチャットごとに決まっています（そのアドレスに届いたメールのチャットから送ると、そのアドレスから送ります）。別のアドレスから送るときは、新しいチャットの作成で差出人を選んでください
           </div>
         );
       })()}

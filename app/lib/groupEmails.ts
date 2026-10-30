@@ -9,9 +9,10 @@
 
 import { ChatConfig } from "../types/mail";
 import { Email } from "../types/email";
-import { isMineEmail, messageMatchesFilter } from "./filterMatch";
-import { LocalKey, RoomKeyStr, encodeRoomKey, decodeRoomKey, keysOf } from "./roomKey";
+import { isMineEmail, messageMatchesFilter, type OwnMatchContext } from "./filterMatch";
+import { LocalKey, RoomKeyStr, encodeRoomKey, decodeRoomKey, keysOf, localKeyFor, splitLocalKey } from "./roomKey";
 import { splitAddressList, parseAddress } from "./mime";
+import { type OwnAddressBook, assignOwnAddresses, ownAddressList } from "./ownAddresses";
 
 function parseAddressSet(toHeader: string): Set<string> {
   const set = new Set<string>();
@@ -46,8 +47,11 @@ export function isOwnMail(email: Pick<Email, "from" | "to" | "cc" | "labelIds" |
   const aliases = rest.filter(a => a && a.trim().toLowerCase() !== primary.trim().toLowerCase());
   if (aliases.length === 0 || !isMineEmail(email, aliases)) return false;
   if ((email.labelIds || []).includes("INBOX")) return false;
-  const me = primary.trim().toLowerCase();
-  const toMe = [email.to, email.cc].some(h => splitAddressList((h || "").slice(0, 200_000)).some(e => parseAddress(e).address.trim().toLowerCase() === me));
+  // To / Cc に、差出人とは別の自分のアドレス（主アドレス・受信専用アドレスなど）があれば、このアカウントに届いたメール
+  const from = parseAddress(email.from || "").address.trim().toLowerCase();
+  const me = new Set(myAddresses.filter(Boolean).map(a => a.trim().toLowerCase()).filter(a => a !== from));
+  me.add(primary.trim().toLowerCase());
+  const toMe = [email.to, email.cc].some(h => splitAddressList((h || "").slice(0, 200_000)).some(e => me.has(parseAddress(e).address.trim().toLowerCase())));
   return !toMe;
 }
 
@@ -280,6 +284,44 @@ export function groupEmailsByRoom(
   return groups as Record<LocalKey, Email[]>;
 }
 
+// 1アカウント分のメールを、自分のアドレスごと・相手ごとのチャットに分ける（README §7.7）。
+// メールごとに自分のアドレスを決め（ownAddresses.ts の assignOwnAddresses）、自分のアドレスごとに groupEmailsByRoom で分けてから、
+// ローカルキーに自分のアドレスを入れて返す（主アドレスのチャットは相手だけのローカルキーのまま）。
+// chatConfigs はこのアカウントの分（自分のアドレス入りのローカルキー）。グループの設定は、そのグループの自分のアドレスの中だけで使う。
+// ピン留めで残しているメール（senderRoom あり）は、senderRoom の自分のアドレスに入れる
+export function groupEmailsByOwnAddress(
+  emails: Email[],
+  accountEmail: string,
+  book: OwnAddressBook,
+  chatConfigs: Record<LocalKey, ChatConfig>,
+): Record<LocalKey, Email[]> {
+  const others = ownAddressList(book).filter(a => a !== book.primary);
+  const mine = [accountEmail, ...others];
+  const ownOf = assignOwnAddresses(emails.filter(e => !e.senderRoom), book, e => isOwnMail(e, mine));
+  const parts = new Map<string, Email[]>();
+  const push = (own: string, e: Email) => { const list = parts.get(own); if (list) list.push(e); else parts.set(own, [e]); };
+  for (const e of emails) {
+    if (e.senderRoom) {
+      const { ownAddress, partnerKey } = splitLocalKey(e.senderRoom, accountEmail);
+      push(ownAddress, partnerKey === e.senderRoom ? e : { ...e, senderRoom: partnerKey });
+    } else push(ownOf.get(e.id) || book.primary, e);
+  }
+  const configsByOwn = new Map<string, Record<LocalKey, ChatConfig>>();
+  keysOf(chatConfigs).forEach(key => {
+    const { ownAddress, partnerKey } = splitLocalKey(key, accountEmail);
+    const map = configsByOwn.get(ownAddress) || ({} as Record<LocalKey, ChatConfig>);
+    map[partnerKey] = chatConfigs[key];
+    configsByOwn.set(ownAddress, map);
+  });
+  const out: Record<string, Email[]> = {};
+  const owns = new Set([...parts.keys(), ...[...configsByOwn.entries()].filter(([, m]) => keysOf(m).some(k => m[k]?.isGroup)).map(([o]) => o)]);
+  owns.forEach(own => {
+    const groups = groupEmailsByRoom(parts.get(own) || [], accountEmail, configsByOwn.get(own) || ({} as Record<LocalKey, ChatConfig>), others);
+    keysOf(groups).forEach(partner => { out[localKeyFor(partner, own, accountEmail)] = groups[partner]; });
+  });
+  return out as Record<LocalKey, Email[]>;
+}
+
 // 複数アカウント分の groupEmailsByRoom の結果を、1つのroomKey空間へマージする。
 // 各アカウントの結果をそのアカウントの encodeRoomKey で複合キー化してから合体するため、
 // 別アカウントに同姓同名の相手がいてもキーが異なり、衝突・混在しない
@@ -311,6 +353,8 @@ export function applyFilterGroups(
   chatConfigs: Record<RoomKeyStr, ChatConfig>,
   allEmails: Email[],
   myEmail: string,
+  // メールごとの自分のアドレスと、そのアカウントの自分のアドレスすべて（受け取ったアドレスの条件・送受信の判定に使う）
+  ownContextOf?: (e: Email) => OwnMatchContext,
 ): Record<RoomKeyStr, Email[]> {
   const next: Record<RoomKeyStr, Email[]> = { ...merged };
 
@@ -323,7 +367,7 @@ export function applyFilterGroups(
       // このメール自身が属するアカウント（未設定＝accountId導入前のデータ等はmyEmail名義とみなす）
       const emailAccount = e.accountId || myEmail;
       if (emailAccount.toLowerCase() !== roomAccount) return false;
-      if (!messageMatchesFilter(e, cfg.filterCriteria!, emailAccount)) return false;
+      if (!messageMatchesFilter(e, cfg.filterCriteria!, emailAccount, ownContextOf?.(e))) return false;
       if (cfg.filterIncludeExisting === false) {
         const t = new Date(e.date).getTime();
         if (!(t > createdAtMs)) return false;

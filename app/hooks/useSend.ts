@@ -12,10 +12,9 @@ import { groupMemberAddresses } from "../lib/groupEmails";
 import { type RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey } from "../lib/roomKey";
 import { makeMessageId, isRateLimitReason } from "../lib/sendVerify";
 import { excludesPartner, quoteGoesToOutsiders, type ComposeRecipient } from "../lib/composeRecipients";
-import { buildReferences, pickSendAs, formatQuoteHeader, quoteTimeOf, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies } from "../lib/replyCompose";
+import { buildReferences, pickSendAs, chatSendAs, formatQuoteHeader, quoteTimeOf, extractHtmlBodyInner, forwardSubjectFor, composeForwardBodies } from "../lib/replyCompose";
 import { finalizeOutgoing, headersOf, fromHeaderOf, type SendApiPayload } from "../lib/outgoingMail";
 import { judgeDraftSend, type DraftSendVerdict } from "../lib/gmailDrafts";
-import { isMineEmail } from "../lib/filterMatch";
 import { logError, logWarn } from "../lib/safeLog";
 import type { useSendAs } from "./useSendAs";
 import type { useDrafts, Attachment } from "./useDrafts";
@@ -163,7 +162,7 @@ export function useSend({
   // noFetch のときは通信が要る補い（引用の取り直し）をせず、要るなら失敗にする（タブを閉じるときの保存の下ごしらえ用）
   const prepareOutgoing = async (c: OutgoingContent, opts: { allowNoSendAs?: boolean; allowFallbackQuote?: boolean; noFetch?: boolean } = {}): Promise<PreparedOutgoing> => {
     const groupCfg = chatConfigsRef.current[c.room];
-    const { accountEmail } = decodeRoomKey(c.room);
+    const { accountEmail, ownAddress } = decodeRoomKey(c.room);
     let to: string;
     let cc = "";
     let bcc = "";
@@ -180,11 +179,9 @@ export function useSend({
     const sendAsList = await getSendAs(accountEmail);
     // 読めなかったときは、純正と違う形（署名なし・既定の送信元）になる。送信なら送る前に確かめる（絶対ルール2）
     if (sendAsList === null && !opts.allowNoSendAs) return { ok: false, kind: "noSendAs" };
-    const base = c.replyToMessage || (groupCfg?.isGroup ? null : (groupedEmails[c.room] || []).find(e => !isMineEmail(e, accountEmail) && !e.isMissing) || null);
-    // Gmail から読み込んだ下書きは、純正で選んだ差出人を使う（送信元の設定に無いアドレスなら、いつもの決まりで選ぶ）
-    const draftFrom = c.fromAddress?.toLowerCase();
-    const draftAlias = draftFrom && sendAsList ? sendAsList.find(s => s.sendAsEmail.toLowerCase() === draftFrom) : undefined;
-    const alias = sendAsList ? (draftAlias ?? pickSendAs(sendAsList, base ? `${base.to}, ${base.cc || ""}` : "", accountEmail)) : null;
+    // 差出人はチャットの自分のアドレスで固定する（README §7.7）。送れないアドレス（受信専用・確認待ち）のチャットは主アドレスから送り、
+    // 入力欄にその旨を出してある。Gmail の下書きは From でチャットに振り分けているので、下書きの差出人もこれと同じになる
+    const alias = sendAsList ? chatSendAs(sendAsList, ownAddress, accountEmail) : null;
 
     // 署名を一度も入れられていない（送信元の設定が今まで読めなかった）のに入力欄に署名が無ければ、ここで入れる
     // （黙って署名なしで送らない。自分で消した署名は入れ直さない）

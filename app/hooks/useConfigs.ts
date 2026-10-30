@@ -43,13 +43,13 @@ export type UseConfigsParams = {
   setAccountSettings: SetState<Record<string, AccountSettings>>;
   setAccountSettingsLoaded: SetState<boolean>;
   checkInbox: boolean; checkArchive: boolean; checkSpam: boolean; checkTrash: boolean; checkSent: boolean;
-  useIconLabels: boolean; checkAccounts: Record<string, boolean>;
+  useIconLabels: boolean; checkAccounts: Record<string, boolean>; checkOwnAddresses: Record<string, boolean>;
   setCheckInbox: SetState<boolean>; setCheckArchive: SetState<boolean>; setCheckSpam: SetState<boolean>; setCheckTrash: SetState<boolean>; setCheckSent: SetState<boolean>;
-  setUseIconLabels: SetState<boolean>; setCheckAccounts: SetState<Record<string, boolean>>;
+  setUseIconLabels: SetState<boolean>; setCheckAccounts: SetState<Record<string, boolean>>; setCheckOwnAddresses: SetState<Record<string, boolean>>;
 };
 
 export function useConfigs({
-  session, showErrorToast, showInfoToast, selectedSender, setSelectedSender, setChatConfigs, setMessageConfigs, chatConfigsRef, messageConfigsRef, setPersistedEmails, hydratePinnedEmails, accountSettings, setAccountSettings, setAccountSettingsLoaded, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, checkAccounts, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setUseIconLabels, setCheckAccounts,
+  session, showErrorToast, showInfoToast, selectedSender, setSelectedSender, setChatConfigs, setMessageConfigs, chatConfigsRef, messageConfigsRef, setPersistedEmails, hydratePinnedEmails, accountSettings, setAccountSettings, setAccountSettingsLoaded, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, checkAccounts, checkOwnAddresses, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setUseIconLabels, setCheckAccounts, setCheckOwnAddresses,
 }: UseConfigsParams) {
   // 設定の保存は、失敗したら自動で送り直す（中身は app/lib/configSaveQueue.ts）。同じ行への保存は新しい値だけを送る。
   // 送り直してもだめなら、画面の表示はもう変わっているので、保存されていないこと（再読み込みで元に戻ること）を伝える（絶対ルール3）
@@ -190,8 +190,8 @@ export function useConfigs({
   // 新しい共通設定を足すときは、ここと下の applySyncedSettings にも足す。アカウントごとの設定は accountSettings に持つ
   const syncedSettings: SyncedSettings = useMemo(() => ({
     inbox: checkInbox, archive: checkArchive, spam: checkSpam, trash: checkTrash, sent: checkSent,
-    iconLabels: useIconLabels, accounts: checkAccounts,
-  }), [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, checkAccounts]);
+    iconLabels: useIconLabels, accounts: checkAccounts, ownAddresses: checkOwnAddresses,
+  }), [checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, checkAccounts, checkOwnAddresses]);
   // D1 から読んだ設定を画面に反映する（D1 に無い設定は、この端末の今の値のまま）
   const applySyncedSettings = (s: SyncedSettings) => {
     if (s.inbox !== undefined) setCheckInbox(s.inbox);
@@ -201,6 +201,7 @@ export function useConfigs({
     if (s.sent !== undefined) setCheckSent(s.sent);
     if (s.iconLabels !== undefined) setUseIconLabels(s.iconLabels);
     if (s.accounts !== undefined) setCheckAccounts(s.accounts);
+    if (s.ownAddresses !== undefined) setCheckOwnAddresses(s.ownAddresses);
   };
   // D1 から読み終えるまでは保存しない（読む前のこの端末の値で、ほかの端末で変えた設定を上書きしないため）
   const [syncedSettingsReady, setSyncedSettingsReady] = useState(false);

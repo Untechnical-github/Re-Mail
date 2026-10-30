@@ -4,22 +4,47 @@ import { useCallback, useEffect, useMemo, useRef, type MutableRefObject } from "
 import type { Session } from "next-auth";
 import type { ChatConfig, MessageConfig } from "../types/mail";
 import type { Email } from "../types/email";
-import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, groupMemberAddresses, roomPartner, isOwnMail } from "../lib/groupEmails";
+import { groupEmailsByOwnAddress, mergeAccountGroups, applyFilterGroups, groupMemberAddresses, roomPartner, isOwnMail } from "../lib/groupEmails";
+import { type OwnAddressBook, assignOwnAddresses, ownAddressList, buildOwnAddressBook } from "../lib/ownAddresses";
 import { type LocalKey, type RoomKeyStr, encodeRoomKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { parseAddressSet, sameAddressSet } from "../lib/mailAppHelpers";
 import { mailIdentity } from "../lib/historySync";
-import type { useSendAs } from "./useSendAs";
 
 export function useRooms({
-  session, chatConfigs, allUniqueEmails, sendAsByAccount, linkedAccounts, messageConfigsRef,
+  session, chatConfigs, allUniqueEmails, linkedAccounts, messageConfigsRef, ownBooks,
 }: {
   session: Session | null;
   chatConfigs: Record<RoomKeyStr, ChatConfig>;
   allUniqueEmails: Email[];
-  sendAsByAccount: ReturnType<typeof useSendAs>["sendAsByAccount"];
   linkedAccounts: string[];
   messageConfigsRef: MutableRefObject<Record<RoomKeyStr, MessageConfig>>;
+  // アカウントごとの自分のアドレス（useSendAs.ts）。チャットを自分のアドレスごとに分けるのに使う
+  ownBooks: Record<string, OwnAddressBook>;
 }) {
+  const bookOf = (account: string): OwnAddressBook => ownBooks[account] || buildOwnAddressBook(account, null, []);
+  // メール（アカウント＋ID）→ そのメールの自分のアドレス（小文字）。フィルターの「受け取ったアドレス」の条件と、
+  // 新しいチャット・グループの自分のアドレスを決めるのに使う（チャットへの分け方 groupEmailsByOwnAddress と同じ決め方）
+  const ownAddressByIdentity = useMemo(() => {
+    const myEmail = session?.user?.email || "";
+    const map = new Map<string, string>();
+    [myEmail, ...linkedAccounts].forEach(account => {
+      const book = ownBooks[account] || buildOwnAddressBook(account, null, []);
+      const mine = [account, ...ownAddressList(book).filter(a => a !== book.primary)];
+      const accountEmails = allUniqueEmails.filter(e => (e.accountId || myEmail) === account && !e.senderRoom);
+      assignOwnAddresses(accountEmails, book, e => isOwnMail(e, mine)).forEach((own, id) => map.set(`${account.toLowerCase()}\u0000${id}`, own));
+    });
+    return map;
+  }, [allUniqueEmails, session, linkedAccounts, ownBooks]);
+  const ownAddressOfEmail = useCallback((e: Email): string => {
+    const account = e.accountId || session?.user?.email || "";
+    return ownAddressByIdentity.get(`${account.toLowerCase()}\u0000${e.id}`) || account.toLowerCase();
+  }, [ownAddressByIdentity, session]);
+  // フィルターの判定に渡す「自分」の情報（そのメールの自分のアドレスと、そのアカウントの自分のアドレスすべて）
+  const ownContextOf = useCallback((e: Email) => {
+    const account = e.accountId || session?.user?.email || "";
+    return { mine: ownAddressList(ownBooks[account] || buildOwnAddressBook(account, null, [])), ownAddress: ownAddressOfEmail(e) };
+  }, [ownBooks, ownAddressOfEmail, session]);
+
   // 実際のグルーピングロジックは app/lib/groupEmails.ts の純粋関数に切り出してある
   // （副作用のない形でユニットテストできるようにするため）。groupedEmails・chatConfigs・
   // selectedSender は常に encodeRoomKey 済みの複合roomKey（RoomKeyStr）をキーとする。
@@ -41,15 +66,16 @@ export function useRooms({
         } catch { /* 複合roomKeyでない古いデータ（移行前の残り等）は無視する */ }
       });
       const accountEmails = allUniqueEmails.filter(e => (e.accountId || myEmail) === accountEmail);
-      const aliases = (sendAsByAccount[accountEmail] || []).map(a => a.sendAsEmail);
-      return { accountEmail, groups: groupEmailsByRoom(accountEmails, accountEmail, localChatConfigs, aliases) };
+      // 自分のアドレスごとに分ける（主アドレスのチャットのキーは今までと同じ）
+      return { accountEmail, groups: groupEmailsByOwnAddress(accountEmails, accountEmail, bookOf(accountEmail), localChatConfigs) };
     });
     const merged = mergeAccountGroups(perAccountGroups);
     // フィルターグループ（filterCriteria持ち）は受信専用のため、上のアカウント単位の集約を
     // 対象外にしてある（groupEmailsByRoom側）。ここで全アカウント分のメールをまたいで
-    // 別途集約する（criteria.accountEmailで対象アカウントを絞り込める）
-    return applyFilterGroups(merged, chatConfigs, allUniqueEmails, myEmail);
-  }, [allUniqueEmails, session, chatConfigs, linkedAccounts, sendAsByAccount]);
+    // 別途集約する（criteria.accountEmailで対象アカウントを絞り込める。受け取ったアドレスの条件はメールごとの自分のアドレスで見る）
+    return applyFilterGroups(merged, chatConfigs, allUniqueEmails, myEmail, ownContextOf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- bookOf は ownBooks から引くだけ（描画ごとに作り直されるため入れない）
+  }, [allUniqueEmails, session, chatConfigs, linkedAccounts, ownBooks, ownContextOf]);
 
   // メール（アカウント＋ID）→ ルーム。連携アカウントどうしのメールは同じ ID で両方のアカウントに入ることがあるため、
   // 画面に出ているメールそのもののルームを引くときはこちらを使う
@@ -109,9 +135,9 @@ export function useRooms({
   // 宛先に書く「表示名 <アドレス>」。相手から届いたメールの From に表示名があればそれを使い、無ければアドレスだけ
   // 受け取ったメールに Reply-To（自分以外）があれば、そのアドレスを相手とする（groupEmails.ts の roomPartner）
   const getRoomPartner = (room: RoomKeyStr): { name: string; address: string } => {
-    const { accountEmail, localKey } = decodeRoomKey(room);
-    const aliases = (sendAsByAccount[accountEmail] || []).map(a => a.sendAsEmail);
-    return roomPartner(groupedEmails[room] || [], localKey, accountEmail, aliases);
+    const { accountEmail, partnerKey } = decodeRoomKey(room);
+    const book = bookOf(accountEmail);
+    return roomPartner(groupedEmails[room] || [], partnerKey, accountEmail, ownAddressList(book).filter(a => a !== book.primary));
   };
   const getRoomRecipient = (room: RoomKeyStr): string => {
     const { name, address } = getRoomPartner(room);
@@ -132,12 +158,13 @@ export function useRooms({
         const decoded = decodeRoomKey(room);
         return {
           room,
-          label: chatConfigs[room]?.customName || decoded.localKey,
+          label: chatConfigs[room]?.customName || decoded.partnerKey,
           // 名前変更後もリネーム前の元の表示名（相手のFromヘッダー由来の名前）で検索できるように、
           // labelとは別に保持しておく（customNameが無ければlabelと同じ値になる）
-          originalName: decoded.localKey,
+          originalName: decoded.partnerKey,
           address: getRoomAddress(room),
           accountEmail: decoded.accountEmail,
+          ownAddress: decoded.ownAddress,
           latestDate: groupedEmails[room][0]?.date ? new Date(groupedEmails[room][0].date).getTime() : 0,
         };
       })
@@ -153,15 +180,17 @@ export function useRooms({
     keysOf(chatConfigs).forEach(room => {
       const cfg = chatConfigs[room];
       if (!cfg?.isGroup) return;
-      const { accountEmail } = decodeRoomKey(room);
+      const { accountEmail, ownAddress } = decodeRoomKey(room);
       // グループは1つのアカウントから送信する前提のため、「自分」はこのグループ自身が属する
       // アカウント（連携アカウントの場合はそちら）で判定する（メインアカウント固定だと、
       // 連携アカウントのグループで送受信の判定が逆転してしまう）
       const memberAddresses = groupMemberAddresses(cfg);
       // このグループのアカウントのメールだけを候補にする（ほかのアカウントのメールを混ぜない）。自分はエイリアスも含む
       const myEmail = session?.user?.email || "";
-      const mine = [accountEmail, ...(sendAsByAccount[accountEmail] || []).map(a => a.sendAsEmail)];
-      const accountEmails = allUniqueEmails.filter(e => (e.accountId || myEmail) === accountEmail);
+      // グループの自分のアドレスのメールだけ（フィルターのグループはアカウント単位なので全アドレス）
+      const book = bookOf(accountEmail);
+      const mine = [accountEmail, ...ownAddressList(book).filter(a => a !== book.primary)];
+      const accountEmails = allUniqueEmails.filter(e => (e.accountId || myEmail) === accountEmail && (!!cfg.filterCriteria || ownAddressOfEmail(e) === ownAddress));
       const sentViaGroup = accountEmails.filter((e) => isOwnMail(e, mine) && sameAddressSet(parseAddressSet(e.to || ""), memberAddresses));
       const received = accountEmails.filter((e) => {
         if (isOwnMail(e, mine)) return false;
@@ -173,7 +202,7 @@ export function useRooms({
     });
     return pools;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allUniqueEmails, chatConfigs, groupedEmails, session, sendAsByAccount]);
+  }, [allUniqueEmails, chatConfigs, groupedEmails, session, ownBooks, ownAddressOfEmail]);
 
-  return { groupedEmails, groupedEmailsRef, emailRoomMap, roomOfEmail, resolveMessageAccountEmail, messageConfigKey, getRoomPartner, getRoomRecipient, getRoomAddress, contactDirectory, groupReplyPools };
+  return { ownAddressOfEmail, ownContextOf, groupedEmails, groupedEmailsRef, emailRoomMap, roomOfEmail, resolveMessageAccountEmail, messageConfigKey, getRoomPartner, getRoomRecipient, getRoomAddress, contactDirectory, groupReplyPools };
 }

@@ -8,7 +8,7 @@ import { type RoomKeyStr, decodeRoomKey, keysOf } from "../lib/roomKey";
 import type { SetState } from "./mailAppTypes";
 
 export function useChatList({
-  session, groupedEmails, allUniqueEmails, chatConfigs, messageConfigs, messageConfigKey, isAccountVisible, checkAccounts,
+  session, groupedEmails, allUniqueEmails, chatConfigs, messageConfigs, messageConfigKey, isAccountVisible, isRoomVisible, roomVisibilityKey, checkAccounts,
   checkInbox, checkArchive, checkSpam, checkTrash, checkSent, revealedCrossPrompts, draftChats, hasLoadedOnceRef, isLoading, selectedSender, setSelectedSender,
 }: {
   session: Session | null;
@@ -18,6 +18,9 @@ export function useChatList({
   messageConfigs: Record<RoomKeyStr, MessageConfig>;
   messageConfigKey: (messageId: string, accountHint?: string) => RoomKeyStr;
   isAccountVisible: (accountId?: string) => boolean;
+  // チャットを出すか（アカウントと自分のアドレスのチェックボックス）。roomVisibilityKey はその判定が変わったら変わる値
+  isRoomVisible: (room: RoomKeyStr) => boolean;
+  roomVisibilityKey: string;
   checkAccounts: Record<string, boolean>;
   checkInbox: boolean;
   checkArchive: boolean;
@@ -66,10 +69,8 @@ export function useChatList({
     return allRoomKeys.filter((sender: RoomKeyStr) => {
       const config = chatConfigs[sender];
       if (config?.isHidden) return false;
-      // 表示しないアカウントのチャットは、下書きだけのチャット・ピン留めしたチャットも出さない
-      let roomAccount: string | undefined;
-      try { roomAccount = decodeRoomKey(sender).accountEmail; } catch { roomAccount = undefined; }
-      if (!isAccountVisible(roomAccount)) return false;
+      // 表示しないアカウント・自分のアドレスのチャットは、下書きだけのチャット・ピン留めしたチャットも出さない
+      if (!isRoomVisible(sender)) return false;
 
       // 「作成」で作った未送信の下書きチャットは、送信するまで無条件で一覧に表示する
       if (draftChats.includes(sender) && (!groupedEmails[sender] || groupedEmails[sender].length === 0)) return true;
@@ -111,7 +112,7 @@ export function useChatList({
       const timeB = getLatestValidDate(b);
       return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
-  }, [groupedEmails, chatConfigs, messageConfigs, checkSent, checkInbox, checkArchive, checkSpam, checkTrash, checkAccounts, session, revealedCrossPrompts, draftChats]);
+  }, [groupedEmails, chatConfigs, messageConfigs, checkSent, checkInbox, checkArchive, checkSpam, checkTrash, checkAccounts, roomVisibilityKey, session, revealedCrossPrompts, draftChats]);
 
   const hiddenChats = keysOf(chatConfigs).filter(k => chatConfigs[k]?.isHidden);
   // messageConfigsは複合キーだが、他所（Modals.tsx等）との互換のため各要素のidは生のメッセージIDのまま返す

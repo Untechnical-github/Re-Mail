@@ -1,6 +1,64 @@
+import { useState } from "react";
 import type { MailAppHook } from "../../hooks/useMailApp";
 import { ROLE_HINTS } from "../../lib/composeRecipients";
+import { checkReceiveOnlyAddress, MAX_RECEIVE_ONLY_ADDRESSES } from "../../lib/ownAddresses";
 import { ModalTabs, accountTabLabel } from "./shared";
+
+// 自分のアドレス（README §7.7）：Gmail の sendAs（自動で読み込む）と、手で登録する受信専用アドレス（sendAs に無い、転送されてくるアドレス）。
+// 受信専用アドレスはアカウント設定に保存する。sendAs の一覧はメモリにだけ持ち、どこにも保存しない
+function OwnAddressesSetting({ app, account }: { app: MailAppHook; account: string }) {
+  const [input, setInput] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const book = app.actions.ownBookFor(account);
+  const saved = app.state.accountSettings[account]?.receiveOnlyAddresses || [];
+  const add = () => {
+    const r = checkReceiveOnlyAddress(input, book);
+    if (!r.ok) { setError(r.reason); return; }
+    setError(null);
+    setInput("");
+    app.actions.setAccountSetting(account, { receiveOnlyAddresses: [...saved, r.address] });
+  };
+  const remove = (addr: string) => app.actions.setAccountSetting(account, { receiveOnlyAddresses: saved.filter(a => a !== addr) });
+  const others = book.sendAs;
+  return (
+    <div className="bg-[#2B2D31] rounded p-3 mt-3">
+      <div className="text-sm font-bold text-gray-200 mb-1">自分のアドレス</div>
+      <div className="text-xs text-gray-500 mb-2">
+        自分のアドレスごとにチャットが分かれます。Gmail の「他のアドレスからメールを送信」に登録したアドレス（エイリアス・プラスアドレスを含む）は自動で入ります。
+        転送されてくるだけのアドレス（Email Routing など）は、下で受信専用アドレスとして登録してください。受信専用アドレスのチャットからは {account} から送信します
+      </div>
+      <div className="text-[11px] text-gray-400 mb-2 break-all">
+        {account}（主アドレス）{others.map(a => `・${a}${book.sendable.includes(a) ? "" : "（確認待ち・受信のみ）"}`).join("")}
+      </div>
+      <div className="text-xs font-bold text-gray-300 mb-1">受信専用アドレス（{saved.length}/{MAX_RECEIVE_ONLY_ADDRESSES}）</div>
+      {saved.length > 0 && (
+        <div className="flex flex-col gap-1 mb-2">
+          {saved.map(addr => (
+            <div key={addr} className="flex items-center gap-2 bg-[#1E1F22] rounded px-2 py-1 text-xs text-gray-300">
+              <span className="truncate flex-1" title={addr}>{addr}</span>
+              {/* sendAs にも入ったアドレスは、受信専用としては使わない（sendAs として扱う） */}
+              {others.includes(addr) && <span className="text-[10px] text-gray-500 flex-shrink-0">Gmail の送信元にあるため不要</span>}
+              <button onClick={() => remove(addr)} className="text-gray-400 hover:text-white flex-shrink-0">削除</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input
+          type="email"
+          value={input}
+          maxLength={254}
+          onChange={(e) => { setInput(e.target.value); setError(null); }}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) add(); }}
+          placeholder="user@example.com"
+          className="flex-1 min-w-0 bg-[#1E1F22] text-sm text-white px-3 py-2 rounded focus:outline-none focus:ring-1 focus:ring-[#5865F2]"
+        />
+        <button onClick={add} disabled={!input.trim()} className="px-3 py-2 rounded text-sm font-bold bg-[#5865F2] text-white disabled:opacity-40">追加</button>
+      </div>
+      {error && <div className="text-[11px] text-red-400 mt-1">{error}</div>}
+    </div>
+  );
+}
 
 // 設定: 共通の設定とアカウントごとの設定をタブで切り替える
 export function SettingsModal({ app, settingsTab, setSettingsTab }: { app: MailAppHook; settingsTab: string; setSettingsTab: (key: string) => void }) {
@@ -68,6 +126,7 @@ export function SettingsModal({ app, settingsTab, setSettingsTab }: { app: MailA
               <button onClick={() => app.actions.setAccountSetting(a, { alwaysLoadImages: true })} className={toggleClass(always)}>毎回読み込む</button>
             </div>
           </div>
+          <OwnAddressesSetting key={a} app={app} account={a} />
           {/* Gmail の下書きとの同期。既定はオン（保存していない＝オン）。オフにしても、どちらの下書きも消さない */}
           {(() => {
             const on = app.state.accountSettings[a]?.gmailDraftSync !== false;

@@ -45,6 +45,12 @@ export async function clearAccountDeviceData(account: string): Promise<void> {
       Object.keys(settings).forEach(k => { if (k.toLowerCase() === target) delete settings[k]; });
       localStorage.setItem("remail_account_settings", JSON.stringify(settings));
     }
+    // 自分のアドレスごとのチェックボックス（キーは「アカウント 自分のアドレス」）
+    const ownChecks = JSON.parse(localStorage.getItem("remail_own_address_settings") || "null") as Record<string, boolean> | null;
+    if (ownChecks && typeof ownChecks === "object") {
+      Object.keys(ownChecks).forEach(k => { if (k.toLowerCase().startsWith(`${target} `)) delete ownChecks[k]; });
+      localStorage.setItem("remail_own_address_settings", JSON.stringify(ownChecks));
+    }
     const drafts = JSON.parse(localStorage.getItem("remail_draft_chats") || "null") as unknown[] | null;
     if (Array.isArray(drafts)) localStorage.setItem("remail_draft_chats", JSON.stringify(drafts.filter(k => !isTargetRoom(k))));
     const pending = JSON.parse(localStorage.getItem("remail_draft_pending_creates") || "null") as unknown[] | null;

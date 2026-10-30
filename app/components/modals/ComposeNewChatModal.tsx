@@ -24,6 +24,14 @@ export function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: N
   // 新規の宛先・グループをどのアカウント名義で作るか（既存の宛先を選んだ場合はそのアカウントのまま開く
   // ため無視される）。連携アカウントが無ければ選択肢を出す意味がないので常にメインアカウントになる
   const [account, setAccount] = useState(sendAccount || mainEmail);
+  // 新しいチャット・グループの差出人（自分のアドレス）。差出人に使えるアドレス（確認済みの sendAs）から選ぶ。既定は Gmail の既定（isDefault）。
+  // チャットは自分のアドレスごとに分かれるので、選んだアドレスのチャットを開く・作る（README §7.7）
+  const [fromChoice, setFromChoice] = useState<Record<string, string>>({});
+  const sendable = app.state.sendAsByAccount[account] || [];
+  const showFromPicker = !isForward && !isRecipients && sendable.length > 1;
+  const fromAddress = showFromPicker
+    ? (fromChoice[account] || sendable.find(s => s.isDefault)?.sendAsEmail || account).toLowerCase()
+    : account.toLowerCase();
   // 送信先を選ぶとき：選んだ人ごとの立場（既定は To）
   const [roles, setRoles] = useState<Record<string, RecipientRole>>({});
   const currentRecipients: ComposeRecipient[] = isRecipients ? app.state.recipients : [];
@@ -55,7 +63,8 @@ export function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: N
 
   // 候補は選択中のアカウントのものだけを表示する（アカウント選択を切り替えると候補も切り替わる）。
   // 送信先を選ぶときは、もう送信先に入っている人は出さない
-  const availableContacts = contactDirectory.filter(c => !selected.includes(c.room) && c.accountEmail === account && !(isRecipients && currentKeys.has(c.address.toLowerCase())));
+  // 差出人を選べるときは、その自分のアドレスのチャットだけを候補にする（別のアドレスのチャットを開いて差出人が変わらないように）
+  const availableContacts = contactDirectory.filter(c => !selected.includes(c.room) && c.accountEmail === account && !(isRecipients && currentKeys.has(c.address.toLowerCase())) && (!showFromPicker || c.ownAddress === fromAddress));
   const trimmedSearch = search.trim();
   const query = trimmedSearch.toLowerCase();
   const filteredContacts = query
@@ -107,7 +116,7 @@ export function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: N
       // アクションバーの選択状態から開いた場合はその選択も一緒に終了させる必要があるため、
       // safeBack（モーダルの履歴だけ1つ戻す）ではなく exitAfterAction を使う
       exitAfterAction();
-      createOrOpenChat(target, account);
+      createOrOpenChat(target, account, undefined, fromAddress);
       return;
     }
     setMemberVisible(Object.fromEntries(selected.map(id => [id, true])));
@@ -131,25 +140,49 @@ export function ComposeNewChatModal({ app, modal }: { app: MailAppHook; modal: N
     // （リロード直後などデータが揃っていないタイミングで送信済みメールとの照合に失敗しないようにするため）
     const memberAddresses = selected.map(resolveAddress);
     exitAfterAction();
-    createGroupChat(name, selected, memberAddresses, groupMode, hideMembers, account);
+    createGroupChat(name, selected, memberAddresses, groupMode, hideMembers, account, fromAddress);
   };
 
   // 連携アカウントがある場合のみ表示する、新規の宛先/グループをどのアカウント名義で作るかの選択UI。
   // 転送は転送元メッセージ自身のアカウントから送るため、ここでの選択は関係なく出さない
-  const accountPicker = linkedAccounts.length > 0 && !isForward && !isRecipients ? (
+  const accountPicker = (linkedAccounts.length > 0 || showFromPicker) && !isForward && !isRecipients ? (
     <div className="px-3 pt-2 pb-2 border-b border-[#1E1F22]">
-      <div className="text-[11px] font-bold text-gray-500 mb-1.5">新規の宛先・グループを作成するアカウント</div>
-      <div className="flex flex-wrap gap-1.5">
-        {[mainEmail, ...linkedAccounts].map(a => (
-          <button
-            key={a}
-            onClick={() => setAccount(a)}
-            className={`text-xs font-bold px-2.5 py-1 rounded-full border transition truncate max-w-[220px] ${account === a ? "bg-[#2B2D31] border-[#4752C4] text-[#5865F2]" : "bg-[#1E1F22] border-[#1E1F22] text-gray-500 hover:text-gray-300"}`}
-          >
-            {a}
-          </button>
-        ))}
-      </div>
+      {linkedAccounts.length > 0 && (
+        <>
+          <div className="text-[11px] font-bold text-gray-500 mb-1.5">新規の宛先・グループを作成するアカウント</div>
+          <div className="flex flex-wrap gap-1.5">
+            {[mainEmail, ...linkedAccounts].map(a => (
+              <button
+                key={a}
+                onClick={() => setAccount(a)}
+                className={`text-xs font-bold px-2.5 py-1 rounded-full border transition truncate max-w-[220px] ${account === a ? "bg-[#2B2D31] border-[#4752C4] text-[#5865F2]" : "bg-[#1E1F22] border-[#1E1F22] text-gray-500 hover:text-gray-300"}`}
+              >
+                {a}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      {showFromPicker && (
+        <>
+          <div className={`text-[11px] font-bold text-gray-500 mb-1.5 ${linkedAccounts.length > 0 ? "mt-2" : ""}`}>差出人</div>
+          <div className="flex flex-wrap gap-1.5">
+            {sendable.map(sa => {
+              const addr = sa.sendAsEmail.toLowerCase();
+              return (
+                <button
+                  key={addr}
+                  title={sa.displayName ? `${sa.displayName} <${sa.sendAsEmail}>` : sa.sendAsEmail}
+                  onClick={() => setFromChoice(prev => ({ ...prev, [account]: addr }))}
+                  className={`text-xs font-bold px-2.5 py-1 rounded-full border transition truncate max-w-[220px] ${fromAddress === addr ? "bg-[#2B2D31] border-[#4752C4] text-[#5865F2]" : "bg-[#1E1F22] border-[#1E1F22] text-gray-500 hover:text-gray-300"}`}
+                >
+                  {sa.sendAsEmail}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   ) : null;
 

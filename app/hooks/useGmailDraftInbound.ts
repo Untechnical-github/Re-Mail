@@ -1,7 +1,7 @@
 // Gmail の下書きとの同期（Gmail → Re:Mail）：純正 Gmail の下書きを、その宛先とのチャットの入力欄に「書きかけ」として出す。
 // - 知る：起動したとき（アカウントごとに drafts.list を1回）と、差分同期で下書きが変わったときだけ一覧を取る。
 //   知らない・変わった下書きだけ中身を取る（同時に3件まで）
-// - 出す：To の最初（無ければ Cc、Bcc）の人との同じアカウントの個人チャット。無ければ下書きチャットを作る。
+// - 出す：To の最初（無ければ Cc、Bcc）の人との同じアカウント・同じ自分のアドレス（From）の個人チャット。無ければ下書きチャットを作る。
 //   入力欄が既定のままなら黙って入れ、何か書いてあれば「ほかに下書きが○件」に並べる
 // - 両方で書き換えたら黙って上書きせず、どちらを残すか聞く。純正で送信・削除されたら入力欄を戻す
 // 中身は Gmail と画面のあいだを通すだけ（D1・ログに残さない）。HTML は入力欄に入れるときに安全化される（composeEditor.ts の load）
@@ -58,7 +58,7 @@ const nowMs = () => Date.now();
 const shortPreview = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 60);
 
 export function useGmailDraftInbound({
-  gmailDrafts, settingsReady, selectedSender, draftReadyRoom, emailsRef, resolveDirectRoom, addDraftChat, partnerRecipient,
+  gmailDrafts, settingsReady, selectedSender, draftReadyRoom, emailsRef, resolveDirectRoom, addDraftChat, partnerRecipient, draftOwnAddress,
   setReplySubject, setReplyToMessage, setReplyAttachments, setRecipients, setRecipientsBase, setAttachError, loadCompose, insertedSignatureRef,
   setComposeDialog, showInfoToast, showErrorToast, isMailReady, isEditorReady,
 }: {
@@ -67,7 +67,9 @@ export function useGmailDraftInbound({
   selectedSender: RoomKeyStr | null;
   draftReadyRoom: string | null;
   emailsRef: MutableRefObject<Email[]>;
-  resolveDirectRoom: (identifier: string, accountEmail?: string) => { room: RoomKeyStr; existing: boolean } | null;
+  resolveDirectRoom: (identifier: string, accountEmail?: string, ownAddress?: string) => { room: RoomKeyStr; existing: boolean } | null;
+  // 下書きを出す自分のアドレス（From が自分のアドレスならそれ。無ければ主アドレス。useMailApp.ts）
+  draftOwnAddress: (account: string, from: string | undefined, threadId: string | undefined) => string;
   addDraftChat: (room: string) => void;
   partnerRecipient: (room: RoomKeyStr | null) => ComposeRecipient | null;
   setReplySubject: SetState<string>;
@@ -99,8 +101,8 @@ export function useGmailDraftInbound({
   const undoRef = useRef(new Map<string, RoomContent>());
   // 今のアカウントごとの、知っている下書きのメッセージ ID（差分同期で消えたら一覧を取り直す）
   const knownMsgIdsRef = useRef(new Map<string, Set<string>>());
-  const latest = useRef({ partnerRecipient, resolveDirectRoom, addDraftChat });
-  useEffect(() => { latest.current = { partnerRecipient, resolveDirectRoom, addDraftChat }; });
+  const latest = useRef({ partnerRecipient, resolveDirectRoom, addDraftChat, draftOwnAddress });
+  useEffect(() => { latest.current = { partnerRecipient, resolveDirectRoom, addDraftChat, draftOwnAddress }; });
 
   const getJson = async <T,>(params: Record<string, string>): Promise<{ status: number | null; data: T | null }> => {
     try {
@@ -431,7 +433,8 @@ export function useGmailDraftInbound({
       const meta = metas.get(u.draftId);
       if (!meta) continue;
       const addr = draftTargetAddress(meta);
-      const dest = addr ? latest.current.resolveDirectRoom(addr, account) : null;
+      // Gmail の下書きは From で、どの自分のアドレスのチャットに出すかを決める
+      const dest = addr ? latest.current.resolveDirectRoom(addr, account, latest.current.draftOwnAddress(account, meta.from, meta.threadId)) : null;
       if (!dest) { noRecipient++; continue; }
       const cur = byRoom.get(dest.room) || { metas: [], existing: dest.existing };
       cur.metas.push(meta);

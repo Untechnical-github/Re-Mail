@@ -20,6 +20,8 @@ export type Email = {
   // 自分が送ったメールにだけ入る（Gmail は受信者側のメールから Bcc を取り除く）
   bcc?: string;
   replyTo?: string;
+  // Delivered-To ヘッダー（カンマ区切り）。どの自分のアドレスに届いたかの判定（ownAddresses.ts）にだけ使う。古いキャッシュには無い
+  deliveredTo?: string;
   date: string;
   // Gmail が受け取った時刻（ミリ秒）。引用・転送の見出しの時刻にだけ使う。
   // 並び順・差分同期・一覧の時刻には使わない。端末のキャッシュにある古いメールには無い

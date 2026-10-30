@@ -372,6 +372,9 @@ export function parseMessageDetail(message: GmailMessage) {
   // 実配送先を示す「Delivered-To」ヘッダーで表示を補っている。同様にフォールバックする
   const to = decodeMimeHeader(getHeader(headers, "To")) || decodeMimeHeader(getHeader(headers, "Delivered-To"));
   const cc = decodeMimeHeader(getHeader(headers, "Cc")) || undefined;
+  // どの自分のアドレスに届いたかを決めるのに使う（To・Cc に自分のアドレスが無い転送メールなど）。
+  // 転送を重ねると複数付くので、上から5つまでをカンマでつなぐ
+  const deliveredTo = headers.filter(h => h.name.toLowerCase() === "delivered-to").slice(0, 5).map(h => (h.value || "").slice(0, 320)).join(", ") || undefined;
   const replyTo = decodeMimeHeader(getHeader(headers, "Reply-To")) || undefined;
   // Bcc は自分が送ったメール（送信済み）にだけ残る。受け取ったメールには無い
   const bcc = decodeMimeHeader(getHeader(headers, "Bcc")) || undefined;
@@ -401,5 +404,5 @@ export function parseMessageDetail(message: GmailMessage) {
   const hasHtml = !!htmlBodyForLinks;
   const internalDate = parseInternalDate(message.internalDate);
   const receivedAt = topReceivedTime(headers);
-  return { id: message.id, threadId: message.threadId, subject, from, to, cc, bcc, replyTo, date, internalDate, receivedAt, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, references, inReplyTo, isForward, hasHtml };
+  return { id: message.id, threadId: message.threadId, subject, from, to, cc, bcc, deliveredTo, replyTo, date, internalDate, receivedAt, body: cleansedBody, snippet: message.snippet, labelIds, htmlLinks, attachments, messageIdHeader, references, inReplyTo, isForward, hasHtml };
 }

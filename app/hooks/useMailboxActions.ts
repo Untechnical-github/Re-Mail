@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, type MutableRefObject } from "react";
 import type { Session } from "next-auth";
 import type { ChatConfig, MessageConfig, ModalState, SelectionMode, ModalTargetMode } from "../types/mail";
 import type { Email } from "../types/email";
-import { messageMatchesFilter } from "../lib/filterMatch";
+import { messageMatchesFilter, type OwnMatchContext } from "../lib/filterMatch";
 import { type LocalKey, type RoomKeyStr, asLocalKey, decodeRoomKey, keysOf } from "../lib/roomKey";
 import { capPinnedIds } from "../lib/pinnedIds";
 import { logError, logWarn } from "../lib/safeLog";
@@ -18,7 +18,7 @@ export function useMailboxActions({
   session, selectedSender, setSelectedSender, groupedEmails, emailRoomMap, allUniqueEmails, emails, setEmails, persistedEmails, setPersistedEmails,
   chatConfigs, chatConfigsRef, messageConfigsRef, updateMessageConfig, updateChatConfig, updateChatConfigByRoomKey, syncConfigs, applySyncedPersisted,
   resolveMessageAccountEmail, modal, exitAfterAction, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, revealedCrossPrompts, setRevealedCrossPrompts,
-  showErrorToast, accountSettings, emailModal,
+  showErrorToast, accountSettings, emailModal, ownContextOf,
   selectionMode, setSelectionMode, selectedIds, setSelectedIds, setModal, hasPushedSelectRef, emailsRef, fetchChatCrossbox, safeBack,
 }: {
   session: Session | null;
@@ -52,6 +52,8 @@ export function useMailboxActions({
   showErrorToast: (message: string) => void;
   accountSettings: Record<string, AccountSettings>;
   emailModal: EmailModalState;
+  // フィルターの「受け取ったアドレス」の条件と送受信の判定に使う、メールごとの自分のアドレス（useRooms.ts）
+  ownContextOf: (e: Email) => OwnMatchContext;
   selectionMode: SelectionMode;
   setSelectionMode: SetState<SelectionMode>;
   selectedIds: string[];
@@ -403,7 +405,7 @@ export function useMailboxActions({
         // フィルターはアカウントごと。そのフィルターのアカウントのメールにだけ効かせる（ほかのアカウントのメールを動かさない）
         if ((e.accountId || session?.user?.email || "").toLowerCase() !== accountEmail.toLowerCase()) return false;
         const t = new Date(e.date).getTime();
-        return !isNaN(t) && t > cutoff && messageMatchesFilter(e, cfg.filterCriteria!, accountEmail);
+        return !isNaN(t) && t > cutoff && messageMatchesFilter(e, cfg.filterCriteria!, accountEmail, ownContextOf(e));
       });
       if (newMatches.length === 0) return;
       const ids = newMatches.map((e) => e.id);

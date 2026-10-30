@@ -294,3 +294,14 @@ describe("extractAttachments（本文の HTML を渡したとき）", () => {
     expect(parsed.attachments.map(a => a.filename)).toEqual(["IMG_0001.HEIC"]);
   });
 });
+
+describe("parseMessageDetail の Delivered-To", () => {
+  it("複数の Delivered-To をつなぎ、5つまでにする（無ければ undefined）", () => {
+    const headers = [{ name: "From", value: "a@example.net" }, { name: "To", value: "list@example.net" }];
+    const many = Array.from({ length: 7 }, (_, i) => ({ name: "Delivered-To", value: `d${i}@example.com` }));
+    const m = parseMessageDetail({ id: "x1", threadId: "t", snippet: "s", labelIds: ["INBOX"], payload: { mimeType: "text/plain", headers: [...headers, ...many], body: { data: b64url("b") } } });
+    expect(m.deliveredTo).toBe("d0@example.com, d1@example.com, d2@example.com, d3@example.com, d4@example.com");
+    const none = parseMessageDetail({ id: "x2", threadId: "t", snippet: "s", labelIds: ["INBOX"], payload: { mimeType: "text/plain", headers, body: { data: b64url("b") } } });
+    expect(none.deliveredTo).toBeUndefined();
+  });
+});

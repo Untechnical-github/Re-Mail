@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { FilterCriteria, ConditionSet, TextField, TextRule, DateDirection, FindBarBoxKey, messageMatchesFilter, isEmptyFilterCriteria, getFindBarBoxKey, isActionBoxRestricted, getConditionSets } from "../../lib/filterMatch";
+import { FilterCriteria, ConditionSet, TextField, TextRule, DateDirection, FindBarBoxKey, messageMatchesFilter, missingOwnAddresses, isEmptyFilterCriteria, getFindBarBoxKey, isActionBoxRestricted, getConditionSets } from "../../lib/filterMatch";
 import { keysOf, asLocalKey, type RoomKeyStr } from "../../lib/roomKey";
 import type { MailAppHook } from "../../hooks/useMailApp";
 import type { ChatConfig } from "../../types/mail";
@@ -108,10 +108,14 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
   const [includeExisting, setIncludeExisting] = useState(true);
   // このフィルターのアカウント。フィルターはアカウントごとに分けて保存し、そのアカウントのメールにだけ効く
   const [filterAccountEmail, setFilterAccountEmail] = useState("");
+  // 受け取ったアドレスの条件（そのアカウントの自分のアドレスから複数選ぶ。空＝全アドレス。README §7.7）
+  const [ownAddrFilter, setOwnAddrFilter] = useState<string[]>([]);
   // フィルターの一覧で開いているアカウントのタブ（空なら最初のアカウント）
   const [filterTab, setFilterTab] = useState("");
 
   const myEmail = app.auth?.session?.user?.email || "";
+  // メールごとの自分のアドレス（受け取ったアドレスの条件・送受信の判定に使う）
+  const ownContextOf = app.actions.ownContextOf;
   const linkedAccounts: string[] = app.state.linkedAccounts || [];
 
   const existingFilters = useMemo(() => {
@@ -170,6 +174,7 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     setActionBoxes([]);
     setHideOriginal(false); setContinuous(false); setDestination("INBOX"); setIncludeExisting(true);
     setFilterAccountEmail("");
+    setOwnAddrFilter([]);
   };
 
   useEffect(() => {
@@ -208,6 +213,7 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     setDestination(cfg.filterDestination || "INBOX");
     // フィルターは、それを保存しているアカウント（チャットのキーのアカウント）のもの
     setFilterAccountEmail(app.actions.roomAccountEmail(id));
+    setOwnAddrFilter(Array.isArray(crit.ownAddresses) ? crit.ownAddresses.filter((a): a is string => typeof a === "string") : []);
     // 非グループ（1回限り/継続の実行時のみ意味を持つ）は保存していないため常にデフォルトへ戻す。
     // グループは filterIncludeExisting を保存しているのでそれを復元する（未指定なら含める＝デフォルト）
     setIncludeExisting(kind === "group" ? cfg.filterIncludeExisting !== false : true);
@@ -261,31 +267,32 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
   // 保存場所を含まない、内容条件（OR結合された条件セット）＋対象アカウントのみのFilterCriteria。
   // 非グループアクションの保存場所チェックボックスの件数集計に、保存場所以外の条件だけを適用するために使う
   const criteriaWithoutBoxes: FilterCriteria = useMemo(
-    () => ({ conditionSets, accountEmail: filterAccountEmail || undefined }),
-    [conditionSets, filterAccountEmail]
+    () => ({ conditionSets, accountEmail: filterAccountEmail || undefined, ownAddresses: ownAddrFilter.length > 0 ? ownAddrFilter : undefined }),
+    [conditionSets, filterAccountEmail, ownAddrFilter]
   );
 
   const boxCounts = useMemo(() => {
     const counts: Record<string, number> = { inbox: 0, archive: 0, sent: 0, spam: 0, trash: 0 };
     if (action === "group") return counts;
     app.computed.allUniqueEmails.forEach(e => {
-      if (!messageMatchesFilter(e, criteriaWithoutBoxes, myEmail)) return;
+      if (!messageMatchesFilter(e, criteriaWithoutBoxes, myEmail, ownContextOf(e))) return;
       const box = getFindBarBoxKey(e);
       counts[box] = (counts[box] || 0) + 1;
     });
     return counts;
-  }, [action, criteriaWithoutBoxes, app.computed.allUniqueEmails, myEmail]);
+  }, [action, criteriaWithoutBoxes, app.computed.allUniqueEmails, myEmail, ownContextOf]);
 
   const criteria: FilterCriteria = useMemo(() => {
     const c: FilterCriteria = { conditionSets };
     if (filterAccountEmail) c.accountEmail = filterAccountEmail;
+    if (ownAddrFilter.length > 0) c.ownAddresses = ownAddrFilter;
     if (action === "group") {
       if (groupBoxEnabled && groupBoxes.length > 0) c.boxes = groupBoxes;
     } else if (actionBoxes.length > 0) {
       c.boxes = actionBoxes;
     }
     return c;
-  }, [conditionSets, action, groupBoxEnabled, groupBoxes, actionBoxes, filterAccountEmail]);
+  }, [conditionSets, action, groupBoxEnabled, groupBoxes, actionBoxes, filterAccountEmail, ownAddrFilter]);
 
   const isNonGroupBoxesEmpty = action !== "group" && actionBoxes.length === 0;
   const isIncludeExistingDisabled = action !== "group" && !continuous;
@@ -294,8 +301,8 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
 
   const matchCount = useMemo(() => {
     if (isCriteriaEmpty) return 0;
-    return app.computed.allUniqueEmails.filter(e => messageMatchesFilter(e, criteria, myEmail)).length;
-  }, [isCriteriaEmpty, criteria, app.computed.allUniqueEmails, myEmail]);
+    return app.computed.allUniqueEmails.filter(e => messageMatchesFilter(e, criteria, myEmail, ownContextOf(e))).length;
+  }, [isCriteriaEmpty, criteria, app.computed.allUniqueEmails, myEmail, ownContextOf]);
 
   // 実行したとき今あるメールのうち何件に効くか（プレビュー）。削除は送信済み・自分が送ったメール・ゴミ箱のメールを
   // 対象にしない（applyDeleteToIds と同じ）ので、その分を除いて数える
@@ -303,14 +310,14 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
     if (isCriteriaEmpty || action === "group") return 0;
     if (continuous && !includeExisting) return 0;
     return app.computed.allUniqueEmails.filter(e => {
-      if (!messageMatchesFilter(e, criteria, myEmail)) return false;
+      if (!messageMatchesFilter(e, criteria, myEmail, ownContextOf(e))) return false;
       if (action === "delete" && (e.labelIds?.includes("TRASH") || e.labelIds?.includes("SENT") || e.isMe)) return false;
       // 既読・未読にするは、いまと違う状態のメールだけを数える（すでに既読のメールは「既読にする」の対象に入れない）
       if (action === "read" && !e.labelIds?.includes("UNREAD")) return false;
       if (action === "unread" && e.labelIds?.includes("UNREAD")) return false;
       return true;
     }).length;
-  }, [isCriteriaEmpty, action, continuous, includeExisting, criteria, app.computed.allUniqueEmails, myEmail]);
+  }, [isCriteriaEmpty, action, continuous, includeExisting, criteria, app.computed.allUniqueEmails, myEmail, ownContextOf]);
 
   const handleClose = () => app.actions.safeBack();
 
@@ -341,7 +348,7 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
       return;
     }
 
-    const matchedIds = app.computed.allUniqueEmails.filter(e => messageMatchesFilter(e, criteria, myEmail)).map(e => e.id);
+    const matchedIds = app.computed.allUniqueEmails.filter(e => messageMatchesFilter(e, criteria, myEmail, ownContextOf(e))).map(e => e.id);
 
     if (continuous) {
       const reuseId = !!editingId && existingKind === action && !accountChanged;
@@ -465,6 +472,41 @@ export function FilterToolModal({ app }: { app: MailAppHook }) {
           {linkedAccounts.length > 0 && (
             <div className="px-4 pt-3 flex-shrink-0 text-[11px] text-gray-500 truncate">{filterAccountEmail} のフィルター（このアカウントのメールにだけ効きます）</div>
           )}
+          {/* 受け取ったアドレス：アドレスが2つ以上あるアカウント（か、もう指定してあるとき）だけ出す。
+              Gmail 側で消えた・受信専用から外れたアドレスは「見つからないアドレス」と出し、そのアドレスには効かない */}
+          {(() => {
+            const known = app.actions.ownAddressesFor(filterAccountEmail || myEmail);
+            const missing = missingOwnAddresses({ ownAddresses: ownAddrFilter }, known);
+            if (known.length < 2 && ownAddrFilter.length === 0) return null;
+            const toggle = (addr: string) => setOwnAddrFilter(prev => prev.includes(addr) ? prev.filter(a => a !== addr) : [...prev, addr]);
+            return (
+              <div className="px-4 pt-3 flex-shrink-0">
+                <div className="text-xs font-bold text-gray-400 mb-1">受け取ったアドレス（選ばなければすべてのアドレス）</div>
+                <div className="flex flex-wrap gap-1 text-[11px] font-bold">
+                  {known.map(addr => (
+                    <button
+                      key={addr}
+                      onClick={() => toggle(addr)}
+                      title={addr}
+                      className={`px-2 py-1 rounded border transition truncate max-w-[220px] ${ownAddrFilter.includes(addr) ? "bg-[#2B2D31] border-[#4752C4] text-[#5865F2]" : "bg-[#1E1F22] border-[#1E1F22] text-gray-500 hover:text-gray-300"}`}
+                    >
+                      {addr}
+                    </button>
+                  ))}
+                  {missing.map(addr => (
+                    <button
+                      key={addr}
+                      onClick={() => toggle(addr)}
+                      title={`${addr}（見つからないアドレス。押すと条件から外します）`}
+                      className="px-2 py-1 rounded border border-red-500/40 bg-red-500/10 text-red-400 truncate max-w-[260px]"
+                    >
+                      {addr}（見つからないアドレス）
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="flex-1 overflow-y-auto p-4 space-y-2">
             <div className="text-xs font-bold text-gray-400 mb-1">いずれか1つに一致すれば対象になります（OR）</div>

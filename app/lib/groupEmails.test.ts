@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, mailPartnerOf, roomPartner, normalizeAliasReceived } from "./groupEmails";
+import { groupEmailsByOwnAddress, groupEmailsByRoom, mergeAccountGroups, applyFilterGroups, mailPartnerOf, roomPartner, normalizeAliasReceived } from "./groupEmails";
 import { Email } from "../types/email";
+import { buildOwnAddressBook } from "./ownAddresses";
 import { ChatConfig } from "../types/mail";
 import { LocalKey, RoomKeyStr, asLocalKey, encodeRoomKey, decodeRoomKey } from "./roomKey";
 
@@ -415,5 +416,40 @@ describe("normalizeAliasReceived（検索・削除などで使う一覧の整え
     expect(normalizeAliasReceived(self, ME, [ME, FAMILY])).toBe(self);
     const unknown = mkEmail({ id: "4", from: `家族 <${FAMILY}>`, to: ME, labelIds: ["SENT", "INBOX"] });
     expect(normalizeAliasReceived(unknown, ME, [])).toBe(unknown);
+  });
+});
+
+describe("groupEmailsByOwnAddress", () => {
+  const book = buildOwnAddressBook(ME, [{ sendAsEmail: ME, canSend: true }, { sendAsEmail: "sales@example.com", canSend: true }], ["info@example.org"]);
+  it("同じ相手でも自分のアドレスが違えば別のチャット。受信専用のスレッドへの主アドレスからの返信はそのチャット", () => {
+    const emails = [
+      mkEmail({ id: "1", threadId: "t1", from: "田中 <tanaka@example.net>", to: ME }),
+      mkEmail({ id: "2", threadId: "t2", from: "田中 <tanaka@example.net>", to: "sales@example.com" }),
+      mkEmail({ id: "3", threadId: "t3", from: "田中 <tanaka@example.net>", to: "info@example.org" }),
+      mkEmail({ id: "4", threadId: "t3", from: ME, to: "田中 <tanaka@example.net>", labelIds: ["SENT"] }),
+      mkEmail({ id: "5", threadId: "t4", from: "sales@example.com", to: "田中 <tanaka@example.net>", labelIds: ["SENT"] }),
+    ];
+    const groups = groupEmailsByOwnAddress(emails, ME, book, {} as Record<LocalKey, ChatConfig>);
+    const merged = mergeAccountGroups([{ accountEmail: ME, groups }]);
+    const ids = (own?: string) => (merged[encodeRoomKey(ME, "田中", own)] || []).map(e => e.id).sort();
+    expect(ids()).toEqual(["1"]);
+    expect(ids("sales@example.com")).toEqual(["2", "5"]);
+    expect(ids("info@example.org")).toEqual(["3", "4"]);
+    expect(Object.keys(merged).length).toBe(3);
+  });
+  it("自分の複数のアドレスに届いたメールは最初の1つのチャットにだけ出る", () => {
+    const emails = [mkEmail({ id: "1", from: "田中 <tanaka@example.net>", to: "sales@example.com", cc: ME })];
+    const groups = groupEmailsByOwnAddress(emails, ME, book, {} as Record<LocalKey, ChatConfig>);
+    expect(Object.keys(groups)).toEqual([encodeRoomKey(ME, "田中", "sales@example.com").slice(ME.length + 1)]);
+  });
+  it("設定（グループ）はそのアドレスの中だけで使う", () => {
+    const groupKey = decodeRoomKey(encodeRoomKey(ME, "group:g1", "sales@example.com")).localKey;
+    const cfgs = { [groupKey]: { isGroup: true, groupMembers: ["田中"], groupMemberAddresses: ["tanaka@example.net"] } } as unknown as Record<LocalKey, ChatConfig>;
+    const emails = [
+      mkEmail({ id: "1", from: "田中 <tanaka@example.net>", to: "sales@example.com" }),
+      mkEmail({ id: "2", from: "田中 <tanaka@example.net>", to: ME }),
+    ];
+    const groups = groupEmailsByOwnAddress(emails, ME, book, cfgs);
+    expect((groups[groupKey] || []).map(e => e.id)).toEqual(["1"]);
   });
 });

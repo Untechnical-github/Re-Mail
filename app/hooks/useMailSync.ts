@@ -7,7 +7,7 @@ import type { SelectionMode, ModalState } from "../types/mail";
 import type { Email } from "../types/email";
 import { clearDeviceData } from "../lib/deviceData";
 import type { ChatListTab } from "../lib/filterMatch";
-import { type LocalKey, type RoomKeyStr, asLocalKey, decodeRoomKey } from "../lib/roomKey";
+import { type LocalKey, type RoomKeyStr, asLocalKey, decodeRoomKey, splitLocalKey } from "../lib/roomKey";
 import { pendingMembers, aggregateGroupPagingState } from "../lib/groupPaging";
 import { applySyncResult, idsToFetchForLabelChanges, mergeEmails, type BoxFlags, type SyncResult } from "../lib/historySync";
 import { syncedSettingsKey, pickCommonSettings, type SyncedSettings } from "../lib/syncedSettings";
@@ -403,16 +403,19 @@ export function useMailSync({
         return { found: false, nextToken: currentToken, messages: [] };
       }
 
+      // ローカルキーに自分のアドレスが入っているチャット（主アドレス以外）は、相手の部分（partnerKey）で検索する。
+      // どの自分のアドレスのチャットに入るかは、取ってきたあとのチャットへの分け方（groupEmailsByOwnAddress）で決まる
+      const partner = splitLocalKey(sender, accountEmail || session?.user?.email || "").partnerKey;
       const addrSet = new Set<string>();
       knownEmails.forEach(e => {
-        if (e.from.includes(sender) || (e.to && e.to.includes(sender)) || e.senderRoom === sender) {
+        if (e.from.includes(partner) || (e.to && e.to.includes(partner)) || e.senderRoom === sender) {
           if (!e.isMe) {
             const match = e.from.match(/<([^>]+)>/);
             if (match) addrSet.add(match[1].trim());
           }
         }
       });
-      let q = `(from:"${sender}" OR to:"${sender}")`;
+      let q = `(from:"${partner}" OR to:"${partner}")`;
       if (addrSet.size > 0) {
          const addrs = Array.from(addrSet).map(a => `from:${a} OR to:${a}`).join(" OR ");
          q = `(${q} OR ${addrs})`;

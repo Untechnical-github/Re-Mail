@@ -34,7 +34,9 @@ import { useChatList } from "./useChatList";
 import { useChatNavigation } from "./useChatNavigation";
 import { useAccounts } from "./useAccounts";
 import type { EmailModalState, AttachmentModalState } from "./mailAppTypes";
-import { getSavedBoxSettings, getSavedAccountSettings } from "../lib/mailAppHelpers";
+import { isOwnAddressVisible, ownAddressList } from "../lib/ownAddresses";
+import { parseAddress } from "../lib/mime";
+import { getSavedBoxSettings, getSavedAccountSettings, getSavedOwnAddressChecks } from "../lib/mailAppHelpers";
 
 // 入力欄の確認画面（送信先を外す・チャットを移る・送信先を置き換える・返信／全員に返信・引用の注意）
 export type ComposeDialog =
@@ -110,6 +112,11 @@ export function useMailApp() {
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("remail_account_settings", JSON.stringify(checkAccounts));
   }, [checkAccounts]);
+  // 自分のアドレスごとの表示チェックボックス（アドレスが2つ以上あるアカウントだけ。ownAddresses.ts）。保存のしかたはアカウントのチェックと同じ
+  const [checkOwnAddresses, setCheckOwnAddresses] = useState<Record<string, boolean>>(() => getSavedOwnAddressChecks() ?? {});
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("remail_own_address_settings", JSON.stringify(checkOwnAddresses));
+  }, [checkOwnAddresses]);
   // メールの所属アカウント（e.accountId、未設定ならメインアカウント）がチェックボックスでオフになっていないか判定する。
   // 場所（受信箱/アーカイブ等）のチェックとは独立した、ハードなフィルター（revealedCrossPromptsによる個別解除は無い）
   const isAccountVisible = (accountId?: string) => checkAccounts[accountId || (session?.user?.email || "")] !== false;
@@ -228,8 +235,13 @@ export function useMailApp() {
   // customNameが無いチャットのフォールバック表示など、Modals.tsx側で複合キーをそのまま
   // 画面に出してしまわないようにするために使う（roomKeyの直接パースを一元化するルールのため、
   // UI側はこのヘルパー経由でのみローカル部分を取得する）
+  // 自分のアドレスごとのチャットでは、ローカルキーに自分のアドレスが入っているので、相手の部分（partnerKey）だけを出す
   const roomLocalKey = (room: string): string => {
-    try { return decodeRoomKey(room).localKey; } catch { return room; }
+    try { return decodeRoomKey(room).partnerKey; } catch { return room; }
+  };
+  // チャットの自分のアドレス（小文字。主アドレスのチャットならアカウントのアドレス）
+  const roomOwnAddress = (room: string): string => {
+    try { return decodeRoomKey(room).ownAddress; } catch { return (session?.user?.email || "").toLowerCase(); }
   };
 
   // UI表示用: 複合キーが属するアカウントのメールアドレスを取り出す（アカウントバッジ表示用）
@@ -239,7 +251,7 @@ export function useMailApp() {
 
   const openRoomAccount = selectedSender ? roomAccountEmail(selectedSender) : "";
   const sendAsAccountsKey = [session?.user?.email || "", ...((linkedAccounts as string[]) || [])].filter(Boolean).join(",");
-  const { sendAsByAccount, setSendAsByAccount, myAddressesFor, getSendAs } = useSendAs({ sessionEmail: session?.user?.email || "", openRoomAccount, sendAsAccountsKey });
+  const { sendAsByAccount, setSendAsByAccount, myAddressesFor, getSendAs, ownBooks, ownBookFor, ownAddressesFor } = useSendAs({ sessionEmail: session?.user?.email || "", openRoomAccount, sendAsAccountsKey, accountSettings });
 
   const selectedSenderRef = useRef(selectedSender);
   useEffect(() => { selectedSenderRef.current = selectedSender; }, [selectedSender]);
@@ -442,9 +454,10 @@ export function useMailApp() {
       .filter(e => !(e.labelIds || []).includes("DRAFT"))
       .map(e => {
         const account = e.accountId || myEmail;
-        return normalizeAliasReceived(e, account, (sendAsByAccount[account] || []).map(a => a.sendAsEmail));
+        return normalizeAliasReceived(e, account, ownAddressesFor(account));
       });
-  }, [emails, persistedEmails, session, sendAsByAccount]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ownAddressesFor は ownBooks から引くだけ（描画ごとに作り直されるため入れない）
+  }, [emails, persistedEmails, session, ownBooks]);
 
   // ピン留めの中身を埋める。まず端末キャッシュから出し、無い分だけ Gmail から ID で取る。
   // Gmail で見つからなかったメッセージ単位のピン留めは、黙って消さず「このメールは存在しません」として出す
@@ -548,7 +561,7 @@ export function useMailApp() {
   const {
     loadD1Configs, applySyncedSettings, setSyncedSettingsReady, savedSyncedKeyRef, setAccountSetting, alwaysLoadImagesFor, saveGlobalSettings, updateChatConfig, updateMessageConfig, deleteChatConfig, updateChatConfigByRoomKey, deleteChatConfigByRoomKey, syncConfigs,
   } = useConfigs({
-    session, showErrorToast, showInfoToast, selectedSender, setSelectedSender, setChatConfigs, setMessageConfigs, chatConfigsRef, messageConfigsRef, setPersistedEmails, hydratePinnedEmails, accountSettings, setAccountSettings, setAccountSettingsLoaded, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, checkAccounts, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setUseIconLabels, setCheckAccounts,
+    session, showErrorToast, showInfoToast, selectedSender, setSelectedSender, setChatConfigs, setMessageConfigs, chatConfigsRef, messageConfigsRef, setPersistedEmails, hydratePinnedEmails, accountSettings, setAccountSettings, setAccountSettingsLoaded, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, useIconLabels, checkAccounts, checkOwnAddresses, setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setUseIconLabels, setCheckAccounts, setCheckOwnAddresses,
   });
 
   useEffect(() => {
@@ -648,17 +661,28 @@ export function useMailApp() {
 
   // ルームの計算（チャットへの分け方・メッセージのルームとアカウント・相手・宛先の候補）は useRooms.ts
   const {
-    groupedEmails, groupedEmailsRef, emailRoomMap, roomOfEmail, resolveMessageAccountEmail, messageConfigKey, getRoomPartner, getRoomRecipient, getRoomAddress, contactDirectory, groupReplyPools,
-  } = useRooms({ session, chatConfigs, allUniqueEmails, sendAsByAccount, linkedAccounts, messageConfigsRef });
+    ownAddressOfEmail, ownContextOf, groupedEmails, groupedEmailsRef, emailRoomMap, roomOfEmail, resolveMessageAccountEmail, messageConfigKey, getRoomPartner, getRoomRecipient, getRoomAddress, contactDirectory, groupReplyPools,
+  } = useRooms({ session, chatConfigs, allUniqueEmails, linkedAccounts, messageConfigsRef, ownBooks });
 
   // 下書きチャットから離れたとき、何も書いていなければ一覧から消す（useDrafts.ts）
   useDraftChatCleanup({
     selectedSender, selectedSenderRef, draftChatsRef, groupedEmailsRef, carryDraftRef, draftReadyRoom, currentCompose, replySubject, insertedSignatureRef, replyToMessage, replyAttachments, recipients, recipientsBase, removeDraftChat,
   });
 
+  // チャットを出すか：アカウントのチェックと、アドレスが2つ以上あるアカウントでは自分のアドレスのチェック。
+  // フィルターのグループはアカウント単位なので、アカウントのチェックだけを見る
+  const isRoomVisible = (room: RoomKeyStr): boolean => {
+    let d: ReturnType<typeof decodeRoomKey>;
+    try { d = decodeRoomKey(room); } catch { return isAccountVisible(undefined); }
+    if (!isAccountVisible(d.accountEmail)) return false;
+    if (chatConfigs[room]?.filterCriteria) return true;
+    if (ownAddressesFor(d.accountEmail).length < 2) return true;
+    return isOwnAddressVisible(checkAccounts, checkOwnAddresses, d.accountEmail, d.ownAddress);
+  };
+  const roomVisibilityKey = JSON.stringify([checkOwnAddresses, Object.keys(ownBooks).map(a => [a, ownAddressesFor(a).length])]);
   // チャット一覧（並び・非表示／ピン留め／名前を変えたものの一覧・消えたチャットを閉じる）は useChatList.ts
   const { senderList, hiddenChats, hiddenMsgs, pinnedChats, pinnedMsgs, nameChangedChats } = useChatList({
-    session, groupedEmails, allUniqueEmails, chatConfigs, messageConfigs, messageConfigKey, isAccountVisible, checkAccounts,
+    session, groupedEmails, allUniqueEmails, chatConfigs, messageConfigs, messageConfigKey, isAccountVisible, isRoomVisible, roomVisibilityKey, checkAccounts,
     checkInbox, checkArchive, checkSpam, checkTrash, checkSent, revealedCrossPrompts, draftChats, hasLoadedOnceRef, isLoading, selectedSender, setSelectedSender,
   });
 
@@ -681,7 +705,7 @@ export function useMailApp() {
     MAX_TOTAL_ATTACHMENT_BYTES, addReplyAttachments, removeReplyAttachment, partnerRecipient, partnerAddressOf, effectiveRecipients, recipientsCustomized, partnerLabel,
     askMoveForRecipients, addComposeRecipients, removeComposeRecipient, clearReplyTarget, chooseReplyTarget, getSendFrom, fetchOriginalFull,
   } = useCompose({
-    session, selectedSender, selectedSenderRef, chatConfigs, groupedEmails, getRoomPartner, roomAccountEmail, resolveDirectRoom, openChat,
+    session, selectedSender, selectedSenderRef, chatConfigs, groupedEmails, getRoomPartner, roomAccountEmail, resolveDirectRoom, openChat, ownAddressesFor,
     replyAttachments, setReplyAttachments, setAttachError, replyToMessage, setReplyToMessage, replyToMessageRef, recipients, setRecipients, recipientsBase, setRecipientsBase,
     replySubject, setReplySubject, setComposeDialog, currentCompose, loadCompose, insertedSignatureRef, editorLoad, carryDraftRef, addDraftChat, draftReadyRoom,
     sendAsByAccount, setSendAsByAccount, getSendAs, showInfoToast, showErrorToast, keepSignatureRef,
@@ -716,8 +740,21 @@ export function useMailApp() {
   useEffect(() => { prepareOutgoingRef.current = prepareOutgoing; });
 
   // Gmail → Re:Mail（純正の下書きを入力欄に出す・両方で書き換えたら聞く・純正で送られたら戻す）は useGmailDraftInbound.ts
+  // Gmail の下書きを出す自分のアドレス：From が自分のアドレスならそれ。From が主アドレス（や一覧に無いアドレス）で、
+  // 同じスレッドの受け取ったメールが受信専用アドレスのチャットにあれば、その受信専用アドレス（メールの振り分けと同じ例外）
+  const draftOwnAddress = (account: string, from: string | undefined, threadId: string | undefined): string => {
+    const book = ownBookFor(account);
+    const fromAddr = parseAddress(from || "").address.trim().toLowerCase();
+    if (fromAddr && fromAddr !== book.primary && ownAddressList(book).includes(fromAddr)) return fromAddr;
+    if (threadId) {
+      const myEmail = session?.user?.email || "";
+      const hit = allUniqueEmails.find(e => e.threadId === threadId && (e.accountId || myEmail) === account && book.receiveOnly.includes(ownAddressOfEmail(e)));
+      if (hit) return ownAddressOfEmail(hit);
+    }
+    return book.primary;
+  };
   const gmailInbound = useGmailDraftInbound({
-    gmailDrafts, settingsReady: accountSettingsLoaded, selectedSender, draftReadyRoom, emailsRef, resolveDirectRoom, addDraftChat, partnerRecipient,
+    gmailDrafts, settingsReady: accountSettingsLoaded, selectedSender, draftReadyRoom, emailsRef, resolveDirectRoom, addDraftChat, partnerRecipient, draftOwnAddress,
     setReplySubject, setReplyToMessage, setReplyAttachments, setRecipients, setRecipientsBase, setAttachError, loadCompose, insertedSignatureRef,
     setComposeDialog, showInfoToast, showErrorToast, isMailReady: () => hasLoadedOnceRef.current, isEditorReady: () => !!editorApiRef.current,
   });
@@ -731,7 +768,7 @@ export function useMailApp() {
     session, selectedSender, setSelectedSender, groupedEmails, emailRoomMap, allUniqueEmails, emails, setEmails, persistedEmails, setPersistedEmails,
     chatConfigs, chatConfigsRef, messageConfigsRef, updateMessageConfig, updateChatConfig, updateChatConfigByRoomKey, syncConfigs, applySyncedPersisted,
     resolveMessageAccountEmail, modal, exitAfterAction, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, revealedCrossPrompts, setRevealedCrossPrompts,
-    showErrorToast, accountSettings, emailModal,
+    showErrorToast, accountSettings, emailModal, ownContextOf,
     selectionMode, setSelectionMode, selectedIds, setSelectedIds, setModal, hasPushedSelectRef, emailsRef, fetchChatCrossbox, safeBack,
   });
 
@@ -761,7 +798,7 @@ export function useMailApp() {
     auth: { session, status },
     state: {
       emails, persistedEmails, isLoading, selectedSender, chatConfigs, messageConfigs,
-      isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, useIconLabels, accountSettings,
+      isLoadingMore, checkInbox, checkArchive, checkSpam, checkTrash, checkSent, checkAccounts, checkOwnAddresses, useIconLabels, accountSettings,
       currentNextPageTokens, chatStatusMessage, msgStatusMessage, isLoadingMoreChats, linkedAccounts, reauthNeededAccounts, linkedAccountProfiles,
       replySubject, composeHtml, composeBodyEmpty, editorLoad, isSending, replyToMessage, replyAttachments, attachError, gmailDraftNotice: gmailDrafts.notice, gmailDraftOthers: gmailInbound.othersCount, gmailDraftOrphans: gmailInbound.orphans,
       hasMouse, isMobile, selectionMode, selectedIds, modal, renameInput,
@@ -774,7 +811,8 @@ export function useMailApp() {
       findBarOpen, findBarKeyword, findBarMatchIndex, findBarSearchSubject, findBarSearchBody, findBarBoxFilter,
     },
     actions: {
-      setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setCheckAccounts, setUseIconLabels, setAccountSetting, alwaysLoadImagesFor, changeChatTab,
+      setCheckInbox, setCheckArchive, setCheckSpam, setCheckTrash, setCheckSent, setCheckAccounts, setCheckOwnAddresses, setUseIconLabels, setAccountSetting, alwaysLoadImagesFor, changeChatTab,
+      ownAddressesFor, ownBookFor, roomOwnAddress, ownAddressOfEmail, ownContextOf,
       setReplySubject, onEditorChange, clearReplyTarget, setReplyToMessage, setSelectionMode, setSelectedIds, setModal, setRenameInput,
       setRevealedCrossPrompts, updateChatConfig, setSelectedSender,
       handleMenuBarClick, handleBackgroundClick, toggleSelection,

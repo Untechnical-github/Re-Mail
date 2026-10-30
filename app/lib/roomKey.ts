@@ -22,16 +22,46 @@ export function asLocalKey(s: string): LocalKey {
 }
 
 const SEP = "\u0000";
+// ローカルキーの中で「自分のアドレス」と「相手」を分ける区切り。主アドレス（アカウントのアドレス）のチャットには付けない
+// （主アドレスのチャットは今までと同じローカルキーのままなので、ピン留めなどの設定がそのまま残る）。
+// 主アドレス以外の自分のアドレス（sendAs・受信専用アドレス）のチャットは「自分のアドレス + OWN_SEP + 相手」をローカルキーにする。
+// ローカルキーは D1 の chat_id にそのまま入る（HMAC・暗号化されるので区切りの制御文字が入っていてもよい）
+const OWN_SEP = "\u0001";
 
-export function encodeRoomKey(accountEmail: string, localKey: LocalKey | string): RoomKeyStr {
-  if (localKey.includes(SEP)) throw new Error("localKey must not contain the separator");
-  return `${accountEmail}${SEP}${localKey}` as RoomKeyStr;
+function sameAddress(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
-export function decodeRoomKey(roomKey: RoomKeyStr | string): { accountEmail: string; localKey: LocalKey } {
+// 相手（partnerKey）と自分のアドレスから、アカウント内のローカルキーを作る。自分のアドレスが空・主アドレスなら相手だけ
+export function localKeyFor(partnerKey: string, ownAddress: string | undefined, accountEmail: string): LocalKey {
+  if (partnerKey.includes(OWN_SEP)) return partnerKey as LocalKey;
+  const own = (ownAddress || "").trim().toLowerCase();
+  if (!own || sameAddress(own, accountEmail)) return partnerKey as LocalKey;
+  return `${own}${OWN_SEP}${partnerKey}` as LocalKey;
+}
+
+// ローカルキーを、自分のアドレス（小文字。主アドレスならアカウントのアドレス）と相手（partnerKey）に分ける
+export function splitLocalKey(localKey: string, accountEmail: string): { ownAddress: string; partnerKey: LocalKey } {
+  const idx = localKey.indexOf(OWN_SEP);
+  if (idx === -1) return { ownAddress: accountEmail.trim().toLowerCase(), partnerKey: localKey as LocalKey };
+  return { ownAddress: localKey.slice(0, idx), partnerKey: localKey.slice(idx + 1) as LocalKey };
+}
+
+// roomKey は「アカウント + 自分のアドレス + 相手」。ownAddress を渡したときは、ローカルキーに自分のアドレスを入れる
+// （localKey に既に自分のアドレスが入っているとき・ownAddress が主アドレスのときはそのまま）
+export function encodeRoomKey(accountEmail: string, localKey: LocalKey | string, ownAddress?: string): RoomKeyStr {
+  if (localKey.includes(SEP)) throw new Error("localKey must not contain the separator");
+  return `${accountEmail}${SEP}${localKeyFor(localKey, ownAddress, accountEmail)}` as RoomKeyStr;
+}
+
+// localKey は D1 の chat_id に入るアカウント内のキー（自分のアドレスを含む）。partnerKey は相手（表示名・アドレス・group:xxxx など）。
+// 相手の名前で検索する・画面に出すときは partnerKey を使う
+export function decodeRoomKey(roomKey: RoomKeyStr | string): { accountEmail: string; localKey: LocalKey; ownAddress: string; partnerKey: LocalKey } {
   const idx = roomKey.indexOf(SEP);
   if (idx === -1) throw new Error(`Invalid room key (missing account prefix): ${roomKey}`);
-  return { accountEmail: roomKey.slice(0, idx), localKey: roomKey.slice(idx + 1) as LocalKey };
+  const accountEmail = roomKey.slice(0, idx);
+  const localKey = roomKey.slice(idx + 1) as LocalKey;
+  return { accountEmail, localKey, ...splitLocalKey(localKey, accountEmail) };
 }
 
 // Object.keys() はTypeScript標準ライブラリの制限で常に string[] を返してしまう

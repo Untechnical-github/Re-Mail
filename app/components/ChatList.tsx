@@ -5,10 +5,12 @@ import type { MailAppHook } from "../hooks/useMailApp";
 import { ActionBar, PinIcon, WarningIcon, InboxIcon, ArchiveIcon, SendIcon, SpamIcon, TrashIcon } from "./ui";
 import { chatConfigTab } from "../lib/filterMatch";
 import { gmailOpenUrl, gmailDraftsUrl } from "../lib/gmailLink";
+import { accountCheckState, isOwnAddressVisible, toggleAccountChecks, toggleOwnAddressCheck } from "../lib/ownAddresses";
 
 // チャット一覧（左の列。スマホではチャットを開いていないときの全画面）。page.tsx から分けたもの（動きは同じ）
 export function ChatList({ app, lastChatIdxRef }: { app: MailAppHook; lastChatIdxRef: MutableRefObject<number> }) {
   const { auth, state, actions, computed, refs } = app;
+  const allAccounts = [auth.session?.user?.email || "", ...state.linkedAccounts].filter(Boolean);
   return (
         <aside className={`${state.isMobile ? 'w-full' : 'w-[320px] border-r'} border-[#1E1F22] bg-[#2B2D31] flex flex-col h-full min-h-0 cursor-pointer`}>
           <div className="p-4 border-b border-[#1E1F22] shadow-sm flex items-center justify-between cursor-default">
@@ -52,21 +54,63 @@ export function ChatList({ app, lastChatIdxRef }: { app: MailAppHook; lastChatId
              </div>
           </div>
 
-          {state.linkedAccounts.length > 0 && (
+          {/* アカウントのチェックボックス。自分のアドレスが2つ以上あるアカウントは、その下にアドレスを並べた2段にする（ownAddresses.ts） */}
+          {(state.linkedAccounts.length > 0 || allAccounts.some(a => actions.ownAddressesFor(a).length > 1)) && (
             <div className="p-3 border-b border-[#1E1F22] bg-[#232428] cursor-default">
                <div className="flex flex-wrap gap-1 text-[11px] font-bold">
-                  {[auth.session?.user?.email || "", ...state.linkedAccounts].map((acct) => {
+                  {allAccounts.map((acct) => {
                     const isMain = acct === (auth.session?.user?.email || "");
                     const profile = isMain ? undefined : state.linkedAccountProfiles[acct];
                     const pictureSrc = isMain ? auth.session?.user?.image : profile?.picture;
                     const displayName = isMain ? (auth.session?.user?.name || acct) : (profile?.name || acct);
+                    const addresses = actions.ownAddressesFor(acct);
+                    const accountLabel = state.useIconLabels ? (
+                      <img src={pictureSrc || `/api/avatar?name=${encodeURIComponent(displayName)}`} alt="" referrerPolicy="no-referrer" className="w-4 h-4 rounded-full flex-shrink-0" />
+                    ) : acct.split("@")[0];
+                    if (addresses.length < 2) {
+                      return (
+                        <label key={acct} onClick={(e) => e.stopPropagation()} title={acct} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]">
+                          <input type="checkbox" checked={state.checkAccounts[acct] !== false} onChange={(e) => actions.setCheckAccounts((prev) => ({ ...prev, [acct]: e.target.checked }))} className="accent-[#5865F2]" />
+                          {accountLabel}
+                        </label>
+                      );
+                    }
+                    const checkState = accountCheckState(state.checkAccounts, state.checkOwnAddresses, acct, addresses);
                     return (
-                      <label key={acct} onClick={(e) => e.stopPropagation()} title={acct} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded flex-1 justify-center hover:bg-[#3f4147]">
-                        <input type="checkbox" checked={state.checkAccounts[acct] !== false} onChange={(e) => actions.setCheckAccounts((prev) => ({ ...prev, [acct]: e.target.checked }))} className="accent-[#5865F2]" />
-                        {state.useIconLabels ? (
-                          <img src={pictureSrc || `/api/avatar?name=${encodeURIComponent(displayName)}`} alt="" referrerPolicy="no-referrer" className="w-4 h-4 rounded-full flex-shrink-0" />
-                        ) : acct.split("@")[0]}
-                      </label>
+                      <div key={acct} className="w-full flex flex-col gap-1" onClick={(e) => e.stopPropagation()}>
+                        <label title={acct} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1.5 rounded justify-center hover:bg-[#3f4147]">
+                          <input
+                            type="checkbox"
+                            checked={checkState === "on"}
+                            // 一部のアドレスだけオンのときは中間の表示にする
+                            ref={(el) => { if (el) el.indeterminate = checkState === "mixed"; }}
+                            onChange={() => {
+                              const next = toggleAccountChecks(state.checkAccounts, state.checkOwnAddresses, acct, addresses);
+                              actions.setCheckAccounts(next.accounts);
+                              actions.setCheckOwnAddresses(next.own);
+                            }}
+                            className="accent-[#5865F2]"
+                          />
+                          {accountLabel}
+                        </label>
+                        <div className="flex flex-wrap gap-1 pl-4 font-normal">
+                          {addresses.map(addr => (
+                            <label key={addr} title={addr} className="flex items-center gap-1 cursor-pointer bg-[#313338] px-2 py-1 rounded flex-1 min-w-0 hover:bg-[#3f4147]">
+                              <input
+                                type="checkbox"
+                                checked={isOwnAddressVisible(state.checkAccounts, state.checkOwnAddresses, acct, addr)}
+                                onChange={(e) => {
+                                  const next = toggleOwnAddressCheck(state.checkAccounts, state.checkOwnAddresses, acct, addresses, addr, e.target.checked);
+                                  actions.setCheckAccounts(next.accounts);
+                                  actions.setCheckOwnAddresses(next.own);
+                                }}
+                                className="accent-[#5865F2] flex-shrink-0"
+                              />
+                              <span className="truncate">{addr}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
                     );
                   })}
                </div>
@@ -278,6 +322,10 @@ export function ChatList({ app, lastChatIdxRef }: { app: MailAppHook; lastChatId
                         <div className="flex items-center gap-1 truncate pr-2">
                           {config?.isPinned && <PinIcon className="w-3 h-3 text-[#FEE75C] flex-shrink-0" />}
                           <span className={`text-sm truncate ${hasUnread ? "font-bold text-white" : "font-semibold"}`}>{config?.customName || actions.roomLocalKey(sender)}</span>
+                          {/* 自分のアドレスが2つ以上あるアカウントでは、どの自分のアドレスのチャットかを小さく出す（フィルターはアカウント単位なので出さない） */}
+                          {!config?.filterCriteria && actions.ownAddressesFor(actions.roomAccountEmail(sender)).length > 1 && (
+                            <span title={actions.roomOwnAddress(sender)} className="text-[10px] text-gray-500 font-normal truncate min-w-0 max-w-[45%]">{actions.roomOwnAddress(sender)}</span>
+                          )}
                           {/* ログインしているアカウントが2つ以上なら、どのアカウントのチャットかを全アカウント同じ形で出す */}
                           {state.linkedAccounts.length > 0 && (() => {
                             const acct = actions.roomAccountEmail(sender);

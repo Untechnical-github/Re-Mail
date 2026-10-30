@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isMineEmail, messageMatchesFilter } from "./filterMatch";
+import { isMineEmail, messageMatchesFilter, matchesOwnAddressCondition, missingOwnAddresses } from "./filterMatch";
 
 describe("isMineEmail", () => {
   it("完全一致するFromは自分のメールと判定する", () => {
@@ -104,5 +104,35 @@ describe("フィルターのアカウント", () => {
     const legacy = { textRules: sets[0].textRules, accountEmail: "me@example.com" } as unknown as Parameters<typeof messageMatchesFilter>[1];
     // textRules は読まれないので件名の条件は効かず、場所の条件だけで判断される
     expect(messageMatchesFilter({ ...email, subject: "関係ない" }, { ...legacy, boxes: ["inbox"] }, "me@example.com")).toBe(true);
+  });
+});
+
+describe("受け取ったアドレスの条件", () => {
+  const acct = "me@example.com";
+  const mine = ["me@example.com", "sales@example.com", "info@example.org"];
+  const mail = { id: "1", from: "a@example.net", to: "sales@example.com", accountId: acct, labelIds: ["INBOX"], date: "2026-01-01T00:00:00.000Z" };
+  it("指定なしは全アドレスに効く（今までのフィルター）", () => {
+    expect(messageMatchesFilter(mail, { accountEmail: acct }, acct, { mine, ownAddress: "sales@example.com" })).toBe(true);
+    expect(messageMatchesFilter(mail, { accountEmail: acct, ownAddresses: [] }, acct, { mine, ownAddress: "info@example.org" })).toBe(true);
+  });
+  it("複数指定はそのどれかのアドレスのメールだけ", () => {
+    const c = { accountEmail: acct, ownAddresses: ["sales@example.com", "info@example.org"] };
+    expect(messageMatchesFilter(mail, c, acct, { mine, ownAddress: "sales@example.com" })).toBe(true);
+    expect(messageMatchesFilter(mail, c, acct, { mine, ownAddress: "info@example.org" })).toBe(true);
+    expect(messageMatchesFilter(mail, c, acct, { mine, ownAddress: "me@example.com" })).toBe(false);
+    // 自分のアドレスを渡さないときは主アドレスのメールとして見る
+    expect(messageMatchesFilter(mail, c, acct)).toBe(false);
+  });
+  it("見つからないアドレスはエラーにせず、そのアドレスには効かない", () => {
+    const c = { accountEmail: acct, ownAddresses: ["gone@example.com", "sales@example.com"] };
+    expect(missingOwnAddresses(c, mine)).toEqual(["gone@example.com"]);
+    expect(messageMatchesFilter(mail, c, acct, { mine, ownAddress: "sales@example.com" })).toBe(true);
+    expect(messageMatchesFilter(mail, c, acct, { mine, ownAddress: "me@example.com" })).toBe(false);
+    expect(matchesOwnAddressCondition({ ownAddresses: ["gone@example.com"] }, "me@example.com")).toBe(false);
+  });
+  it("送受信の方向はエイリアスも自分として判定する", () => {
+    const sent = { id: "2", from: "Sales <sales@example.com>", to: "a@example.net", accountId: acct, labelIds: ["SENT"], date: "2026-01-01T00:00:00.000Z" };
+    expect(messageMatchesFilter(sent, { accountEmail: acct, conditionSets: [{ direction: "sent" }] }, acct, { mine, ownAddress: "sales@example.com" })).toBe(true);
+    expect(messageMatchesFilter(sent, { accountEmail: acct, conditionSets: [{ direction: "received" }] }, acct, { mine, ownAddress: "sales@example.com" })).toBe(false);
   });
 });

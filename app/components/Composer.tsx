@@ -70,6 +70,12 @@ export function Composer({ app, composeRef, selectedRoom, recipientsOpen, setRec
                       </button>
                     );
                   })()}
+                  {/* 受信専用アドレス（や確認待ちのアドレス）のチャットでは、そのアドレスからは送れないので主アドレスから送ることを伝える（絶対ルール2） */}
+                  {showComposeExtras && computed.sendFrom?.cannotSendFrom && (
+                    <div className="text-[11px] text-gray-400 mb-2 px-1">
+                      このアドレス（{computed.sendFrom.cannotSendFrom}）からは送信できないため、{computed.sendFrom.address} から送信されます
+                    </div>
+                  )}
                   {/* 送信先：たたんでいるときは1行の要約。開くと1人ずつのチップ（押すと確認を挟んで外す）と「＋ 送信先を追加」 */}
                   {showComposeExtras && (isGroupChat ? (
                     <div className="flex items-center gap-2 bg-[#2B2D31] text-gray-300 p-2 rounded text-xs mb-2 border-l-4 border-[#5865F2]">

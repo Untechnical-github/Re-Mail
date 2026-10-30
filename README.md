@@ -242,7 +242,7 @@ Re-Mail/
 │   ├── hooks/
 │   │   ├── useMailApp.ts                 # 状態とロジックの中核（カスタムフック。下のフックを組み合わせて state / actions / computed を返す。§13）
 │   │   ├── mailAppTypes.ts               # 分けたフックどうしで使う型
-│   │   ├── useSendAs.ts                  # 送信元の設定（アカウントごとの sendAs・エイリアス・署名の取得）
+│   │   ├── useSendAs.ts                  # 送信元の設定（アカウントごとの sendAs・エイリアス・署名の取得）と自分のアドレスの一覧（§7.7）
 │   │   ├── useConfigs.ts                 # 設定の読み込みと保存（チャットの設定・共通設定・アカウント設定。失敗したら送り直す）
 │   │   ├── useDrafts.ts                  # 下書き（チャットごとの入力中の内容・ほかのチャットへ持っていく内容・下書きチャット）
 │   │   ├── useMailSync.ts                # 一覧の取得と差分同期（最初の読み込み・場所の切り替え・チャットごとの取得・再試行・裏からの同期）
@@ -362,7 +362,7 @@ Re-Mail/
 
 ### 7.5 チャットの分け方（設計判断）
 - **チャットはアカウントごとに完全に分ける。** 同じ相手でも、アカウントが違えば別のチャットにする。仕事用と個人用の文脈が混ざったり、送信元を取り違えたり（＝ビジネス上の事故）するのを避けるため。
-- 画面で使うキー（roomKey）は「アカウントのアドレス ＋ `\u0000` ＋ ローカルキー」の複合キー。ローカルキーは、相手の表示名（無ければアドレス）、`group:xxxx`、`filter:xxxx`、メッセージ単位の設定なら Gmail のメッセージ ID。組み立てと分解は必ず `roomKey.ts` を通す。型でも `LocalKey` と `RoomKeyStr` を分けている。**D1 の `chat_id` はローカルキー、画面の state は複合キー**、と使い分ける。
+- 画面で使うキー（roomKey）は「アカウントのアドレス ＋ `\u0000` ＋ ローカルキー」の複合キー。ローカルキーは、相手の表示名（無ければアドレス）、`group:xxxx`、`filter:xxxx`、メッセージ単位の設定なら Gmail のメッセージ ID。**主アドレス以外の自分のアドレスのチャットは、ローカルキーの前に「自分のアドレス（小文字）＋ `\u0001`」を付ける**（§7.7。roomKey は「アカウント＋自分のアドレス＋相手」になる）。組み立てと分解は必ず `roomKey.ts` を通す。型でも `LocalKey` と `RoomKeyStr` を分けている。**D1 の `chat_id` はローカルキー、画面の state は複合キー**、と使い分ける。
 - 一覧の上の**アカウント別チェックボックス**で、表示するアカウントを絞れる（共通設定）。
 - **グループ・フィルター・フィルターグループもアカウントごと。** フィルターは必ずどれか1つのアカウントのもの（`filterCriteria.accountEmail`）で、そのアカウントのメールにだけ効く。フィルターグループもほかのアカウントのメールを混ぜない。
 - 返信は、開いているチャットのアカウントから送る。**ログインしているアカウントが2つ以上あるときは、返信欄の上に「送信元: <アカウント> 切り替え」を出す**（グループでは出さない）。押すと `select_send_account` モーダルで別のアカウントを選べ、そのアカウントで同じ相手とのチャット（無ければ新しいチャット）に切り替わる（§13.8）。
@@ -370,6 +370,29 @@ Re-Mail/
 
 ### 7.6 OAuth の「テストモード」の制約
 審査前はリフレッシュトークンが**7日で失効**する。失効しても §7.2・§7.3 の導線（再ログインのトースト）があるので、黙って壊れることはない。根本的な解決は OAuth 審査の通過（§18.4）。
+
+### 7.7 自分のアドレスごとのチャット（sendAs・エイリアス・受信専用アドレス）
+**単位**：設定とフィルターは**アカウント単位**、チャットとチェックボックスは**自分のアドレス単位**。フィルターには「受け取ったアドレス」の条件がある（指定なし＝そのアカウントの全アドレス）。IMAP・POP は扱わない。
+- **自分のアドレスの一覧（`ownAddresses.ts` の `OwnAddressBook`）**：アカウントごとに `users.settings.sendAs.list`（`GET /api/emails?sendAs=1`。今の OAuth スコープ `gmail.modify` で呼べる。スコープは増やさない）で取る。主アドレスも含まれる。
+  - 受信の判定には sendAs の**すべて**（確認待ちも含む。応答の `receiveAddresses`）を使う。差出人に使えるのは `verificationStatus === "accepted"` のものと主アドレスだけ（応答の `sendAs`。`book.sendable`）。
+  - 加えて**受信専用アドレス**（sendAs に無い、Email Routing などで転送されてくるアドレス）をアカウント設定 `receiveOnlyAddresses` に手で登録できる（設定 →アカウントのタブ →「自分のアドレス」。形式チェック `isValidOwnAddress`〔`ローカル部@ドメイン.トップレベル`、254文字まで、空白・`<>(),;:"` は不可〕、sendAs・主アドレス・登録済みと重複は不可、最大 `MAX_RECEIVE_ONLY_ADDRESSES = 20` 件。`checkReceiveOnlyAddress` が理由を返す）。保存は暗号化した D1 のアカウント設定（§8）。あとで sendAs に入ったアドレスは受信専用としては使わない（一覧から除く）。
+  - 比較はすべて小文字にそろえた完全一致。sendAs の取得結果は**メモリにだけ持ち**、どこにも保存しない（`useSendAs.ts` の `ownBooks`）。取得に失敗したら主アドレス＋受信専用アドレスだけで動かす（画面を止めない・エラーにしない）。
+  - エイリアスの扱い：プラスアドレス（`name+xxx@gmail.com`）や Workspace の別名は、sendAs に登録されていれば自動で自分のアドレスになり、チャットも分かれる。sendAs に無いエイリアスは、受信専用アドレスとして登録したときだけ分かれる。どちらにも無いプラスアドレス宛てのメールは主アドレスのメールとして扱う（主アドレスのチャットに入る。プラスアドレスごとに自動でチャットを作らない）。
+- **自分のメールか（`isMineEmail`）**：主アドレスだけでなく、そのアカウントの自分のアドレスすべて（`ownAddressesFor(account)` = 主アドレス・sendAs・受信専用アドレス）で判定する（チャットの見出し・返信元の候補・フィルター・グルーピング）。ただし**返信の宛先から除く「自分」**（全員に返信・Reply-To・受け取った欄の表示）は純正 Gmail と同じく sendAs だけ（`myAddressesFor`。受信専用アドレスは Gmail が知らないため）。
+- **メールがどの自分のアドレスのものか（`resolveOwnAddress` / `assignOwnAddresses`）**：
+  1. 受け取ったメール：To → Cc → Delivered-To（`Email.deliveredTo`。`messageParse.ts` が Delivered-To ヘッダーを上から5つまでカンマでつなぐ）の順に見て、最初に出てくる自分のアドレス。無ければ主アドレス。自分の複数のアドレスに同時に届いたメールも、この順で最初の1つにだけ入れる（二重に出さない）。
+  2. 送ったメール・下書き：From。From が一覧に無ければ主アドレス。
+  3. 例外：送ったメールの From が主アドレスで、同じスレッド（`threadId`）の受け取ったメールが受信専用アドレスに振り分けられているときは、その受信専用アドレスに入れる（受信専用アドレスのチャットから主アドレスで返信した分がチャットから消えないように）。
+- **チャット（roomKey）**：ローカルキーは `localKeyFor(相手, 自分のアドレス, アカウント)`。主アドレスのチャットは相手だけ（今までと同じキー。ピン留め・名前変更などの設定がそのまま残る）、ほかのアドレスは `自分のアドレス + "\u0001" + 相手`。`decodeRoomKey` は `{ accountEmail, localKey, ownAddress, partnerKey }` を返す。**D1 の `chat_id`・`senderRoom`・ピン留めの `roomId` は `localKey`（自分のアドレス入り）、相手の名前で Gmail を検索する・画面に出すときは `partnerKey`**（`fetchChatCrossbox` は中で `splitLocalKey` して相手の部分で検索する）。`encodeRoomKey(account, localKey, ownAddress?)` は、自分のアドレスが主アドレス・空ならそのまま、localKey に既に自分のアドレスが入っていればそのまま。以前の形のキーに結びついたデータ（主アドレス以外のアドレス宛てで、今まで主アドレスのチャットにあったもの）は移さない。
+  - グルーピングは `groupEmailsByOwnAddress(emails, account, book, chatConfigs)`：メールごとに自分のアドレスを決めて分け、自分のアドレスごとに `groupEmailsByRoom`（§12.1 の規則そのまま）をかけ、ローカルキーに自分のアドレスを入れて返す。設定（グループなど）はそのアドレスの中だけで使う。`senderRoom` 付きのメールは `senderRoom` のアドレスに入れる。同じ相手でも自分のアドレスが違えば別のチャット。
+  - 通常のグループもどれか1つの自分のアドレスに属する（作成時に差出人で選ぶ。未指定なら、選んだ既存チャットがみな同じアドレスならそれ、違えば主アドレス）。`groupMembers` は同じアドレスの中の相手（partnerKey）、`groupHiddenMembers` はローカルキー。フィルターのグループはアカウント単位（キーは主アドレスの形）で、全アドレスのメールから集める。
+  - アカウントに自分のアドレスが2つ以上あるときだけ、チャット一覧とチャットの見出しに自分のアドレスを小さく出す（フィルターのグループには出さない）。
+  - **差出人はチャットのアドレスで固定**（`replyCompose.ts` の `chatSendAs`）：チャットの自分のアドレスが `sendAs`（確認済み）にあればそれ、無ければ（受信専用・確認待ち）主アドレス。From には sendAs の `displayName` を付ける（`fromHeaderOf`）。主アドレスのチャットは Gmail の既定（`isDefault`）ではなく主アドレスから送る。受信専用アドレスのチャットでは、入力欄に「このアドレス（〇〇）からは送信できないため、（主アドレス）から送信されます」と出す（`getSendFrom().cannotSendFrom`。送信元の設定を読めるまでは出さない）。
+  - 新しいチャット・グループの作成（「作成」モーダル）では、差出人に使えるアドレスが2つ以上あれば「差出人」を選べる（既定は sendAs の `isDefault`）。候補はその自分のアドレスのチャットだけに絞る。返信欄の送信元のアカウント切り替え（`switchSendAccount`）では、切り替え先の主アドレスのチャットを開く。入力欄を持ってほかの相手に移るとき（`moveComposeTo`）は同じアドレスのチャットへ移る。
+  - **下書き同期**：Gmail の下書きは From でチャットに振り分ける（`drafts.get?meta=1` の応答に `from` を足した。`draftOwnAddress`：From が主アドレス以外の自分のアドレスならそれ、そうでなく同じスレッドの受け取ったメールが受信専用アドレスのものならその受信専用アドレス、どちらでもなければ主アドレス）。Re:Mail の書きかけは、送信と同じ `prepareOutgoing` で組み立てるので、チャットのアドレスを From にして保存する。
+  - **署名は今回変えていない**：今までどおり「差出人の sendAs の署名」を入力欄に入れ、差出人が変わったら署名の部分だけ入れ替える（書き換えていたら確かめる。Gmail から読み込んだ下書きの署名はそのまま）。差出人の決め方が上のとおりチャットのアドレスになったので、署名もそのアドレスの sendAs の署名になる（受信専用アドレスのチャットは主アドレスの署名）。
+- **チェックボックス**：一覧の上のアカウントのチェックボックスの下に、そのアカウントの自分のアドレスを並べた2段にする（自分のアドレスが2つ以上あるアカウントだけ。1つだけのアカウントは今と同じ1段）。アカウントのチェックで全アドレスをまとめて切り替え（全部オンなら全部オフ、それ以外なら全部オン）、一部だけオンのときは中間（`indeterminate`）の表示。アドレスのチェックを押したときは、ほかのアドレスの今の見え方をそのまま書き、アカウントは1つでもオンならオンにする（`toggleAccountChecks` / `toggleOwnAddressCheck` / `accountCheckState`）。保存のしかたはアカウントのチェックと同じ：共通設定 `ownAddresses`（キーは `"アカウント 自分のアドレス"`〔`ownAddressCheckKey`〕、値 boolean、最大500件）と端末の `remail_own_address_settings`。アドレスが1つになったアカウントでは、アドレスのチェックは見ない（古い値でチャットが消えないように）。フィルターのグループはアカウントのチェックだけを見る。ログインしているアカウントが1つでも、アドレスが2つ以上あればこの欄を出す。
+- **フィルター**：アカウント単位のまま。条件に「受け取ったアドレス」（`FilterCriteria.ownAddresses`。そのアカウントの自分のアドレスから複数選ぶ）を足した。指定なし（空・未指定）＝全アドレスで、既存のフィルターは今まで通り動く。メールの自分のアドレス（上の決め方）がどれかに一致したときだけ一致する（`matchesOwnAddressCondition`）。指定したアドレスが Gmail 側で消えた・受信専用から外れたときは、エラーにせず編集画面に「（アドレス）（見つからないアドレス）」と出し（`missingOwnAddresses`。押すと条件から外す）、そのアドレスには効かないままにする（指定がすべて見つからないアドレスなら、どのメールにも一致しない）。自分のアドレスが2つ以上あるアカウント（か、もう指定してあるフィルター）だけ、この条件の欄を出す。
 
 ---
 
@@ -475,6 +498,7 @@ Re-Mail/
 | `remail_scroll_aside_<タブ>` / `remail_scroll_main` | スクロール位置 |
 | `remail_ui_state` | 開いていた画面の状態（復元用） |
 | `remail_account_settings` | アカウントの表示チェックボックス（D1 から読み終えるまでの仮の値） |
+| `remail_own_address_settings` | 自分のアドレスごとの表示チェックボックス（キーは「アカウント 自分のアドレス」。§7.7。D1 から読み終えるまでの仮の値。1つのアカウントのログアウトでそのアカウントの分を消す） |
 | ⭐ `remail_use_icon_labels` | 文字／アイコン表示（D1 から読み終えるまでの仮の値） |
 | ⭐ `remail_box_settings` | 場所のチェックボックス（既定は受信箱とアーカイブだけオン） |
 | ⭐ `remail_chat_cache_limit` | チャットごとのメール一覧を何チャット分メモリに残すか（既定10、LRU） |
@@ -530,7 +554,7 @@ Gmail の読み取りはすべて `fetchWithRetry` を通す（§10.1）。詳�
 | パラメータ | 動き | 応答 |
 | --- | --- | --- |
 | `messageId` ＋ `attachmentId` | 添付の中身を取る（`fake-` の ID なら取らない） | `{ data: base64url \| null }` |
-| `sendAs=1` | 送信元エイリアスと署名の一覧。`isPrimary` か `verificationStatus === "accepted"` のものだけ | `{ sendAs: [{ sendAsEmail, displayName, replyToAddress, signature, isPrimary, isDefault }] }` |
+| `sendAs=1` | 送信元エイリアスと署名の一覧。`sendAs` は `isPrimary` か `verificationStatus === "accepted"` のものだけ。`receiveAddresses` は確認待ちも含めた sendAs のすべてのアドレス（最大200件。受け取ったメールの自分のアドレスの判定にだけ使う。§7.7） | `{ sendAs: [{ sendAsEmail, displayName, replyToAddress, signature, isPrimary, isDefault }], receiveAddresses: string[] }` |
 | `sync=1` ＋ `historyId` | 差分同期（§13.4） | 下記 |
 | `ids=<id,id,...>` | ID 指定で取る（16進6〜32文字だけ、重複を除いて最大50件、20件ずつ並列） | `{ messages, missing, failedIds }`（404・400 は `missing`） |
 | `drafts=1` | Gmail の下書きの一覧（`drafts.list`、最大100件。`fields` で絞らない） | `{ drafts: [{ id, messageId, threadId }], more }`（`more` は100件を超えた分の目安） |
@@ -703,8 +727,9 @@ React に依存しない純粋関数を置く。ほぼすべてに `*.test.ts` �
 ### 12.1 キー・グルーピング・フィルター
 | ファイル | 役割 |
 | --- | --- |
-| ★`roomKey.ts` | `encodeRoomKey(account, localKey)` / `decodeRoomKey(roomKey)`。区切りは `\u0000`（表示名やアドレスに絶対に出てこない文字）。`LocalKey` / `RoomKeyStr` の branded type、`asLocalKey`、`keysOf`。**区切り文字で直接 `split` してはいけない** |
-| `groupEmails.ts` | `groupEmailsByRoom(emails, myAddress, chatConfigs, myAliases)`：1アカウント分をローカルキーでまとめる（エイリアスは Reply-To が自分宛てかの判定にだけ使う）。`mailPartnerOf`：受け取ったメールの相手（Reply-To 優先）。`roomPartner`：ルームの相手の表示名とアドレス（画面の `getRoomAddress` / `getRoomRecipient` が使う）。`mergeAccountGroups`：アカウントごとの結果を複合キーにして合体する。`applyFilterGroups`：フィルターで作ったグループを、全アカウントのメールから組み立てる（下記）。`groupMemberAddresses`：グループのメンバーの保存したアドレス |
+| ★`roomKey.ts` | `encodeRoomKey(account, localKey, ownAddress?)` / `decodeRoomKey(roomKey)`（`{ accountEmail, localKey, ownAddress, partnerKey }`）・`localKeyFor` / `splitLocalKey`（§7.7）。区切りは `\u0000`（表示名やアドレスに絶対に出てこない文字）、ローカルキーの中の自分のアドレスと相手の区切りは `\u0001`。`LocalKey` / `RoomKeyStr` の branded type、`asLocalKey`、`keysOf`。**区切り文字で直接 `split` してはいけない** |
+| `groupEmails.ts` | `groupEmailsByOwnAddress(emails, account, book, chatConfigs)`：自分のアドレスごとに分けてから `groupEmailsByRoom` をかける（§7.7。画面はこちらを使う）。`groupEmailsByRoom(emails, myAddress, chatConfigs, myAliases)`：1アカウント分をローカルキーでまとめる（エイリアスは Reply-To が自分宛てかの判定にだけ使う）。`mailPartnerOf`：受け取ったメールの相手（Reply-To 優先）。`roomPartner`：ルームの相手の表示名とアドレス（画面の `getRoomAddress` / `getRoomRecipient` が使う）。`mergeAccountGroups`：アカウントごとの結果を複合キーにして合体する。`applyFilterGroups`：フィルターで作ったグループを、全アカウントのメールから組み立てる（下記）。`groupMemberAddresses`：グループのメンバーの保存したアドレス |
+| `ownAddresses.ts` | 自分のアドレス（§7.7）。`buildOwnAddressBook`・`ownAddressList`・`canSendFrom`・`isReceiveOnlyAddress`・`checkReceiveOnlyAddress`・`isValidOwnAddress`・`resolveOwnAddress`・`assignOwnAddresses`・チェックボックスの `ownAddressCheckKey` / `isOwnAddressVisible` / `accountCheckState` / `toggleAccountChecks` / `toggleOwnAddressCheck` |
 | `filterMatch.ts` | `isMineEmail`・`getFindBarBoxKey`・`BOX_KEY_TO_LABEL`・`isActionBoxRestricted`・`messageMatchesFilter`・`getConditionSets`・`chatConfigTab`・`isEmptyFilterCriteria`（下記） |
 | `mailboxOps.ts` | 移動・削除・既読／未読のラベル（`labelChangeFor`：`INBOX` は INBOX を付け TRASH・SPAM を外す／`ARCHIVE` は INBOX・TRASH・SPAM を外すだけ（Gmail にアーカイブのラベルは無い）／`SPAM` は SPAM を付け INBOX・TRASH を外す／`TRASH` は TRASH を付け INBOX・SPAM を外す。`readLabelChange`）、`sanitizeMessageIds`、`chunkIds`（`BATCH_MODIFY_LIMIT = 1000`）、`groupIdsByAccount`。サーバーと画面の両方で使う |
 | `groupPaging.ts` | グループチャットの、メンバーごとのページトークンの状態をまとめる。`PAGING_DONE_STATES = ["END_ALL", "END_LIMIT"]`、`pendingMembers`、`aggregateGroupPagingState`（まだ読める人がいれば `MORE`） |
@@ -743,8 +768,10 @@ type FilterCriteria = {
   conditionSets?: ConditionSet[]; // セットどうしは OR。空なら場所とアカウントだけで絞る
   boxes?: ("inbox" | "archive" | "sent" | "spam" | "trash")[];
   accountEmail?: string;          // このフィルターのアカウント。必ず入る。無いフィルターは壊れた設定として、どのメールにも一致させない
+  ownAddresses?: string[];        // 受け取ったアドレス（小文字）。空・未指定＝そのアカウントの全アドレス（§7.7）
 };
 ```
+- `messageMatchesFilter(email, criteria, myEmail, own?)` の `own` は `{ mine, ownAddress }`（そのアカウントの自分のアドレスすべてと、そのメールの自分のアドレス。画面では `ownContextOf(e)`）。送受信の方向・「自分でない方」は `mine` で判定する。`own` が無ければ主アドレスだけで判定し、メールの自分のアドレスは主アドレスとみなす。
 - 相手の名前・アドレスの条件は、`direction` が `sent` なら To、`received` なら From、未指定なら「自分でない方」を見る。比較は小文字にした部分一致。
 - 語が空・壊れている条件、`accountEmail` の無いフィルター、`conditionSets` が配列でないフィルターはどのメールにも一致させない。`messageMatchesFilter` 全体を `try/catch` で囲み、例外なら「一致しない」にする（壊れた設定で画面を落とさない）。
 - `isEmptyFilterCriteria`：条件セットも場所もアカウントも無いフィルターは、誤って全件に効かないよう弾く。
@@ -776,7 +803,7 @@ type FilterCriteria = {
 | ★`configStore.ts` | §8.3・§8.3.1（`openConfigs`・`openSessionConfigs`・`saveSessionConfig`・`deleteSessionConfig`・`saveCommonSettings`・`saveAccountSettings`・`UnknownAccountError`） |
 | `googleScopes.ts` | `GOOGLE_OAUTH_SCOPE`（§7.1） |
 | `linkedAccountsStore.ts` | §8.4（`promoteLinkedAccount`、設定の読み書きで使う軽い `listLinkedAccountEmails` を含む） |
-| ★`syncedSettings.ts` | **共通設定**（`SYNCED_SETTING_TYPES`）：`inbox` / `archive` / `spam` / `trash` / `sent` / `iconLabels`（boolean）、`accounts`（アドレス → boolean、最大50件、アドレスは320文字以内で `^[^\s@]{1,64}@[^\s@]{1,255}$`）、`updatedAt`（ミリ秒。写しのどれが新しいかを決める）。画面が持つのは `COMMON_SETTING_KEYS`（`updatedAt` を除く）。**アカウント設定**（`ACCOUNT_SETTING_TYPES`）：`alwaysLoadImages` / `autoReadOnOpenChat` / `autoReadOnOpenMail`（boolean）。`sanitizeSyncedSettings` / `sanitizeAccountSettings` は一覧に無いものを捨てる。`syncedSettingsKey`（名前の順番に左右されない比較用の文字列）・`pickCommonSettings`・`newestCommonSettings` |
+| ★`syncedSettings.ts` | **共通設定**（`SYNCED_SETTING_TYPES`）：`inbox` / `archive` / `spam` / `trash` / `sent` / `iconLabels`（boolean）、`accounts`（アドレス → boolean、最大50件、アドレスは320文字以内で `^[^\s@]{1,64}@[^\s@]{1,255}$`）、`ownAddresses`（「アカウント 自分のアドレス」→ boolean、最大500件。§7.7）、`updatedAt`（ミリ秒。写しのどれが新しいかを決める）。画面が持つのは `COMMON_SETTING_KEYS`（`updatedAt` を除く）。**アカウント設定**（`ACCOUNT_SETTING_TYPES`）：`alwaysLoadImages` / `autoReadOnOpenChat` / `autoReadOnOpenMail` / `gmailDraftSync` / `showSentRecipients` / `showReceivedRecipients`（boolean）、`receiveOnlyAddresses`（受信専用アドレスの配列。形の正しいものだけ・小文字・重なりなし・20件まで。§7.7）。`sanitizeSyncedSettings` / `sanitizeAccountSettings` は一覧に無いものを捨てる。`syncedSettingsKey`（名前の順番に左右されない比較用の文字列）・`pickCommonSettings`・`newestCommonSettings` |
 | `pinnedIds.ts` | `MAX_PINNED_IDS_PER_CHAT = 60`、`isGmailId`（16進6〜32文字）、`readPinnedIds`（`ids` だけを読む）、`capPinnedIds`、`mergePinnedIds`、`missingPinnedEmail`（消えていたメールの代わりに置く「このメールは存在しません」の仮のメール。`isMissing: true`）、`stripPinnedBodies`（保存の前に JSON から `data` を取り除く守り） |
 | `pinnedCache.ts` | ピン留めの中身の端末キャッシュ（ストア `pinned`、キーはアカウント） |
 | `drafts.ts` | `loadDraft` / `saveDraft`（空なら消す）/ `removeDraft` / `removeAccountDrafts` / `clearDrafts`。`ComposeDraft = { subject, body, replyToMessage, attachments[{filename,mimeType,size,data}], updatedAt }` |

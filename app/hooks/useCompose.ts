@@ -9,7 +9,7 @@ import { type RoomKeyStr, decodeRoomKey } from "../lib/roomKey";
 import { withSignature, withQuote, signatureOf, sameSignature, buildQuoteHtml, hasQuote } from "../lib/composeHtml";
 import type { InlineImage } from "../lib/composeEditor";
 import { normalizeRecipients, excludesPartner, pickMoveTarget, replyChoices, recipientsKey, isValidRecipientAddress, displayRecipientName, type ComposeRecipient } from "../lib/composeRecipients";
-import { replySubjectFor, pickSendAs, formatQuoteHeader, quoteTimeOf, extractHtmlBodyInner } from "../lib/replyCompose";
+import { replySubjectFor, chatSendAs, formatQuoteHeader, quoteTimeOf, extractHtmlBodyInner } from "../lib/replyCompose";
 import { logWarn } from "../lib/safeLog";
 import type { useSendAs } from "./useSendAs";
 import type { CarriedDraft, Attachment } from "./useDrafts";
@@ -19,7 +19,7 @@ import type { SetState } from "./mailAppTypes";
 type SendAsApi = ReturnType<typeof useSendAs>;
 
 export function useCompose({
-  session, selectedSender, selectedSenderRef, chatConfigs, groupedEmails, getRoomPartner, roomAccountEmail, resolveDirectRoom, openChat,
+  session, selectedSender, selectedSenderRef, chatConfigs, groupedEmails, getRoomPartner, roomAccountEmail, resolveDirectRoom, openChat, ownAddressesFor,
   replyAttachments, setReplyAttachments, setAttachError, replyToMessage, setReplyToMessage, replyToMessageRef, recipients, setRecipients, recipientsBase, setRecipientsBase,
   replySubject, setReplySubject, setComposeDialog, currentCompose, loadCompose, insertedSignatureRef, editorLoad, carryDraftRef, addDraftChat, draftReadyRoom,
   sendAsByAccount, setSendAsByAccount, getSendAs, showInfoToast, showErrorToast, keepSignatureRef,
@@ -31,7 +31,9 @@ export function useCompose({
   groupedEmails: Record<RoomKeyStr, Email[]>;
   getRoomPartner: (room: RoomKeyStr) => { name: string; address: string };
   roomAccountEmail: (room: string) => string;
-  resolveDirectRoom: (identifier: string, accountEmail?: string) => { room: RoomKeyStr; existing: boolean } | null;
+  resolveDirectRoom: (identifier: string, accountEmail?: string, ownAddress?: string) => { room: RoomKeyStr; existing: boolean } | null;
+  // そのアカウントの自分のアドレスすべて（主アドレス・sendAs・受信専用アドレス。useSendAs.ts）
+  ownAddressesFor: (account: string) => string[];
   openChat: (sender: RoomKeyStr, opts?: { replaceHistory?: boolean }) => Promise<void>;
   replyAttachments: Attachment[];
   setReplyAttachments: SetState<Attachment[]>;
@@ -109,17 +111,17 @@ export function useCompose({
   const getReplyBase = (room: RoomKeyStr | null): Email | null => {
     if (!room || chatConfigs[room]?.isGroup) return null;
     const { accountEmail } = decodeRoomKey(room);
-    return replyToMessage || (groupedEmails[room] || []).find(e => !isMineEmail(e, accountEmail) && !e.isMissing) || null;
+    return replyToMessage || (groupedEmails[room] || []).find(e => !isMineEmail(e, ownAddressesFor(accountEmail)) && !e.isMissing) || null;
   };
 
   // ---- 送信先（To / Cc / Bcc） ----
   // 開いている個別チャットの相手（To）。アドレスが分からない（形が正しくない）ときは null
   const partnerRecipient = (room: RoomKeyStr | null): ComposeRecipient | null => {
     if (!room || chatConfigs[room]?.isGroup) return null;
-    const { localKey } = decodeRoomKey(room);
+    const { partnerKey } = decodeRoomKey(room);
     const { name, address } = getRoomPartner(room);
-    // 下書きチャット（まだやり取りが無い）は、ルームのキーそのものが相手のアドレス
-    const addr = address || localKey.trim().toLowerCase();
+    // 下書きチャット（まだやり取りが無い）は、ルームのキー（相手の部分）そのものが相手のアドレス
+    const addr = address || partnerKey.trim().toLowerCase();
     if (!isValidRecipientAddress(addr)) return null;
     return name ? { address: addr, name, role: "to" } : { address: addr, role: "to" };
   };
@@ -135,7 +137,7 @@ export function useCompose({
   const partnerLabel = (room: RoomKeyStr): string => {
     const p = partnerRecipient(room);
     const label = chatConfigs[room]?.customName || p?.name || "";
-    return displayRecipientName({ name: label || undefined, address: p?.address || decodeRoomKey(room).localKey });
+    return displayRecipientName({ name: label || undefined, address: p?.address || decodeRoomKey(room).partnerKey });
   };
 
   // 入力中の内容（本文・添付・送信先・返信元・件名）を持って、送信先の人とのチャットへ移る。
@@ -144,8 +146,9 @@ export function useCompose({
     const room = selectedSender;
     const target = pickMoveTarget(list);
     if (!room || !target) return;
-    const { accountEmail } = decodeRoomKey(room);
-    const dest = resolveDirectRoom(target.address, accountEmail);
+    // 同じアカウント・同じ自分のアドレスのチャットへ移る（差出人を変えない）
+    const { accountEmail, ownAddress } = decodeRoomKey(room);
+    const dest = resolveDirectRoom(target.address, accountEmail, ownAddress);
     if (!dest || dest.room === room) { setRecipients(list); return; }
     carryDraftRef.current = {
       room: dest.room, fromRoom: room, subject: replySubject, html: currentCompose().html, images: currentCompose().images, insertedSignature: insertedSignatureRef.current, attachments: replyAttachments,
@@ -284,14 +287,18 @@ export function useCompose({
     proceedChecked();
   };
 
-  const getSendFrom = (room: RoomKeyStr | null): { account: string; address: string; displayName?: string; isAlias: boolean } | null => {
+  const getSendFrom = (room: RoomKeyStr | null): { account: string; address: string; displayName?: string; isAlias: boolean; cannotSendFrom?: string } | null => {
     if (!room || chatConfigs[room]?.isGroup) return null;
     const account = roomAccountEmail(room);
     const list = sendAsByAccount[account];
-    const base = getReplyBase(room);
-    const alias = list ? pickSendAs(list, base ? `${base.to}, ${base.cc || ""}` : "", account) : null;
+    // 差出人はチャットの自分のアドレスで固定（送れないアドレスなら主アドレス。replyCompose.ts の chatSendAs）
+    const own = decodeRoomKey(room).ownAddress;
+    const alias = list ? chatSendAs(list, own, account) : null;
     const address = alias?.sendAsEmail || account;
-    return { account, address, displayName: alias?.displayName || undefined, isAlias: address.toLowerCase() !== account.toLowerCase() };
+    // チャットの自分のアドレスから送れない（受信専用アドレス・確認待ち）ときは、そのアドレス（入力欄に「〇〇から送信されます」と出す）
+    // （送信元の設定を読めるまでは分からないので出さない）
+    const cannotSendFrom = list && own !== address.toLowerCase() ? own : undefined;
+    return { account, address, displayName: alias?.displayName || undefined, isAlias: address.toLowerCase() !== account.toLowerCase(), cannotSendFrom };
   };
 
   // 署名：送信元（アカウント・エイリアス）の sendAs の署名を入力欄に入れる。送信元が変わったら署名の部分だけを入れ替える（純正と同じ）。
@@ -302,8 +309,8 @@ export function useCompose({
     const account = roomAccountEmail(selectedSender);
     const list = sendAsByAccount[account];
     if (!list) return undefined;
-    const base = getReplyBase(selectedSender);
-    const alias = pickSendAs(list, base ? `${base.to}, ${base.cc || ""}` : "", account);
+    // 署名は差出人（チャットの自分のアドレスの sendAs）の署名（今までどおり「差出人の sendAs の署名」）
+    const alias = chatSendAs(list, decodeRoomKey(selectedSender).ownAddress, account);
     return alias?.signature?.trim() ? alias.signature : null;
   })();
   const desiredSignatureLabel = (() => {

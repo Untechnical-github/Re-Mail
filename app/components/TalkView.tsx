@@ -53,12 +53,18 @@ export function TalkView({ app, lastMsgIdxRef, collapseCompose, selectedGroupCon
                       {isInboundOnlyGroup ? "・受信専用" : isOutboundOnlyGroup ? "・送信専用" : ""}
                     </span>
                   ) : (() => {
-                    const firstPartner = (computed.groupedEmails[state.selectedSender!] || []).find((e) => !isMineEmail(e, actions.roomAccountEmail(state.selectedSender!)));
+                    const firstPartner = (computed.groupedEmails[state.selectedSender!] || []).find((e) => !isMineEmail(e, actions.ownAddressesFor(actions.roomAccountEmail(state.selectedSender!))));
                     if (!firstPartner) return null;
                     const addrMatch = firstPartner.from.match(/<([^>]+)>/);
                     const addr = addrMatch ? addrMatch[1].trim() : firstPartner.from.trim();
                     return <span className="text-xs text-gray-500 truncate">{addr}</span>;
                   })()}
+                  {/* 自分のアドレスが2つ以上あるアカウントでは、このチャットの自分のアドレスを小さく出す（フィルターはアカウント単位なので出さない） */}
+                  {!isFilterGroup && actions.ownAddressesFor(actions.roomAccountEmail(state.selectedSender!)).length > 1 && (
+                    <span title={`自分のアドレス：${actions.roomOwnAddress(state.selectedSender!)}`} className="text-[10px] text-gray-500 truncate flex-shrink min-w-0">
+                      {actions.roomOwnAddress(state.selectedSender!)}
+                    </span>
+                  )}
                 </div>
                 {state.isMobile && (
                   <button onClick={(e) => { e.stopPropagation(); actions.setModal({ type: "filter_tool", targetMode: "all_chats", targets: [] }); window.history.pushState({ action: "modal" }, "", window.location.href); }} className="text-gray-400 hover:text-white transition flex-shrink-0" title="フィルター">
@@ -181,7 +187,7 @@ export function TalkView({ app, lastMsgIdxRef, collapseCompose, selectedGroupCon
                     // このルーム自身が属するアカウントのメールアドレスで判定する
                     // （メインアカウントのメールアドレスで判定すると、連携アカウント側の受信メールが
                     // 差出人＝メインアカウントの場合に誤って「自分が送った」扱いになってしまう）
-                    const isMe = isMineEmail(email, actions.roomAccountEmail(state.selectedSender!));
+                    const isMe = isMineEmail(email, actions.ownAddressesFor(actions.roomAccountEmail(state.selectedSender!)));
                     // このメールのアカウント（宛先の表示などのアカウント設定を引くのに使う）
                     const mailAccount = email.accountId || actions.roomAccountEmail(state.selectedSender!);
                     const isSelected = state.selectedIds.includes(email.id);

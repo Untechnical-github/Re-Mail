@@ -4,6 +4,8 @@
 // - アカウント設定（ACCOUNT_SETTING_TYPES）：アカウントごと。そのアカウントの __ACCOUNT_SETTINGS__ に書く
 // 新しい設定を足すときは、どちらかの一覧に名前と型を足す（一覧に無い名前の値は保存されずに捨てられる）。
 // 画面の状態（開いているタブ・スクロール位置・開いているチャット）と下書きは設定ではないので、ここに入れず端末に置く
+import { isValidOwnAddress, normalizeAddress, MAX_RECEIVE_ONLY_ADDRESSES } from "./ownAddresses";
+
 export const SYNCED_SETTING_TYPES = {
   // 場所のチェックボックス（受信箱〜ゴミ箱）
   inbox: "boolean",
@@ -18,12 +20,15 @@ export const SYNCED_SETTING_TYPES = {
   showReceivedRecipients: "boolean",
   // アカウントごとの表示チェックボックス（キーはアカウントのアドレス。行ごと暗号化するので D1 に平文では残らない）
   accounts: "accountMap",
+  // 自分のアドレスごとの表示チェックボックス（キーは「アカウント 自分のアドレス」。ownAddresses.ts の ownAddressCheckKey）。
+  // アドレスが2つ以上あるアカウントだけで使う。外したもの（false）だけが意味を持つ
+  ownAddresses: "ownAddressMap",
   // 最後に保存した時刻（ミリ秒）。アカウントごとの写しのうち、どれが一番新しいかを決めるのに使う
   updatedAt: "number",
 } as const;
 
 // 画面が持って保存する共通設定の名前（updatedAt は含めない）
-export const COMMON_SETTING_KEYS = ["inbox", "archive", "spam", "trash", "sent", "iconLabels", "accounts"] as const;
+export const COMMON_SETTING_KEYS = ["inbox", "archive", "spam", "trash", "sent", "iconLabels", "accounts", "ownAddresses"] as const;
 
 // アカウント設定の一覧（アカウントごとに保存する）
 export const ACCOUNT_SETTING_TYPES = {
@@ -39,17 +44,22 @@ export const ACCOUNT_SETTING_TYPES = {
   showSentRecipients: "boolean",
   // 受け取ったメールの時間の横に、自分がどの欄（To / Cc）で受け取ったかを出すか（既定はオフ）
   showReceivedRecipients: "boolean",
+  // 受信専用アドレス（sendAs に無い、転送されてくる自分のアドレス）。小文字・重なりなし・ownAddresses.ts の上限まで
+  receiveOnlyAddresses: "addressList",
 } as const;
-export type AccountSettings = { -readonly [K in keyof typeof ACCOUNT_SETTING_TYPES]?: boolean };
+type AccountValueOf<T> = T extends "addressList" ? string[] : boolean;
+export type AccountSettings = { -readonly [K in keyof typeof ACCOUNT_SETTING_TYPES]?: AccountValueOf<(typeof ACCOUNT_SETTING_TYPES)[K]> };
 
 type SettingType = (typeof SYNCED_SETTING_TYPES)[keyof typeof SYNCED_SETTING_TYPES];
-type ValueOf<T extends SettingType> = T extends "boolean" ? boolean : T extends "accountMap" ? Record<string, boolean> : T extends "number" ? number : never;
+type ValueOf<T extends SettingType> = T extends "boolean" ? boolean : T extends "accountMap" | "ownAddressMap" ? Record<string, boolean> : T extends "number" ? number : never;
 export type SyncedSettings = { -readonly [K in keyof typeof SYNCED_SETTING_TYPES]?: ValueOf<(typeof SYNCED_SETTING_TYPES)[K]> };
 
 // アカウントの表示チェックボックスに入れてよい件数とアドレスの長さの上限（壊れた・巨大な値を保存しない）
 const MAX_ACCOUNTS = 50;
 const MAX_ADDRESS_LENGTH = 320;
 const ADDRESS_RE = /^[^\s@]{1,64}@[^\s@]{1,255}$/;
+// 自分のアドレスのチェックボックスの件数の上限（アカウント50件 × アドレス数件を見込む）
+const MAX_OWN_ADDRESS_CHECKS = 500;
 
 // 決まった名前・型の値だけを残す（それ以外は捨てる）
 export function sanitizeSyncedSettings(value: unknown): SyncedSettings {
@@ -63,6 +73,14 @@ export function sanitizeSyncedSettings(value: unknown): SyncedSettings {
       const map: Record<string, boolean> = {};
       for (const [addr, on] of Object.entries(v as Record<string, unknown>).slice(0, MAX_ACCOUNTS)) {
         if (typeof on === "boolean" && addr.length <= MAX_ADDRESS_LENGTH && ADDRESS_RE.test(addr)) map[addr] = on;
+      }
+      out[key] = map;
+    }
+    if (type === "ownAddressMap" && v && typeof v === "object" && !Array.isArray(v)) {
+      const map: Record<string, boolean> = {};
+      for (const [k, on] of Object.entries(v as Record<string, unknown>).slice(0, MAX_OWN_ADDRESS_CHECKS)) {
+        const parts = k.split(" ");
+        if (typeof on === "boolean" && parts.length === 2 && parts.every(p => p.length <= MAX_ADDRESS_LENGTH && ADDRESS_RE.test(p))) map[k] = on;
       }
       out[key] = map;
     }
@@ -91,7 +109,12 @@ export function sanitizeAccountSettings(value: unknown): AccountSettings {
   if (!value || typeof value !== "object" || Array.isArray(value)) return out;
   for (const key of Object.keys(ACCOUNT_SETTING_TYPES) as (keyof typeof ACCOUNT_SETTING_TYPES)[]) {
     const v = (value as Record<string, unknown>)[key];
-    if (typeof v === "boolean") out[key] = v;
+    if (ACCOUNT_SETTING_TYPES[key] === "addressList") {
+      if (Array.isArray(v)) {
+        const list = [...new Set(v.slice(0, MAX_RECEIVE_ONLY_ADDRESSES * 2).filter((a): a is string => typeof a === "string" && isValidOwnAddress(a)).map(normalizeAddress))];
+        (out as Record<string, unknown>)[key] = list.slice(0, MAX_RECEIVE_ONLY_ADDRESSES);
+      }
+    } else if (typeof v === "boolean") (out as Record<string, unknown>)[key] = v;
   }
   return out;
 }
