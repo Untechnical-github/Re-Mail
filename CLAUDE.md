@@ -20,7 +20,7 @@ Gmail をチャット風（相手ごとのトークルーム）で読み書き�
 
 ## 実行環境
 - **PC の VSCode**：ブラウザでの確認は `~/remail-e2e`（リポジトリの外。Playwright と、手でログインしたプロファイルで本番を操作する。`docs/claude/browser.md`）。push は自分で行う（「Git とデプロイ」のとおり）。
-- **Muse の環境**：Playwright・`~/remail-e2e` は無い。ブラウザでの確認はせず、本番で Muse のブラウザで確かめる手順（2つの開発用アカウント間だけ・件名は `[re-mail-test]` から）を報告に書く。commit・push は Muse が GitHub 連携で行う。wrangler で行えるのはシークレットの登録・変更（`npx wrangler secret put` など）だけ。本番 D1 への直接操作（`wrangler d1 execute --remote` など）と `wrangler deploy` はしない（マイグレーションとデプロイは GitHub Actions 経由）。トークンは Muse が環境変数 `CLOUDFLARE_API_TOKEN` として先に入れておく。コマンドでは `$CLOUDFLARE_API_TOKEN` を参照するだけで、値をコマンド行に書かない・echo しない・表示しない。
+- **Muse の環境**：Playwright・`~/remail-e2e` は無い。ブラウザでの確認はせず、本番で Muse のブラウザで確かめる手順（2つの開発用アカウント間だけ・件名は `[re-mail-test]` から）を報告に書く。commit・push は Muse が GitHub 連携で行う。本番に対して wrangler で行えるのはシークレットの登録・変更（`npx wrangler secret put` など）だけ。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。本番 D1 への直接操作（`wrangler d1 execute --remote` など）と `wrangler deploy` はしない（マイグレーションとデプロイは GitHub Actions 経由）。トークンは Muse が環境変数 `CLOUDFLARE_API_TOKEN` として先に入れておく。コマンドでは `$CLOUDFLARE_API_TOKEN` を参照するだけで、値をコマンド行に書かない・echo しない・表示しない。
 
 ## 大きな指示文の進め方（コンテキストを溜めない）
 - 指示文を、単独でテスト・コミットできる段階に分けて TaskCreate で並べ、1つずつ終わらせて commit・push する。
