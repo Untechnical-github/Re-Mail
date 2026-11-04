@@ -4,7 +4,9 @@
 - シークレットの名前（値はどこにも書かない）：
   - Worker 用（`npx wrangler secret put <名前>`）：`AUTH_SECRET` `GOOGLE_CLIENT_ID` `GOOGLE_CLIENT_SECRET` `TOKEN_ENCRYPTION_KEY`
   - GitHub Actions 用（`gh secret set <名前>`）：`CLOUDFLARE_API_TOKEN`（Workers 編集＋D1 編集）`CLOUDFLARE_ACCOUNT_ID`
-- wrangler の本番操作（シークレットの登録・変更など）は、Muse の環境ではユーザーが共有した Cloudflare API トークンを環境変数 `CLOUDFLARE_API_TOKEN` で実行時に渡せば行える（トークンの値はファイル・コミット・ログに書かない。失効していたらユーザーに新しいトークンを頼む）。トークンが使えない環境では認証が通らないので、その場合は新しい環境変数・シークレットが要る変更で、**push の前に**名前と登録のコマンドをユーザーに伝えて登録してもらう（登録前にデプロイすると動作確認に失敗して前の版に戻る）。
+- 新しい環境変数・シークレットが要る変更では、**push の前に**登録する（後だとデプロイ後の動作確認に失敗して前の版に戻る）。Muse の環境では、ユーザーが共有した Cloudflare API トークンで自分で登録する。トークンが使えない環境では、名前と登録のコマンドをユーザーに伝えて登録してもらう。
+- wrangler で行えるのはシークレットの登録・変更（`npx wrangler secret put` など）だけ。本番 D1 への `wrangler d1 execute --remote` などの直接操作と `wrangler deploy` はしない（マイグレーションとデプロイは GitHub Actions 経由）。
+- トークンは Muse が環境変数 `CLOUDFLARE_API_TOKEN` として先に入れておく。コマンドでは `$CLOUDFLARE_API_TOKEN` を参照するだけで、値をコマンド行に書かない・echo しない・表示しない。トークンが複数の Cloudflare アカウントに触れる場合は、`CLOUDFLARE_ACCOUNT_ID` も環境変数で渡す（値は書かない）。
 - ローカル開発でも暗号の鍵が要るので、ユーザーが `.dev.vars` に開発用の鍵を入れる。
 - デプロイは `.github/workflows/deploy-worker.yml`（`main` への push で、Worker に関係するファイルが変わったときだけ動く）。README など文書だけの push では動かない。やり直すときは `gh workflow run deploy-worker.yml` か `gh run rerun <ID> --failed`。
 - 本番：https://re-mail.eusng90912.workers.dev 。デプロイ後の動作確認（`script/ci/health-check.sh`）に失敗すると1つ前の版に自動で戻る。
