@@ -20,7 +20,7 @@ Gmail をチャット風（相手ごとのトークルーム）で読み書き�
 
 ## 実行環境
 - **PC の VSCode**：ブラウザでの確認は `~/remail-e2e`（リポジトリの外。Playwright と、手でログインしたプロファイルで本番を操作する。`docs/claude/browser.md`）。push は自分で行う（「Git とデプロイ」のとおり）。
-- **Muse の環境**：Playwright・`~/remail-e2e` は無い。ブラウザでの確認はせず、本番で Muse のブラウザで確かめる手順（2つの開発用アカウント間だけ・件名は `[re-mail-test]` から）を報告に書く。commit・push は Muse が GitHub 連携で行う。
+- **Muse の環境**：Playwright・`~/remail-e2e` は無い。ブラウザでの確認はせず、本番で Muse のブラウザで確かめる手順（2つの開発用アカウント間だけ・件名は `[re-mail-test]` から）を報告に書く。commit・push は Muse が GitHub 連携で行う。wrangler は、ユーザーが共有した Cloudflare API トークンを環境変数 `CLOUDFLARE_API_TOKEN` で実行時に渡して使える（本体は Photo-Video-Share 側のインストール。トークンの値はファイル・コミット・ログに書かない）。
 
 ## 大きな指示文の進め方（コンテキストを溜めない）
 - 指示文を、単独でテスト・コミットできる段階に分けて TaskCreate で並べ、1つずつ終わらせて commit・push する。
