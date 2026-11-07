@@ -1335,7 +1335,7 @@ WebKit の記録には、スクリプトを許していない iframe でイベ�
 ## 21. claude.ai・Claude Code（PC）・Muse の役割分担
 - **claude.ai（Re:Mail プロジェクト）**：設計の壁打ち、原因の仮説出し、指示文づくり。**指示文には、関係する §0 のルールを必ず書き添える。** 指示文は宛先（Claude Code か Muse か）を分けて書く。Muse 宛ての確認手順は、本番サイトとブラウザの操作だけで済む形にする。
 - **Claude Code（PC の VSCode）**：PC での開発。実装・テスト・`~/remail-e2e` での本番の確認（`docs/claude/browser.md`）・push。作業ルールは `CLAUDE.md` に従う（冒頭に §0 とサブテーマ、§17.1 のチェックリストがある）。README・大きなファイルは全体を読まず、`grep -n` で節や場所を探して要る範囲だけ読む。README は変えた節だけ直す。
-- **Muse**（Meta の AI エージェント）：スマホからの指示の実行（実装・push・本番の確認・報告）。仮想マシンに Claude Code とブラウザがあり、開発用アカウント2つで本番にログイン済み。Playwright・`~/remail-e2e` は使わず、commit・push は GitHub 連携で行う。本番に対して wrangler で行えるのは、ユーザーが共有した Cloudflare API トークンを使ったシークレットの登録・変更だけ（トークンは Muse が環境変数として先に入れておき、値はどこにも書かない・表示しない）。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。本番 D1 への直接操作（`wrangler d1 execute --remote` など）と `wrangler deploy` はせず、デプロイとマイグレーションは GitHub Actions 経由。
+- **Muse**（Meta の AI エージェント）：スマホからの指示の実行（実装・push・本番の確認・報告）。仮想マシンに Claude Code とブラウザがあり、開発用アカウント2つで本番にログイン済み。Playwright・`~/remail-e2e` は使わず、commit・push は GitHub 連携で行う。本番に対して行えるのはシークレットの登録・変更だけ（Cloudflare API トークンは Muse の保管庫（Secure Vault）に登録済みで、値はどこにも書かない・表示しない。保管庫の値は外に出ないため wrangler には渡せず、登録・変更は REST API 経由で行う。API 経由の操作は未検証）。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。本番 D1 への直接操作（`wrangler d1 execute --remote` など）と `wrangler deploy` はせず、デプロイとマイグレーションは GitHub Actions 経由。
 - **この README を正とする。** 大きな変更をしたら、同じコミットで README の該当箇所も直す。claude.ai のプロジェクトは GitHub と同期しているが、Claude Code の変更は自動では反映されないので、大きな変更のあとは同期をやり直す。
 
 ---
