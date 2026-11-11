@@ -48,6 +48,7 @@ export default function Home() {
     <div className="flex h-screen flex-col items-center justify-center bg-[#313338] text-white">
       <h1 className="mb-8 text-5xl font-extrabold text-[#5865F2]">Re:Mail</h1>
       <button onClick={() => signIn("google", { callbackUrl: "/" })} className="rounded bg-[#5865F2] px-8 py-3 font-bold shadow transition hover:bg-[#4752C4] active:scale-95">Googleでログインして始める</button>
+      <a href="/privacy" className="mt-6 text-sm text-gray-400 underline">プライバシーポリシー</a>
     </div>
   );
 
