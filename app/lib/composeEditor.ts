@@ -47,7 +47,8 @@ export function editorSrcDoc(allowRemoteImages: boolean): string {
   const img = allowRemoteImages ? "data: blob: cid: https:" : "data: blob: cid:";
   return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${img}; style-src 'unsafe-inline'; font-src data:">`
     + `<meta charset="utf-8"><style>`
-    + `html,body{margin:0;background:transparent;color:#DBDEE1;font:15px/24px system-ui,-apple-system,"Segoe UI",sans-serif;caret-color:#fff}`
+    // 本文は16px（iOS Safari は16px未満の入力欄にフォーカスすると画面を拡大するため。行の高さ24pxと placeholder の text-[16px] に合わせる）
+    + `html,body{margin:0;background:transparent;color:#DBDEE1;font:16px/24px system-ui,-apple-system,"Segoe UI",sans-serif;caret-color:#fff}`
     + `body{padding:4px 8px;min-height:24px;outline:none;word-break:break-word;overflow-wrap:anywhere}`
     + `a{color:#00A8FC}img{max-width:100%;height:auto}img.remail-selected{outline:2px solid #5865F2}`
     + `blockquote.gmail_quote{color:#B5BAC1}table{border-collapse:collapse}td,th{border:1px solid #4E5058}`

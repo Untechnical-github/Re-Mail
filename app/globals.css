@@ -24,3 +24,14 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* iOS Safari は文字の大きさが16px未満の入力欄にフォーカスすると画面を拡大するので、タッチ端末では入力欄をすべて16pxにする。
+   @layer の外に置くと Tailwind の text-sm / text-xs（@layer utilities）より強い。PC（マウス）の見た目は変えない。
+   viewport の maximum-scale / user-scalable=no で止めない（拡大できなくなるため） */
+@media (any-pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}

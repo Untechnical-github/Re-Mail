@@ -46,3 +46,18 @@ describe("iframe の sandbox", () => {
     }
   });
 });
+
+// iOS Safari は16px未満の入力欄にフォーカスすると画面を拡大する
+describe("入力欄の文字の大きさ（iOS で拡大されない16px以上）", () => {
+  it("入力欄の iframe の本文は16px以上", () => {
+    const px = Number(editorSrcDoc(false).match(/html,body\{[^}]*font:(\d+)px/)![1]);
+    expect(px).toBeGreaterThanOrEqual(16);
+  });
+  it("globals.css で、タッチ端末の input・textarea・select を @layer の外で16pxにする", () => {
+    const css = readFileSync("app/globals.css", "utf8");
+    const block = css.match(/@media \(any-pointer: coarse\) \{\s*input,\s*textarea,\s*select\s*\{\s*font-size: 16px;\s*\}\s*\}/);
+    expect(block).not.toBeNull();
+    // Tailwind の text-sm / text-xs に勝つには @layer の中に入れない
+    expect(css.slice(0, block!.index)).not.toMatch(/@layer[^{]*\{[^}]*$/);
+  });
+});

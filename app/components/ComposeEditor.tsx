@@ -239,7 +239,7 @@ export function ComposeEditor(props: Props) {
           style={{ height: 32, maxHeight: "min(40dvh, 13rem)" }}
         />
         {bodyEmpty && (
-          <div className="absolute left-2 top-1 text-[15px] leading-6 text-gray-500 pointer-events-none truncate max-w-[calc(100%-1rem)] px-2">{placeholder}</div>
+          <div className="absolute left-2 top-1 text-[16px] leading-6 text-gray-500 pointer-events-none truncate max-w-[calc(100%-1rem)] px-2">{placeholder}</div>
         )}
       </div>
 
