@@ -20,7 +20,7 @@ Gmail をチャット風（相手ごとのトークルーム）で読み書き�
 
 ## 実行環境
 - **PC の VSCode**：ブラウザでの確認は `~/remail-e2e`（リポジトリの外。Playwright と、手でログインしたプロファイルで本番を操作する。`docs/claude/browser.md`）。push は自分で行う（「Git とデプロイ」のとおり）。
-- **Muse の環境**：Playwright・`~/remail-e2e` は無い。ブラウザでの確認はせず、本番で Muse のブラウザで確かめる手順（2つの開発用アカウント間だけ・件名は `[re-mail-test]` から）を報告に書く。commit・push は Muse が GitHub 連携で行う。本番に対して行えるのはシークレットの登録・変更だけ。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。本番 D1 への直接操作（`wrangler d1 execute --remote` など）と `wrangler deploy` はしない（マイグレーションとデプロイは GitHub Actions 経由）。Cloudflare API トークンは Muse の保管庫（Secure Vault）に登録済みで（コネクタ `custom.cloudflare`）、値はどこにも書かない・表示しない。保管庫の値は外に出ないため wrangler には渡せず、シークレットの登録・変更は Cloudflare REST API 経由で行う（API 経由の操作は未検証。手順は `~/workspace/custom-connectors/custom.cloudflare/CONNECTOR.md`）。認証が通らないときは、そこで止まってユーザーに報告する。
+- **Muse の環境**：Playwright・`~/remail-e2e` は無い。ブラウザでの確認はせず、本番で Muse のブラウザで確かめる手順（2つの開発用アカウント間だけ・件名は `[re-mail-test]` から）を報告に書く。git は SSH 鍵で自分で操作する（2026-11-18 の本人の決定で、git と Cloudflare の操作は Claude Code と同等の権限に解放された）。本番への操作（シークレットの登録・変更、本番 D1、デプロイ）も行えるが、通常のマイグレーションとデプロイは GitHub Actions 経由を基本とする。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。Cloudflare API トークンは Muse の保管庫（Secure Vault）に登録済みで（コネクタ `custom.cloudflare`）、値はどこにも書かない・表示しない。保管庫の値は外に出ないため wrangler には渡せず、Cloudflare の操作は Cloudflare REST API 経由で行う（手順は `~/workspace/custom-connectors/custom.cloudflare/CONNECTOR.md`）。認証が通らないときは、そこで止まってユーザーに報告する。
 
 ## 大きな指示文の進め方（コンテキストを溜めない）
 - 指示文を、単独でテスト・コミットできる段階に分けて TaskCreate で並べ、1つずつ終わらせて commit・push する。
@@ -41,13 +41,13 @@ Gmail をチャット風（相手ごとのトークルーム）で読み書き�
 ## してはいけないこと
 - `.next/` `.open-next/` `.wrangler/`・Next.js の自動生成ファイル（`next-env.d.ts`・`types/routes.d.ts` など）を手で編集する。`wrangler.json` の `database_id` を変える。
 - シークレット・トークン・`.dev.vars` の値を見る・書く。実在のアドレスや実データをテスト・コメントに書く（例は `user@example.com`）。
-- 本番 D1 を直接操作する・適用済みの migration を書き換える・`DROP TABLE` を書く。
+- 適用済みの migration を書き換える・`DROP TABLE` を書く。
 - メール本文を表示する iframe の `sandbox` に項目を足す。入力欄の iframe に `composeHtml.ts` の安全化を通さずに HTML を入れる。
 - 2026-10-22 までに直したルール違反を「まだ直っていない」として作り直す。新しく見つけた違反は悪化させず、大きいものは直さずに報告する。
 
 ## Git とデプロイ
 - `main` 1本。始める前に `git pull origin main`。日本語1行のコミットメッセージで `main` に直接コミットし `git push origin main`。PR は作らない。
-- push で GitHub Actions がデプロイする（手で deploy しない）。push 後は上の絞ったコマンドで CI を確かめ、失敗したら原因を調べて報告する。
+- push で GitHub Actions がデプロイする（通常はこれを使う。手で deploy するのは Actions が使えないときだけ）。push 後は上の絞ったコマンドで CI を確かめ、失敗したら原因を調べて報告する。
 
 ## 毎回のチェック（報告に結果を1行ずつ書く）
 - push 前に `npm test`・`npm run lint`・`npx tsc --noEmit` が通る。lint のエラー0、`any` を使わない、ルールを外すときは `-- 理由` を書く。
