@@ -4,7 +4,7 @@
 - シークレットの名前（値はどこにも書かない）：
   - Worker 用（`npx wrangler secret put <名前>`）：`AUTH_SECRET` `GOOGLE_CLIENT_ID` `GOOGLE_CLIENT_SECRET` `TOKEN_ENCRYPTION_KEY`
   - GitHub Actions 用（`gh secret set <名前>`）：`CLOUDFLARE_API_TOKEN`（Workers 編集＋D1 編集）`CLOUDFLARE_ACCOUNT_ID`
-- 新しい環境変数・シークレットが要る変更では、**push の前に**登録する（後だとデプロイ後の動作確認に失敗して前の版に戻る）。Muse の環境では、ユーザーが共有した Cloudflare API トークンで自分で登録する。トークンが使えない環境では、名前と登録のコマンドをユーザーに伝えて登録してもらう。
+- 新しい環境変数・シークレットが要る変更では、**push の前に**登録する（後だとデプロイ後の動作確認に失敗して前の版に戻る）。Muse の環境では、保管庫のトークンで REST API 経由で自分で登録する（`cf_api.py secret-put`。値は標準入力でのみ渡す）。トークンが使えない環境では、名前と登録のコマンドをユーザーに伝えて登録してもらう。
 - 本番への操作（シークレットの登録・変更、本番 D1、デプロイ）は Cloudflare REST API 経由で行える（2026-11-18 の本人の決定で権限を解放。wrangler には保管庫のトークンを渡せない）。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。通常のマイグレーションとデプロイは GitHub Actions 経由を基本とする。
 - トークンは Muse の保管庫（Secure Vault）に登録済みで（コネクタ `custom.cloudflare`）、Muse からは値そのものに触れられない。呼び出しは保管庫経由で REST API に行う（手順は `~/workspace/custom-connectors/custom.cloudflare/CONNECTOR.md`）。認証エラーで通らないときは、失効している可能性があるので、そこで止まってユーザーに報告する。
 - ローカル開発でも暗号の鍵が要るので、ユーザーが `.dev.vars` に開発用の鍵を入れる。
