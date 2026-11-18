@@ -142,7 +142,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 
 ### 3.2 プロジェクトの成り立ち
 - `create-next-app`（TypeScript・ESLint・Tailwind・App Router、`src/` なし）で始めたプロジェクト。設定ファイルの要点は §4、依存の版は §2。
-- `app/globals.css` は create-next-app の既定のまま。画面の色はコンポーネント側で直接指定する。
+- `app/globals.css` は create-next-app の既定に、タッチ端末で入力欄の文字を16pxにする指定（§14.4）だけを足したもの。画面の色はコンポーネント側で直接指定する。
 - `public/` には create-next-app 既定の SVG だけが入っていて、画面では使っていない。
 
 ### 3.3 Google Cloud の設定
@@ -169,6 +169,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
    npx wrangler secret put TOKEN_ENCRYPTION_KEY   # base64 にした32バイト。例: openssl rand -base64 32
    ```
    - **`TOKEN_ENCRYPTION_KEY` を変える・消す・失くすと、D1 のトークンと設定がすべて読めなくなる**（§8.4）。Cloudflare に登録したシークレットは後から値を読み出せないので、控えはリポジトリ・Cloudflare・GitHub の**外**（パスワードマネージャーなど）に保管する。今の本番の鍵の控えは、開発者が保管済み。
+   - Muse の環境では wrangler に保管庫のトークンを渡せないので、Cloudflare REST API 経由で登録する（`cf_api.py secret-put`。値は標準入力でのみ渡す。手順は Muse の環境の `~/workspace/custom-connectors/custom.cloudflare/CONNECTOR.md`）。新しいシークレットが要る変更では **push の前に**登録する（後だとデプロイ後のヘルスチェックに失敗して前の版に戻る）。
 4. GitHub の Actions シークレットを登録する：`CLOUDFLARE_API_TOKEN`（権限は Workers の編集と D1 の編集）、`CLOUDFLARE_ACCOUNT_ID`。
 
 ### 3.5 ローカルで動かす
@@ -210,7 +211,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 | `.github/workflows/deploy-worker.yml` | 流れは §6。`main` への push で、Worker に関係するファイル（`app/**` `public/**` `migrations/**` `auth.ts` `worker.ts` `env.d.ts` `next.config.ts` `open-next.config.ts` `postcss.config.mjs` `tsconfig.json` `eslint.config.mjs` `wrangler.json` `package.json` `package-lock.json` `script/ci/**` とこのファイル）が変わったときだけ動く。手動実行（`workflow_dispatch`）もできる。権限は `contents: read`。`concurrency: deploy-worker`（取り消さずに順番待ち）、20分で打ち切り。ロールバックは、デプロイが成功したあとにヘルスチェックが失敗したときだけ |
 | `script/ci/retry.sh` | 引数のコマンドを最大3回試す（失敗したら20秒・40秒待つ）。`npm ci`・マイグレーション・デプロイ・ロールバックに使う |
 | `script/ci/health-check.sh` | デプロイ後の動作確認（中身は §6）。URL は `HEALTH_CHECK_URL` で変えられる（既定は本番）。最大3回、10秒・20秒の間を空けて試す |
-| `app/globals.css` | create-next-app の既定のまま（画面の色はコンポーネント側で直接指定する） |
+| `app/globals.css` | create-next-app の既定に、`@media (any-pointer: coarse)` で `input` / `textarea` / `select` の文字を16pxにする指定を足したもの（iOS Safari が16px未満の入力欄で画面を拡大するのを防ぐ。`@layer` の外に置くので Tailwind の `text-sm` などより強い。PC〔マウス〕の見た目は変えない）。画面の色はコンポーネント側で直接指定する |
 | `app/layout.tsx` | `lang="ja"`。**`export const dynamic = "force-dynamic"`** で毎回サーバーで描く（CSP の nonce は開くたびに変わるので、ビルド時の HTML を返すとスクリプトが止まる） |
 | `app/providers.tsx` | `SessionProvider` で包むだけ（`layout.tsx` をサーバー側の部品にするため分けた） |
 | `auth.ts` | §7.2・§7.4 |
@@ -317,7 +318,7 @@ Re-Mail/
 ### 6.2 スキーマ変更の決まり
 - 新しいファイル（`0004_xxx.sql` …）を足す。適用済みのファイルは書き換えない。
 - 非破壊にする：`DROP TABLE` は書かない。列は `ALTER TABLE ... ADD COLUMN` で足す。列やデータを消すときは、まず使わなくなるコードを出し、次の段階で消す。
-- 本番の D1 を手で操作しない。migrations を足して push し、Actions に当てさせる。
+- 本番の D1 の直接操作もできる（2026-11-18 の権限解放）が、スキーマ変更はふだん migrations を足して push し、Actions に当てさせる。
 
 ---
 
@@ -1025,7 +1026,7 @@ type FilterCriteria = {
    - **返信元**：「返信元:」と元のメッセージ（無ければ「なし（新しいメール）」）と「×」（返信元を外す）。欄を押すと `select_reply_target`（「返信元を選択／変更」の文言は出さない）。「×」で外すと、返信元を選んだときに自動で入れた件名（Re: 元の件名）も一緒に消す（自分で書き換えた件名は残す）。
    - 件名「件名 (省略可)」は返信元が無いときだけ出す（返信の件名はスレッドが分かれないよう元の件名に揃える）。
    - 添付（📎「ファイルを添付」。複数可、25MB まで）、「Aa」（書式。送信スペースを開いているときだけ）、本文、「送信」ボタン（本文が空・送信先が0人・送信中・下書きを読み込み中は押せない）。本文の欄は最初は1行で、入力に合わせて伸び、画面の高さの約40%（13rem まで）で止まって中をスクロールし、カーソルの位置が見えるようにする（PC・スマホ共通。スマホでキーボードが出たら、入力欄が隠れないようにスクロールする）。
-   - **本文は書式付きの入力欄**（`ComposeEditor.tsx` ＋ `composeEditor.ts`。チャットを開いたときに読み込む〔`next/dynamic`〕。§15.6 の iframe）。見た目は今の入力欄に合わせて暗い背景・明るい文字（入力欄の中の CSS だけ。送る HTML には画面の色を入れない。文字の色を付けたところだけ色が入る）。本文が空のときは「Message to 〇〇」を薄く出す。送信のキー操作は今までどおり（Enter は改行。送信は「送信」ボタン）。
+   - **本文は書式付きの入力欄**（`ComposeEditor.tsx` ＋ `composeEditor.ts`。チャットを開いたときに読み込む〔`next/dynamic`〕。§15.6 の iframe）。見た目は今の入力欄に合わせて暗い背景・明るい文字（入力欄の中の CSS だけ。送る HTML には画面の色を入れない。文字の色を付けたところだけ色が入る）。本文が空のときは「Message to 〇〇」を薄く出す。本文と「Message to 〇〇」の文字は16px・行の高さ24px（iOS Safari は16px未満の入力欄にフォーカスすると画面を拡大するため。ほかの入力欄も、タッチ端末では `globals.css` で16pxにする。viewport の `maximum-scale` / `user-scalable=no` では止めない〔利用者が拡大できなくなるため〕）。送信のキー操作は今までどおり（Enter は改行。送信は「送信」ボタン）。
    - **書式のボタン**（純正の作成画面にあるものだけ。表を作る機能は付けない）：
      - 文字を選んだとき：選んだ範囲の近く（スマホでは画面の下＝キーボードの上）に小さなバー（太字・斜体・下線・リンク・色・書式をクリア・「その他」）。
      - 「Aa」を押したとき：すべての書式のバー（フォント〔Ｐゴシック・Ｐ明朝・ゴシック・Sans Serif・Serif・固定幅・幅広・幅狭・Comic Sans MS・Garamond・Georgia・Tahoma・Trebuchet MS・Verdana。純正の日本語版と同じ14種類〕・大きさ〔小・標準・大・最大〕・太字・斜体・下線・取り消し線・色〔純正と同じ64色。文字の色と背景の色〕・配置〔左・中央・右〕・番号付きリスト・箇条書き・インデント解除・インデント・引用・リンク・本文に画像を入れる・書式をクリア）。押している書式は明るくして分かるようにする。送信スペースをたたむと閉じる。
@@ -1322,6 +1323,7 @@ WebKit の記録には、スクリプトを許していない iframe でイベ�
 | セッションを持つアカウントのログアウトは、ほかのアカウントへ引き継ぐ | 1つだけログアウトしても、残りのアカウントを使い続けられるようにするため。ログアウトしたアカウントのトークンは残さない |
 | 権限の一覧を `googleScopes.ts` の1か所にまとめる | あとから追加したアカウントだけ `profile` が無く、名前と画像が出なかったため |
 | 既読・未読を自動にする設定は既定でオフ | Gmail の状態を勝手に変えないため（シンプルなデザイン：新しい機能は既定でオフ） |
+| 入力欄の文字を16pxにし、viewport で拡大を止めない | iOS Safari が入力欄へのフォーカスで画面を拡大するのを防ぎつつ、利用者がピンチで拡大できるようにするため |
 | 外部の画像の読み込みと既読をそろえない | Gmail の既読は相手に伝わるものではなく、そろえる必要がないため（一度入れて元に戻した） |
 | 完全削除を作らない | `gmail.modify` では使えず、作るには権限を増やす必要があるため（ルール1-6） |
 | リフレッシュの同時実行をメモリの Map でまとめる | 同じインスタンス内での二重リフレッシュを防ぐ簡易な対策。厳密にするなら D1 に「リフレッシュ中」の印を持たせる |
@@ -1341,7 +1343,7 @@ WebKit の記録には、スクリプトを許していない iframe でイベ�
 ## 21. claude.ai・Claude Code（PC）・Muse の役割分担
 - **claude.ai（Re:Mail プロジェクト）**：設計の壁打ち、原因の仮説出し、指示文づくり。**指示文には、関係する §0 のルールを必ず書き添える。** 指示文は宛先（Claude Code か Muse か）を分けて書く。Muse 宛ての確認手順は、本番サイトとブラウザの操作だけで済む形にする。
 - **Claude Code（PC の VSCode）**：PC での開発。実装・テスト・`~/remail-e2e` での本番の確認（`docs/claude/browser.md`）・push。作業ルールは `CLAUDE.md` に従う（冒頭に §0 とサブテーマ、§17.1 のチェックリストがある）。README・大きなファイルは全体を読まず、`grep -n` で節や場所を探して要る範囲だけ読む。README は変えた節だけ直す。
-- **Muse**（Meta の AI エージェント）：スマホからの指示の実行（実装・push・本番の確認・報告）。仮想マシンに Claude Code とブラウザがあり、開発用アカウント2つで本番にログイン済み。Playwright・`~/remail-e2e` は使わない。git は SSH 鍵で直接操作する（2026-11-18 の本人の決定で、git と Cloudflare の操作は Claude Code と同等の権限に解放された）。本番への操作（シークレットの登録・変更、本番 D1、デプロイ）も REST API 経由で行えるが、通常のデプロイとマイグレーションは GitHub Actions 経由を基本とする（Cloudflare API トークンは Muse の保管庫（Secure Vault）に登録済みで、値はどこにも書かない・表示しない。保管庫の値は外に出ないため wrangler には渡せない）。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。
+- **Muse**（Meta の AI エージェント）：スマホからの指示の実行（実装・push・本番の確認・報告）。仮想マシンに Claude Code とブラウザがあり、開発用アカウント2つで本番にログイン済み。Playwright・`~/remail-e2e` は使わない。git は SSH 鍵で直接操作する（2026-11-18 の本人の決定で、git と Cloudflare の操作は Claude Code と同等の権限に解放された）。本番への操作（シークレットの登録・変更、本番 D1、デプロイ）も REST API 経由で行えるが、通常のデプロイとマイグレーションは GitHub Actions 経由を基本とする（Cloudflare API トークンは Muse の保管庫（Secure Vault）に登録済みで、値はどこにも書かない・表示しない。保管庫の値は外に出ないため wrangler には渡せない。シークレットの登録は `cf_api.py secret-put` で、値は標準入力でのみ渡す。認証が通らないときは止まって報告する）。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。
 - **この README を正とする。** 大きな変更をしたら、同じコミットで README の該当箇所も直す。claude.ai のプロジェクトは GitHub と同期しているが、Claude Code の変更は自動では反映されないので、大きな変更のあとは同期をやり直す。
 
 ---
