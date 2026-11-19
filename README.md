@@ -83,7 +83,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 ### 0.4 ルールの確かめ方
 - 新しい機能や変更を入れるたびに、§17 のチェックリストを通す。
 - ルール1・2 に関わる処理（MIME の組み立て、宛先の計算、暗号化、ログの伏せ字、送信結果の判定）には、必ず Vitest のテストを書く。
-- 純正 Gmail との差は、**同じ内容を純正と Re:Mail の両方から送り、受信側の「メッセージのソースを表示」で比べる**実機テストで確かめる（§17.2）。2026-10-22 の実機テストで見つかった差（署名の位置、引用見出しの表示名、転送のスレッド、ヘッダーの並び）は修正済み。
+- 純正 Gmail との差は、**同じ内容を純正と Re:Mail の両方から送り、受信側の「メッセージのソースを表示」で比べる**実機テストで確かめる（§17.2）。
 
 ---
 
@@ -103,7 +103,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 - インフラは Cloudflare に寄せる。
   - **Workers**：OpenNext 経由で Next.js を動かす。
   - **D1**：チャット設定・共通設定・アカウント設定と、ログインしているアカウントの暗号化したトークンを保存する（キーは HMAC、中身は暗号化）。
-  - **Cron Triggers**：使わない（以前は古い形式の行の置き換えに使っていたが、移行を終えたので 2026-10-23 にやめた）。
+  - **Cron Triggers**：使わない。
   - **R2**：**使わない。** 添付は Gmail から端末へ直接流す（一時保管も個人情報の保存にあたるため）。
   - **Workers AI**：有料プランの AI 機能に使う想定で、まだ使っていない。使うときは**オプトイン・保存なし・ログなし**（§20）。
 - 今の対応は Gmail のみ。将来は Outlook・iCloud にも対応したい。Web 版が仕上がったら Android / iOS アプリを作る予定。
@@ -115,20 +115,20 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 
 | 領域 | 採用技術 |
 | --- | --- |
-| フレームワーク | **Next.js 16.3.8**（App Router）/ React 19.2.4。Next.js 15 のサポートが 2026-10-21 に終わるのに合わせて更新した |
+| フレームワーク | **Next.js 16**（App Router）/ React 19。細かい版は `package.json` が正 |
 | 言語 | TypeScript 5（`strict`） |
-| 認証 | NextAuth v5（`5.0.0-beta.32`）＋ Google Provider。JWT セッションを400日保持する。トークンは暗号化された Cookie に入る。ブラウザに返すセッションからはアクセストークンを除く |
+| 認証 | NextAuth v5（beta）＋ Google Provider。JWT セッションを400日保持する。トークンは暗号化された Cookie に入る。ブラウザに返すセッションからはアクセストークンを除く |
 | スタイリング | Tailwind CSS v4（`@tailwindcss/postcss`）。色はクラスに直接書く（例：`bg-[#313338]`） |
-| 実行・デプロイ | **`@opennextjs/cloudflare` 1.20.9** で Cloudflare Workers に載せる。入り口は自作の `worker.ts`（OpenNext の Worker に、ページごとの CSP nonce を足したもの）。互換フラグは `nodejs_compat` / `global_fetch_strictly_public` |
+| 実行・デプロイ | **`@opennextjs/cloudflare`** で Cloudflare Workers に載せる（版は `package.json`）。入り口は自作の `worker.ts`（OpenNext の Worker に、ページごとの CSP nonce を足したもの）。互換フラグは `nodejs_compat` / `global_fetch_strictly_public` |
 | DB | Cloudflare D1（バインディング `DB`、DB 名 `re-mail`、`migrations/` で管理）。**メールの中身は置かない** |
 | CI/CD | GitHub Actions（`.github/workflows/deploy-worker.yml`）、Node 24 |
 | テスト | Vitest 4（`app/**/*.test.ts`、Node 環境。jsdom は使わない） |
-| Lint | ESLint 9（`eslint-config-next` 16.3.8）。`no-console` をエラーにする |
+| Lint | ESLint 9（`eslint-config-next`）。`no-console` をエラーにする |
 | 端末内の保存 | localforage（IndexedDB）：下書き・ピン留めの中身・添付・動画サムネイル。localStorage：画面の状態。どれもアカウント別に分け、ログアウトで消す |
 | メール API | Gmail REST API v1 を `fetch` で直接呼ぶ（SDK は使わない）。送信は upload エンドポイント、更新は history API |
 | 実行時の依存 | `next` / `react` / `react-dom` / `next-auth` / `localforage` の5つだけ。**解析・広告・外部 CDN・外部フォントは読み込まない** |
 
-**移行の経緯**：以前は `@cloudflare/next-on-pages`（Cloudflare Pages ＋ Edge Runtime）を使っていたが、非推奨になったため OpenNext ＋ Workers に移った。API ルートに `export const runtime = 'edge'` を書いてはいけない（OpenNext が対応していない）。D1 などのバインディングは `getCloudflareContext().env` から取る。
+API ルートに `export const runtime = 'edge'` を書いてはいけない（OpenNext が対応していない）。D1 などのバインディングは `getCloudflareContext().env` から取る。
 
 ---
 
@@ -141,14 +141,13 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 - GitHub リポジトリ（Actions を使う）
 
 ### 3.2 プロジェクトの成り立ち
-- `create-next-app`（TypeScript・ESLint・Tailwind・App Router、`src/` なし）で始めたプロジェクト。設定ファイルの要点は §4、依存の版は §2。
-- `app/globals.css` は create-next-app の既定に、タッチ端末で入力欄の文字を16pxにする指定（§14.4）だけを足したもの。画面の色はコンポーネント側で直接指定する。
-- `public/` には create-next-app 既定の SVG だけが入っていて、画面では使っていない。
+- `create-next-app`（TypeScript・ESLint・Tailwind・App Router、`src/` なし）で始めたプロジェクト。設定ファイルの要点は §4、依存の版は `package.json`（概要は §2）。
+- `app/globals.css` は create-next-app の既定に、タッチ端末で入力欄の文字を16pxにする指定（§14.4）だけを足したもの。画面の色はコンポーネント側で直接指定する。`public/` の SVG は画面では使っていない。
 
 ### 3.3 Google Cloud の設定
 1. **Gmail API を有効にする。**
 2. **OAuth 同意画面**：
-   - ユーザーの種類は「外部」。公開ステータスは「本番」（2026-11-11 にテストから切り替えた。審査は受けていない＝未確認のアプリ）。テストユーザーの登録は要らない（§7.6）。
+   - ユーザーの種類は「外部」。公開ステータスは「本番」（審査は受けていない＝未確認のアプリ）。テストユーザーの登録は要らない（§7.6）。
    - スコープは `openid` `email` `profile` `https://www.googleapis.com/auth/gmail.modify`。
    - ブランディング：ホームページは `https://<本番ドメイン>/`、プライバシーポリシーは `https://<本番ドメイン>/privacy`、承認済みドメインは `eusng90912.workers.dev`。ロゴは入れない（入れると審査が必要になる）。
 3. **OAuth クライアント ID**（ウェブアプリケーション）：
@@ -194,27 +193,21 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 
 | ファイル | 要点 |
 | --- | --- |
-| `package.json` | 実行時の依存は `next` / `react` / `react-dom` / `next-auth` / `localforage` の5つだけ（版は §2）。スクリプトは `dev` / `build` / `start` / `lint`（`eslint`）/ `test`（`vitest run --passWithNoTests`）/ `preview`（OpenNext でビルドしてローカルの Workers で動かす）/ `cf-build`（OpenNext のビルドだけ）。`package-lock.json` は `npm install` で作る |
+| `package.json` | 実行時の依存は `next` / `react` / `react-dom` / `next-auth` / `localforage` の5つだけ。版とスクリプトはファイルが正（概要は §2） |
 | `tsconfig.json` | `strict`。`worker.ts` はビルドで生成される `.open-next/worker.js` を読むので、型チェックから外す |
 | `eslint.config.mjs` | `eslint-config-next` の core-web-vitals と typescript。`no-console` はエラー（例外は `app/lib/safeLog.ts` だけ。ログにアドレスや本文を出さないため）。React Compiler 向けの4ルール（`react-hooks/set-state-in-effect` / `refs` / `purity` / `immutability`）は誤検知が多いので警告。未使用の引数は `_` で始めれば許す。`.open-next/` `.wrangler/` と Next.js が生成する型ファイルは対象外 |
 | `vitest.config.ts` | 対象は `app/**/*.test.ts`。環境は Node のまま（jsdom や Workers の再現は使わない） |
 | `open-next.config.ts` / `postcss.config.mjs` | 既定のまま（`defineCloudflareConfig()`、`@tailwindcss/postcss`） |
-| `wrangler.json` | 名前 `re-mail`、入り口 `worker.ts`、互換フラグ `nodejs_compat` / `global_fetch_strictly_public`、静的ファイルは `.open-next/assets`（バインディング `ASSETS`）、自分自身へのサービスバインディング `WORKER_SELF_REFERENCE`（OpenNext が使う）、`observability` オン、D1 のバインディング `DB`（DB 名 `re-mail`、`migrations_dir: "migrations"`）。**`database_id` は本番の D1 の ID なので変えない**（§3.4）。定期実行は使わない。`triggers.crons` を空の配列にしてあるのは、以前登録していた定期実行をデプロイのときに確実に外すため（`triggers` を書かないと、wrangler は登録済みの定期実行をそのまま残す） |
+| `wrangler.json` | 名前 `re-mail`、入り口 `worker.ts`、バインディングは `DB`（D1）・`ASSETS`・`WORKER_SELF_REFERENCE`。**`database_id` は本番の D1 の ID なので変えない**（§3.4）。定期実行は使わない。`triggers.crons` を空の配列にしてあるのは、登録済みの定期実行をデプロイのときに確実に外すため（`triggers` を書かないと、wrangler は登録済みの定期実行をそのまま残す） |
 | `next.config.ts` | 型チェックは CI で別に行うので `typescript.ignoreBuildErrors: true`。セキュリティヘッダー（`SECURITY_HEADERS`）は本番のビルドだけに付ける。**CSP はここに入れない**（nonce が消える。§15.1）。`initOpenNextCloudflareForDev()` で `next dev` でも D1 などのバインディングを使えるようにする |
 | `worker.ts` | OpenNext の Worker をそのまま使い、ページごとの CSP nonce の処理だけを足す（中身は `securityHeaders.ts`。§15.1）。OpenNext が使う Durable Object のクラス（`DOQueueHandler` / `DOShardedTagCache` / `BucketCachePurge`）もそのまま export する（しないとデプロイが失敗する） |
 | `env.d.ts` | `CloudflareEnv` は `DB: D1Database` だけ。`TOKEN_ENCRYPTION_KEY` などのシークレットは `process.env` から読む（OpenNext がリクエストのたびに入れる） |
 | `types/next-auth.d.ts` | `Session` に `accessToken?` と `error?`（リフレッシュトークンが失効したとき `"RefreshAccessTokenError"`）を足す |
-| `.gitignore` | create-next-app の既定に、`/.open-next/`・`.dev.vars*`・`/.wrangler/` を足す（`.env*` は既定で入っている） |
-| `migrations/0001_initial.sql` | `chat_configs`（§8.3）と `linked_accounts`（§8.4）の `CREATE TABLE IF NOT EXISTS`。本番には適用済み |
-| `migrations/0002_linked_accounts_account_enc.sql` | `linked_accounts` に `account_enc TEXT` を足す（§8.4） |
-| `migrations/0003_drop_legacy_rows.sql` | 保存の形の移行を終えたときに古い形式のデータを消したもの（§6.1）。`chat_configs` はすべて消し、`linked_accounts` は今の形式でない行だけを消す（先頭は `LIKE` ではなく `substr` で比べる。`LIKE` は大文字小文字を区別しないため）。新しく作る D1 では何も消さない |
+| `migrations/` | 連番で足す（適用済みは書き換えない。§6.2）。中身は `chat_configs`（§8.3）と `linked_accounts`（§8.4）の作成・変更と、`0003` の古い形式のデータの削除（§6.1。先頭の比較は `LIKE` でなく `substr` で行う。`LIKE` は大文字小文字を区別しないため。新しく作る D1 では何も消さない） |
 | `.github/workflows/deploy-worker.yml` | 流れは §6。`main` への push で、Worker に関係するファイル（`app/**` `public/**` `migrations/**` `auth.ts` `worker.ts` `env.d.ts` `next.config.ts` `open-next.config.ts` `postcss.config.mjs` `tsconfig.json` `eslint.config.mjs` `wrangler.json` `package.json` `package-lock.json` `script/ci/**` とこのファイル）が変わったときだけ動く。手動実行（`workflow_dispatch`）もできる。権限は `contents: read`。`concurrency: deploy-worker`（取り消さずに順番待ち）、20分で打ち切り。ロールバックは、デプロイが成功したあとにヘルスチェックが失敗したときだけ |
-| `script/ci/retry.sh` | 引数のコマンドを最大3回試す（失敗したら20秒・40秒待つ）。`npm ci`・マイグレーション・デプロイ・ロールバックに使う |
-| `script/ci/health-check.sh` | デプロイ後の動作確認（中身は §6）。URL は `HEALTH_CHECK_URL` で変えられる（既定は本番）。最大3回、10秒・20秒の間を空けて試す |
-| `app/globals.css` | create-next-app の既定に、`@media (any-pointer: coarse)` で `input` / `textarea` / `select` の文字を16pxにする指定を足したもの（iOS Safari が16px未満の入力欄で画面を拡大するのを防ぐ。`@layer` の外に置くので Tailwind の `text-sm` などより強い。PC〔マウス〕の見た目は変えない）。画面の色はコンポーネント側で直接指定する |
+| `script/ci/` | `retry.sh`（引数のコマンドを最大3回。失敗したら20秒・40秒待つ。`npm ci`・マイグレーション・デプロイ・ロールバックに使う）と `health-check.sh`（デプロイ後の動作確認。中身は §6。URL は `HEALTH_CHECK_URL` で変えられる。最大3回、10秒・20秒の間を空けて試す） |
+| `app/globals.css` | create-next-app の既定に、`@media (any-pointer: coarse)` で `input` / `textarea` / `select` の文字を16pxにする指定を足したもの（iOS Safari が16px未満の入力欄で画面を拡大するのを防ぐ。`@layer` の外に置くので Tailwind の `text-sm` などより強い。PC〔マウス〕の見た目は変えない） |
 | `app/layout.tsx` | `lang="ja"`。**`export const dynamic = "force-dynamic"`** で毎回サーバーで描く（CSP の nonce は開くたびに変わるので、ビルド時の HTML を返すとスクリプトが止まる） |
-| `app/providers.tsx` | `SessionProvider` で包むだけ（`layout.tsx` をサーバー側の部品にするため分けた） |
-| `auth.ts` | §7.2・§7.4 |
 | `app/api/auth/[...nextauth]/route.ts` / `app/lib/publicSession.ts` | `/api/auth/session` の応答から `accessToken` / `refreshToken` / `expiresAt` を取り除く（§7.2）。Set-Cookie はそのまま通し、中身を作り直すので `content-length` は消す |
 
 ---
@@ -224,69 +217,24 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 ```
 Re-Mail/
 ├── app/
-│   ├── api/
-│   │   ├── auth/[...nextauth]/route.ts   # NextAuth のハンドラ。/session の応答からアクセストークンを除く（§7.2）
-│   │   ├── accounts/route.ts             # セッションを持たないアカウントの一覧（GET）・ログアウト（DELETE）
-│   │   ├── accounts/connect/route.ts     # 別のアカウントでもログインするための独自 OAuth（リダイレクトとコールバックを兼ねる）
-│   │   ├── avatar/route.ts               # イニシャルの SVG アバター
-│   │   ├── config/route.ts               # D1 の設定の読み書き（HMAC＋暗号化。鍵が無ければ 500）
-│   │   ├── config/route.test.ts
-│   │   └── emails/route.ts               # Gmail の取得・差分同期・送信・送信確認・移動・削除・添付・HTML 本文・sendAs（保存せず中継だけ）
-│   ├── components/
-│   │   ├── AttachmentChips.tsx           # メッセージの画像・動画の添付の表示
-│   │   ├── ChatList.tsx                  # チャット一覧（左の列）
-│   │   ├── Composer.tsx                  # 入力欄（送信元・送信先・返信元・件名・添付・本文・送信ボタン）
-│   │   ├── ComposeEditor.tsx             # 書式付きの入力欄（iframe・選んだ文字のバー・「Aa」の書式のバー・リンク・色・画像の大きさ。§14.4）
-│   │   ├── Modals.tsx                    # モーダルの振り分け（どの種類を出すかだけ。§14.6）
-│   │   ├── TalkView.tsx                  # トーク画面（見出し・ページ内検索・ピン留め・メッセージ一覧。入力欄は Composer）
-│   │   ├── modals/                       # モーダルの種類ごとのファイル（SettingsModal・FilterToolModal・SearchModal・AccountMenuModal・ComposeNewChatModal・ReplyTargetModal・ConfirmModals など。共通の部品は shared.tsx）
-│   │   └── ui.tsx                        # ActionBar・アイコン・HighlightText・BodyWithLinks・formatFileSize
-│   ├── hooks/
-│   │   ├── useMailApp.ts                 # 状態とロジックの中核（カスタムフック。下のフックを組み合わせて state / actions / computed を返す。§13）
-│   │   ├── mailAppTypes.ts               # 分けたフックどうしで使う型
-│   │   ├── useSendAs.ts                  # 送信元の設定（アカウントごとの sendAs・エイリアス・署名の取得）と自分のアドレスの一覧（§7.7）
-│   │   ├── useConfigs.ts                 # 設定の読み込みと保存（チャットの設定・共通設定・アカウント設定。失敗したら送り直す）
-│   │   ├── useDrafts.ts                  # 下書き（チャットごとの入力中の内容・ほかのチャットへ持っていく内容・下書きチャット）
-│   │   ├── useMailSync.ts                # 一覧の取得と差分同期（最初の読み込み・場所の切り替え・チャットごとの取得・再試行・裏からの同期）
-│   │   ├── useLoadMore.ts                # さらに読み込む（チャット一覧・メッセージ。スクロールバーが出るまで自動で続ける）
-│   │   ├── useRooms.ts                   # ルームの計算（チャットへの分け方・メッセージのルームとアカウント・相手・宛先の候補）
-│   │   ├── useChatList.ts                # チャット一覧の並び・非表示／ピン留め／名前を変えたものの一覧
-│   │   ├── useChatNavigation.ts          # チャットを開く・作る・戻る・送信元のアカウントの切り替え
-│   │   ├── useAccounts.ts                # アカウントを1つだけログアウトする・連携を外す
-│   │   ├── useEmailModals.ts             # メールの詳細と添付のプレビューのモーダル
-│   │   ├── useCompose.ts                 # 入力欄まわり（添付・送信先・返信元と引用・送信元と署名）
-│   │   ├── useSend.ts                    # 送る（送信 API・送る前の確認・返信・転送。自動で再試行しない）
-│   │   ├── useGmailDraftSync.ts          # Gmail の下書きとの同期（Re:Mail → Gmail：保存・消す・送るときの下書き。§13.7）
-│   │   ├── useGmailDraftInbound.ts       # Gmail の下書きとの同期（Gmail → Re:Mail：読み込み・出し先・ほかの下書き・競合。§13.7）
-│   │   ├── useMailboxActions.ts          # 選択モードと操作（非表示・ピン留め・移動・削除・既読／未読・継続フィルター）
-│   │   └── useFindBar.ts                 # 検索バーと、検索結果・返信元へのジャンプ
-│   ├── lib/                              # React に依存しない純粋関数（ほぼすべてにテストあり。§12）
-│   │   ├── composeHtml.ts                # 入力欄の HTML の安全化・純正の形への整形・テキスト版・署名と引用（§10.3・§15.6）
-│   │   ├── composeEditor.ts              # 入力欄の編集の処理（iframe の中の CSP・イベント・見張り・貼り付け・画像。ブラウザでだけ動く）
-│   │   ├── mailAppHelpers.ts             # useMailApp から移した計算（同時数を絞った並列処理・仮の送信済みの突き合わせ・アドレスの集合）
-│   │   ├── htmlTree.ts                   # HTML を1回なめて木にする・戻す（DOM の無いテストでも同じに動く）
-│   │   ├── inlineImages.ts               # 送信の API に届いた本文中の画像の検証
-│   │   └── __fixtures__/gmailCompose.json # 純正 Gmail の作成画面から送ったメールの HTML とテキスト版（整形とテキスト版の正解の見本）
-│   ├── types/
-│   │   ├── mail.ts                       # ChatConfig / MessageConfig / SelectionMode / ModalState
-│   │   └── email.ts                      # Email / EmailAttachment
-│   ├── error.tsx / global-error.tsx      # エラー画面（もう一度表示する・ページを読み込み直す・純正 Gmail で開く）
-│   ├── globals.css / layout.tsx / providers.tsx
-│   ├── privacy/                          # プライバシーポリシー（/privacy。ログインなしで見られる。お問い合わせ先は contact.ts の定数）
-│   └── page.tsx                          # メイン画面（ログイン・通知・ChatList / TalkView / Composer の組み立て）
-├── migrations/                           # D1 のスキーマ（連番。適用済みのファイルは書き換えない）
-├── script/ci/                            # retry.sh / health-check.sh
+│   ├── api/            # NextAuth・accounts・avatar・config・emails のルート（§9）
+│   ├── components/     # ChatList・Composer・ComposeEditor・Modals・TalkView・ui と modals/（§14）
+│   ├── hooks/          # useMailApp と役割ごとのフック（§13）
+│   ├── lib/            # React に依存しない純粋関数（ほぼすべてにテストあり。§12）
+│   ├── types/          # mail.ts（設定の型。§8.6）・email.ts（§12.5）
+│   ├── privacy/        # プライバシーポリシー（/privacy。お問い合わせ先は contact.ts の定数）
+│   └── page.tsx ほか   # メイン画面・layout・globals.css・エラー画面
+├── migrations/         # D1 のスキーマ（連番。適用済みのファイルは書き換えない）
+├── script/ci/          # retry.sh / health-check.sh（§4・§6）
+├── docs/claude/        # 作業の種類ごとの決まり（d1・code・editor-security・secrets-deploy・browser）
 ├── .github/workflows/deploy-worker.yml
-├── types/next-auth.d.ts
+├── .claude/settings.json  # Claude Code に読ませないファイル（生成物・鍵など）
 ├── auth.ts / worker.ts / env.d.ts
-├── next.config.ts / open-next.config.ts / wrangler.json
-├── vitest.config.ts / tsconfig.json / eslint.config.mjs / postcss.config.mjs
-├── public/                               # create-next-app 既定の SVG（使っていない）
-├── CLAUDE.md                             # Claude Code 向けの作業ルール（短い版。詳しくは docs/claude/）
-├── docs/claude/                          # 作業の種類ごとの決まり（d1・code・editor-security・secrets-deploy・browser）
-├── .claude/settings.json                 # Claude Code に読ませないファイル（生成物・鍵など）
-├── README.md                             # この文書（仕様書を兼ねる）
-└── package.json / package-lock.json
+├── types/              # next-auth.d.ts（§4）
+├── next.config.ts / open-next.config.ts / wrangler.json などの設定ファイル（§4）
+├── public/             # create-next-app 既定の SVG（使っていない）
+├── CLAUDE.md           # Claude Code 向けの作業ルール（短い版。詳しくは docs/claude/）
+└── README.md / package.json / package-lock.json
 ```
 
 右クリックや長押しの専用メニュー（ContextMenu）は**無い**。長押し（PC はクリック操作）で**選択モード**に入り、アクションバー（`ui.tsx` の `ActionBar`）から操作する。
@@ -312,13 +260,13 @@ Re-Mail/
 - **段階1**：新しい形式も古い形式も**読める**コードを出す。保存はまだ古い形式のまま。
 - **段階2**：保存を新しい形式に切り替える。段階1のコードは新しい形式も読めるので、段階2から1つ戻しても壊れない。
 - **終わったら**：古い形式のデータを migrations で消し、古い形式を読むコードを消す。段階2のコードは新しい形式だけの D1 でも動くので、「データの削除」と「コードの削除」は1回の push でよい（マイグレーションはデプロイより先に当たる）。
-- **今の状態**：アドレスの置き換え（`a1:`）と設定の置き場所の移行（そのアカウント自身の置き場所）は、**2026-10-23 にすべて終えた。** 古い形式のデータは `migrations/0003_drop_legacy_rows.sql` で消した（`chat_configs` はすべて、`linked_accounts` は今の形式でない行だけ。§4）。段階のフラグ（`addressStage.ts` / `configStage.ts`）、定期実行での書き直し（`backfill.ts`）、平文の値を読む処理も消した。今のコードは今の形式だけを読み、鍵が無ければ平文で書かずに例外にする。
+- **今の状態**：今のコードは今の形式だけを読み、鍵が無ければ平文で書かずに例外にする。古い形式のデータは `migrations/0003_drop_legacy_rows.sql` で削除済み（`chat_configs` はすべて、`linked_accounts` は今の形式でない行だけ。§4）。
 - 今後また保存の形を変えるときは、この段階1・段階2で入れ、終わったら古い形式のデータと読むコードを消す。
 
 ### 6.2 スキーマ変更の決まり
 - 新しいファイル（`0004_xxx.sql` …）を足す。適用済みのファイルは書き換えない。
 - 非破壊にする：`DROP TABLE` は書かない。列は `ALTER TABLE ... ADD COLUMN` で足す。列やデータを消すときは、まず使わなくなるコードを出し、次の段階で消す。
-- 本番の D1 の直接操作もできる（2026-11-18 の権限解放）が、スキーマ変更はふだん migrations を足して push し、Actions に当てさせる。
+- 本番の D1 の直接操作もできるが、スキーマ変更はふだん migrations を足して push し、Actions に当てさせる。
 
 ---
 
@@ -372,8 +320,8 @@ Re-Mail/
 - 新規作成とグループ作成では送信元のアカウントを選ぶ。転送は、元のメールを受け取ったアカウントから送る。
 
 ### 7.6 OAuth の「未確認のアプリ」の制約
-2026-11-11 に公開ステータスを「テスト」から「本番」にした（審査は受けていない）。
-- テストのときの「リフレッシュトークンが7日で失効する」制約は無くなった。切り替える前に発行したトークンは7日で切れるので、そのときは再ログインする。トークンが切れても、§7.2・§7.3 の導線（再ログインのトースト）があるので、黙って壊れることはない。
+公開ステータスは「本番」（審査は受けていない）。
+- テストのときの「リフレッシュトークンが7日で失効する」制約は無い。トークンが切れても、§7.2・§7.3 の導線（再ログインのトースト）があるので、黙って壊れることはない。
 - ログインのたびに「Google はこのアプリを確認していません」の警告が出る（「詳細」から進める）。
 - 使える人は、警告が出たあとの新規ユーザーで**合計100人まで**。この上限はプロジェクトがある限り続き、リセットできない。開発用のアカウントも数に入る。
 - 根本的な解決は OAuth 審査の通過（§18.4）。
@@ -624,7 +572,7 @@ Gmail の読み取りはすべて `fetchWithRetry` を通す（§10.1）。詳�
 - メール全体を **7bit の ASCII** にする。ヘッダーは RFC 2047（`=?UTF-8?B?...?=`、1語45バイトまで、`CRLF＋空白` で折り返す。ASCII だけなら符号化しない）。本文はすべて base64（76文字で折り返す）。
 - ヘッダーの値から CR・LF を取り除き、ヘッダーの差し込みを防ぐ。
 - アドレスのヘッダー（From / To / Cc / Bcc / Reply-To）は、表示名だけを符号化し、`<アドレス>` はそのまま残す。
-- **Bcc**：Bcc ヘッダーを入れた raw を `messages.send` に渡すと、Gmail が受信者側のメールからは取り除き、自分の送信済みにだけ残す（純正と同じ）。Bcc だけで送るとき（To が空）は To ヘッダーを付けない。受け取った側のメールには、純正と同じく Gmail が `To: undisclosed-recipients:;` を付ける。こちらで `undisclosed-recipients:;` を入れると Gmail API が 400（`invalidArgument`）で送信を断る（2026-10-24 に実機で確かめた）。そのため自分の送信済みにだけ、純正との違い（To の行が無い）が残る。宛先の分解（`splitAddressList`）は、中身の無いグループ（`undisclosed-recipients:;`）を宛先として数えない。
+- **Bcc**：Bcc ヘッダーを入れた raw を `messages.send` に渡すと、Gmail が受信者側のメールからは取り除き、自分の送信済みにだけ残す（純正と同じ）。Bcc だけで送るとき（To が空）は To ヘッダーを付けない。受け取った側のメールには、純正と同じく Gmail が `To: undisclosed-recipients:;` を付ける。こちらで `undisclosed-recipients:;` を入れると Gmail API が 400（`invalidArgument`）で送信を断る（実機で確認済み）。そのため自分の送信済みにだけ、純正との違い（To の行が無い）が残る。宛先の分解（`splitAddressList`）は、中身の無いグループ（`undisclosed-recipients:;`）を宛先として数えない。
 - 構造：
   - テキストと HTML の両方を `multipart/alternative` にする。
   - 本文中の画像（入力欄で入れた画像、転送で引き継いだ cid: 画像）があれば、HTML と画像を `multipart/related` にまとめる。各画像は `Content-Disposition: inline; filename=…`・`Content-ID: <ii_…>`・`X-Attachment-Id: ii_…`（純正と同じ）。入力欄の画像は画面から `inlineImages`（`{ contentId, filename, mimeType, data }`）で届き、サーバーが `validateInlineImages` で形（`ii_` で始まる ID・PNG/JPEG/GIF/WebP/BMP・1枚10MB・20枚まで・重なりなし）を確かめる。1つでも違えば送らずに 400 `INVALID_INLINE_IMAGES`。添付と合わせて 25MB まで。
@@ -676,10 +624,10 @@ Gmail の読み取りはすべて `fetchWithRetry` を通す（§10.1）。詳�
    - 見つからなければ、`in:sent after:<送信の60秒前>` の直近10件を、件名（空白を除いて比較）・To と Cc と Bcc の集合（送信済みには Bcc が残るので、Bcc だけの送信でも照合できる。メタデータは `metadataHeaders` に Bcc を足して取る）・時刻（送信の60秒前以降）・本文の冒頭（最大40文字。Gmail の snippet の文字参照を戻して比較）で照合する。
    - 見つかれば成功（`verified: true`）。見つからなければ `502 { error: "SEND_UNCONFIRMED", messageId }`。
    - 画面は `SEND_UNCONFIRMED` を受けたら `verifySent` でもう一度確かめ、それでも見つからなければ「送信されていません。再送しますか？」と**ユーザーに確かめる**。**自動では再送しない。** 再送するときは同じ Message-ID を使う。
-6. **Gmail の下書きがある入力**（§13.7）は `drafts.send` で送る（`draftSend`。最後の保存から変えていれば中身を付けて送る）。保存の途中なら終わるのを待ち、送っている間は保存しない。失敗しても `messages.send` に勝手に切り替えない。Gmail から読み込んだ下書き（こちらで付けた Message-ID を持たない）も同じく `drafts.send` で送る（照合用の Message-ID はそのときに決める）。何も変えていなければ中身を付けずに送るので、純正から送ったのと同じになる（2026-10-26 に純正から送ったものと受信側のソースで比べ、本文中の画像の ID 以外は同じだった）。純正で書き換えられていれば（中身を付けるときも）`409 DRAFT_CONFLICT` で送らず、送信中の印を外してから下書きを読み直す（§13.7）。
+6. **Gmail の下書きがある入力**（§13.7）は `drafts.send` で送る（`draftSend`。最後の保存から変えていれば中身を付けて送る）。保存の途中なら終わるのを待ち、送っている間は保存しない。失敗しても `messages.send` に勝手に切り替えない。Gmail から読み込んだ下書き（こちらで付けた Message-ID を持たない）も同じく `drafts.send` で送る（照合用の Message-ID はそのときに決める）。何も変えていなければ中身を付けずに送るので、純正から送ったのと同じになる（受信側のソースで比べ、本文中の画像の ID 以外は同じことを確認済み）。純正で書き換えられていれば（中身を付けるときも）`409 DRAFT_CONFLICT` で送らず、送信中の印を外してから下書きを読み直す（§13.7）。
    - 404・400 で下書きがもう無い（ほかで送信・削除された）：送信済みに見つかれば「このメールは別の場所から送信済みです」と出して入力欄と端末の下書きを空に戻す。見つからなければ「この下書きは別の場所で削除されたか、送信済みです。本文は入力欄に残っています。新しいメールとして送りますか？」と確かめ、「送る」のときだけ新しい Message-ID で `messages.send`。
    - 結果が分からない：下書きが残っていれば「送信されていません。再送しますか？」（再送は同じ下書きを `drafts.send`）。無ければ送信済みと照合し、見つからなければ「送信できたか確認できませんでした。Gmail の送信済みを確認してから、必要なら再送してください。」
-   - **Gmail は下書きの Message-ID を、保存のときと `drafts.send` のときの両方で付け替える**（2026-10-25 に実機で確認。こちらで付けた `<CA…>` も、保存したときに Gmail が付けたものも、送ったメールには残らない）。そのため下書きを送ったあとの照合は、`rfc822msgid:` では見つからず、宛先・件名・時刻・本文の冒頭（上の 5 と同じ）で行う。ほかで送られた（404）ときは、時刻の幅を24時間に広げて直近10件から探す。
+   - **Gmail は下書きの Message-ID を、保存のときと `drafts.send` のときの両方で付け替える**（実機で確認。こちらで付けた `<CA…>` も、保存したときに Gmail が付けたものも、送ったメールには残らない）。そのため下書きを送ったあとの照合は、`rfc822msgid:` では見つからず、宛先・件名・時刻・本文の冒頭（上の 5 と同じ）で行う。ほかで送られた（404）ときは、時刻の幅を24時間に広げて直近10件から探す。
 7. 実 ID が取れなかったとき（照合でも ID が分からないとき）だけ、画面に `fake-` で始まる仮 ID のメールを置く。次に一覧を取ったとき、`reconcileFakeSentEmails` で本物と重複する仮のメールを消す。仮 ID は Gmail に存在しないので、API に渡さない。
 
 ---
@@ -871,7 +819,7 @@ type FilterCriteria = {
 - **60秒ごと**（タブが見えているときだけ）・タブに戻ったとき（`visibilitychange`）・通信が戻ったとき（`online`）に、`syncOrRefetch` を呼ぶ。
 - 各アカウントで `sync=1&historyId=…` を呼び、`applySyncResult` で画面に当てる。`idsToFetchForLabelChanges` で出てきた、画面に無いのに表示する場所へ入ってきたメールは `ids=` で詳細を取る。
 - `reset: true` が返ったら、そのアカウントの一覧を取り直す（取りこぼしを残さない）。
-- 以前は約1分ごとに最新100通の詳細をすべて取り直しており、Gmail API の利用上限をすぐに使い切っていた。history.list は1回2ユニットで、詳細を取るのは新着だけ。
+- history.list は1回2ユニットで、詳細を取るのは新着だけ（最新100通を毎回取り直す方式は Gmail API の利用上限をすぐに使い切るため採らない）。
 
 ### 13.5 チャットを開いたとき（`useChatNavigation.ts`・`useMailSync.ts`）
 - **クロスボックス取得**：その相手について、全部の場所を横断して取る。検索式は `(from:"相手" OR to:"相手")` に、分かっている相手のアドレスを OR で足したもの。`maxResults=100`、`knownIds`（最大300件）で取得済みの詳細は取り直さない。
@@ -885,7 +833,7 @@ type FilterCriteria = {
 
 ### 13.7 下書き（`useDrafts.ts`）
 - 入力中の返信（本文・件名・返信元・送信先・添付）を、**チャットごとに** IndexedDB に保存する（`drafts.ts`）。本文は入力欄の HTML（本文・引用・署名。本文中の画像は `cid:`）と本文中の画像（`images`。base64）と最後に入れた署名（`insertedSignature`）。文字だけの古い形（`body`）の下書きは、読むときに `<div>` の行に直す。「空」は署名・引用を除いた本文に文字・画像・表が無いこと（署名だけの下書きは残さず、開き直したときに署名を入れ直す）。送信先は既定（相手を To に1人）のままなら保存しない（`null`）。送信の失敗・通信断・再読み込み・チャットの切り替えで失わない。空なら消す。
-- チャットを切り替えたら、そのチャットの下書きを読み込む。読み込み終わるまで送信ボタンを押せなくする（`isDraftReady`）。以前は、別のチャットで書きかけた文が今のチャットに残って誤送信される問題があった。
+- チャットを切り替えたら、そのチャットの下書きを読み込む。読み込み終わるまで送信ボタンを押せなくする（`isDraftReady`。別のチャットで書きかけた文が今のチャットに残って誤送信されるのを防ぐ）。
 - 端末に保存できなかったら「入力中の内容を端末に保存できませんでした。再読み込みすると消えます…」と伝える。
 - **下書きチャット**：新しい宛先でチャットを作って、まだ送っていない状態。`remail_draft_chats` に持ち、送ると普通のチャットになる。ほかのチャットへ離れたとき、**書いた内容（本文・件名・添付・返信元）もその相手とのやり取りも無ければ**、一覧から消し、下書き（送信先を変えただけのものも）も消す。書いた内容があれば残す（離れる直前の入力はすぐ保存する）。入力を持って移った（送信先を変えて移る・送信元を切り替える）ときは、移り先で読み戻して移り元の下書きを消したあと（2秒後）に判断する。
 - **Gmail の下書きとの同期（Re:Mail → Gmail。`useGmailDraftSync.ts`・`gmailDrafts.ts`）**：アカウント設定 `gmailDraftSync`（既定はオン。読み終えるまでは同期しない）。グループチャットと、送信先が1人もいない書きかけは同期しない。
@@ -1170,7 +1118,7 @@ frame-ancestors 'none'
 ## 16. テスト
 
 - `npm test`（Vitest、`app/**/*.test.ts`、Node 環境）。
-- テストのあるファイル：`roomKey` `groupEmails` `filterMatch` `groupPaging` `searchFallback` `historySync` `messageParse` `mime` `replyCompose` `recipients` `sendVerify` `emailHtml` `safeLog` `tokenCrypto` `addressKey` `configCrypto` `configStore` `linkedAccountsStore` `migrations`（0003 が古い形式の行だけを消すか） `syncedSettings` `securityHeaders` `configSaveQueue` `pinnedIds` `drafts` `gmailLink` `publicSession`、`mailboxOps`、`configSpaces`（アカウントごとの置き場所）、`composeHtml`（純正の見本 `__fixtures__/gmailCompose.json` と同じ HTML・テキスト版になるか、ブラウザごとの違いの吸収、署名・引用、本文が空か、攻撃の文字列、巨大・深い入力）、`composeEditor`（iframe の中の CSP と sandbox）、`inlineImages`、`app/api/config/route.test.ts`。
+- テストは、絶対ルールに直結するモジュール（§12 のキー・グルーピング・フィルター、同期・解析・送信、暗号・保存、セキュリティヘッダー、設定の送り直しなど）と `app/api/config/route` に付ける。個別の一覧はリポジトリの `*.test.ts` が正。固有の確かめ方として、`migrations`（0003 が古い形式の行だけを消すか）、`composeHtml`（純正の見本 `__fixtures__/gmailCompose.json` と同じ HTML・テキスト版になるか、ブラウザごとの違いの吸収、署名・引用、本文が空か、攻撃の文字列、巨大・深い入力）、`composeEditor`（iframe の中の CSP と sandbox）がある。
 - D1 は `fakeD1.testutil.ts` の偽物で試す。暗号は、テスト用に作った鍵を `process.env.TOKEN_ENCRYPTION_KEY` に入れて試す（本物の鍵は使わない）。
 - **必ず境界値のテストを書くもの**（壊れると絶対ルールに直結する）：送信の MIME の組み立て（日本語の件名、長い件名、絵文字、Cc あり、日本語のファイル名、ヘッダーへの改行の差し込み）、宛先の計算（Reply-To、自分が送ったメールへの返信、全員に返信で自分を除く）、暗号化と HMAC（古い形式の値は読まずに例外で止まらない・鍵が無いと平文で保存しない）、入力の上限（巨大な入力・深い入れ子・壊れた MIME）、ログの伏せ字、送信結果の分類。
 - `npm test`・`npm run lint`・`npx tsc --noEmit` の3つがすべて通ってから push する（CI でも確かめ、どれか失敗するとデプロイされない）。
@@ -1236,25 +1184,10 @@ PC では `~/remail-e2e`（リポジトリの外）で、本番の Re:Mail と�
 ## 18. 既知の問題・残り課題
 
 ### 18.1 直したもの（2026-10-22〜23）
-README 作成時のコード確認で見つかった不具合は、すべて直した。
-- アーカイブへの移動が Gmail に反映されなかった → `labelChangeFor("ARCHIVE")` で受信箱から外す。
-- 連携アカウントのメールの移動・削除にメインアカウントのトークンが使われていた → 画面がアカウントごとに分けて送る（`groupIdsByAccount`）。
-- 削除の失敗を成功と返していた → Gmail が失敗したらそのステータスと理由を返す。
-- 完全削除（`batchDelete`）の使えない分岐 → 消した。`permanentIds` は 400 で断る。
-- 重複していた削除の分岐、使われていない移動先のモーダル（`select_move_dest` など） → 消した。
-- `verifySent` に Cc を渡していなかった → 渡す。
-- `CLAUDE.md` の `ContextMenu.tsx` の記述 → 外した。
+README 作成時のコード確認で見つかった不具合は、すべて直した。現行の動きは各節に反映済み（アーカイブ移動のラベル操作とアカウントごとの送信は §12.1、完全削除を 400 で断るのは §9）。削除が Gmail で失敗したら、そのステータスと理由を返す。
 
 ### 18.2 2026-10-23 のコード確認で気づいた点（すべて対応済み）
-| 項目 | 対応 |
-| --- | --- |
-| 設定の置き場所の移行が段階1のまま、以前の置き場所の古い写しが残る | 段階2に切り替え、以前の置き場所の写しは読んだときに消すようにした |
-| `/api/config` のたびに `listLinkedAccounts`（全行の復号と書き直し）を呼んでいた | アドレスだけを読む `listLinkedAccountEmails` に替えた |
-| 返信欄の「送信元」が、実際の From（エイリアス）と違うことがあった | 送るときと同じ決め方で、実際の From を出すようにした |
-| 既読・未読の失敗の文言が移動・削除向けだった | 「元の既読・未読の状態に戻ります」にした |
-| アクションバーの文言がそろっていなかった | 「既読」「未読」にそろえた |
-| API が `scope=shared` を受け付けていた | やめた（`configScope.ts` も消した） |
-| 移行のための「古い形式も読む」コードと古い形式のデータが残っていた | 2026-10-23 に移行を終え、古い形式のデータを `0003_drop_legacy_rows.sql` で消し、読むコード・段階のフラグ・定期実行を消した。鍵が無いときに平文で保存する逃げ道もなくした（§6.1） |
+すべて対応済みで、現行仕様は各節に反映済み（設定の置き場所は §8.3.1、`/api/config` がアドレスだけを読む点は §8、返信欄の送信元は §13.8、移行の完了は §6.1）。以前の置き場所の古い写しは、読んだときに消す。既読・未読の失敗の文言は「元の既読・未読の状態に戻ります」。
 
 ### 18.3 ルールとのギャップのうち、開発者が判断してそのままにするもの
 | 項目 | 理由 |
@@ -1266,8 +1199,8 @@ README 作成時のコード確認で見つかった不具合は、すべて直�
 ほかに、品質の改善候補として `next.config.ts` の `ignoreBuildErrors: true` がある（CI で `tsc` を通しているので実害は無い）。
 
 ### 18.4 一般公開に向けて残っているもの
-- **Google の OAuth 審査**：`gmail.modify` は制限付きスコープなので、100人を超えて公開するには審査と第三者のセキュリティ評価（CASA）が要る。今は審査を受けずに本番にしている（2026-11-11）ので、「未確認のアプリ」の警告が出て、使える人は合計100人まで（§7.6）。審査では、ドメインの所有を Search Console で確かめる必要があるので、先に独自ドメインを取る。D1 に平文の個人情報を残さない形にしたので、審査で説明する範囲は小さくなった。
-- **プライバシーポリシー・利用規約**：プライバシーポリシーは `/privacy` に掲載済み（2026-11-11）。お問い合わせ先（`app/privacy/contact.ts` の `PRIVACY_CONTACT_EMAIL`）はまだ例のアドレスのままで、独自ドメインを取ったらそのドメインのアドレスに変える。利用規約はまだ。
+- **Google の OAuth 審査**：`gmail.modify` は制限付きスコープなので、100人を超えて公開するには審査と第三者のセキュリティ評価（CASA）が要る。今は審査を受けずに本番にしているので、「未確認のアプリ」の警告が出て、使える人は合計100人まで（§7.6）。審査では、ドメインの所有を Search Console で確かめる必要があるので、先に独自ドメインを取る。D1 に平文の個人情報を残さない形にしたので、審査で説明する範囲は小さくなった。
+- **プライバシーポリシー・利用規約**：プライバシーポリシーは `/privacy` に掲載済み。お問い合わせ先（`app/privacy/contact.ts` の `PRIVACY_CONTACT_EMAIL`）はまだ例のアドレスのままで、独自ドメインを取ったらそのドメインのアドレスに変える。利用規約はまだ。
 - **実際の利用者のメールでの検証**：ログには中身を残せないので、ログには「どの処理で・どの種類の失敗か」だけを残し、再現は利用者の同意を得た報告で行う。
 
 ---
@@ -1283,26 +1216,14 @@ README 作成時のコード確認で見つかった不具合は、すべて直�
 | 入力欄の iframe に `allow-scripts` を足す（案A） | 下の試作の結果。案C（`allow-scripts` なしのまま Safari だけ機能を減らす）は、iPhone のすべてのブラウザと Mac の Safari で Enter の決まり・ショートカット・文字だけの貼り付け・画像のドロップ・貼る前の安全化が使えず、選択範囲を定期的に見に行く無理も出て、ブラウザごとに2通りの動きを確かめ続けることになる。案B（iframe を使わず画面に直接置く）は、画面の CSP が外部の画像を許しているため、安全化を1つ取りこぼすと引用の中のトラッキング画像が読まれる（守りが1枚）。案A は全ブラウザで同じに動き、守りが4枚（§15.6）。弱いところは、sandbox がスクリプトの守りとして働かないこと（承知のうえで選んだ） |
 | HTML の読み書きを DOMParser ではなく自前の `htmlTree.ts` にする | DOM の無い Node のテストで、純正の見本との比較・攻撃の文字列の安全化を確かめるため。入れるときはブラウザの DOMParser で読み直し、見張りでもう一度確かめる |
 
-**入力欄の試作の結果（2026-10-24、Playwright。PC の Chromium・Firefox・WebKit と iPhone 13・Pixel 7 の画面の真似）**
+**入力欄の試作の結果**（Playwright で Chromium・Firefox・WebKit と iPhone・Pixel 相当の画面で比較）：`allow-same-origin` だけでは、WebKit（Safari・iPhone）でキー入力・貼り付けのイベントが画面側に届かず、貼り付けを安全化してから入れることもできない（WebKit は親が付けた処理でも、スクリプトを許していない iframe の中のイベントでは呼ばない）。案A（`allow-scripts` を足す）と案B（画面の中の div）は全ブラウザでイベントを受けられるが、案B は安全化を通らない分について外部の画像などが読まれる。中のスクリプトは、案A でも中の CSP で止まる。
 
-| 確かめたこと | `allow-same-origin` だけ（最初の指示の作り） | 案A `allow-same-origin allow-scripts` | 案B 画面の中の div |
-| --- | --- | --- | --- |
-| 画面側でキー入力・入力・貼り付けのイベントを受ける | Chromium・Firefox は OK、**WebKit（Safari・iPhone）は届かない** | すべて OK | すべて OK |
-| 貼り付けを受けて安全化してから入れる | WebKit はできない | すべて OK | すべて OK |
-| 中のスクリプトが動かない | すべて OK | すべて OK（CSP） | すべて OK（画面の CSP） |
-| 外部の画像・CSS・フォント（中の CSP あり） | 0件 | 0件 | **安全化を通らない分は読まれる**（画面の CSP が https を許すため） |
-| 中の CSP を外したとき | スクリプトは止まるが外部は読まれる（3〜5件） | 同左 | ― |
-| 元に戻す・やり直す、高さ、日本語の変換（Chromium の IME） | OK | OK | OK（WebKit は1行目の形が違う → 整形で吸収） |
-
-WebKit の記録には、スクリプトを許していない iframe でイベントの処理が呼ばれるたびに「sandbox でスクリプトの実行を止めました」が残っていた（WebKit は親が付けた処理でも、iframe の中の document でのイベントでは呼ばない）。
 | roomKey の区切りに `\u0000` を使い、`roomKey.ts` に集める | 表示名に区切りと同じ文字が入る衝突を構造的に防ぐため。型でも取り違えを防ぐ |
 | グループから送ったメールを D1 に残さず、To の集合で判定する | 送るたびに D1 のデータが増えないようにするため |
 | セッションを持たないアカウントのトークンは D1 に暗号化して置き、暗号化 Cookie には移さない | Cookie だと連携が「その端末・そのブラウザだけ」になりログアウトで消える／1つ約4KB で連携が多いと入らない／トークン更新のたびに書き換えて同時リクエストどうしで上書きし合う／D1 のトークンはすでに暗号化済みで、移しても安全性はそれほど上がらない |
 | HMAC の鍵を新しいシークレットにせず、`TOKEN_ENCRYPTION_KEY` から HKDF で派生させる | シークレットを増やさないため |
 | 保存の形の変更を2段階で入れ、終わったら古い形式を消す | ロールバックで壊れないようにするため。移行が終わったら古い形式を読むコードを消し、コードを単純にする |
-| 移行の終わりに `chat_configs` をすべて消す（設定を作り直す） | 暗号化した中身の中に古い形式が残っていても SQL では見分けられないため。利用者が開発者本人だけで、設定が消えてよいと本人が決めた。`linked_accounts` は今の形式の行だけ残し、再ログインを要らなくした |
 | 鍵が無ければ例外にし、平文で保存しない | ローカル開発の便利さより、D1 に平文の個人情報を書く道をなくすことを取った（ルール1） |
-| 定期実行（`backfill.ts`）をやめる | 古い形式の行が無くなり、置き換えるものが無くなったため |
 | 送信を自動で再試行しない | 5xx やタイムアウトでも送れている可能性があり、再試行すると二重送信になる |
 | Message-ID を自前で決め、純正の形にする | 結果が分からないときの照合に使うため。Re:Mail から送ったことが分からないように |
 | 送信を upload エンドポイントにする | raw を JSON に入れる方式は数MB を超えると失敗したため |
@@ -1314,8 +1235,6 @@ WebKit の記録には、スクリプトを許していない iframe でイベ�
 | CSP を nonce にする | `script-src 'unsafe-inline'` をなくすため |
 | HTML メールの外部画像を既定で読み込まない | トラッキングピクセルで開封や IP が送り手に伝わるのを防ぐため |
 | 専用の右クリックメニューを作らず、選択モードとアクションバーにまとめる | PC とモバイルで同じ操作にし、画面の部品の種類を増やさないため |
-| `@cloudflare/next-on-pages` から OpenNext に移る | next-on-pages が非推奨になったため |
-| Next.js 16 に上げる | Next.js 15 のサポートが 2026-10-21 に終わったため |
 | `groupEmailsByRoom` はローカルキーを返し、複合キーにするのは `mergeAccountGroups` | 複数アカウント対応のとき、既存のグルーピングのロジックを一切変えずに済ませるため（広がる破損を防ぐための、意図した仕様からの逸脱） |
 | 複数のアカウントを対等に扱い、画面から「連携」「メイン」の区別をなくす | ログインできた＝同じ人なので、どのアカウントも同じように使え、どれでも1つだけログアウトできるようにするため |
 | 設定をそのアカウント自身の置き場所に保存する | ほかのアカウントの付属として使っていたアカウントで直接ログインしても、同じ設定で使えるようにするため |
@@ -1342,8 +1261,8 @@ WebKit の記録には、スクリプトを許していない iframe でイベ�
 
 ## 21. claude.ai・Claude Code（PC）・Muse の役割分担
 - **claude.ai（Re:Mail プロジェクト）**：設計の壁打ち、原因の仮説出し、指示文づくり。**指示文には、関係する §0 のルールを必ず書き添える。** 指示文は宛先（Claude Code か Muse か）を分けて書く。Muse 宛ての確認手順は、本番サイトとブラウザの操作だけで済む形にする。
-- **Claude Code（PC の VSCode）**：PC での開発。実装・テスト・`~/remail-e2e` での本番の確認（`docs/claude/browser.md`）・push。作業ルールは `CLAUDE.md` に従う（冒頭に §0 とサブテーマ、§17.1 のチェックリストがある）。README・大きなファイルは全体を読まず、`grep -n` で節や場所を探して要る範囲だけ読む。README は変えた節だけ直す。
-- **Muse**（Meta の AI エージェント）：スマホからの指示の実行（実装・push・本番の確認・報告）。仮想マシンに Claude Code とブラウザがあり、開発用アカウント2つで本番にログイン済み。Playwright・`~/remail-e2e` は使わない。git は SSH 鍵で直接操作する（2026-11-18 の本人の決定で、git と Cloudflare の操作は Claude Code と同等の権限に解放された）。本番への操作（シークレットの登録・変更、本番 D1、デプロイ）も REST API 経由で行えるが、通常のデプロイとマイグレーションは GitHub Actions 経由を基本とする（Cloudflare API トークンは Muse の保管庫（Secure Vault）に登録済みで、値はどこにも書かない・表示しない。保管庫の値は外に出ないため wrangler には渡せない。シークレットの登録は `cf_api.py secret-put` で、値は標準入力でのみ渡す。認証が通らないときは止まって報告する）。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。
+- **Claude Code（PC の VSCode）**：PC での開発。実装・テスト・`~/remail-e2e` での本番の確認（`docs/claude/browser.md`）・push。作業ルールは `CLAUDE.md` に従う。README は変えた節だけ直す。
+- **Muse**（Meta の AI エージェント）：スマホからの指示の実行（実装・push・本番の確認・報告）。実行環境と権限、シークレットの扱いは `CLAUDE.md` の「実行環境」と `docs/claude/secrets-deploy.md` が正。通常のデプロイとマイグレーションは GitHub Actions 経由を基本とする。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。
 - **この README を正とする。** 大きな変更をしたら、同じコミットで README の該当箇所も直す。claude.ai のプロジェクトは GitHub と同期しているが、Claude Code の変更は自動では反映されないので、大きな変更のあとは同期をやり直す。
 
 ---
