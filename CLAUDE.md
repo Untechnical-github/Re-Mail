@@ -20,7 +20,7 @@ Gmail をチャット風（相手ごとのトークルーム）で読み書き�
 | ブラウザでの画面・送受信の確認（`~/remail-e2e`） | `docs/claude/browser.md`（PC のときだけ） |
 
 ## 実行環境
-- **仕様設計と指示文づくりは Muse が行う**。claude.ai は使わない（2026-11-20 の本人の決定。トークン消費対策として廃止）。
+- **仕様設計と指示文づくりは Muse が行う**。
 - **PC の VSCode**：ブラウザでの確認は `~/remail-e2e`（リポジトリの外。Playwright と、手でログインしたプロファイルで本番を操作する。`docs/claude/browser.md`）。push は自分で行う（「Git とデプロイ」のとおり）。
 - **Muse の環境**：Playwright・`~/remail-e2e` は無い。ブラウザでの確認はせず、本番で Muse のブラウザで確かめる手順（2つの開発用アカウント間だけ・件名は `[re-mail-test]` から）を報告に書く。git は SSH 鍵で自分で操作する（2026-11-18 の本人の決定で、git と Cloudflare の操作は Claude Code と同等の権限に解放された）。本番への操作（シークレットの登録・変更、本番 D1、デプロイ）も行えるが、通常のマイグレーションとデプロイは GitHub Actions 経由を基本とする。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。Cloudflare API トークンは Muse の保管庫（Secure Vault）に登録済みで（コネクタ `custom.cloudflare`）、値はどこにも書かない・表示しない。保管庫の値は外に出ないため wrangler には渡せず、Cloudflare の操作は Cloudflare REST API 経由で行う（手順は `~/workspace/custom-connectors/custom.cloudflare/CONNECTOR.md`）。認証が通らないときは、そこで止まってユーザーに報告する。
 
