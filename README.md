@@ -39,7 +39,7 @@ Gmail を **LINE / Discord のようなチャット形式** で読み書きす�
 18. [既知の問題・残り課題](#18-既知の問題残り課題)
 19. [設計判断の記録](#19-設計判断の記録)
 20. [今後の構想](#20-今後の構想)
-21. [claude.ai・Claude Code（PC）・Muse の役割分担](#21-claudeaiclaude-codepcmuse-の役割分担)
+21. [Claude Code（PC）・Muse の役割分担](#21-claude-codepcmuse-の役割分担)
 
 ---
 
@@ -1259,10 +1259,10 @@ README 作成時のコード確認で見つかった不具合は、すべて直�
 
 ---
 
-## 21. claude.ai・Claude Code（PC）・Muse の役割分担
-- **claude.ai（Re:Mail プロジェクト）**：設計の壁打ち、原因の仮説出し、指示文づくり。**指示文には、関係する §0 のルールを必ず書き添える。** 指示文は宛先（Claude Code か Muse か）を分けて書く。Muse 宛ての確認手順は、本番サイトとブラウザの操作だけで済む形にする。
+## 21. Claude Code（PC）・Muse の役割分担
+- **Muse**（Meta の AI エージェント）：仕様設計、原因の仮説出し、指示文づくりから、スマホからの指示の実行（実装・push・本番の確認・報告）までを担う。**指示文には、関係する §0 のルールを必ず書き添える。** 指示文は宛先（Claude Code か Muse 自身か）を分けて書く。確認手順は、本番サイトとブラウザの操作だけで済む形にする。実行環境と権限、シークレットの扱いは `CLAUDE.md` の「実行環境」と `docs/claude/secrets-deploy.md` が正。通常のデプロイとマイグレーションは GitHub Actions 経由を基本とする。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。
 - **Claude Code（PC の VSCode）**：PC での開発。実装・テスト・`~/remail-e2e` での本番の確認（`docs/claude/browser.md`）・push。作業ルールは `CLAUDE.md` に従う。README は変えた節だけ直す。
-- **Muse**（Meta の AI エージェント）：スマホからの指示の実行（実装・push・本番の確認・報告）。実行環境と権限、シークレットの扱いは `CLAUDE.md` の「実行環境」と `docs/claude/secrets-deploy.md` が正。通常のデプロイとマイグレーションは GitHub Actions 経由を基本とする。既存の `TOKEN_ENCRYPTION_KEY` は上書きしない（変えると D1 のトークンと設定がすべて読めなくなる。変えるときはユーザーが行う）。
-- **この README を正とする。** 大きな変更をしたら、同じコミットで README の該当箇所も直す。claude.ai のプロジェクトは GitHub と同期しているが、Claude Code の変更は自動では反映されないので、大きな変更のあとは同期をやり直す。
+- **claude.ai は使わない**（2026-11-20 の本人の決定。トークン消費対策として廃止し、設計の壁打ちも Muse が担う）。
+- **この README を正とする。** 大きな変更をしたら、同じコミットで README の該当箇所も直す。
 
 ---
